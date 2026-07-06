@@ -28,6 +28,9 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { useAsk } from '@/lib/hooks/use-ask';
 import { askBrainSchema, type AskBrainFormValues } from '@/lib/api/schemas';
 import {
@@ -35,12 +38,14 @@ import {
   AskCertifiedNumber,
   AskTrustBanner,
   AskProvenance,
+  metricLabel,
+  askMetricDrill,
 } from '@/components/ask/ask-result';
 
 const SAMPLE_QUESTIONS = [
   'How much revenue did we realize?',
-  'What is our blended ROAS?',
-  'What is the CoD RTO rate?',
+  'What is our return on ad spend?',
+  'How often do cash-on-delivery orders come back undelivered?',
 ];
 
 function PageHeader() {
@@ -176,6 +181,10 @@ export function AskBrainContent() {
                 <CardContent className="space-y-4 pt-6">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <AskBindingBadge binding={data.binding} />
+                    <DataWindowBadge
+                      from={data.binding.params?.date_from ?? null}
+                      to={data.binding.params?.date_to ?? null}
+                    />
                   </div>
                   <EmptyState
                     title="No data yet for this metric"
@@ -196,9 +205,29 @@ export function AskBrainContent() {
                 <CardContent className="space-y-4 pt-6">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <AskBindingBadge binding={data.binding} />
+                    <DataWindowBadge
+                      from={data.binding.params?.date_from ?? null}
+                      to={data.binding.params?.date_to ?? null}
+                    />
                   </div>
-                  <AskCertifiedNumber number={data.number} />
+                  <div className="space-y-1">
+                    <MetricTitle
+                      label={
+                        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Your answer
+                        </span>
+                      }
+                      help={`Brain matched your question to the "${metricLabel(
+                        data.binding.metric_id,
+                      )}" certified metric and calculated this number from your own data at the data snapshot shown in Technical details. It is computed by Brain's metric engine, not written by AI.`}
+                    />
+                    <AskCertifiedNumber number={data.number} />
+                  </div>
                   <AskTrustBanner tier={data.trust_tier} grade={data.confidence_grade} />
+                  <VerifyLink
+                    href={askMetricDrill(data.binding.metric_id).href}
+                    label={askMetricDrill(data.binding.metric_id).label}
+                  />
                   <AskProvenance
                     binding={data.binding}
                     snapshotId={data.binding.snapshot_id}
@@ -215,7 +244,7 @@ export function AskBrainContent() {
                     title="No certified metric answers this"
                     description={
                       data.reason ||
-                      "Brain only answers from certified metrics it can calculate exactly. This question doesn't match one — so no number is shown. Try rephrasing around revenue, spend, ROAS, RTO, orders, journeys, or attribution."
+                      "Brain only answers from certified metrics it can calculate exactly. This question doesn't match one, so no number is shown. Try asking about your revenue, ad spend, return on ad spend, delivery returns, orders, customer journeys, or where your sales came from."
                     }
                     icon={<SearchX className="h-8 w-8" aria-hidden="true" />}
                   />

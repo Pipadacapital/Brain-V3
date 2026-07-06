@@ -53,14 +53,25 @@ export interface SchemaRegistrationResult {
 }
 
 /**
- * Register an Avro schema in Apicurio with FULL_TRANSITIVE compatibility.
+ * Artifact types this wrapper registers. AVRO = the collector envelope lane; JSON (JSON Schema) =
+ * the AMD-03-sanctioned type for NEW identity/action program artifacts (pixel.identify.v1, the
+ * AMD-08 map-mutation lane, action.*.v1) — registry-registered under the same FULL_TRANSITIVE rule.
+ */
+export type ApicurioArtifactType = 'AVRO' | 'JSON';
+
+/**
+ * Register a schema in Apicurio with FULL_TRANSITIVE compatibility.
  * Called by the collector on startup to ensure the schema is registered.
+ *
+ * `artifactType` defaults to AVRO (the original collector-envelope behavior, unchanged);
+ * pass 'JSON' to register a JSON Schema artifact (AMD-03 new-artifact convention).
  *
  * Throws if the schema is not compatible (non-additive change rejected by registry).
  */
 export async function registerSchema(
   config: ApicurioConfig,
-  avscJson: string
+  avscJson: string,
+  artifactType: ApicurioArtifactType = 'AVRO'
 ): Promise<SchemaRegistrationResult> {
   // Apicurio Registry v2 takes `ifExists` as a QUERY PARAMETER, not the v1-style
   // `X-Registry-IfExists` header (which this endpoint silently ignores → POST defaults to
@@ -73,9 +84,9 @@ export async function registerSchema(
   const response = await fetch(url, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json; artifactType=AVRO',
+      'Content-Type': `application/json; artifactType=${artifactType}`,
       'X-Registry-ArtifactId': config.artifactId,
-      'X-Registry-ArtifactType': 'AVRO',
+      'X-Registry-ArtifactType': artifactType,
     },
     body: avscJson,
   });
@@ -98,37 +109,90 @@ export async function registerSchema(
 }
 
 /**
+ * Ensure the artifact carries the COMPATIBILITY rule (default FULL_TRANSITIVE) — idempotent.
+ *
+ * SPEC: 1.7 (AMD-03, BINDING): the compose-env compatibility setting provably does NOT
+ * materialize a registry rule; rule creation must be an explicit idempotent boot step via
+ * REST. Without a rule on the artifact (or a global rule), Apicurio's compatibility test
+ * endpoint checks NOTHING and every breaking change passes silently.
+ *
+ * Live-verified against Apicurio 2.6.3 (:8080): POST rule → 204 created; POST when the rule
+ * already exists → 409 (treated as success — the rule is present, which is the goal).
+ */
+export async function ensureCompatibilityRule(
+  config: ApicurioConfig,
+  rule: 'FULL_TRANSITIVE' | 'FULL' | 'BACKWARD_TRANSITIVE' | 'BACKWARD' = 'FULL_TRANSITIVE'
+): Promise<void> {
+  const url =
+    `${config.baseUrl}/apis/registry/v2/groups/${config.groupId}/artifacts/${config.artifactId}/rules`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'COMPATIBILITY', config: rule }),
+  });
+
+  // 204 = rule created; 409 = rule already exists on the artifact (idempotent success).
+  if (response.status === 204 || response.status === 409) return;
+
+  const error = await response.text();
+  throw new Error(`[events] Failed to ensure COMPATIBILITY rule (${response.status}): ${error}`);
+}
+
+/**
  * Validate a schema change against Apicurio's compatibility rules (FULL_TRANSITIVE).
  * Used in CI to reject non-additive changes before they reach the registry.
  *
- * Returns { compatible: true } or throws with the incompatibility reason.
+ * SPEC: 1.7 (AMD-03 fix, WA-02): the previous implementation POSTed to
+ * `/versions/latest/compatibility`, an endpoint that DOES NOT EXIST in Apicurio Registry
+ * v2 (live-verified 404 on 2.6.3) — and then treated 404 as "compatible", so every check
+ * silently passed, breaking changes included. The correct 2.6 API is the dry-run rule
+ * test: `PUT /apis/registry/v2/groups/{g}/artifacts/{id}/test` (testUpdateArtifact) —
+ * live-verified: 204 = rules pass, 409 = RuleViolationException (incompatible), 404 = the
+ * ARTIFACT genuinely does not exist (first version → compatible).
+ *
+ * NOTE: the test endpoint only enforces rules that exist — pair with
+ * ensureCompatibilityRule() (the AMD-03 idempotent boot step) or the check is decorative.
+ *
+ * Returns { compatible: true } / { compatible: false, reason } or throws on transport errors.
  */
 export async function validateSchemaCompatibility(
   config: ApicurioConfig,
   avscJson: string
 ): Promise<{ compatible: boolean; reason?: string }> {
   const url =
-    `${config.baseUrl}/apis/registry/v2/groups/${config.groupId}/artifacts/${config.artifactId}/versions/latest/compatibility`;
+    `${config.baseUrl}/apis/registry/v2/groups/${config.groupId}/artifacts/${config.artifactId}/test`;
 
   const response = await fetch(url, {
-    method: 'POST',
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json; artifactType=AVRO' },
     body: avscJson,
   });
 
-  if (response.status === 200) {
+  // 2xx (204 on 2.6.3) — all configured rules pass.
+  if (response.ok) {
     return { compatible: true };
   }
 
+  // 409 — RuleViolationException: the schema breaks the artifact's compatibility rule.
   if (response.status === 409) {
-    const body = await response.json() as { message?: string };
+    const body = await response.json() as {
+      message?: string;
+      detail?: string;
+      causes?: Array<{ context?: string; description?: string }>;
+    };
+    const causes = (body.causes ?? [])
+      .map((c) => [c.description, c.context && `at ${c.context}`].filter(Boolean).join(' '))
+      .filter(Boolean)
+      .join('; ');
     return {
       compatible: false,
-      reason: body.message ?? 'Schema incompatible with FULL_TRANSITIVE policy',
+      reason: causes || body.detail || body.message || 'Schema incompatible with FULL_TRANSITIVE policy',
     };
   }
 
-  // Artifact not found — this is the first version, always compatible
+  // 404 — the ARTIFACT does not exist (this is the real artifact-missing signal on the
+  // /test endpoint, unlike the old nonexistent-endpoint 404): first version, compatible.
   if (response.status === 404) {
     return { compatible: true };
   }

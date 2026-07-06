@@ -42,9 +42,12 @@ case "${ENTITY}" in
                   PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:5.3.1_for_spark_3" ;;
   identity_map)   JOBS=("silver_identity_map.py")
                   PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:5.3.1_for_spark_3" ;;
-  all)            JOBS=("silver_settlement.py" "silver_payment.py" "silver_campaign.py" "silver_journey.py" "silver_identity_alias.py" "silver_identity_map.py")
+  # SPEC: A.2.4 (WA-19) — the unmerge ledger (UnmergeEvent projection); needs the Neo4j connector.
+  identity_unmerge) JOBS=("silver_identity_unmerge.py")
                   PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:5.3.1_for_spark_3" ;;
-  *) echo "[silver-entities] unknown entity '${ENTITY}'. Use: settlement|payment|campaign|journey|identity_alias|identity_map|all" >&2; exit 2 ;;
+  all)            JOBS=("silver_settlement.py" "silver_payment.py" "silver_campaign.py" "silver_journey.py" "silver_identity_alias.py" "silver_identity_map.py" "silver_identity_unmerge.py")
+                  PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:5.3.1_for_spark_3" ;;
+  *) echo "[silver-entities] unknown entity '${ENTITY}'. Use: settlement|payment|campaign|journey|identity_alias|identity_map|identity_unmerge|all" >&2; exit 2 ;;
 esac
 
 echo "[silver-entities] entity=${ENTITY} image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER}"

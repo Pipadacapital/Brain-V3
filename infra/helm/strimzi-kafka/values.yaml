@@ -159,6 +159,9 @@ topics:
     - identity.minted.v1
     - identity.linked.v1
     - identity.review_queued.v1
+    # A.2.4 unmerge lane (WA-19); the restitch-dirty consumer subscribes to it — a missing topic
+    # crashes the stream-worker on startup (auto-create OFF). Must exist in prod too.
+    - identity.unmerged.v1
 
   # Internal canonical fan-out lanes -> brain.<entity>
   fanout:

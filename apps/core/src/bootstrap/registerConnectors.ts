@@ -68,6 +68,12 @@ export interface RegisterConnectorsDeps {
   liveTopic: string;
   getWebhookSaltHex: (brandId: string) => Promise<string>;
   identityReader: Neo4jIdentityReader;
+  /**
+   * SPEC: A.1.4 (WA-09) — per-brand `connector.identity_fields` flag resolver (platform-flags
+   * FlagService read, injected from main.ts). OPTIONAL + FAIL-CLOSED: absent → flag OFF → the
+   * webhook mappers emit today's envelope byte-identical.
+   */
+  isIdentityFieldsEnabled?: (brandId: string) => Promise<boolean>;
   // Pixel provisioning (constructed in main BEFORE BrandService — ADR-4).
   pixelInstallationRepo: PgPixelInstallationRepository;
   pixelStatusRepo: PgPixelStatusRepository;
@@ -159,6 +165,8 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
     getSaltHex: getWebhookSaltHex,
     redis: deps.redis,
     identityReader, // Epic 3 / ADR-0004: GDPR redact resolves + erases via the Neo4j identity SoR
+    // SPEC: A.1.4 (WA-09) — connector.identity_fields flag gate (fail-closed when absent).
+    isIdentityFieldsEnabled: deps.isIdentityFieldsEnabled,
   });
 
   app.log.info({ topic: liveTopic }, '[core] All webhook receivers registered via generic pipeline (Shopify/Razorpay/Shopflo/WooCommerce)');

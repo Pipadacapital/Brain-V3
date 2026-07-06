@@ -14,19 +14,24 @@
  */
 
 import * as React from 'react';
-import { Boxes, Cpu, Search, ShieldCheck } from 'lucide-react';
+import Link from 'next/link';
+import { Boxes, Cpu, Lock, Search, ShieldCheck, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { useModels, usePromoteModel, useCustomerScore } from '@/lib/hooks/use-ml';
+import { useCustomers } from '@/lib/hooks/use-identity';
+import { useSessionRole } from '@/lib/hooks/use-session-role';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { plainLabel } from '@/lib/format/plain-language';
 import type { MlModel, MlModelStage } from '@/lib/api/types';
 
 /** Stage → badge tone. Production strongest; archived muted. */
@@ -62,7 +67,7 @@ function MetricsStrip({ metrics }: { metrics: MlModel['metrics'] }) {
         .slice(0, 4)
         .map(([k, v]) => (
           <span key={k}>
-            {k.replace(/_/g, ' ')}: <span className="font-medium text-foreground tabular-nums">{String(v)}</span>
+            {plainLabel(k)}: <span className="font-medium text-foreground tabular-nums">{String(v)}</span>
           </span>
         ))}
     </div>
@@ -137,16 +142,127 @@ function inr(minor: string): string {
   }
 }
 
-function CustomerScorePanel() {
-  const [input, setInput] = React.useState('');
-  const [brainId, setBrainId] = React.useState<string | null>(null);
-  const { data, isLoading, error, refetch } = useCustomerScore(brainId);
+/** A customer chosen in the picker — carries the id used for serving + a human label for display. */
+interface PickedCustomer {
+  brainId: string;
+  label: string;
+}
 
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const v = input.trim();
-    setBrainId(v.length > 0 ? v : null);
+/**
+ * CustomerPicker — search-and-pick a customer by name/email/reference instead of pasting a raw
+ * Brain customer ID. Types ≥2 chars → live matches from the customer browse (counts-only, no raw
+ * PII); pick one to serve its score. This replaces the old raw brain_id textbox so a non-technical
+ * owner never has to know what a UUID is.
+ */
+function CustomerPicker({
+  value,
+  onSelect,
+  onClear,
+}: {
+  value: PickedCustomer | null;
+  onSelect: (c: PickedCustomer) => void;
+  onClear: () => void;
+}) {
+  const [input, setInput] = React.useState('');
+  const [debounced, setDebounced] = React.useState('');
+  const [open, setOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebounced(input.trim()), 250);
+    return () => clearTimeout(t);
+  }, [input]);
+
+  const active = debounced.length >= 2;
+  const { data, isFetching } = useCustomers({ search: active ? debounced : undefined, limit: 8 });
+  const items = active ? (data?.items ?? []) : [];
+
+  if (value) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-1.5 text-sm">
+          <Cpu className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+          <span className="font-medium">{value.label}</span>
+        </span>
+        <Button variant="outline" size="sm" onClick={onClear}>
+          <X className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+          Choose another
+        </Button>
+      </div>
+    );
   }
+
+  return (
+    <div className="relative max-w-md">
+      <div className="relative">
+        <Search
+          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <Input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          placeholder="Search a customer by name, email, or reference…"
+          aria-label="Search a customer to score"
+          className="pl-8 text-sm"
+        />
+      </div>
+      {open && active && (
+        <div
+          className="absolute z-10 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-md"
+          role="listbox"
+        >
+          {isFetching && items.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">Searching…</p>
+          ) : items.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">
+              No customers match &ldquo;{debounced}&rdquo;.
+            </p>
+          ) : (
+            <ul className="max-h-64 overflow-y-auto py-1">
+              {items.map((c) => {
+                const label = c.customer_ref ?? c.brain_id;
+                return (
+                  <li key={c.brain_id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected="false"
+                      // onMouseDown fires before the input's onBlur closes the list.
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        onSelect({ brainId: c.brain_id, label });
+                        setInput('');
+                        setOpen(false);
+                      }}
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-accent focus:bg-accent focus:outline-none"
+                    >
+                      <span className="font-medium">{label}</span>
+                      <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {c.segment && <span>{plainLabel(c.segment)}</span>}
+                        {c.order_count != null && (
+                          <span className="tabular-nums">
+                            {c.order_count} {c.order_count === 1 ? 'order' : 'orders'}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomerScorePanel() {
+  const [picked, setPicked] = React.useState<PickedCustomer | null>(null);
+  const brainId = picked?.brainId ?? null;
+  const { data, isLoading, error, refetch } = useCustomerScore(brainId);
 
   return (
     <Card>
@@ -159,22 +275,10 @@ function CustomerScorePanel() {
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Look up a customer&apos;s buying-behaviour score (how recently, how often, and how much they
-          buy) and their churn risk, using their Brain customer ID. Every lookup is kept in a
+          buy) and their churn risk. Search for the customer below — every lookup is kept in a
           tamper-proof log.
         </p>
-        <form onSubmit={onSubmit} className="flex flex-wrap items-center gap-2">
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Brain customer ID"
-            aria-label="Brain customer ID"
-            className="max-w-xs font-mono text-sm"
-          />
-          <Button type="submit" size="sm" disabled={input.trim().length === 0}>
-            <Search className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-            Serve score
-          </Button>
-        </form>
+        <CustomerPicker value={picked} onSelect={setPicked} onClear={() => setPicked(null)} />
 
         {brainId &&
           (isLoading ? (
@@ -239,16 +343,27 @@ function CustomerScorePanel() {
                   </dd>
                 </div>
               </dl>
-              <div className="border-t pt-2 text-xs text-muted-foreground">
-                Served by{' '}
-                {data.model ? (
-                  <span className="font-medium text-foreground">
-                    {data.model.name} {data.model.version} ({data.model.framework})
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-2 text-xs text-muted-foreground">
+                <span>
+                  Served by{' '}
+                  {data.model ? (
+                    <span className="font-medium text-foreground">
+                      {data.model.name} {data.model.version} ({data.model.framework})
+                    </span>
+                  ) : (
+                    <span className="italic">no production model registered</span>
+                  )}
+                  {' · '}
+                  <span title="A tamper-proof reference for this exact prediction, kept in the audit log.">
+                    prediction reference {data.prediction_id}
                   </span>
-                ) : (
-                  <span className="italic">no production model registered</span>
+                </span>
+                {brainId && (
+                  <VerifyLink
+                    href={`/customers/${encodeURIComponent(brainId)}`}
+                    label="See this customer's records"
+                  />
                 )}
-                {' · '}prediction {data.prediction_id}
               </div>
             </div>
           ))}
@@ -257,7 +372,12 @@ function CustomerScorePanel() {
   );
 }
 
-export function MlContent() {
+/**
+ * ModelRegistryCard — the lifecycle-management table. Admin-only: promoting a model to production
+ * retires the previous live model, so we gate it behind the workspace-admin roles (owner /
+ * brand_admin). Non-admins see the customer-score serving surface but not the registry controls.
+ */
+function ModelRegistryCard() {
   const { data, isLoading, error, refetch } = useModels();
   const models = data?.models ?? [];
   const [modelsQ, setModelsQ] = React.useState('');
@@ -267,30 +387,29 @@ export function MlContent() {
   );
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Models"
-        description="The prediction models Brain uses for this brand. Promote a model through its lifecycle — promoting one to production automatically retires the previous production model, so exactly one stays live."
-      />
-
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="space-y-1">
             <CardTitle className="flex items-center gap-2 text-base">
               <Boxes className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
               Model registry
             </CardTitle>
-            {models.length > 0 && (
-              <TableSearch
-                value={modelsQ}
-                onChange={setModelsQ}
-                placeholder="Search models…"
-                aria-label="Search model registry"
-              />
-            )}
+            {/* Not a time window — the registry is the current, complete set of models. State that
+                honestly rather than implying a hidden date filter. */}
+            <DataWindowBadge from={null} to={null} count={models.length} label="models" />
           </div>
-        </CardHeader>
-        <CardContent>
+          {models.length > 0 && (
+            <TableSearch
+              value={modelsQ}
+              onChange={setModelsQ}
+              placeholder="Search models…"
+              aria-label="Search model registry"
+            />
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
           {isLoading ? (
             <div className="space-y-3">
               <Skeleton className="h-10 w-full" />
@@ -329,8 +448,37 @@ export function MlContent() {
               </table>
             </div>
           )}
-        </CardContent>
-      </Card>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function MlContent() {
+  const role = useSessionRole();
+  const isAdmin = role === 'owner' || role === 'brand_admin';
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Models"
+        description="The prediction models Brain uses for this brand, and a way to look up any customer's buying-behaviour and churn scores. Promoting a model to production automatically retires the previous live model, so exactly one stays live."
+      />
+
+      {isAdmin ? (
+        <ModelRegistryCard />
+      ) : (
+        <Card>
+          <CardContent className="py-6">
+            <div className="flex items-start gap-3 text-sm text-muted-foreground">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <p>
+                Managing prediction models (promoting them through their lifecycle) is available to
+                workspace admins. You can still look up any customer&apos;s scores below.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <CustomerScorePanel />
     </div>

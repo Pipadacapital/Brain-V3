@@ -94,7 +94,8 @@ describe('order.live.v1 → Iceberg Bronze wiring (P0, lakehouse)', () => {
     if (!infraUp) return;
     const env = liveOrderEnvelope();
     await produceCollectorEvent(producer, env);
-    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND, eventId: env.event_id }, { min: 1, timeoutMs: 60_000 });
-    expect(landed).toBeGreaterThan(0); // the Spark sink wrote it to Iceberg Bronze
-  }, 75_000);
+    // ADR-0010: Connect-sink commit visibility is 30-60s+ under load — helper's 120s default.
+    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND, eventId: env.event_id }, { min: 1 });
+    expect(landed).toBeGreaterThan(0); // the Connect sink wrote it to Iceberg Bronze
+  }, 150_000);
 });

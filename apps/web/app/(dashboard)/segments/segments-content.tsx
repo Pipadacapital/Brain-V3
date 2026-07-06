@@ -35,6 +35,7 @@ import {
   FolderOpen,
   X,
   ArrowRight,
+  Info,
 } from 'lucide-react';
 import { TabShell } from '@/components/ui/tab-shell';
 import { SectionCard } from '@/components/ui/section-card';
@@ -561,8 +562,14 @@ export function SegmentsContent() {
           </div>
         </SectionCard>
 
-        {/* ── Live preview ──────────────────────────────────────────────────── */}
-        <SectionCard title="Live preview" description="Customers this segment reaches.">
+        {/* ── Total customer base ───────────────────────────────────────────── */}
+        {/*
+          HONESTY: there is NO run-time rule evaluator yet (core `previewSegment` ignores the
+          definition and returns the brand's whole customer base). So we must NOT render this as a
+          rule-narrowed "matched" count — that would fabricate a filtered number. We label it plainly
+          as the unfiltered Total customers denominator and annotate that rules don't filter it yet.
+        */}
+        <SectionCard title="Audience size" description="Your total addressable customer base.">
           <div aria-live="polite" aria-busy={isPreviewing}>
             {previewError ? (
               <p className="text-sm text-muted-foreground">Couldn’t estimate the audience right now.</p>
@@ -577,28 +584,27 @@ export function SegmentsContent() {
               />
             ) : (
               <div className="space-y-1">
-                <div className="flex items-baseline gap-2">
-                  <span
-                    className={cn(
-                      'text-4xl font-semibold tabular-nums text-foreground transition-opacity',
-                      isPreviewing && 'opacity-50',
-                    )}
-                  >
-                    {formatCount(preview.matched_customers)}
-                  </span>
-                  <span className="text-sm text-muted-foreground">
-                    of {formatCount(preview.total_customers)}
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground">reachable customers</p>
+                <span
+                  className={cn(
+                    'block text-4xl font-semibold tabular-nums text-muted-foreground transition-opacity',
+                    isPreviewing && 'opacity-50',
+                  )}
+                >
+                  {formatCount(preview.total_customers)}
+                </span>
+                <p className="text-xs text-muted-foreground">Total customers</p>
               </div>
             )}
           </div>
 
-          <p className="mt-4 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground">
-            This is your reachable customer base. Brain stores the segment as a rule and applies
-            your conditions each time the segment is used — so the saved segment narrows to the
-            matching customers at that moment.
+          <p className="mt-4 flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>
+              <span className="font-medium text-foreground">Live preview coming.</span> Your rules
+              don’t filter this count yet — it’s your whole customer base, not the matched subset.
+              Brain saves the segment as a rule and applies your conditions each time it’s used to
+              pick the matching customers.
+            </span>
           </p>
 
           <div className="mt-4 flex flex-col gap-2">

@@ -38,6 +38,11 @@ export interface WebhookRegistrationDeps {
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j identity reader for GDPR redact side-effects. */
   identityReader?: WebhookIdentityReader;
   /**
+   * SPEC: A.1.4 (WA-09) — per-brand `connector.identity_fields` flag resolver (platform-flags).
+   * OPTIONAL + FAIL-CLOSED (absent → flag OFF → today's envelope byte-identical).
+   */
+  isIdentityFieldsEnabled?: (brandId: string) => Promise<boolean>;
+  /**
    * CRIT-2 OVERRIDE (optional): resolve the Shopify webhook HMAC signing key (the brand's app
    * `client_secret`) for a shop domain. When omitted, a default resolver is built from
    * secretsManager + rawPgPool below. Injectable so tests can stub it.
@@ -58,6 +63,8 @@ export function registerAllWebhookRoutes(
     redis: deps.redis,
     regionCode: deps.regionCode ?? 'IN',
     identityReader: deps.identityReader,
+    // SPEC: A.1.4 (WA-09) — connector.identity_fields flag resolver (fail-closed when absent).
+    isIdentityFieldsEnabled: deps.isIdentityFieldsEnabled,
   };
 
   // ── Shopify HMAC secret resolver (CRIT-2) ─────────────────────────────────

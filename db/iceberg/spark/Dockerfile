@@ -27,7 +27,30 @@ WORKDIR /opt/brain
 # medallion maintenance. (ADR-0010: the Spark-SS landing/oracle/inspector modules are removed —
 # Bronze landing is the Kafka Connect Iceberg sink, deployed outside this image.)
 COPY bronze_maintenance.py bronze_raw_retention.py erasure_raw_delete.py \
-     iceberg_base.py provision_silver_gold.py medallion_maintenance.py job_log.py /opt/brain/
+     iceberg_base.py provision_silver_gold.py medallion_maintenance.py job_log.py \
+     _identity_normalization.py /opt/brain/
+
+# SPEC: A.1.3 (WA-06) — python dep for the shared identity-normalization twin
+# (_identity_normalization.py: phone E.164 via Google libphonenumber). PINNED to the exact
+# version the A.5.2 cross-language property test proved byte-identical against the TS twin
+# (packages/identity-normalization, libphonenumber-js) — bump BOTH sides together and re-run
+# packages/identity-normalization/scripts/run-a52-property-test.sh (0 mismatches required).
+# NOTE: the local docker-run dev path (run-silver-*.sh) uses the vanilla apache/spark image;
+# the module lazy-guards the import so email-only consumers work without it there.
+RUN pip3 install --no-cache-dir phonenumbers==9.0.34
+
+# SPEC: A.3 / §1.1 (WA-20) — Splink is the ONE sanctioned added dependency (probabilistic stitch,
+# silver/silver_probabilistic_stitch.py). PINNED <4: this base is apache/spark:3.5.3 (Python 3.8) and
+# Splink 4 requires Python ≥3.9. Splink 3.9.15 trains (estimate_m_from_label_column) and predicts on
+# Spark 3.5.3 — VERIFIED in-image — GIVEN the two shims the job sets at runtime:
+#   (a) spark.sparkContext.setCheckpointDir(...) — SparkLinker checkpoints to break query lineage; and
+#   (b) an `array_length` session UDF aliasing size() — Splink's Spark array_intersect_at_sizes SQL
+#       emits ARRAY_LENGTH, which is NOT a Spark 3.5.3 builtin.
+# The probabilistic layer is QUARANTINED (§1.4) + flag-gated (identity.probabilistic, default OFF), so
+# this dependency ships DORMANT. Bump this pin and run-silver-probabilistic-stitch.sh's SPLINK_SPEC
+# together (only past 3.x once the base image's Python is ≥3.9). Also carried in the model-eval harness
+# via a dev venv — NOT this image (splink_v1_golden_eval.py uses Splink 4 + DuckDB on the dev's 3.9+).
+RUN pip3 install --no-cache-dir 'splink>=3.9.10,<4'
 
 # V4 Spark Silver/Gold MART jobs + run scripts + the shared bounded-retry helper. Additive: the image
 # now CARRIES the transform marts so the V4 CronWorkflows (infra/helm/cronworkflows → spark-v4.yaml) can

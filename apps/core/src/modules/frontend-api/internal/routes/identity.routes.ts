@@ -37,7 +37,7 @@ import {
 import type { BffDeps } from './_shared.js';
 
 export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, identityReader, vaultService } = deps;
+  const { bffProtectedPreHandler, identityReader, vaultService, identityEventPublisher } = deps;
 
   // ── GET /api/v1/identity/customers — customer BROWSE (discover front-door) ────
   /**
@@ -406,6 +406,8 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
               type: 'string',
               pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
             },
+            // SPEC: A.2.4 (WA-19) — optional operator reason for the reversible-decision-log (audited).
+            reason: { type: 'string', maxLength: 500 },
           },
           required: ['brain_id'],
           additionalProperties: false,
@@ -423,7 +425,7 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         });
       }
       const auth = (request as AuthenticatedRequest).auth;
-      const { brain_id } = request.body as { brain_id: string };
+      const { brain_id, reason } = request.body as { brain_id: string; reason?: string };
       if (!auth.brandId || !identityReader) {
         return reply.code(409).send({
           request_id: requestId,
@@ -432,7 +434,24 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
       }
       let result: ContractUnmergeResult;
       try {
-        result = await unmergeCustomer(auth.brandId, brain_id, identityReader);
+        // SPEC: A.2.4 (WA-19) — actor = the auth principal (audited); onUnmerged emits
+        // identity.unmerged.v1 (AMD-08) for downstream re-versioning/re-stitch, fail-open.
+        result = await unmergeCustomer(auth.brandId, brain_id, identityReader, {
+          actor: auth.userId,
+          reason,
+          onUnmerged: identityEventPublisher
+            ? (evt) =>
+                identityEventPublisher.emitUnmerged({
+                  brandId: evt.brandId,
+                  restoredBrainId: evt.restoredBrainId,
+                  survivorBrainId: evt.survivorBrainId,
+                  mergeEventId: evt.mergeEventId,
+                  actor: evt.actor,
+                  reason: evt.reason,
+                  correlationId: requestId,
+                })
+            : undefined,
+        });
       } catch {
         return reply.code(503).send({
           request_id: requestId,

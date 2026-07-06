@@ -208,6 +208,11 @@ export type {
 export { computeJourneyPaths } from './journey-paths.js';
 export type { JourneyPathsResult, JourneyPathRow, JourneyPathLink } from './journey-paths.js';
 
+// Recent-journeys list — a thin keyset-paginated projection over the per-journey serving view
+// mv_gold_journey (one row per brand_id, brain_anon_id), newest-first by last_touch_at. NO money.
+export { computeJourneyList } from './journey-list.js';
+export type { JourneyListResult, JourneyListRow, JourneyListParams } from './journey-list.js';
+
 // Versioned journey-ledger CURRENT projection (mv_journey_events_current over
 // iceberg.brain_gold.journey_events) — the resolved-identity per-customer timeline,
 // keyset-paginated newest-first. Money = bigint minor string ONLY on composite rows.
@@ -233,6 +238,12 @@ export {
   DEFAULT_ATTRIBUTION_MODEL,
 } from './attribution-models.js';
 export type { AttributionModelId, TouchCredit, AttributionTouch } from './attribution-models.js';
+
+// WA-02 (SPEC: 0.5) purpose-named Gold reads — replace the raw withSilverBrand/BRAND_PREDICATE
+// usage that non-measurement core modules (workspace-access, notification) used to inline.
+export { brandHasRealizedLedgerRows } from './ledger-presence.js';
+export { computeFinalizedPurchasesForWindow } from './finalized-purchases-window.js';
+export type { FinalizedPurchaseWindowRow } from './finalized-purchases-window.js';
 
 // Billing meter seam — per-period realized GMV from the lakehouse (gold), the PG-function replacement.
 export { computeRealizedGmvForPeriod } from './realized-gmv-period.js';

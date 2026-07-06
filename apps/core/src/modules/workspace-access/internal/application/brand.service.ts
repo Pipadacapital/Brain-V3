@@ -10,8 +10,11 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeBrandHost } from '@brain/pixel-sdk';
 import type { DbPool, QueryContext } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
-import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+// WA-02 (SPEC: 0.5): metric-engine is fenced to the measurement tier — the MA-11 ledger-presence
+// probe moved into the engine as brandHasRealizedLedgerRows and is consumed via the analytics
+// facade. No raw withSilverBrand/BRAND_PREDICATE serving SQL in this module.
+import type { SilverPool } from '../../../analytics/index.js';
+import { brandHasRealizedLedgerRows } from '../../../analytics/index.js';
 import type { AuditWriter } from '@brain/audit';
 
 /**
@@ -318,13 +321,7 @@ export class BrandService {
       if (data.currencyCode !== undefined && this.srPool) {
         let hasLedgerRows = false;
         try {
-          hasLedgerRows = await withSilverBrand(this.srPool, id, async (scope) => {
-            const rows = await scope.runScoped<{ one: number }>(
-              `SELECT 1 AS one FROM brain_serving.mv_gold_revenue_ledger WHERE ${BRAND_PREDICATE} LIMIT 1`,
-              [],
-            );
-            return rows.length > 0;
-          });
+          hasLedgerRows = await brandHasRealizedLedgerRows(this.srPool, id);
         } catch {
           // Silver unavailable / table absent → treat as no financial data yet (fail open).
           hasLedgerRows = false;

@@ -36,6 +36,7 @@
     "@brain/observability": "workspace:*",
     "@brain/pii-vault": "workspace:*",
     "@brain/pixel-sdk": "workspace:*",
+    "@brain/platform-flags": "workspace:*",
     "@brain/razorpay-mapper": "workspace:*",
     "@brain/shiprocket-mapper": "workspace:*",
     "@brain/shopflo-mapper": "workspace:*",

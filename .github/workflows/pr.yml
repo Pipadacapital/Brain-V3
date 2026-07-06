@@ -115,6 +115,10 @@ jobs:
   # a raw-PII column name (email/phone/first_name/last_name/full_name/address);
   # hashed/derived forms (email_sha256, *_hash, hashed_*, has_*, email_domain)
   # are allowed. See tools/lint/serving-pii-guard.sh (self-test runs first).
+  # Also runs the identity-view guard (A.2.2 / AMD-07): the bi-temporal
+  # silver_identity_map may be read ONLY through a sanctioned accessor
+  # (identity_current_v / identity_asof; Spark _identity_views.*). See
+  # tools/lint/identity-view-guard.sh (self-test runs first).
   # ─────────────────────────────────────────────────────────────────────────
   v4-naming-guard:
     name: Brain V4 Naming Guard (no dbt / retired DBs)
@@ -131,6 +135,13 @@ jobs:
         run: tools/lint/serving-pii-guard-test.sh
       - name: Run the serving PII-projection guard over db/trino/views (ADR-0007 D6)
         run: tools/lint/serving-pii-guard.sh
+      # Identity-view guard (A.2.2 / AMD-07) — silver_identity_map is bi-temporal; every read must go
+      # through a sanctioned accessor (Spark identity_current/asof/raw; Trino identity_current_v/asof).
+      # Fails on any direct read outside tools/lint/identity-view-guard-allowlist.txt.
+      - name: Self-test the identity-view guard (proves catch + allowlist)
+        run: tools/lint/identity-view-guard.sh --selftest
+      - name: Run the identity-view guard over the tree (A.2.2)
+        run: tools/lint/identity-view-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # Prod placeholder guard (AUD-COST-007) — renders every prod chart

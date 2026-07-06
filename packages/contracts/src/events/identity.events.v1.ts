@@ -213,6 +213,41 @@ export const IdentityReviewQueuedEventSchema = EventEnvelopeBaseSchema.extend({
 });
 export type IdentityReviewQueuedEvent = z.infer<typeof IdentityReviewQueuedEventSchema>;
 
+// ── 6. identity.unmerged ─────────────────────────────────────────────────────
+// SPEC: A.2.4 (WA-19, AMD-08/AMD-09) — Emitted when an operator REVERSES a committed merge
+// (admin unmerge). AMD-08 R1: unmerge fits no existing identity.* topic, so this is the ONE
+// convention-following sibling the amendment sanctions on the live {env}.identity.*.v1 lane. It
+// carries the survivor (canonical) + the identity being split back out, plus the ORIGINAL merge_id
+// so downstream re-versioning/re-stitch can invert exactly the transfer that merge made. The
+// journey re-version job un-reverts affected brain_ids; the recompute consumer marks both dirty.
+//
+// AMD-09: survivor = the lowest-UUID canonical the merge chose (unchanged); unmerge does not pick a
+// new survivor — it restores the ABSORBED id (`restored_brain_id`) to independent existence.
+// Audited: `actor` (operator) + optional `reason` mirror identity_audit(action='unmerge').
+
+export const IdentityUnmergedPayloadSchema = z.object({
+  brand_id: z.string().uuid(),
+  /** The ORIGINAL merge this unmerge reverses (identity_merge_event.merge_id / MergeEvent.merge_id). */
+  merge_id: z.string().uuid(),
+  /** The surviving canonical identity the absorbed id had been folded INTO (unchanged by the split). */
+  canonical_brain_id: z.string().uuid(),
+  /** The identity being split back OUT and restored to independent existence (the former absorbed id). */
+  restored_brain_id: z.string().uuid(),
+  /** Resolution rule-set version for the reversal (audit/replay), e.g. 'v1-admin-unmerge'. */
+  rule_version: z.string().min(1),
+  /** The operator who triggered the unmerge (audit — the auth principal user id, never raw PII). */
+  actor: z.string().min(1),
+  /** Optional operator-supplied reason for the reversal (free text, no PII by contract). */
+  reason: z.string().optional(),
+});
+export type IdentityUnmergedPayload = z.infer<typeof IdentityUnmergedPayloadSchema>;
+
+export const IdentityUnmergedEventSchema = EventEnvelopeBaseSchema.extend({
+  event_name: z.literal('identity.unmerged'),
+  payload: IdentityUnmergedPayloadSchema,
+});
+export type IdentityUnmergedEvent = z.infer<typeof IdentityUnmergedEventSchema>;
+
 // ── Topic suffixes ({env}.identity.{event}.v1) ───────────────────────────────
 
 export const IDENTITY_MINTED_TOPIC_SUFFIX = 'identity.minted.v1' as const;
@@ -220,6 +255,7 @@ export const IDENTITY_LINKED_TOPIC_SUFFIX = 'identity.linked.v1' as const;
 export const IDENTITY_MERGED_TOPIC_SUFFIX = 'identity.merged.v1' as const;
 export const IDENTITY_SUPPRESSED_TOPIC_SUFFIX = 'identity.suppressed.v1' as const;
 export const IDENTITY_REVIEW_QUEUED_TOPIC_SUFFIX = 'identity.review_queued.v1' as const;
+export const IDENTITY_UNMERGED_TOPIC_SUFFIX = 'identity.unmerged.v1' as const;
 
 // ── Avro subjects (Apicurio registry — additive evolution only) ──────────────
 
@@ -228,6 +264,10 @@ export const IDENTITY_LINKED_AVRO_SUBJECT = 'brain.identity.linked.v1' as const;
 export const IDENTITY_MERGED_AVRO_SUBJECT = 'brain.identity.merged.v1' as const;
 export const IDENTITY_SUPPRESSED_AVRO_SUBJECT = 'brain.identity.suppressed.v1' as const;
 export const IDENTITY_REVIEW_QUEUED_AVRO_SUBJECT = 'brain.identity.review_queued.v1' as const;
+// AMD-03: this NEW program topic gets a registry-registered JSON Schema artifact (generated/json-schema/
+// brain.identity.unmerged.v1.json) under the FULL_TRANSITIVE rule — registered at boot next to
+// pixel.identify.v1. The 5 pre-existing identity events above stay JSON+zod-only (ratified).
+export const IDENTITY_UNMERGED_JSON_SCHEMA_SUBJECT = 'identity.unmerged.v1' as const;
 
 // ── All identity event schemas (for codegen — mirrors M1_EVENT_SCHEMAS) ───────
 
@@ -237,4 +277,5 @@ export const IDENTITY_EVENT_SCHEMAS = {
   'identity.merged': IdentityMergedEventSchema,
   'identity.suppressed': IdentitySuppressedEventSchema,
   'identity.review_queued': IdentityReviewQueuedEventSchema,
+  'identity.unmerged': IdentityUnmergedEventSchema,
 } as const;

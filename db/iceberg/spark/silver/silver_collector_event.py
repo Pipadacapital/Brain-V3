@@ -65,7 +65,9 @@ from pyspark.sql.window import Window  # noqa: E402
 
 from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 from job_log import emit_job_log  # noqa: E402
-from _silver_technical import write_quarantine, write_consent_rejected, event_category_udf  # noqa: E402
+from _silver_technical import (  # noqa: E402
+    event_category_udf, identify_consent_denied_udf, write_consent_rejected, write_quarantine,
+)
 
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 # ADR-0010 (Kafka Connect Iceberg sink REINSTATED as the Bronze landing writer — cost decision): the
@@ -183,6 +185,10 @@ def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) ->
         get_json_object(col("payload"), "$.properties.install_token").alias("install_token"),
         # R3 signal: the consent_flags object PRESENT in the envelope (non-null string) vs absent (null).
         get_json_object(col("payload"), "$.consent_flags").alias("consent_flags_raw"),
+        # SPEC A.1.2 (AMD-04 denied-VALUE drop) signals: the WA-07 identify envelope's consent_state
+        # ('granted'|'denied') + the consent_flags analytics VALUE ('true'/'false' as strings).
+        get_json_object(col("payload"), "$.properties.consent_state").alias("consent_state_raw"),
+        get_json_object(col("payload"), "$.consent_flags.analytics").alias("consent_analytics_raw"),
         # Promote the anonymous / device identifiers to named columns (they otherwise live only inside the
         # payload JSON). anon-id is the client-side pre-identity key; device_id fingerprints the device.
         get_json_object(col("payload"), "$.properties.brain_anon_id").alias("anonymous_id"),
@@ -236,7 +242,28 @@ def _process_window(spark: SparkSession, raw: DataFrame, installs: DataFrame) ->
             col("payload"),
         ),
     )
-    consent_ok = pixel_candidates.where(col("consent_flags_raw").isNotNull())  # R3
+    consent_present = pixel_candidates.where(col("consent_flags_raw").isNotNull())  # R3 (presence)
+
+    # ── SPEC A.1.2 (AMD-04, WA-08): denied-VALUE drop for IDENTIFY events. The presence gate above is
+    #    NOT enough for an identify: a deliberate identity-capture event whose consent VALUE denies
+    #    (WA-07 envelope consent_state != 'granted', or legacy consent_flags analytics:false) must land
+    #    in silver_consent_rejected — never in Silver, never in the identity graph. Strictly-stronger,
+    #    identify-only (behavioural events keep the unchanged presence-only posture). ────────────────────
+    _identify_denied = identify_consent_denied_udf()(
+        col("event_type"), col("consent_state_raw"), col("consent_analytics_raw")
+    )
+    write_consent_rejected(
+        spark,
+        consent_present.where(_identify_denied).select(
+            col("claimed_brand_id").alias("brand_id"),
+            col("event_id"),
+            col("occurred_at"),
+            col("anonymous_id"),
+            lit("consent_denied").alias("reason"),
+            col("payload"),
+        ),
+    )
+    consent_ok = consent_present.where(~_identify_denied)
 
     # ── Stage-1 DQ gate (R2 tenant resolution): LEFT join so an unresolved install_token is CAPTURED (the
     #    old INNER join silently dropped it), then brand_mismatch — both → quarantine (stage='dq'). ─────────

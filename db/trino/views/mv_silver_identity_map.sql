@@ -23,6 +23,11 @@ SELECT
   confidence,
   effective_from,
   effective_to,
+  -- SPEC: A.1.5 — the SYSTEM-TIME axis (AMD-07). system_to IS NULL = the version the system currently
+  -- knows; the pair (effective_*, system_*) makes this the raw bi-temporal serving projection. Governed
+  -- as-of / current reads go through identity_asof / identity_current_v.
+  system_from,
+  system_to,
   replaced_by_brain_id,
   merge_event_id,
   is_current,

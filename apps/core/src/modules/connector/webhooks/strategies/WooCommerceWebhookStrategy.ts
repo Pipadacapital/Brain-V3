@@ -154,7 +154,7 @@ export class WooCommerceWebhookStrategy implements IWebhookStrategy {
 
     // ── Orders (FROZEN path) → order.live.v1 ──────────────────────────────────────────────────────
     if (ORDER_UPSERT_TOPICS.has(topic)) {
-      return this.mapOrder(body as unknown as WooOrderShape, brandId, saltHex, region);
+      return this.mapOrder(body as unknown as WooOrderShape, brandId, saltHex, region, ctx.identityFieldsEnabled === true);
     }
 
     // ── Refunds (newest refund in the order's refunds[]) → refund.recorded.v1 ─────────────────────
@@ -200,7 +200,7 @@ export class WooCommerceWebhookStrategy implements IWebhookStrategy {
   }
 
   // ── Order → order.live.v1 (FROZEN id: uuidV5FromOrderLive) ───────────────────────────────────────
-  private mapOrder(order: WooOrderShape, brandId: string, saltHex: string, region: string): PayloadMapResult {
+  private mapOrder(order: WooOrderShape, brandId: string, saltHex: string, region: string, identityFieldsEnabled = false): PayloadMapResult {
     if (order.id === undefined || order.id === null || String(order.id).length === 0) {
       // id-less delivery (e.g. the registration ping) → fast-ack rather than 400-retry-storm.
       return SKIP;
@@ -208,7 +208,10 @@ export class WooCommerceWebhookStrategy implements IWebhookStrategy {
 
     let mapped;
     try {
-      mapped = mapWooOrderToEvent(order, brandId, saltHex, region, 'real');
+      // SPEC: A.1.4 (WA-09) — connector.identity_fields flag (pipeline-resolved, fail-closed OFF).
+      mapped = mapWooOrderToEvent(order, brandId, saltHex, region, 'real', {
+        emitInteropIdentifiers: identityFieldsEnabled,
+      });
     } catch {
       const err = new Error('Order could not be mapped');
       (err as NodeJS.ErrnoException & { code: string }).code = 'INVALID_PAYLOAD';

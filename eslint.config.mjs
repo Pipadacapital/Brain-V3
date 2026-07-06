@@ -60,6 +60,10 @@ export default [
         { type: 'core-module', pattern: 'apps/core/src/modules/*', capture: ['module'] },
         // The metric engine — more specific than the generic package pattern.
         { type: 'metric-engine', pattern: 'packages/metric-engine', capture: [] },
+        // Hexagonal DOMAIN packages (Commerce-OS program, SPEC: 0.5) — pure domain logic with
+        // ports only. More specific than the generic package pattern. Wave B's domain-journey
+        // is the first occupant; every future packages/domain-* lands inside this zone.
+        { type: 'domain', pattern: 'packages/domain-*', capture: ['domain'] },
         // Each deployable app — captured by the top-level directory name.
         { type: 'app', pattern: 'apps/*', capture: ['app'] },
         // Shared packages.
@@ -95,9 +99,22 @@ export default [
             },
             // Tools may not be imported by apps or packages
             {
-              from: ['app', 'package', 'core-module', 'metric-engine'],
+              from: ['app', 'package', 'core-module', 'metric-engine', 'domain'],
               disallow: ['tool'],
               message: 'Tools must not be imported from application or package code.',
+            },
+            // HEXAGONAL RULE (SPEC: 0.5): domain packages hold pure domain logic + ports; all
+            // datastore access arrives through injected adapters. They may not import the
+            // in-repo infrastructure adapter packages: @brain/db (the PG client wrapper) or
+            // @brain/metric-engine (the Trino serving seam). External driver imports (kafkajs,
+            // ioredis, neo4j-driver, pg, …) are banned by boundaries/external below.
+            {
+              from: ['domain'],
+              disallow: ['metric-engine', ['package', { pkg: 'db' }]],
+              message:
+                'Hexagonal boundary (SPEC: 0.5): packages/domain-* must not import infrastructure ' +
+                'adapters (@brain/db, @brain/metric-engine). Define a port in the domain package and ' +
+                'inject the adapter at the composition root.',
             },
             // metric-engine is fenced to the MEASUREMENT TIER — the modules that legitimately
             // consume the metric registry/engine: measurement, analytics, attribution (credit
@@ -115,6 +132,40 @@ export default [
                 'packages/metric-engine is fenced to the measurement tier (measurement, analytics, ' +
                 'attribution, data-quality, ai, frontend-api) — I-ST03, D-6. This module must not ' +
                 'import the metric engine directly; go through the analytics module instead.',
+            },
+          ],
+        },
+      ],
+
+      // ── HEXAGONAL RULE (SPEC: 0.5) — external infrastructure clients ─────
+      // Domain packages (packages/domain-*) must not import infrastructure driver
+      // libraries directly: Kafka (kafkajs), Redis (ioredis/redis), Neo4j
+      // (neo4j-driver), PostgreSQL (pg), Trino (trino-client / presto-client —
+      // Trino access in this repo is the @brain/metric-engine seam, banned above).
+      // Domain code programs against its own PORT interfaces; the composition root
+      // injects the concrete adapter.
+      'boundaries/external': [
+        'error',
+        {
+          default: 'allow',
+          rules: [
+            {
+              from: ['domain'],
+              disallow: [
+                'kafkajs',
+                'ioredis',
+                'redis',
+                'neo4j-driver',
+                'pg',
+                'pg-pool',
+                'pg-cursor',
+                'trino-client',
+                'presto-client',
+              ],
+              message:
+                'Hexagonal boundary (SPEC: 0.5): packages/domain-* must not import infrastructure ' +
+                'clients (kafka/redis/neo4j/pg/trino). Define a port in the domain package and inject ' +
+                'the adapter at the composition root.',
             },
           ],
         },

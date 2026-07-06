@@ -40,8 +40,11 @@
  */
 
 import { createHash } from 'node:crypto';
-import { hashToUuidShaped } from '@brain/connector-core';
+import { hashToUuidShaped, type IdentityFieldsOptions } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
+// SPEC: A.1.4 — WA-09 interop-space dual-write (AMD-01): plain-sha256 of the SAME normalized
+// values, so pixel identify hashes become joinable with connector identities.
+import { emailInteropHash, phoneInteropHash } from '@brain/identity-normalization';
 import {
   decimalStringToMinor,
   tryDecimalToMinor,
@@ -136,6 +139,14 @@ export interface ShopfloCheckoutProperties {
   cart_token: string | null;
   customer_email_hash: string | null;   // sha256(salt || normalized email) — raw DROPPED
   customer_phone_hash: string | null;   // sha256(salt || normalized E.164) — raw DROPPED
+  // ── SPEC: A.1.4 (WA-09) — emitted ONLY when connector.identity_fields is ON:
+  // AMD-02 name unification (the standard salted names alongside the frozen legacy ones above),
+  // the AMD-01 interop plain-sha256 dual-write, and the checkout-session join key.
+  hashed_customer_email?: string;
+  hashed_customer_phone?: string;
+  email_sha256?: string;
+  phone_sha256?: string;
+  checkout_session_id?: string;
   marketing_consent: boolean;
   has_address: boolean;             // addressless-checkout flag (research finding 8)
   line_items: ShopfloMappedLineItem[];
@@ -242,6 +253,7 @@ export function mapShopfloCheckoutAbandoned(
   saltHex: string,
   regionCode = 'IN',
   dataSource: DataSource = 'real',
+  identityFields?: IdentityFieldsOptions,
 ): MappedShopfloCheckoutEvent {
   const checkoutId = String(payload.checkout_id ?? payload.cart_token ?? '').trim();
   if (!checkoutId) {
@@ -259,12 +271,21 @@ export function mapShopfloCheckoutAbandoned(
 
   let emailHash: string | null = null;
   let phoneHash: string | null = null;
+  // SPEC: A.1.4 — INTEROP-space dual-write (AMD-01), flag-gated by the caller. undefined when OFF.
+  let emailSha256: string | undefined;
+  let phoneSha256: string | undefined;
   if (rawEmail) {
     emailHash = hashIdentifier(rawEmail, 'email', saltHex, regionCode);
+    if (identityFields?.emitInteropIdentifiers === true) {
+      emailSha256 = emailInteropHash(rawEmail) ?? undefined;
+    }
   }
   if (rawPhone) {
     const { normalized } = normalizePhone(rawPhone, regionCode);
     phoneHash = hashIdentifier(normalized, 'phone', saltHex, regionCode);
+    if (identityFields?.emitInteropIdentifiers === true) {
+      phoneSha256 = phoneInteropHash(rawPhone, regionCode) ?? undefined;
+    }
   }
   // rawEmail / rawPhone / customer object are dropped here — never leave this scope.
 
@@ -286,6 +307,17 @@ export function mapShopfloCheckoutAbandoned(
     cart_token: payload.cart_token != null ? String(payload.cart_token) : null,
     customer_email_hash: emailHash,
     customer_phone_hash: phoneHash,
+    // SPEC: A.1.4 — flag-ON additions ONLY (AMD-02 standard-name unification + AMD-01 interop
+    // dual-write + the checkout-session join key = this event's checkout_id).
+    ...(identityFields?.emitInteropIdentifiers === true && emailHash !== null
+      ? { hashed_customer_email: emailHash }
+      : {}),
+    ...(identityFields?.emitInteropIdentifiers === true && phoneHash !== null
+      ? { hashed_customer_phone: phoneHash }
+      : {}),
+    ...(emailSha256 !== undefined ? { email_sha256: emailSha256 } : {}),
+    ...(phoneSha256 !== undefined ? { phone_sha256: phoneSha256 } : {}),
+    ...(identityFields?.emitInteropIdentifiers === true ? { checkout_session_id: checkoutId } : {}),
     marketing_consent: marketingConsent,
     has_address: hasAddress(payload),
     line_items: lineItems,
@@ -408,6 +440,37 @@ function firstNestedCustomer(rec: Record<string, unknown>, keys: readonly string
   return null;
 }
 
+// SPEC: A.1.4 — INTEROP-space (AMD-01) plain-sha256 of the SAME probed raw email/phone. Raw is
+// consumed here and DROPPED exactly like the salted path. Only called when the flag is ON.
+function interopEmailFrom(rec: Record<string, unknown>): string | undefined {
+  const email = firstField(rec, EMAIL_KEYS) ?? firstNestedCustomer(rec, EMAIL_KEYS);
+  return email ? (emailInteropHash(email) ?? undefined) : undefined;
+}
+
+function interopPhoneFrom(rec: Record<string, unknown>, regionCode: string): string | undefined {
+  const phone = firstField(rec, PHONE_KEYS) ?? firstNestedCustomer(rec, PHONE_KEYS);
+  return phone ? (phoneInteropHash(phone, regionCode) ?? undefined) : undefined;
+}
+
+/**
+ * SPEC: A.1.4 — the interop block appended to Shopflo order/checkout properties when the caller
+ * enables `connector.identity_fields`. Flag OFF (or absent) → {} → BYTE-IDENTICAL legacy envelope.
+ * (checkout_session_id already rides projectJourneyContext on the SLICE-B events — AMD-02.)
+ */
+function projectInteropIdentifiers(
+  rec: Record<string, unknown>,
+  regionCode: string,
+  identityFields?: IdentityFieldsOptions,
+): { email_sha256?: string; phone_sha256?: string } {
+  if (identityFields?.emitInteropIdentifiers !== true) return {};
+  const emailSha256 = interopEmailFrom(rec);
+  const phoneSha256 = interopPhoneFrom(rec, regionCode);
+  return {
+    ...(emailSha256 !== undefined ? { email_sha256: emailSha256 } : {}),
+    ...(phoneSha256 !== undefined ? { phone_sha256: phoneSha256 } : {}),
+  };
+}
+
 // ── Journey context (non-PII; threaded directly — finding #9) ────────────────────
 
 interface ShopfloJourneyContext {
@@ -503,6 +566,10 @@ export interface ShopfloOrderProperties extends ShopfloJourneyContext {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — interop plain-sha256; emitted ONLY when the
+  // caller enables connector.identity_fields. checkout_session_id rides ShopfloJourneyContext.
+  email_sha256?: string;
+  phone_sha256?: string;
   line_items?: OrderLineItem[];
   tax_total_minor?: string;
   shipping_total_minor?: string;
@@ -578,6 +645,10 @@ export interface ShopfloCheckoutFunnelProperties extends ShopfloJourneyContext {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — interop plain-sha256; emitted ONLY when the
+  // caller enables connector.identity_fields. checkout_session_id rides ShopfloJourneyContext.
+  email_sha256?: string;
+  phone_sha256?: string;
   occurred_at: string;
 }
 
@@ -682,6 +753,7 @@ export function mapShopfloOrder(
   saltHex: string,
   regionCode = 'IN',
   dataSource: DataSource = 'real',
+  identityFields?: IdentityFieldsOptions,
 ): MappedShopfloOrderEvent {
   const orderId = firstField(record, ORDER_ID_KEYS);
   if (!orderId) {
@@ -715,6 +787,8 @@ export function mapShopfloOrder(
     ...(hashedEmail !== undefined ? { hashed_customer_email: hashedEmail } : {}),
     ...(hashedPhone !== undefined ? { hashed_customer_phone: hashedPhone } : {}),
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
+    // SPEC: A.1.4 — interop dual-write ({} when the flag is OFF).
+    ...projectInteropIdentifiers(record, regionCode, identityFields),
     ...projectJourneyContext(record),
     ...projectShopfloOrderDepth(record),
   };
@@ -849,6 +923,7 @@ export function mapShopfloCheckout(
   regionCode: string,
   kind: ShopfloCheckoutFunnelKind,
   dataSource: DataSource = 'real',
+  identityFields?: IdentityFieldsOptions,
 ): MappedShopfloCheckoutFunnelEvent {
   const checkoutId = firstField(record, CHECKOUT_ID_KEYS);
   if (!checkoutId) {
@@ -885,6 +960,8 @@ export function mapShopfloCheckout(
     ...(hashedEmail !== undefined ? { hashed_customer_email: hashedEmail } : {}),
     ...(hashedPhone !== undefined ? { hashed_customer_phone: hashedPhone } : {}),
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
+    // SPEC: A.1.4 — interop dual-write ({} when the flag is OFF).
+    ...projectInteropIdentifiers(record, regionCode, identityFields),
     ...projectJourneyContext(record),
   };
 

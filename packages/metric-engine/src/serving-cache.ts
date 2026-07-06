@@ -135,14 +135,12 @@ export function createServingCacheReader(config: ServingCacheReaderConfig): Serv
         }
         if (state.outcome === 'ok') {
           // Compute succeeded but the cache SET failed — return the value, drop the write.
-          // eslint-disable-next-line no-console
           console.warn(
             `[metric-engine] serving cache write failed (value served, cache skipped): ${err instanceof Error ? err.message : String(err)}`,
           );
           return state.value as T;
         }
         // computeOutcome === 'pending' → the cache GET failed before compute ran → direct read.
-        // eslint-disable-next-line no-console
         console.warn(
           `[metric-engine] serving cache unavailable — reading Trino directly: ${err instanceof Error ? err.message : String(err)}`,
         );

@@ -822,6 +822,38 @@ export const JourneyPathsSchema = z.discriminatedUnion('state', [
 ]);
 export type JourneyPaths = z.infer<typeof JourneyPathsSchema>;
 
+// ── GET /v1/analytics/journey/list — paginated recent customer journeys ──────────────
+// @see apps/core/.../analytics/.../get-journey-list.ts (NO money — a journey list is behavioral).
+// One row per (brand_id, brain_anon_id) over mv_gold_journey, newest-first by last_touch_at,
+// keyset-paginated (opaque next_cursor; null = last page). brain_anon_id is the opaque anon key.
+
+export const JourneyListRowDtoSchema = z.object({
+  brain_anon_id: z.string(), // opaque anon journey key (no PII)
+  first_touch_at: z.string(), // raw serving timestamp (UTC)
+  last_touch_at: z.string(), // raw serving timestamp (UTC); the sort key
+  first_channel: JourneyChannelSchema,
+  last_channel: JourneyChannelSchema,
+  touchpoint_count: MinorUnitsSchema, // bigint → string
+  distinct_channels: MinorUnitsSchema, // bigint → string
+  distinct_sessions: MinorUnitsSchema, // bigint → string
+  converted: z.boolean(),
+  converted_at: z.string().nullable(), // null when not converted
+  days_to_convert: MinorUnitsSchema.nullable(), // bigint → string; null when not converted
+});
+export type JourneyListRowDto = z.infer<typeof JourneyListRowDtoSchema>;
+
+export const JourneyListSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    total: MinorUnitsSchema, // bigint → string — brand-wide journey count (pagination denominator)
+    rows: z.array(JourneyListRowDtoSchema),
+    next_cursor: z.string().nullable(), // opaque keyset cursor for the next (older) page; null = last
+    data_source: DataSourceSchema,
+  }),
+]);
+export type JourneyList = z.infer<typeof JourneyListSchema>;
+
 // ── #32b GET /v1/analytics/retention/repeat-latency — time-to-2nd-purchase median + histogram ──
 // @see apps/core/.../analytics/.../get-repeat-latency.ts (NO money — integer day math only).
 // Exactly six fixed, non-overlapping latency buckets per brand; brand scalars denormalized.

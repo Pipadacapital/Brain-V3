@@ -70,16 +70,20 @@ export {
   IdentitySuppressedEventSchema,
   IdentityReviewQueuedPayloadSchema,
   IdentityReviewQueuedEventSchema,
+  IdentityUnmergedPayloadSchema,
+  IdentityUnmergedEventSchema,
   IDENTITY_MINTED_TOPIC_SUFFIX,
   IDENTITY_LINKED_TOPIC_SUFFIX,
   IDENTITY_MERGED_TOPIC_SUFFIX,
   IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
   IDENTITY_REVIEW_QUEUED_TOPIC_SUFFIX,
+  IDENTITY_UNMERGED_TOPIC_SUFFIX,
   IDENTITY_MINTED_AVRO_SUBJECT,
   IDENTITY_LINKED_AVRO_SUBJECT,
   IDENTITY_MERGED_AVRO_SUBJECT,
   IDENTITY_SUPPRESSED_AVRO_SUBJECT,
   IDENTITY_REVIEW_QUEUED_AVRO_SUBJECT,
+  IDENTITY_UNMERGED_JSON_SCHEMA_SUBJECT,
   IDENTITY_EVENT_SCHEMAS,
 } from './events/identity.events.v1.js';
 export type {
@@ -95,6 +99,8 @@ export type {
   IdentitySuppressedEvent,
   IdentityReviewQueuedPayload,
   IdentityReviewQueuedEvent,
+  IdentityUnmergedPayload,
+  IdentityUnmergedEvent,
 } from './events/identity.events.v1.js';
 
 // ── API contracts (Sprint-0 legacy) ──────────────────────────────────────────
@@ -404,6 +410,8 @@ export {
   JourneyPathRowDtoSchema,
   JourneyPathLinkDtoSchema,
   JourneyPathsSchema,
+  JourneyListRowDtoSchema,
+  JourneyListSchema,
   RepeatLatencyBucketDtoSchema,
   RepeatLatencySchema,
   CohortUserDtoSchema,
@@ -478,6 +486,8 @@ export type {
   JourneyPathRowDto,
   JourneyPathLinkDto,
   JourneyPaths,
+  JourneyListRowDto,
+  JourneyList,
   RepeatLatencyBucketDto,
   RepeatLatency,
   CohortUserDto,

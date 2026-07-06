@@ -60,8 +60,12 @@ import { MetricTitle } from '@/components/ui/metric-title';
 import { TabShell } from '@/components/ui/tab-shell';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { TouchpointTimeline } from '@/components/analytics/touchpoint-timeline';
 import { JourneyLedger } from '@/components/analytics/journey-ledger';
+import { brainRef } from '@brain/contracts';
 import { humanize } from '@/lib/format/humanize';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import { relativeTime } from '@/lib/format/relative-time';
@@ -69,8 +73,11 @@ import { eventLabel } from '@/lib/event-labels';
 import { useCustomer360, useEraseCustomer, useUnmergeCustomer } from '@/lib/hooks/use-identity';
 import { useCustomerScore } from '@/lib/hooks/use-ml';
 import { useExecutiveMetrics, useJourneyEvents } from '@/lib/hooks/use-analytics';
-import type { Customer360Identifier, Customer360Merge } from '@/lib/api/types';
+import type { Customer360Identifier, Customer360Merge, Customer360Response } from '@/lib/api/types';
 import type { CurrencyCode } from '@brain/money';
+
+/** One order row on the profile (derived from the Customer 360 contract's `found` variant). */
+type Customer360Order = Extract<Customer360Response, { state: 'found' }>['orders'][number];
 
 function ConsentBadge({ on, label }: { on: boolean; label: string }) {
   return (
@@ -133,6 +140,15 @@ function confidencePct(confidence: string): string | null {
   return Number.isFinite(n) && n >= 0 && n <= 100 ? `${Math.round(n)}%` : null;
 }
 
+/**
+ * publicRef — the human-readable BRN- reference we surface INSTEAD of the raw brain_id UUID
+ * (canonical brainRef derivation; never invented). Falls back to the raw id only if derivation
+ * somehow fails, so we never render a blank.
+ */
+function publicRef(brainId: string): string {
+  return brainRef(brainId) ?? brainId;
+}
+
 /** Absolute date for identity events ("12 Mar 2026") — identity history reads better absolute. */
 function absDate(iso: string): string {
   const d = new Date(iso);
@@ -158,6 +174,20 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
   const profileFetchedIso = dataUpdatedAt ? new Date(dataUpdatedAt).toISOString() : null;
 
   const found = data && data.state === 'found' ? data : null;
+
+  // Controlled tab + per-order trace: clicking an order row jumps to the Journey tab and traces
+  // that exact order — the honest "proof" drill (per-order Bronze detail was retired; the order's
+  // own visit→purchase journey IS its proof). Both live at parent scope so the row → tab handoff works.
+  const [activeTab, setActiveTab] = React.useState('overview');
+  const [traceDraft, setTraceDraft] = React.useState('');
+  const [tracedOrderId, setTracedOrderId] = React.useState<string | null>(null);
+
+  const openOrderProof = React.useCallback((orderId: string) => {
+    const v = orderId.trim();
+    setTraceDraft(v);
+    setTracedOrderId(v.length > 0 ? v : null);
+    setActiveTab('journey');
+  }, []);
 
   return (
     <TabShell
@@ -237,7 +267,7 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
           <EmptyState
             icon={<CircleSlash className="h-6 w-6" aria-hidden="true" />}
             title="No customer found"
-            description={`No customer with Brain ID ${data.brain_id} exists for the active brand.`}
+            description={`No customer with reference ${publicRef(data.brain_id)} exists for the active brand.`}
             action={
               <Button asChild variant="outline" size="sm">
                 <Link href="/customers">Back to Customers</Link>
@@ -245,7 +275,7 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
             }
           />
         ) : found ? (
-          <Tabs defaultValue="overview" className="gap-6">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-6">
             <TabsList>
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="identity">Identity timeline</TabsTrigger>
@@ -307,8 +337,13 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
                 <CardContent className="grid gap-4 sm:grid-cols-2">
                   <dl className="space-y-2 text-sm">
                     <div>
-                      <dt className="text-muted-foreground">Brain ID</dt>
-                      <dd className="font-mono">{found.customer.brain_id}</dd>
+                      <dt className="text-muted-foreground">
+                        <MetricTitle
+                          label="Customer reference"
+                          help="Brain's stable, human-readable ID for this customer (a BRN- code). It never changes, even after profiles merge."
+                        />
+                      </dt>
+                      <dd className="font-mono">{publicRef(found.customer.brain_id)}</dd>
                     </div>
                     <div>
                       <dt className="text-muted-foreground">Lifecycle</dt>
@@ -321,7 +356,7 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
                     {found.customer.merged_into ? (
                       <div>
                         <dt className="text-muted-foreground">Merged into</dt>
-                        <dd className="font-mono">{found.customer.merged_into}</dd>
+                        <dd className="font-mono">{publicRef(found.customer.merged_into)}</dd>
                         <dd className="mt-2">
                           <Button
                             variant="outline"
@@ -463,9 +498,9 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
                                   : 'this profile was folded into the surviving one'}
                               </p>
                               <p className="truncate text-xs text-muted-foreground/80">
-                                <span className="font-mono">{m.merged_brain_id}</span>
+                                <span className="font-mono">{publicRef(m.merged_brain_id)}</span>
                                 {' → '}
-                                <span className="font-mono">{m.canonical_brain_id}</span>
+                                <span className="font-mono">{publicRef(m.canonical_brain_id)}</span>
                               </p>
                             </div>
                           </li>
@@ -516,11 +551,11 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
                 </div>
               ) : null}
 
-              <SectionCard
-                title={`Orders${found.orders.length > 0 ? ` (${found.orders.length})` : ''}`}
-                description="This customer's orders, newest first, each showing its latest status."
-              >
-                {found.orders.length === 0 ? (
+              {found.orders.length === 0 ? (
+                <SectionCard
+                  title="Orders"
+                  description="This customer's orders, newest first, each showing its latest status."
+                >
                   <EmptyState
                     icon={<ShoppingBag className="h-6 w-6" aria-hidden="true" />}
                     title="No orders for this customer yet"
@@ -531,42 +566,25 @@ export function CustomerProfileContent({ brainId }: { brainId: string }) {
                       </Button>
                     }
                   />
-                ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-left text-muted-foreground">
-                        <th scope="col" className="px-3 py-2 font-medium">Order ID</th>
-                        <th scope="col" className="px-3 py-2 font-medium">Status</th>
-                        <th scope="col" className="px-3 py-2 font-medium text-right">Amount</th>
-                        <th scope="col" className="px-3 py-2 font-medium">Placed</th>
-                        <th scope="col" className="px-3 py-2 font-medium">Last updated</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {found.orders.map((o) => (
-                        <tr key={o.order_id} className="border-b last:border-0 hover:bg-muted/40">
-                          <td className="px-3 py-2 font-mono text-xs">{o.order_id}</td>
-                          <td className="px-3 py-2">{humanize(o.lifecycle_state)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">
-                            {formatMoneyDisplay(o.order_value_minor, (o.currency_code ?? currency) as CurrencyCode)}
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {o.first_event_at ? new Date(o.first_event_at).toLocaleDateString() : '—'}
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {o.state_effective_at ? new Date(o.state_effective_at).toLocaleDateString() : '—'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </SectionCard>
+                </SectionCard>
+              ) : (
+                <OrdersTable
+                  orders={found.orders}
+                  currency={currency}
+                  onOpenProof={openOrderProof}
+                />
+              )}
             </TabsContent>
 
             {/* ── Journey (story timeline + "Explain this order" trace) ────── */}
             <TabsContent value="journey" className="space-y-4">
-              <JourneyTab brainId={found.customer.brain_id} />
+              <JourneyTab
+                brainId={found.customer.brain_id}
+                traceDraft={traceDraft}
+                setTraceDraft={setTraceDraft}
+                tracedOrderId={tracedOrderId}
+                setTracedOrderId={setTracedOrderId}
+              />
             </TabsContent>
 
             {/* ── Segments (RFM / churn) ───────────────────────────────────── */}
@@ -752,15 +770,119 @@ function RecentActivity({ brainId }: { brainId: string }) {
 }
 
 /**
+ * OrdersTable — this customer's orders (newest first, latest state each). Adds the three shared
+ * definition-of-done affordances over the raw list:
+ *   - a <DataWindowBadge> stating the honest date span these orders cover (+ the count shown);
+ *   - a <TableSearch> narrowing the visible rows by order id or status (client-side, no re-fetch);
+ *   - each order id is a button that jumps to the Journey tab and traces that exact order — the
+ *     "proof" drill (per-order Bronze detail was retired; the order's own journey IS its evidence).
+ * Money stays bigint minor + currency via formatMoneyDisplay; search never touches a number.
+ */
+function OrdersTable({
+  orders,
+  currency,
+  onOpenProof,
+}: {
+  orders: readonly Customer360Order[];
+  currency: CurrencyCode;
+  onOpenProof: (orderId: string) => void;
+}) {
+  const [query, setQuery] = React.useState('');
+
+  const visible = filterRows(orders, query, (o) => `${o.order_id} ${humanize(o.lifecycle_state)}`);
+
+  // Honest date span over the VISIBLE rows: min/max placed date (first_event_at). Nulls skipped;
+  // when none carry a date we pass null → the badge renders "all time" rather than a fabricated bound.
+  const placedTimes = visible
+    .map((o) => (o.first_event_at ? new Date(o.first_event_at).getTime() : NaN))
+    .filter((t) => Number.isFinite(t));
+  const fromIso = placedTimes.length ? new Date(Math.min(...placedTimes)).toISOString() : null;
+  const toIso = placedTimes.length ? new Date(Math.max(...placedTimes)).toISOString() : null;
+
+  return (
+    <SectionCard
+      title={`Orders (${orders.length})`}
+      description="This customer's orders, newest first, each showing its latest status. Select an order to see the visits and clicks that led to it."
+      meta={<DataWindowBadge from={fromIso} to={toIso} count={visible.length} label="orders" />}
+    >
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search orders…"
+          aria-label="Search this customer's orders by id or status"
+        />
+        <VerifyLink href="/analytics/orders" label="All orders" />
+      </div>
+      {visible.length === 0 ? (
+        <EmptyState
+          compact
+          icon={<ShoppingBag className="h-5 w-5" aria-hidden="true" />}
+          title="No orders match your search"
+          description="No order id or status contains that text. Clear the search to see every order."
+        />
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th scope="col" className="px-3 py-2 font-medium">Order</th>
+              <th scope="col" className="px-3 py-2 font-medium">Status</th>
+              <th scope="col" className="px-3 py-2 font-medium text-right">Amount</th>
+              <th scope="col" className="px-3 py-2 font-medium">Placed</th>
+              <th scope="col" className="px-3 py-2 font-medium">Last updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((o) => (
+              <tr key={o.order_id} className="border-b last:border-0 hover:bg-muted/40">
+                <td className="px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenProof(o.order_id)}
+                    className="rounded font-mono text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    title="See this order's journey — every step from first visit to purchase"
+                  >
+                    {o.order_id}
+                  </button>
+                </td>
+                <td className="px-3 py-2">{humanize(o.lifecycle_state)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">
+                  {formatMoneyDisplay(o.order_value_minor, (o.currency_code ?? currency) as CurrencyCode)}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {o.first_event_at ? new Date(o.first_event_at).toLocaleDateString() : '—'}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {o.state_effective_at ? new Date(o.state_effective_at).toLocaleDateString() : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </SectionCard>
+  );
+}
+
+/**
  * JourneyTab — the customer's full story timeline (shared <JourneyTimeline/> via JourneyLedger)
  * plus the "Explain this order" trace box. The ledger endpoint does not expose per-event order
  * references today, so a submitted order id always resolves through the per-order trace below
  * (TouchpointTimeline, controlled); the highlight seam is wired for when the BFF exposes them.
  */
-function JourneyTab({ brainId }: { brainId: string }) {
-  const [traceDraft, setTraceDraft] = React.useState('');
-  const [tracedOrderId, setTracedOrderId] = React.useState<string | null>(null);
-
+function JourneyTab({
+  brainId,
+  traceDraft,
+  setTraceDraft,
+  tracedOrderId,
+  setTracedOrderId,
+}: {
+  brainId: string;
+  traceDraft: string;
+  setTraceDraft: (v: string) => void;
+  tracedOrderId: string | null;
+  setTracedOrderId: (v: string | null) => void;
+}) {
   const submitTrace = (e: React.FormEvent) => {
     e.preventDefault();
     const v = traceDraft.trim();

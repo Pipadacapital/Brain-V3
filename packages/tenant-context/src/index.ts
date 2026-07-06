@@ -99,6 +99,73 @@ export function rateLimitKey(params: RateLimitKeyParams): string {
   return `brain:v1:rl:brand:${brandId}:resource:${resource}:w:${windowBucket}`;
 }
 
+// ── Feature-flag key (SPEC: 0.5) ──────────────────────────────────────────────
+
+export interface FlagKeyParams {
+  /** UUID of the brand (tenant key — MUST be the first key segment). */
+  brandId: string;
+  /** The flag name from the @brain/platform-flags registry (e.g. 'stitch.v2'). */
+  flag: string;
+}
+
+/**
+ * Build a per-brand feature-flag key: `{brand_id}:flag:{flag_name}`.
+ *
+ * SPEC: 0.5 — brand_id is the FIRST segment of every Redis key. The Python twin
+ * (db/iceberg/spark/_platform_flags.py) builds the identical key — keep in lockstep.
+ * Sanctioned builder per the no-raw-redis-key lint rule (NN-7).
+ *
+ * @throws {Error} If a segment is missing or contains ":" (separator injection).
+ */
+export function flagKey(params: FlagKeyParams): string {
+  const { brandId, flag } = params;
+  if (!brandId) throw new Error('[tenant-context] flagKey: brandId is required');
+  if (!flag) throw new Error('[tenant-context] flagKey: flag is required');
+  for (const [name, val] of Object.entries({ brandId, flag })) {
+    if (String(val).includes(':')) {
+      throw new Error(
+        `[tenant-context] flagKey: "${name}" must not contain ":" (would break key parsing)`,
+      );
+    }
+  }
+  return `${brandId}:flag:${flag}`;
+}
+
+// ── Touchpoint cache key (SPEC: A.4) ────────────────────────────────────────────
+
+export interface TouchpointCacheKeyParams {
+  /** UUID of the brand (tenant key — MUST be the first key segment, §0.5). */
+  brandId: string;
+  /** The DETERMINISTIC canonical identity the touchpoints belong to. */
+  brainId: string;
+}
+
+/**
+ * Build the real-time touchpoint-cache zset key: `{brand_id}:tp:{brain_id}` (SPEC: A.4).
+ *
+ * SPEC: 0.5 — brand_id is the FIRST segment of every Redis key (tenant-first isolation).
+ * The `tp:` namespace holds the last-200 touchpoints per DETERMINISTIC brain_id (a Redis
+ * zset scored by event-ts-ms). It is best-effort CACHE (journey APIs fall back to Iceberg),
+ * so it is NOT exempt from the AnalyticsCacheInvalidateConsumer scope.all eviction (which is
+ * also the erasure-shred path) — unlike the durable `{brand_id}:flag:*` config namespace.
+ * Sanctioned builder per the no-raw-redis-key lint rule (NN-7).
+ *
+ * @throws {Error} If a segment is missing or contains ":" (separator injection).
+ */
+export function touchpointCacheKey(params: TouchpointCacheKeyParams): string {
+  const { brandId, brainId } = params;
+  if (!brandId) throw new Error('[tenant-context] touchpointCacheKey: brandId is required');
+  if (!brainId) throw new Error('[tenant-context] touchpointCacheKey: brainId is required');
+  for (const [name, val] of Object.entries({ brandId, brainId })) {
+    if (String(val).includes(':')) {
+      throw new Error(
+        `[tenant-context] touchpointCacheKey: "${name}" must not contain ":" (would break key parsing)`,
+      );
+    }
+  }
+  return `${brandId}:tp:${brainId}`;
+}
+
 // ── Session key ───────────────────────────────────────────────────────────────
 
 export interface SessionKeyParams {

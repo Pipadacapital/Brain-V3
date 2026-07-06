@@ -34,6 +34,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { MetricTitle } from '@/components/ui/metric-title';
 import {
   useBillingPeriods,
   useSealPeriod,
@@ -43,6 +46,7 @@ import {
   useIssueCreditNote,
 } from '@/lib/hooks/use-billing';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { eventLabel } from '@/lib/event-labels';
 import type { CurrencyCode } from '@brain/money';
 
 /** Current month as 'YYYY-MM' (the natural default period to meter). */
@@ -64,9 +68,9 @@ function ratePct(bps: number): string {
   return `${(bps / 100).toFixed(2)}%`;
 }
 
-/** Human label for a ledger event_type (the composition line). */
-function eventLabel(t: string): string {
-  return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+/** Human label for a ledger recognition event_type (the composition line) — no raw code to the DOM. */
+function plainEvent(t: string): string {
+  return eventLabel(t).label;
 }
 
 /** The issued GST invoice for a period — issue button when not issued, else the immutable doc. */
@@ -83,8 +87,8 @@ function InvoiceSection({ period, currency }: { period: string; currency: string
       <div className="rounded-lg border border-dashed p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-sm text-muted-foreground">
-            No invoice issued for {period} yet. Issuing assigns a gapless number and locks the
-            figures (immutable).
+            No invoice created for {period} yet. Creating one assigns a permanent invoice number and
+            locks the figures — they can&apos;t change afterwards.
           </div>
           <Button
             size="sm"
@@ -92,12 +96,12 @@ function InvoiceSection({ period, currency }: { period: string; currency: string
             onClick={() => issue.mutate(period)}
           >
             <FileCheck2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-            {issue.isPending ? 'Issuing…' : 'Issue invoice'}
+            {issue.isPending ? 'Creating…' : 'Create invoice'}
           </Button>
         </div>
         {issue.isError && (
           <div aria-live="polite" className="mt-2 text-sm text-destructive">
-            Could not issue the invoice. The period must be sealed first.
+            Could not create the invoice. Lock in this month first.
           </div>
         )}
       </div>
@@ -264,8 +268,8 @@ function BillDetail({ period }: { period: string }) {
     return (
       <EmptyState
         icon={<FileClock className="h-6 w-6" aria-hidden="true" />}
-        title={`${period} is not sealed yet`}
-        description="Seal the period above to compute its bill."
+        title={`${period} isn't locked in yet`}
+        description="Lock in this month above to see its bill."
       />
     );
   }
@@ -278,7 +282,11 @@ function BillDetail({ period }: { period: string }) {
       {/* Derivation: basis × rate → fee */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded-lg border p-3">
-          <div className="text-xs uppercase text-muted-foreground" title="The realized revenue this period's bill is based on.">Realized revenue basis</div>
+          <MetricTitle
+            className="text-xs uppercase text-muted-foreground"
+            label="Realized revenue"
+            help="The money you actually collected this month — settled payments and confirmed cash-on-delivery, minus refunds. Brain's fee is a share of this, never of unpaid orders."
+          />
           <div className="mt-1 text-lg font-semibold tabular-nums">
             {money(data.basis.metered_gmv_minor, c)}
           </div>
@@ -305,26 +313,29 @@ function BillDetail({ period }: { period: string }) {
 
       {/* Composition — the realized rows that make up the basis */}
       <div>
-        <div className="mb-1.5 text-sm font-medium">How the basis is composed</div>
+        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm font-medium">What makes up this revenue</span>
+          <VerifyLink href="/analytics/settlements" label="See the settled revenue behind this" />
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <caption className="sr-only">Realized GMV composition by event type for {period}</caption>
             <thead>
               <tr className="border-b text-left text-muted-foreground">
-                <th scope="col" className="py-2 pr-4 font-medium">Recognition event</th>
+                <th scope="col" className="py-2 pr-4 font-medium">Revenue event</th>
                 <th scope="col" className="py-2 font-medium text-right">Amount</th>
               </tr>
             </thead>
             <tbody>
               {data.lines.map((l) => (
                 <tr key={l.event_type} className="border-b last:border-0">
-                  <th scope="row" className="py-2 pr-4 font-normal">{eventLabel(l.event_type)}</th>
+                  <th scope="row" className="py-2 pr-4 font-normal">{plainEvent(l.event_type)}</th>
                   <td className="py-2 text-right tabular-nums">{money(l.amount_minor, c)}</td>
                 </tr>
               ))}
               <tr className="border-t-2">
                 <th scope="row" className="py-2 pr-4 font-semibold">
-                  Composition total (live, as of {data.basis.as_of_date})
+                  Total (as of {data.basis.as_of_date})
                 </th>
                 <td className="py-2 text-right font-semibold tabular-nums">
                   {money(data.reconciliation.live_composition_minor, c)}
@@ -339,16 +350,16 @@ function BillDetail({ period }: { period: string }) {
       {reconciled ? (
         <div className="inline-flex items-center gap-1.5 rounded-md bg-success-subtle px-2.5 py-1.5 text-sm text-success-subtle-foreground">
           <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-          Reconciles — the live composition equals the sealed basis.
+          Checks out — today&apos;s revenue for this month still matches the locked figure.
         </div>
       ) : (
         <div className="flex items-start gap-1.5 rounded-md bg-warning-subtle px-2.5 py-1.5 text-sm text-warning-subtle-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span>
-            Backdated rows landed after sealing: the live composition is{' '}
-            <strong>{money(data.reconciliation.drift_minor, c)}</strong> off the sealed basis. You
-            are billed on the <strong>sealed</strong> figure ({money(data.basis.metered_gmv_minor, c)}) —
-            the drift carries into a later period.
+            Some revenue was recorded after this month was locked: today&apos;s total is{' '}
+            <strong>{money(data.reconciliation.drift_minor, c)}</strong> away from the locked figure.
+            You are billed on the <strong>locked</strong> figure ({money(data.basis.metered_gmv_minor, c)}) —
+            the difference is carried into a later month.
           </span>
         </div>
       )}
@@ -371,6 +382,15 @@ export function BillingContent() {
     matchesQuery(periodsQ, p.billing_period, p.as_of_date),
   );
 
+  // Honest data window: the span of months that have actually been locked in (all-time history).
+  const sortedByMonth = [...allPeriods].sort((a, b) =>
+    a.billing_period.localeCompare(b.billing_period),
+  );
+  const windowFrom = sortedByMonth.length ? `${sortedByMonth[0].billing_period}-01` : null;
+  const windowTo = sortedByMonth.length
+    ? sortedByMonth[sortedByMonth.length - 1].as_of_date
+    : null;
+
   function onSeal(e: React.FormEvent) {
     e.preventDefault();
     seal.mutate(period);
@@ -382,26 +402,27 @@ export function BillingContent() {
         title="Billing"
         description={
           <>
-            Brain bills on a share of <strong className="font-medium text-foreground">realized revenue</strong> — money actually collected,
-            not just ordered. Each billing period is sealed into a locked snapshot: the figure
-            you&apos;re billed on can be traced entry by entry and can never silently change.
+            Brain charges a share of your <strong className="font-medium text-foreground">realized revenue</strong> — money you
+            actually collected, not just ordered. At the end of each month we lock in that month&apos;s
+            collected revenue: the figure you&apos;re charged on can be traced entry by entry and can
+            never silently change afterwards.
           </>
         }
       />
 
-      {/* ── Meter a period ───────────────────────────────────────────────── */}
+      {/* ── Lock in a month ──────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Lock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            Seal a billing period
+            Lock in a month&apos;s revenue
           </CardTitle>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSeal} className="flex flex-wrap items-end gap-3">
             <div className="space-y-1.5">
               <label htmlFor="billing-period" className="text-sm font-medium">
-                Period (month)
+                Billing month
               </label>
               <Input
                 id="billing-period"
@@ -412,20 +433,20 @@ export function BillingContent() {
               />
             </div>
             <Button type="submit" disabled={seal.isPending || !/^\d{4}-\d{2}$/.test(period)}>
-              {seal.isPending ? 'Sealing…' : 'Meter & seal'}
+              {seal.isPending ? 'Locking in…' : 'Lock in this month'}
             </Button>
           </form>
 
           <div aria-live="polite" className="mt-3 text-sm">
             {seal.isError && (
               <span className="text-destructive">
-                Could not seal that period. Please try again.
+                Could not lock in that month. Please try again.
               </span>
             )}
             {seal.isSuccess && seal.data && (
               <span className="inline-flex items-center gap-1.5 text-success">
                 <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                {seal.data.sealed ? 'Sealed' : 'Already sealed'} {seal.data.billing_period}:{' '}
+                {seal.data.sealed ? 'Locked in' : 'Already locked in'} {seal.data.billing_period}:{' '}
                 <strong>{money(seal.data.metered_gmv_minor, seal.data.currency_code)}</strong>{' '}
                 realized revenue (as of {seal.data.as_of_date}).
               </span>
@@ -434,23 +455,32 @@ export function BillingContent() {
         </CardContent>
       </Card>
 
-      {/* ── Sealed periods ───────────────────────────────────────────────── */}
+      {/* ── Locked-in months ─────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle className="flex items-center gap-2 text-base">
               <Receipt className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-              Sealed periods
+              Locked-in months
             </CardTitle>
             {allPeriods.length > 0 && (
               <TableSearch
                 value={periodsQ}
                 onChange={setPeriodsQ}
-                placeholder="Search periods…"
-                aria-label="Search sealed billing periods"
+                placeholder="Search months…"
+                aria-label="Search locked-in billing months"
               />
             )}
           </div>
+          {allPeriods.length > 0 && (
+            <DataWindowBadge
+              from={windowFrom}
+              to={windowTo}
+              count={allPeriods.length}
+              label="months"
+              className="mt-1"
+            />
+          )}
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -464,30 +494,36 @@ export function BillingContent() {
           ) : !data || data.state === 'no_data' ? (
             <EmptyState
               icon={<FileClock className="h-6 w-6" aria-hidden="true" />}
-              title="No periods sealed yet"
-              description="Seal a billing period above to lock in this brand's realized revenue for that month. Once sealed, the figure can never change."
+              title="No months locked in yet"
+              description="Lock in a billing month above to fix this brand's collected revenue for that month. Once locked in, the figure can never change."
             />
           ) : filteredPeriods.length === 0 ? (
             <p className="py-4 text-sm text-muted-foreground" role="status">
-              No matching periods for &ldquo;{periodsQ}&rdquo;.
+              No matching months for &ldquo;{periodsQ}&rdquo;.
             </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <caption className="sr-only">Sealed billing periods for the active brand</caption>
+                <caption className="sr-only">Locked-in billing months for the active brand</caption>
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
-                    <th scope="col" className="py-2 pr-4 font-medium">Period</th>
-                    <th scope="col" className="py-2 pr-4 font-medium text-right">Realized revenue</th>
+                    <th scope="col" className="py-2 pr-4 font-medium">Month</th>
+                    <th scope="col" className="py-2 pr-4 font-medium text-right">
+                      <MetricTitle
+                        className="justify-end"
+                        label="Realized revenue"
+                        help="The money you actually collected that month — settled payments and confirmed cash-on-delivery, minus refunds. This is the figure Brain's fee is a share of."
+                      />
+                    </th>
                     <th scope="col" className="py-2 pr-4 font-medium">As of</th>
                     <th
                       scope="col"
                       className="py-2 pr-4 font-medium text-right"
-                      title="How many individual revenue entries make up this period's figure."
+                      title="How many individual revenue entries make up this month's figure."
                     >
                       Entries
                     </th>
-                    <th scope="col" className="py-2 pr-4 font-medium">Sealed</th>
+                    <th scope="col" className="py-2 pr-4 font-medium">Locked in</th>
                     <th scope="col" className="py-2 font-medium sr-only">Bill</th>
                   </tr>
                 </thead>
@@ -529,6 +565,12 @@ export function BillingContent() {
                   ))}
                 </tbody>
               </table>
+              <div className="mt-3 border-t pt-3">
+                <VerifyLink
+                  href="/analytics/settlements"
+                  label="See the settled revenue these figures come from"
+                />
+              </div>
             </div>
           )}
         </CardContent>

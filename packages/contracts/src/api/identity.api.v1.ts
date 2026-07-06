@@ -70,7 +70,13 @@ export type MergeResolveResult = z.infer<typeof MergeResolveResultSchema>;
 export const UnmergeResultSchema = z.object({
   unmerged: z.boolean(),
   reason: z.string().optional(),
+  /** The identity split back out (the former absorbed id restored to independent existence). */
   brain_id: z.string().optional(),
+  // SPEC: A.2.4 (WA-19) — additive audit surface for the reversal. Present when unmerged=true.
+  /** The surviving canonical the absorbed id had been folded into (the merge survivor, AMD-09). */
+  survivor_brain_id: z.string().optional(),
+  /** The ORIGINAL merge id this unmerge reversed (identity_merge_event.merge_id / MergeEvent.merge_id). */
+  merge_id: z.string().optional(),
 });
 export type UnmergeResult = z.infer<typeof UnmergeResultSchema>;
 

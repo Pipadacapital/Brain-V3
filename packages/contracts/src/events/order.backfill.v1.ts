@@ -88,8 +88,26 @@ export const OrderBackfillPropertiesSchema = z.object({
   /**
    * Shopify numeric customer ID (not PII — a platform identifier, not a contact).
    * Used as storefront_customer_id for weak identity linking (tier: strong_on_link).
+   * AMD-02: this IS the spec's `platform_customer_id` (canonical existing name kept).
    */
   storefront_customer_id: z.string().optional(),
+
+  // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — INTEROP-space identifiers. ADDITIVE OPTIONAL
+  // ONLY (FULL_TRANSITIVE-safe per AMD-03): present ONLY when the per-brand flag
+  // connector.identity_fields is ON; flag OFF = the pre-Wave-A envelope byte-identical.
+
+  /**
+   * INTEROP-space plain UNSALTED sha256 of the normalized email (trim → lowercase → NFC) —
+   * the SAME hash the pixel computes client-side, consumed downstream as `pre_hashed_email`.
+   * 64 lowercase hex chars. NEVER the raw email.
+   */
+  email_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+
+  /**
+   * INTEROP-space plain UNSALTED sha256 of the E.164 phone (including '+') — consumed
+   * downstream as `pre_hashed_phone`. 64 lowercase hex chars. NEVER the raw phone.
+   */
+  phone_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 
 export type OrderBackfillProperties = z.infer<typeof OrderBackfillPropertiesSchema>;

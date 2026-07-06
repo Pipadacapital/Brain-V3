@@ -12,6 +12,7 @@ import type { DbPool } from '@brain/db';
 import type pg from 'pg';
 import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
 import type { AuditWriter } from '@brain/audit';
+import type { FlagService } from '@brain/platform-flags';
 
 import type {
   AuthService,
@@ -32,6 +33,7 @@ import { registerBffRoutes } from '../modules/frontend-api/index.js';
 import { registerDevRoutes, registerConsentRoutes } from '../modules/notification/index.js';
 import type { ContactPiiVaultService } from '../modules/identity/index.js';
 import type { Neo4jIdentityReader } from '../modules/identity/internal/infrastructure/neo4j-identity-reader.js';
+import type { IdentityEventPublisher } from '../infrastructure/events/IdentityEventPublisher.js';
 
 export interface RegisterWorkspaceAccessDeps {
   nodeEnv: string;
@@ -52,6 +54,10 @@ export interface RegisterWorkspaceAccessDeps {
   identityReader: Neo4jIdentityReader;
   /** D13: per-brand salt resolver for the consent gate. */
   getCoreSaltHex: (brandId: string) => Promise<string>;
+  /** SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed). */
+  flagService?: FlagService;
+  /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge (identity.unmerged.v1). */
+  identityEventPublisher?: IdentityEventPublisher;
 }
 
 export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWorkspaceAccessDeps): void {
@@ -72,6 +78,8 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     piiVaultService,
     identityReader,
     getCoreSaltHex,
+    flagService,
+    identityEventPublisher,
   } = deps;
 
   // Register workspace-access + BFF routes.
@@ -79,7 +87,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache);
+  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityEventPublisher);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   registerConsentRoutes(app, {

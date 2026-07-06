@@ -66,6 +66,9 @@ import { ReconciliationResidualCard } from '@/components/analytics/reconciliatio
 import { Sankey, type SankeyNode, type SankeyLink } from '@/components/analytics/sankey';
 import { TrendChart } from '@/components/analytics/trend-chart';
 import { channelMeta } from '@/components/analytics/channel-meta';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { DateRangeFilter, initialRange, type DateRange, type RangePreset } from '@/components/ui/date-range-filter';
 import {
   useAttributionByChannel,
@@ -321,6 +324,16 @@ export function AttributionContent() {
             aria-label="Attribution date range"
           />
         </div>
+
+        {/* Always show the exact window these numbers cover (honest-empty companion). */}
+        <DataWindowBadge
+          className="mt-2"
+          from={range.from}
+          to={range.to}
+          count={byChannel?.state === 'has_data' ? byChannel.by_channel.length : undefined}
+          label="channels credited"
+          data-testid="attribution-data-window"
+        />
       </section>
 
       {/* ── Attributed revenue by channel + reconciliation residual ── */}
@@ -508,7 +521,32 @@ export function AttributionContent() {
  * engine's exact ratio string (roas_bps/10000) — n/a when spend = 0. Counts are exact integers.
  */
 function CampaignAttributionTable({ data }: { data: CampaignAttrHasData }) {
+  const [query, setQuery] = useState('');
+  const rows = useMemo(
+    () =>
+      filterRows(
+        data.rows,
+        query,
+        (r) => `${r.campaign_name ?? ''} ${r.campaign_id} ${channelMeta(r.platform).label}`,
+      ),
+    [data.rows, query],
+  );
+
   return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search campaigns…"
+          aria-label="Search campaigns by name or platform"
+        />
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground italic" role="status">
+          No campaigns match &ldquo;{query}&rdquo;. Clear the search to see all campaigns.
+        </p>
+      ) : (
     <Table className="w-full text-sm">
       <TableHeader>
         <TableRow>
@@ -535,7 +573,7 @@ function CampaignAttributionTable({ data }: { data: CampaignAttrHasData }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {data.rows.map((r) => {
+        {rows.map((r) => {
           const ccy = r.currency_code as CurrencyCode;
           const platformLabel = channelMeta(r.platform).label;
           return (
@@ -567,6 +605,8 @@ function CampaignAttributionTable({ data }: { data: CampaignAttrHasData }) {
         })}
       </TableBody>
     </Table>
+      )}
+    </div>
   );
 }
 
@@ -773,6 +813,15 @@ function AttributionData({
             sublabel={`${attributionModelLabel(byChannel.model)} model`}
             data-testid="attribution-kpi-channels"
           />
+        </div>
+
+        {/* Proof affordances — every headline number clicks through to the records behind it. */}
+        <div
+          className="flex flex-wrap items-center gap-x-4 gap-y-1"
+          data-testid="attribution-verify-links"
+        >
+          <VerifyLink href="/analytics/orders" label="See the orders behind this revenue" />
+          <VerifyLink href="/journeys" label="See the customer journeys that earned the credit" />
         </div>
 
         <Card>

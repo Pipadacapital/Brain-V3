@@ -82,6 +82,8 @@ from pyspark.sql.window import Window  # noqa: E402
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # gold/ — for _gold_base
 from _gold_base import gold_partition_filter  # noqa: E402
+# SPEC: A.2.2 — the ONLY sanctioned Spark reads of silver_identity_map (identity-view-guard allowlist).
+from _identity_views import identity_current, identity_map_exists, identity_raw  # noqa: E402
 
 # B2 enrichment scalars live PURE (no Spark) in _customer_360_enrich so they are unit-tested without a
 # Spark session; we wrap them as UDFs here so the EXECUTED churn/lifecycle logic IS the tested logic.
@@ -290,19 +292,18 @@ def _build_journey_summary(spark: SparkSession, limit: int = 200):
 def _reconcile_merged_away(spark: SparkSession, fqtn: str) -> None:
     """MERGE RE-VERSIONING (aggregate grain): when Neo4j merges two brain_ids, the dead brain_id's
     Customer360 row would LINGER (MERGE only upserts, never deletes) even though its value has re-folded onto
-    the survivor via the identity link. Read silver_identity_map for brain_ids that are FULLY superseded (no
-    is_current=true interval anywhere) and DELETE their Customer360 rows, so a merged customer collapses onto
-    the survivor. History is preserved in identity_map (the merge intervals); only the derived aggregate is
-    reconciled. Optional: absent/empty identity_map → no-op (nothing to reconcile)."""
-    im = _read_silver(spark, "silver_identity_map", optional=True)
-    if im is None:
+    the survivor via the identity link. A brain_id is FULLY superseded when it has NO valid-now+known-now
+    interval (identity_current, A.2.2/AMD-07) even though it still appears in the raw interval history; DELETE
+    such brain_ids' Customer360 rows so a merged customer collapses onto the survivor. History is preserved
+    in identity_map (the merge intervals); only the derived aggregate is reconciled. Reads go through the
+    SANCTIONED accessors (identity_current / identity_raw) — never the raw table directly. Absent map → no-op."""
+    if not identity_map_exists(spark):
         return
-    dead = (
-        im.groupBy("brand_id", "brain_id")
-        .agg(F.max(F.col("is_current").cast("int")).alias("_any_current"))
-        .where(F.col("_any_current") == 0)
-        .select("brand_id", "brain_id")
-    )
+    # dead = every (brand_id, brain_id) present in the map history that has NO live current interval
+    # (left-anti against identity_current — the bi-temporal "still resolves to today" set).
+    all_ids = identity_raw(spark).select("brand_id", "brain_id").distinct()
+    live_ids = identity_current(spark).select("brand_id", "brain_id").distinct()
+    dead = all_ids.join(live_ids, ["brand_id", "brain_id"], "left_anti")
     if dead.head(1) == []:
         return
     dead.createOrReplaceTempView("_c360_merged_away")

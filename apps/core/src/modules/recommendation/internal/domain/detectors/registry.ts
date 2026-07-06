@@ -18,13 +18,14 @@
  * event data) remains a PostgreSQL operational read here.
  */
 import type { DbClient, QueryContext } from '@brain/db';
+// WA-02 (SPEC: 0.5): metric-engine is fenced to the measurement tier — consume via the analytics facade.
 import {
   computeRtoRiskSignal,
   computeRealizationSignal,
   computeCm2RevenueSignal,
   computeCm2MarketingSignal,
   type SilverPool,
-} from '@brain/metric-engine';
+} from '../../../../analytics/index.js';
 import { rtoRiskDetector, type RtoSignal } from './rto-risk.detector.js';
 import { realizationGapDetector, type RealizationSignal } from './realization-gap.detector.js';
 import { marginErosionDetector, type Cm2Signal } from './margin-erosion.detector.js';

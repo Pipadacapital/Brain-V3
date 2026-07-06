@@ -25,6 +25,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { DateRangeFilter, type DateRange, initialRange } from '@/components/ui/date-range-filter';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { useShipmentOutcomes, useReturnFunnel } from '@/lib/hooks/use-analytics';
@@ -268,6 +270,11 @@ function ReturnsData({ data }: { data: ReturnHasData }) {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <DataWindowBadge from={data.from} to={data.to} count={Number(data.total)} label="returns" />
+        <VerifyLink href="/analytics/orders?tab=status" label="See the orders behind these returns" />
+      </div>
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <KpiTile
           label="Total returns"
@@ -371,6 +378,14 @@ function ReturnsData({ data }: { data: ReturnHasData }) {
 function OutcomesData({ data }: { data: ShipmentHasData }) {
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <DataWindowBadge from={data.from} to={data.to} count={Number(data.total)} label="shipments" />
+        <VerifyLink
+          href="/analytics/orders?tab=status"
+          label="See the shipments behind these numbers"
+        />
+      </div>
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <KpiTile
           label="RTO rate"

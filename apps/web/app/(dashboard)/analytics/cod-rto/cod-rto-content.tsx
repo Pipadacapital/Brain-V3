@@ -25,6 +25,7 @@
  * a verdict label + icon.
  */
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { Truck, ArrowRight, ShoppingBag, Wallet, Minus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,6 +33,9 @@ import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { RtoPincodeChart } from '@/components/analytics/rto-pincode-chart';
@@ -50,6 +54,27 @@ import type {
 type CodMixHasData = Extract<AnalyticsCodMixResponse, { state: 'has_data' }>;
 type CheckoutFunnelHasData = Extract<AnalyticsCheckoutFunnelResponse, { state: 'has_data' }>;
 type RtoRiskHasData = Extract<AnalyticsRtoRiskResponse, { state: 'has_data' }>;
+
+/**
+ * The checkout-funnel and RTO-risk endpoints aggregate the trailing 30 days (no from/to
+ * param — so a DateRangeFilter would be non-functional and dishonest here). We surface the
+ * true window via a DataWindowBadge instead; the CoD-mix and RTO-by-pincode reads are
+ * brand-wide all-time aggregates, shown honestly as "all time".
+ */
+const LAST_30D = (() => {
+  const to = new Date();
+  const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+  return { from: from.toISOString(), to: to.toISOString() };
+})();
+
+/** Small helper: safely turn a bigint string into a display number for a badge count. */
+function toCount(bigintStr: string): number {
+  try {
+    return Number(BigInt(bigintStr));
+  } catch {
+    return 0;
+  }
+}
 
 function SectionSkeleton({ label }: { label: string }) {
   return (
@@ -115,17 +140,40 @@ export function CodRtoContent() {
 
 function RtoSection() {
   const { data, isLoading, error, refetch } = useCodRtoRates();
+  const [pincodeQuery, setPincodeQuery] = useState('');
+
+  const hasData = data && data.state === 'has_data' ? data : null;
+  // RTO-by-pincode is a brand-wide all-time aggregate (no date window on the endpoint).
+  const cohorts = hasData?.cohorts ?? [];
+  const filteredCohorts = filterRows(cohorts, pincodeQuery, ['pincode']);
+  // Search only helps when there is a real pincode split to filter (not the single
+  // "unknown" cohort shown while partner pincodes are still pending).
+  const showSearch = !!hasData && !hasData.pincode_pending && cohorts.length > 1;
 
   return (
-    <section aria-label="RTO rate by pincode" data-testid="cod-rto-section">
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-foreground">RTO rate by pincode</h2>
+    <section aria-label="Returned-to-origin rate by pincode" data-testid="cod-rto-section">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground">
+          Returned-to-origin (RTO) rate by pincode
+        </h2>
         {/* Badge shown whenever the data is synthetic-sourced (GoKwik dev). */}
-        {data?.state === 'has_data' && data.data_source === 'synthetic' && (
+        {hasData && hasData.data_source === 'synthetic' && (
           <SyntheticBadge
             data-testid="cod-rto-synthetic-badge"
             reason="These shipment outcomes come from sample data used during setup — they are replaced once live GoKwik tracking connects."
           />
+        )}
+        {hasData && (
+          <div className="ml-auto flex items-center gap-3">
+            <DataWindowBadge
+              from={null}
+              to={null}
+              count={toCount(hasData.total_terminal)}
+              label="completed shipments"
+              data-testid="cod-rto-window-badge"
+            />
+            <VerifyLink href="/analytics/logistics" label="See shipments" />
+          </div>
         )}
       </div>
 
@@ -170,12 +218,22 @@ function RtoSection() {
           </div>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                RTO rate by destination pincode
-              </CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  RTO rate by destination pincode
+                </CardTitle>
+                {showSearch && (
+                  <TableSearch
+                    value={pincodeQuery}
+                    onChange={setPincodeQuery}
+                    placeholder="Search pincode…"
+                    aria-label="Search pincode cohorts"
+                  />
+                )}
+              </div>
             </CardHeader>
             <CardContent>
-              <RtoPincodeChart cohorts={data.cohorts} pincodePending={data.pincode_pending} />
+              <RtoPincodeChart cohorts={filteredCohorts} pincodePending={data.pincode_pending} />
             </CardContent>
           </Card>
         </div>
@@ -190,14 +248,21 @@ function CodMixSection() {
   const { data, isLoading, error, refetch } = useCodMix();
 
   return (
-    <section aria-label="CoD versus prepaid mix" data-testid="cod-mix-section">
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-foreground">CoD vs prepaid &amp; CoD CM2</h2>
+    <section aria-label="What cash-on-delivery really earns" data-testid="cod-mix-section">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground">What cash-on-delivery really earns</h2>
         {/* CoD ledger is fed by the synthetic GoKwik AWB consumer in dev. */}
         <SyntheticBadge
           data-testid="cod-mix-synthetic-badge"
           reason="These cash-on-delivery figures come from sample data used during setup — they are replaced once live GoKwik data connects."
         />
+        {data?.state === 'has_data' && (
+          <div className="ml-auto flex items-center gap-3">
+            {/* Brand-wide all-time ledger aggregate — no date window on this endpoint. */}
+            <DataWindowBadge from={null} to={null} data-testid="cod-mix-window-badge" />
+            <VerifyLink href="/analytics/orders" label="See orders" />
+          </div>
+        )}
       </div>
 
       {isLoading && <SectionSkeleton label="CoD mix" />}
@@ -282,11 +347,23 @@ function CheckoutFunnelSection() {
 
   return (
     <section aria-label="Checkout conversion funnel" data-testid="checkout-funnel-section">
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <h2 className="text-lg font-semibold text-foreground">Checkout funnel</h2>
         {/* Shopflo checkout_abandoned is REAL — synthetic badge only if the source says so. */}
         {data?.state === 'has_data' && data.data_source === 'synthetic' && (
           <SyntheticBadge data-testid="checkout-funnel-synthetic-badge" />
+        )}
+        {data?.state === 'has_data' && (
+          <div className="ml-auto flex items-center gap-3">
+            <DataWindowBadge
+              from={LAST_30D.from}
+              to={LAST_30D.to}
+              count={toCount(data.abandoned_count)}
+              label="abandoned checkouts"
+              data-testid="checkout-funnel-window-badge"
+            />
+            <VerifyLink href="/analytics/abandoned-cart" label="See abandoned checkouts" />
+          </div>
         )}
       </div>
 
@@ -362,11 +439,25 @@ function RtoRiskSection() {
   const { data, isLoading, error, refetch } = useRtoRiskDistribution();
 
   return (
-    <section aria-label="RTO risk distribution" data-testid="rto-risk-section">
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-foreground">RTO risk at checkout</h2>
+    <section aria-label="Return-to-origin risk at checkout" data-testid="rto-risk-section">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground">
+          Return-to-origin (RTO) risk at checkout
+        </h2>
         {data?.state === 'has_data' && data.data_source === 'synthetic' && (
           <SyntheticBadge data-testid="rto-risk-synthetic-badge" />
+        )}
+        {data?.state === 'has_data' && (
+          <div className="ml-auto flex items-center gap-3">
+            <DataWindowBadge
+              from={LAST_30D.from}
+              to={LAST_30D.to}
+              count={toCount(data.order_count)}
+              label="orders scored"
+              data-testid="rto-risk-window-badge"
+            />
+            <VerifyLink href="/analytics/orders" label="See orders" />
+          </div>
         )}
       </div>
 

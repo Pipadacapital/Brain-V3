@@ -87,7 +87,6 @@ export class NotImplementedYet extends Error {
  *
  * Exported so tests can prove the seam throws rather than no-ops.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function shredIcebergSnapshots(_brandId: string, _brainId: string): never {
   throw new NotImplementedYet('erasure-aware-iceberg-compaction');
 }

@@ -6,12 +6,14 @@
  * Pure REUSE of existing surfaces (no new backend — web-only slice):
  *   - useCustomers({ segment }) — the SAME customer browse the /customers tab uses, filtered
  *     server-side (RLS, brand from session) to the at-risk / churned RFM band folded from
- *     gold_customer_scores. Each row already carries segment, lifetime value (bigint MINOR +
- *     currency), order count and last_identifier_at (last-active) — no per-row PII.
+ *     gold_customer_scores. Each row already carries customer_ref (the public BRN- identity),
+ *     segment, lifetime value (bigint MINOR + currency), order count and last_identifier_at
+ *     (last-active) — no per-row PII. The churn-risk BAND is derived from that segment
+ *     (riskFromSegment) so the "Churn risk" column is filled by default, no serving required.
  *   - useCustomerScore(brain_id) — the deterministic RFM/churn served score per customer. This
  *     SERVES on demand and logs a prediction_log row, so we DO NOT auto-fire it for the whole
- *     page: the "Load churn scores" toggle gates it (default off). When on, each visible row
- *     reveals its churn-risk band + days-since-last-order.
+ *     page: the "Load churn scores" toggle gates it (default off). When on, each visible row is
+ *     ENRICHED with the precise days-since-last-order (the band itself is already shown).
  *   - useSavedSegments / usePreviewSegment / useCreateSegment — the P2 saved-segments surface.
  *     "Create win-back" opens a dialog PRE-FILLED with a win-back segment definition for the
  *     active band, previews the matched customer count (no persistence), then persists it as a
@@ -43,6 +45,7 @@ import {
   Bookmark,
 } from 'lucide-react';
 import type { CurrencyCode } from '@brain/money';
+import { brainRef } from '@brain/contracts';
 import { TabShell } from '@/components/ui/tab-shell';
 import { SectionCard } from '@/components/ui/section-card';
 import { MetricTitle } from '@/components/ui/metric-title';
@@ -114,9 +117,9 @@ const EXPLAINER = {
     {
       name: 'Churn risk',
       definition:
-        'The per-customer churn-risk band (a risk BAND, never a made-up probability), with days since last order.',
+        'The per-customer churn-risk band (a risk BAND, never a made-up probability). Shown for every row by default; turning on scores adds the exact days since the last order.',
       howComputed:
-        'Looked up on demand from each customer’s score — every lookup is logged, so it is revealed only when you turn on “Load churn scores”.',
+        'The band comes straight from each customer’s RFM group in the list (High risk = churned, Elevated = at-risk). Turning on “Load churn scores” looks up the exact days-since-last-order per customer — each lookup is logged. A customer with no order history yet shows “not enough history”, never a blank.',
     },
     {
       name: 'Lifetime value',
@@ -156,6 +159,26 @@ function riskTone(risk: string): StatusTone {
   if (r.includes('medium') || r.includes('elev') || r === 'at_risk') return 'warning';
   if (r.includes('low') || r.includes('healthy')) return 'success';
   return 'neutral';
+}
+
+/**
+ * Derive the plain-language churn-risk band from the RFM segment the customer list ALREADY returns
+ * (folded from gold_customer_scores) — no per-row score serving, so the "Churn risk" column is never
+ * blank by default. Churned = past the threshold (High risk); At-Risk = slipping (Elevated risk).
+ * A null segment (no score row yet) → null, which the row renders as an honest "not enough history".
+ */
+function riskFromSegment(segment: string | null): { label: string; tone: StatusTone } | null {
+  if (!segment) return null;
+  const s = segment.toLowerCase();
+  if (s === 'churned') return { label: 'High risk', tone: 'destructive' };
+  if (s === 'at_risk') return { label: 'Elevated risk', tone: 'warning' };
+  // Any other band that surfaces here (defensive) — reflect it plainly, never blank.
+  return { label: humanize(segment), tone: riskTone(segment) };
+}
+
+/** Prefer the customer's public BRN- reference over the raw brain_id UUID for a recognizable identity. */
+function customerLabel(c: CustomerListItem): string {
+  return c.customer_ref ?? brainRef(c.brain_id) ?? c.brain_id;
 }
 
 export function ChurnContent() {
@@ -273,7 +296,7 @@ export function ChurnContent() {
       {/* ── At-risk / churned customer list ── */}
       <SectionCard
         title={`${activeBand.label} customers`}
-        description="Click a Brain ID to open the full Customer Profile. Turn on churn scores to reveal each customer’s risk band (each lookup is logged)."
+        description="Each customer’s churn-risk band shows by default, folded from their RFM band. Click a customer to open the full Customer Profile. Turn on churn scores to add the precise days-since-last-order (each lookup is logged)."
         meta={
           <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
             <input
@@ -324,7 +347,7 @@ export function ChurnContent() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
-                      <th scope="col" className="px-4 py-2.5 font-medium">Brain ID</th>
+                      <th scope="col" className="px-4 py-2.5 font-medium">Customer</th>
                       <th scope="col" className="px-4 py-2.5 font-medium">Band</th>
                       <th scope="col" className="px-4 py-2.5 font-medium">Churn risk</th>
                       <th scope="col" className="px-4 py-2.5 font-medium text-right">Lifetime value</th>
@@ -407,43 +430,51 @@ export function ChurnContent() {
 }
 
 /**
- * One customer row. The churn-risk cell lazily serves useCustomerScore ONLY when the page-level
- * "Load churn scores" toggle is on (it logs a prediction), passing null otherwise to keep the hook idle.
+ * One customer row.
+ *
+ * The churn-risk band is shown BY DEFAULT — derived from the RFM segment the list already returns
+ * (riskFromSegment), so the column is never blank and no per-row serving/logging is needed. When the
+ * page-level "Load churn scores" toggle is on we ALSO serve useCustomerScore (which logs a prediction)
+ * to enrich the row with the precise "days idle" since the last order; otherwise the hook stays idle
+ * (brain_id → null). A customer with no score row at all → an honest "not enough history".
  */
 function ChurnRow({ c, showScore }: { c: CustomerListItem; showScore: boolean }) {
   const scoreQ = useCustomerScore(showScore ? c.brain_id : null);
   const last = relativeTime(c.last_identifier_at);
 
-  let riskCell: React.ReactNode = (
-    <span className="text-muted-foreground" title="Turn on “Load churn scores” to reveal">
-      —
-    </span>
-  );
-  if (showScore) {
-    if (scoreQ.isLoading) {
-      riskCell = <Skeleton className="h-4 w-20" />;
-    } else if (scoreQ.error) {
-      riskCell = (
-        <span className="text-muted-foreground" title="Score unavailable">
-          —
-        </span>
-      );
-    } else if (scoreQ.data?.state === 'has_data') {
-      const score = scoreQ.data.score;
-      riskCell = (
-        <span className="inline-flex items-center gap-2">
-          <StatusBadge tone={riskTone(score.churn_risk)} hideDot>
-            {humanize(score.churn_risk)}
-          </StatusBadge>
-          {score.days_since_last_order != null ? (
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {score.days_since_last_order}d idle
-            </span>
-          ) : null}
-        </span>
-      );
-    }
+  // Band always available from the list row; the served score refines it (+ days idle) when loaded.
+  const derived = riskFromSegment(c.segment);
+  const served =
+    showScore && scoreQ.data?.state === 'has_data' ? scoreQ.data.score : null;
+  const risk = served
+    ? { label: humanize(served.churn_risk), tone: riskTone(served.churn_risk) }
+    : derived;
+  const daysIdle = served?.days_since_last_order ?? null;
+
+  let riskCell: React.ReactNode;
+  if (risk) {
+    riskCell = (
+      <span className="inline-flex items-center gap-2">
+        <StatusBadge tone={risk.tone} hideDot>
+          {risk.label}
+        </StatusBadge>
+        {daysIdle != null ? (
+          <span className="text-xs text-muted-foreground tabular-nums">{daysIdle}d idle</span>
+        ) : showScore && scoreQ.isLoading ? (
+          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" aria-hidden="true" />
+        ) : null}
+      </span>
+    );
+  } else {
+    // No RFM band and no score row — honest, never a blank cell or a fabricated risk.
+    riskCell = (
+      <span className="text-muted-foreground" title="No score yet — not enough order history">
+        — not enough history
+      </span>
+    );
   }
+
+  const label = customerLabel(c);
 
   return (
     <tr className="border-b last:border-0 hover:bg-muted/40">
@@ -451,8 +482,9 @@ function ChurnRow({ c, showScore }: { c: CustomerListItem; showScore: boolean })
         <Link
           href={`/customers/${encodeURIComponent(c.brain_id)}`}
           className="font-mono text-xs hover:underline"
+          title={c.brain_id}
         >
-          {c.brain_id}
+          {label}
         </Link>
       </td>
       <td className="px-4 py-2.5">
@@ -482,7 +514,7 @@ function ChurnRow({ c, showScore }: { c: CustomerListItem; showScore: boolean })
         <Link
           href={`/customers/${encodeURIComponent(c.brain_id)}`}
           className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          aria-label={`Open the profile for ${c.brain_id}`}
+          aria-label={`Open the profile for ${label}`}
         >
           Open <ArrowRight className="h-3 w-3" aria-hidden="true" />
         </Link>

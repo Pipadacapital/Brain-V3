@@ -21,8 +21,9 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
-import { computeRealizedGmvCompositionForPeriod } from '@brain/metric-engine';
+// WA-02 (SPEC: 0.5): metric-engine is fenced to the measurement tier — consume via the analytics facade.
+import type { SilverPool } from '../../../../analytics/index.js';
+import { computeRealizedGmvCompositionForPeriod } from '../../../../analytics/index.js';
 import { roundToMinorBankers } from '@brain/money';
 
 /** Platform default billing rate when a brand has no billing_plan row (100 bps = 1.00%). */

@@ -23,6 +23,8 @@ import type {
 import type { IdentityReader } from '../../../identity/index.js';
 import type { ContactPiiVaultService } from '../../../identity/index.js';
 import type { FoundationSignals } from '../../../analytics/index.js';
+import type { FlagService } from '@brain/platform-flags';
+import type { IdentityEventPublisher } from '../../../../infrastructure/events/IdentityEventPublisher.js';
 
 // @fastify/cookie v11 module augmentation is not automatically applied in
 // NodeNext module resolution when the package has no `exports` field.
@@ -69,11 +71,23 @@ export interface BffDeps {
   vaultService?: ContactPiiVaultService;
   identityReader?: IdentityReader;
   /**
+   * SPEC: A.2.4 (WA-19) — identity-lane producer for admin mutations (unmerge → identity.unmerged.v1).
+   * Optional: absent → the unmerge still commits (Neo4j split + PG audit) but emits no wire event
+   * (the batch re-version job folds the change from silver_identity_map). Existing tests omit it.
+   */
+  identityEventPublisher?: IdentityEventPublisher;
+  /**
    * Per-brand salt resolver (the single brandSaltSource: dev-derived / prod KMS-unwrapped from
    * brand_identity_salt). Used by the Customer-360 search to hash the query term identically to how
    * the brand's identities were hashed. Optional: absent → callers fall back to the dev resolver.
    */
   getCoreSaltHex?: (brandId: string) => Promise<string>;
+  /**
+   * SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed).
+   * Optional: absent → the admin flag routes answer 503 and nothing reads flags
+   * (equivalent to every flag OFF — the safe pre-wave state).
+   */
+  flagService?: FlagService;
   /** Standard session validation pre-handler (NN-3). */
   sessionPreHandler: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   /** Cookie + CSRF + session validation pre-handler used by every protected BFF route. */

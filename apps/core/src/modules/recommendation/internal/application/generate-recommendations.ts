@@ -20,7 +20,8 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
+// WA-02 (SPEC: 0.5): metric-engine is fenced to the measurement tier — consume via the analytics facade.
+import type { SilverPool } from '../../../analytics/index.js';
 import { DETECTORS, type Detector } from '../domain/detectors/registry.js';
 
 export interface GenerateResult {

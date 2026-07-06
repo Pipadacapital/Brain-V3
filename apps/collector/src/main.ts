@@ -18,9 +18,15 @@
  */
 
 import Fastify from 'fastify';
+import { Redis } from 'ioredis';
 import { loadCollectorConfig } from '@brain/config';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
-import { registerSchema, defaultApicurioConfig } from '@brain/events';
+import { registerSchema, ensureCompatibilityRule, defaultApicurioConfig } from '@brain/events';
+import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
+import {
+  createPixelIdentityConfigService,
+  PgBrandConsentConfigReader,
+} from './interfaces/rest/pixel-identity-config.js';
 import { PgSpoolRepository } from './infrastructure/pg-spool.repository.js';
 import { CollectorKafkaProducer } from './infrastructure/kafka-producer.js';
 import { AcceptEventUseCase } from './application/accept-event.usecase.js';
@@ -61,6 +67,29 @@ async function registerSchemaWithBackoff(): Promise<void> {
     return;
   }
 
+  // SPEC A.1.1 (WA-07, AMD-03): the pixel.identify.v1 JSON Schema artifact — registered alongside
+  // the collector envelope, under the same idempotent boot step. Missing file → log + skip (never
+  // blocks the envelope registration).
+  let identifyJson: string | null = null;
+  try {
+    const identifyPath = fileURLToPath(new URL('../../../packages/contracts/generated/json-schema/brain.pixel.identify.v1.json', import.meta.url));
+    identifyJson = readFileSync(identifyPath, 'utf-8');
+  } catch (err) {
+    log.warn('Could not load pixel.identify.v1 JSON Schema — skipping its Apicurio registration', { err });
+  }
+
+  // SPEC A.2.4 (WA-19, AMD-03/AMD-08): the identity.unmerged.v1 JSON Schema artifact — the ONE new
+  // identity program topic that gets a registry-registered JSON Schema under FULL_TRANSITIVE. Registered
+  // here on the collector's proven idempotent boot step (single governance site for the new JSON-Schema
+  // program artifacts; the event is PRODUCED by core). Missing file → log + skip (never blocks boot).
+  let identityUnmergedJson: string | null = null;
+  try {
+    const p = fileURLToPath(new URL('../../../packages/contracts/generated/json-schema/brain.identity.unmerged.v1.json', import.meta.url));
+    identityUnmergedJson = readFileSync(p, 'utf-8');
+  } catch (err) {
+    log.warn('Could not load identity.unmerged.v1 JSON Schema — skipping its Apicurio registration', { err });
+  }
+
   const apicurioConfig = {
     ...defaultApicurioConfig(),
     baseUrl: apicurioUrl,
@@ -74,6 +103,30 @@ async function registerSchemaWithBackoff(): Promise<void> {
     try {
       const result = await registerSchema(apicurioConfig, avscJson);
       log.info('Apicurio schema registered', { artifact_id: result.artifactId, version: result.version });
+      // SPEC A.1.1 (WA-07, AMD-03): register pixel.identify.v1 (JSON Schema) + ensure its
+      // FULL_TRANSITIVE compatibility rule (the AMD-03 idempotent boot step — the compose env var
+      // provably does not materialize a rule, and a rule-less artifact enforces nothing).
+      if (identifyJson) {
+        const identifyConfig = { ...apicurioConfig, artifactId: 'pixel.identify.v1' };
+        const identifyResult = await registerSchema(identifyConfig, identifyJson, 'JSON');
+        await ensureCompatibilityRule(identifyConfig, 'FULL_TRANSITIVE');
+        log.info('Apicurio schema registered', {
+          artifact_id: identifyResult.artifactId,
+          version: identifyResult.version,
+          rule: 'FULL_TRANSITIVE',
+        });
+      }
+      // SPEC A.2.4 (WA-19, AMD-03): identity.unmerged.v1 (JSON Schema) + its FULL_TRANSITIVE rule.
+      if (identityUnmergedJson) {
+        const unmergedConfig = { ...apicurioConfig, artifactId: 'identity.unmerged.v1' };
+        const unmergedResult = await registerSchema(unmergedConfig, identityUnmergedJson, 'JSON');
+        await ensureCompatibilityRule(unmergedConfig, 'FULL_TRANSITIVE');
+        log.info('Apicurio schema registered', {
+          artifact_id: unmergedResult.artifactId,
+          version: unmergedResult.version,
+          rule: 'FULL_TRANSITIVE',
+        });
+      }
       return;
     } catch (err) {
       log.warn('Apicurio registration attempt failed', { elapsed_ms: totalMs, err });
@@ -181,10 +234,34 @@ export async function main(): Promise<void> {
   );
   registerSpoolBackpressure(app, backpressure);
 
+  // ── SPEC A.1.1 + A.1.2 (WA-07/WA-08): per-brand pixel identity bootstrap wiring ──────────────
+  // Redis (per-brand platform flags, DEFAULT OFF fail-closed) + PG (tenancy.brand consent config
+  // via the 0121 SECURITY DEFINER reader). Everything here is fail-closed-to-legacy: Redis down,
+  // PG down, flag OFF, or unknown token ⇒ the served asset carries NO identity config and behaves
+  // exactly as before WA-07. lazyConnect mirrors apps/core (startup never blocks on Redis).
+  const flagRedis = new Redis(cfg.REDIS_URL, {
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
+    lazyConnect: true,
+    enableOfflineQueue: false,
+  });
+  flagRedis.connect().catch((err: unknown) => {
+    log.warn('Redis connect failed — platform flags read disabled (pixel identity stays legacy)', { err });
+  });
+  const flagService = createFlagService({
+    store: new RedisFlagStoreAdapter(flagRedis as unknown as RedisFlagClient),
+  });
+  const consentConfigReader = new PgBrandConsentConfigReader(cfg.DATABASE_URL);
+  const pixelIdentityConfig = createPixelIdentityConfigService({
+    reader: consentConfigReader,
+    flags: flagService,
+    onError: (err) => log.warn('pixel identity config resolve failed — serving legacy asset', { err }),
+  });
+
   // Register routes
   registerHealthRoutes(app, spoolRepo, backpressure);
   registerMetricsRoute(app); // GET /metrics — Prometheus exposition (AUD-LOCAL-016); ungated (guards match POST ingest routes only)
-  registerPixelAssetRoute(app); // GET /pixel.js — the served brain.js asset (Track B)
+  registerPixelAssetRoute(app, pixelIdentityConfig); // GET /pixel.js — the served brain.js asset (Track B + WA-07 identity bootstrap)
   registerCollectRoute(app, acceptUseCase);
 
   // ── 5. Start HTTP listener ───────────────────────────────────────────────────
@@ -225,6 +302,9 @@ export async function main(): Promise<void> {
     await drainer.stop();
     await app.close();
     await (spoolRepo as PgSpoolRepository & { end(): Promise<void> }).end();
+    // WA-07/WA-08 identity-bootstrap resources — best-effort teardown (both are fail-closed paths).
+    await consentConfigReader.end().catch((err) => log.debug('consent-config pool end failed on shutdown', { err }));
+    try { flagRedis.disconnect(); } catch (err) { log.debug('flag redis disconnect failed on shutdown', { err }); }
     // Flush buffered telemetry LAST so shutdown spans/metrics are exported (C1).
     // intentional: a flush failure during shutdown must not block process exit — best-effort,
     // logged at debug so a stuck exporter is still traceable.

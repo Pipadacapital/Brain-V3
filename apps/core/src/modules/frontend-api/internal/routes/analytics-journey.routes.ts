@@ -16,6 +16,7 @@ import {
   getJourneyTimeline,
   getJourneyEvents,
   getJourneyPaths,
+  getJourneyList,
   getShipmentOutcomes,
   getReturnFunnel,
   getBehaviorOverview,
@@ -29,6 +30,7 @@ import {
 import type {
   JourneyFirstTouchMix as ContractJourneyFirstTouchMix,
   JourneyPaths as ContractJourneyPaths,
+  JourneyList as ContractJourneyList,
   ShipmentOutcomes as ContractShipmentOutcomes,
   ReturnFunnel as ContractReturnFunnel,
   BehaviorOverview as ContractBehaviorOverview,
@@ -235,6 +237,64 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         { srPool },
         {
           limit: query.limit,
+          // Dev: journey data is enriched with clearly-labelled synthetic fixtures (real shape).
+          dataSource: 'synthetic',
+        },
+      );
+
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/journey/list?limit=N&cursor=...
+   * Paginated recent customer journeys — one row per (brand_id, brain_anon_id) over the serving
+   * view mv_gold_journey, newest-first by last_touch_at, keyset-paginated (opaque next_cursor; an
+   * invalid cursor degrades to the first page). NO money (a journey list is behavioral); brain_anon_id
+   * is the opaque anon key. Brand from session (D-1); honest no_data.
+   */
+  fastify.get(
+    '/api/v1/analytics/journey/list',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            limit:  { type: 'integer', minimum: 1, maximum: 100 },
+            cursor: { type: 'string', maxLength: 512 },
+          },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'limit must be an integer 1..100; cursor a string.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+
+      const query = request.query as { limit?: number; cursor?: string };
+
+      const result: ContractJourneyList = await getJourneyList(
+        auth.brandId,
+        { srPool },
+        {
+          limit: query.limit,
+          cursor: query.cursor ?? null,
           // Dev: journey data is enriched with clearly-labelled synthetic fixtures (real shape).
           dataSource: 'synthetic',
         },

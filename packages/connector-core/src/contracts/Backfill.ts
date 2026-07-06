@@ -260,7 +260,6 @@ export async function runResumableBackfill(args: {
 
 /** Default id factory — UUID-shaped via crypto.randomUUID where available. */
 function defaultId(): string {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c = (globalThis as any).crypto;
   if (c?.randomUUID) return c.randomUUID();
   // Deterministic-enough fallback for non-crypto runtimes (tests inject their own).

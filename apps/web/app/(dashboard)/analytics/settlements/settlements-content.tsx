@@ -16,6 +16,7 @@
  * /settings/connectors so the brand can connect Razorpay — never a fabricated zero.
  */
 
+import * as React from 'react';
 import Link from 'next/link';
 import { Receipt, ArrowRight, Minus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,6 +24,9 @@ import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SettlementsWaterfall } from '@/components/analytics/settlements-waterfall';
 import { useSettlements } from '@/lib/hooks/use-analytics';
@@ -105,6 +109,13 @@ function SettlementsData({ data }: { data: SettlementsHasData }) {
 
   return (
     <>
+      {/* Honest data window — settlements are a cumulative "as of" figure (the endpoint
+          takes a single as-of date, not a from/to range), so we show all-time up to as_of. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <DataWindowBadge from={null} to={data.as_of} />
+        <VerifyLink href="/analytics/revenue" label="See the revenue records behind this" />
+      </div>
+
       <section aria-label="Settlement totals">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <KpiTile
@@ -150,50 +161,87 @@ function SettlementsData({ data }: { data: SettlementsHasData }) {
         </Card>
       </section>
 
-      <section aria-label="Fee breakdown">
-        <Card>
-          <CardHeader className="pb-2">
+      <FeeBreakdown fees={data.fees} ccy={ccy} net={net} />
+    </>
+  );
+}
+
+/** Fee breakdown table with plain-language deduction labels + a client-side search. */
+function FeeBreakdown({
+  fees,
+  ccy,
+  net,
+}: {
+  fees: SettlementsHasData['fees'];
+  ccy: CurrencyCode;
+  net: string;
+}) {
+  const [query, setQuery] = React.useState('');
+  // Search over the human-readable deduction label (never the raw fee.type code).
+  const visible = filterRows(fees, query, (fee) => FEE_LABELS[fee.type]);
+
+  return (
+    <section aria-label="Fee breakdown">
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <Minus className="h-4 w-4" aria-hidden="true" />
               Fee Breakdown
             </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {data.fees.length === 0 ? (
-              <p className="text-sm text-muted-foreground italic" role="status">
-                No fees deducted in this period.
-              </p>
-            ) : (
-              <table className="w-full text-sm" aria-label="Settlement fee breakdown">
-                <thead>
-                  <tr className="border-b">
-                    <th scope="col" className="text-left font-medium text-muted-foreground pb-2">
-                      Deduction
-                    </th>
-                    <th scope="col" className="text-right font-medium text-muted-foreground pb-2">
-                      Amount
-                    </th>
+            {fees.length > 0 && (
+              <TableSearch
+                value={query}
+                onChange={setQuery}
+                placeholder="Search deductions…"
+                aria-label="Search deductions"
+              />
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {fees.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic" role="status">
+              No fees deducted yet. When Razorpay reports processing fees, tax, reserves, or
+              reversals, each deduction will be listed here.
+            </p>
+          ) : visible.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic" role="status">
+              No deductions match “{query}”.
+            </p>
+          ) : (
+            <table className="w-full text-sm" aria-label="Settlement fee breakdown">
+              <thead>
+                <tr className="border-b">
+                  <th scope="col" className="text-left font-medium text-muted-foreground pb-2">
+                    Deduction
+                  </th>
+                  <th scope="col" className="text-right font-medium text-muted-foreground pb-2">
+                    Amount
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((fee) => (
+                  <tr key={fee.type} className="border-b last:border-0">
+                    <td className="py-2">{FEE_LABELS[fee.type]}</td>
+                    <td className="py-2 text-right tabular-nums font-medium text-destructive">
+                      − {formatMoneyDisplay(fee.amount_minor, ccy)}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {data.fees.map((fee) => (
-                    <tr key={fee.type} className="border-b last:border-0">
-                      <td className="py-2">{FEE_LABELS[fee.type]}</td>
-                      <td className="py-2 text-right tabular-nums font-medium text-destructive">
-                        − {formatMoneyDisplay(fee.amount_minor, ccy)}
-                      </td>
-                    </tr>
-                  ))}
+                ))}
+                {/* Net row only when the full (unfiltered) ladder is shown, so the total stays honest. */}
+                {visible.length === fees.length && (
                   <tr className="border-t-2">
                     <td className="py-2 font-semibold">Net Settled</td>
                     <td className="py-2 text-right tabular-nums font-bold">{net}</td>
                   </tr>
-                </tbody>
-              </table>
-            )}
-          </CardContent>
-        </Card>
-      </section>
-    </>
+                )}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+    </section>
   );
 }

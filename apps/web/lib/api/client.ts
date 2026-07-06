@@ -38,6 +38,7 @@ import {
   JourneyEventsLedgerSchema,
   JourneyStitchRateSchema,
   JourneyPathsSchema,
+  JourneyListSchema,
   RepeatLatencySchema,
   CohortUsersSchema,
   DeliveryTimeSchema,
@@ -175,6 +176,7 @@ import type {
   AnalyticsJourneyTimelineResponse,
   AnalyticsJourneyEventsResponse,
   AnalyticsJourneyPathsResponse,
+  AnalyticsJourneyListResponse,
   AnalyticsRepeatLatencyResponse,
   AnalyticsCohortUsersResponse,
   AnalyticsDeliveryTimeResponse,
@@ -1723,6 +1725,21 @@ export const analyticsApi = {
       `/v1/analytics/journey/paths${qsStr ? `?${qsStr}` : ''}`,
     );
     return parseData(JourneyPathsSchema, env);
+  },
+
+  /** GET /api/v1/analytics/journey/list — paginated recent customer journeys (keyset next_cursor). */
+  getJourneyList: async (params?: {
+    limit?: number;
+    cursor?: string | null;
+  }): Promise<AnalyticsJourneyListResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.cursor) qs.set('cursor', params.cursor);
+    const qsStr = qs.toString();
+    const env = await bffFetch<BffEnvelope<unknown>>(
+      `/v1/analytics/journey/list${qsStr ? `?${qsStr}` : ''}`,
+    );
+    return parseData(JourneyListSchema, env);
   },
 
   /** GET /api/v1/analytics/logistics/shipment-outcomes — delivered/RTO + RTO% by courier/pincode. */

@@ -61,8 +61,12 @@ import {
   type DateRange,
   type RangePreset,
 } from '@/components/ui/date-range-filter';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { useCampaignAttribution, useCampaignTimeseries } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { plainLabel } from '@/lib/format/plain-language';
 import type { CurrencyCode } from '@brain/money';
 import type {
   AttributionModel,
@@ -87,8 +91,9 @@ function campaignKey(r: CampaignAttributionRow): string {
   return `${r.platform}␟${r.campaign_id}␟${r.currency_code}`;
 }
 
+/** Human-readable campaign name — never a raw ad-platform id on the DOM (plain-language rule). */
 function campaignLabel(r: CampaignAttributionRow): string {
-  return r.campaign_name ?? r.campaign_id;
+  return r.campaign_name ?? 'Unnamed campaign';
 }
 
 /**
@@ -173,6 +178,8 @@ export function CampaignsContent() {
   const [range, setRange] = useState<DateRange>(() => initialRange(CAMPAIGN_PRESETS, '90'));
   // Compare mode — up to 2 campaign ids selected.
   const [compare, setCompare] = useState<string[]>([]);
+  // Free-text filter over the campaign table (narrows already-loaded rows; never re-fetches).
+  const [query, setQuery] = useState('');
 
   const campaignQ = useCampaignAttribution({ model });
   const timeseriesQ = useCampaignTimeseries({
@@ -185,7 +192,12 @@ export function CampaignsContent() {
   const rows: CampaignAttributionRow[] =
     campaignData?.state === 'has_data' ? campaignData.rows : [];
 
-  const roasRows = useMemo(() => toRoasRows(rows), [rows]);
+  // Search filters the visible campaign rows across the human-meaningful columns (name · platform).
+  const visibleRows = useMemo(
+    () => filterRows(rows, query, (r) => `${campaignLabel(r)} ${plainLabel(r.platform)}`),
+    [rows, query],
+  );
+  const roasRows = useMemo(() => toRoasRows(visibleRows), [visibleRows]);
   const trend = useMemo(() => rollupToTrend(timeseriesQ.data), [timeseriesQ.data]);
 
   /** Toggle a campaign into/out of the (max-2) compare set. */
@@ -272,10 +284,25 @@ export function CampaignsContent() {
       <section aria-label="Campaign performance" data-testid="campaigns-table-section">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Megaphone className="size-4" aria-hidden="true" />
-              Campaign performance
-            </CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <Megaphone className="size-4" aria-hidden="true" />
+                Campaign performance
+              </CardTitle>
+              {rows.length > 0 && (
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* The per-campaign roll-up covers all time (only the trend below honors the date range). */}
+                  <DataWindowBadge from={null} to={null} count={rows.length} label="campaigns" />
+                  <TableSearch
+                    value={query}
+                    onChange={setQuery}
+                    placeholder="Search campaigns…"
+                    aria-label="Search campaigns by name or ad platform"
+                    className="sm:w-56"
+                  />
+                </div>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             {campaignQ.isLoading ? (
@@ -286,22 +313,44 @@ export function CampaignsContent() {
               </div>
             ) : campaignQ.error ? (
               <ErrorCard error={campaignQ.error} retry={campaignQ.refetch} />
-            ) : roasRows.length > 0 ? (
-              <ChannelRoasTable rows={roasRows} className="w-full text-sm" />
-            ) : (
+            ) : rows.length === 0 ? (
               <EmptyState
                 compact
                 icon={<Megaphone />}
                 title="No per-campaign attribution yet"
-                description="Campaign-level credit appears once your customer journeys carry campaign tags (from your ad links) and revenue has been attributed under this model. We don't make up campaign rows."
+                description="Campaign rows appear once two things line up: (1) your ad links carry campaign tags (utm_campaign) so Brain can name the campaign, and (2) revenue has been attributed to those journeys under this model. We don't invent campaign rows — this stays empty until real credit exists."
                 action={
-                  <Link href="/settings/pixel">
+                  <Link href="/analytics/attribution">
                     <Button variant="outline" size="sm">
-                      Set up the Brain Pixel
+                      See attribution status
                     </Button>
                   </Link>
                 }
               />
+            ) : roasRows.length === 0 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground" role="status">
+                No campaigns match “{query.trim()}”.{' '}
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  className="font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  Clear search
+                </button>
+              </p>
+            ) : (
+              <>
+                <ChannelRoasTable rows={roasRows} className="w-full text-sm" />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    Every figure traces back to the customer journeys that touched each campaign.
+                  </p>
+                  <VerifyLink
+                    href="/analytics/attribution"
+                    label="See the journeys behind these numbers"
+                  />
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -311,10 +360,14 @@ export function CampaignsContent() {
       <section aria-label="Attributed revenue over time" data-testid="campaigns-trend-section">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <BarChart3 className="size-4" aria-hidden="true" />
-              Attributed revenue over time
-            </CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <BarChart3 className="size-4" aria-hidden="true" />
+                Attributed revenue over time
+              </CardTitle>
+              {/* This chart honors the date range above (unlike the all-time campaign roll-up). */}
+              <DataWindowBadge from={range.from} to={range.to} />
+            </div>
           </CardHeader>
           <CardContent>
             {timeseriesQ.error ? (
@@ -399,7 +452,7 @@ export function CampaignsContent() {
                               <p className="truncate font-medium text-foreground">
                                 {campaignLabel(row)}
                               </p>
-                              <p className="text-xs text-muted-foreground">{row.platform}</p>
+                              <p className="text-xs text-muted-foreground">{plainLabel(row.platform)}</p>
                             </div>
                             <Sparkline
                               data={series}

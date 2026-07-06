@@ -19,8 +19,8 @@
  *  4. MALFORMED — unparseable body → invalid → routed to .dlq (NOT .quarantine, NOT silent).
  *  5. ABSENT-CONSENT — valid token but no consent_flags → quarantined (reason consent_absent),
  *     0 Bronze rows.
- *  6. REPLAY/DEDUP OBSERVABILITY — replayed event_id → collector_dedup_conflict_total
- *     emitted (assert via injected counter sink — NON-INERT, not just console.info).
+ *  6. REPLAY/DEDUP — replayed event_id APPENDS a second Bronze row (ADR-0010: Bronze is
+ *     append-only, no Bronze dedup; Silver's admission MERGE owns effectively-once).
  *  7. READ-PATH NEGATIVE CONTROL (Track C) — a cross-brand bronze_events SELECT under
  *     brain_app for the tracking-health read returns 0 rows (proves withBrandTxn fails-closed).
  *
@@ -243,9 +243,10 @@ describe('R2 happy path — valid install_token → Iceberg Bronze under DERIVED
     // Bronze SoR: produce to the collector topic → the Spark sink applies the SAME R2/R3 gate (resolves
     // install_token → brand via pixel_installation) → lands under the DERIVED brand in Iceberg.
     await produceEvent(buf, BRAND_A);
-    expect(await icebergCount(eventId, BRAND_A, { min: 1, timeoutMs: 60_000 })).toBe(1); // derived brand
-    expect(await icebergCount(eventId, BRAND_B, { timeoutMs: 3_000 })).toBe(0);          // read-seam isolation
-  }, 75_000);
+    // ADR-0010: Connect-sink commit visibility is 30-60s+ under load — use a 120s deadline.
+    expect(await icebergCount(eventId, BRAND_A, { min: 1, timeoutMs: 120_000 })).toBe(1); // derived brand
+    expect(await icebergCount(eventId, BRAND_B, { timeoutMs: 3_000 })).toBe(0);           // read-seam isolation
+  }, 150_000);
 });
 
 // ── 2. CROSS-BRAND quarantine (non-inert) ─────────────────────────────────────
@@ -386,13 +387,15 @@ describe('R3 absent-consent — valid token but no consent_flags → quarantined
   }, 20_000);
 });
 
-// ── 6. DEDUP (R4) — Iceberg MERGE is the dedup SoR ────────────────────────────
+// ── 6. DEDUP (R4) — Bronze is APPEND-ONLY; Silver owns effectively-once (ADR-0010) ──
 // ICEBERG-BRONZE: the in-process Redis-NX dedup + its collector_dedup_conflict_total metric were
 // RETIRED with the PG Bronze write (ProcessEventUseCase returns 'written' before the dedup check when
-// pgWriteEnabled=false — Step 1c). The durable dedup is now the Spark MERGE WHEN NOT MATCHED on
-// (brand_id, event_id) in Iceberg (I-E02). This asserts that real dedup on the pixel lane.
-describe('R4 dedup — replayed event_id collapses to ONE Iceberg Bronze row (Spark MERGE)', () => {
-  it('same (brand_id, event_id) delivered twice → exactly one Bronze row', async () => {
+// pgWriteEnabled=false — Step 1c). Under ADR-0010 the Kafka Connect sink APPENDS every delivery —
+// there is NO Bronze-side dedup. The durable effectively-once collapse on (brand_id, event_id) is
+// the Silver admission MERGE (silver_collector_event.py window+MERGE) — proven in
+// bronze-dedup-effectively-once.live.test.ts. This asserts the append-only Bronze contract.
+describe('R4 dedup — replayed event_id APPENDS a second Bronze row (ADR-0010; Silver owns dedup)', () => {
+  it('same (brand_id, event_id) delivered twice → TWO Bronze rows (append-only)', async () => {
     if (!lakehouseUp) return;
     const eventId = randomUUID();
     cleanupEventIds.push(eventId);
@@ -400,11 +403,9 @@ describe('R4 dedup — replayed event_id collapses to ONE Iceberg Bronze row (Sp
     await produceEvent(buf, BRAND_A);
     await produceEvent(buf, BRAND_A);
 
-    const landed = await icebergCount(eventId, BRAND_A, { min: 1, timeoutMs: 60_000 });
-    expect(landed).toBeGreaterThanOrEqual(1);
-    await new Promise((r) => setTimeout(r, 14_000)); // settle ~1 extra trigger cycle for a 2nd-batch insert
-    expect(await icebergCount(eventId, BRAND_A, { timeoutMs: 5_000 })).toBe(1); // MERGE deduped the replay
-  }, 90_000);
+    const settled = await icebergCount(eventId, BRAND_A, { min: 2, timeoutMs: 150_000 });
+    expect(settled).toBe(2); // both deliveries landed — append-only, no Bronze-side dedup
+  }, 180_000);
 });
 
 // ── 7. READ-PATH NEGATIVE CONTROL (Track C tracking-health / recent-events) ───
@@ -420,7 +421,9 @@ describe('Track C read-path — cross-brand Iceberg Bronze read is brand-scoped 
     await produceEvent(buf, BRAND_A);
 
     // The tracking-health / recent-events read scopes via the metric-engine seam (WHERE brand_id = ?).
-    expect(await icebergCount(eventId, BRAND_A, { min: 1, timeoutMs: 60_000 })).toBe(1); // positive control
-    expect(await icebergCount(eventId, BRAND_B, { timeoutMs: 3_000 })).toBe(0);          // cross-brand → 0
-  }, 75_000);
+    // ADR-0010: Connect-sink commit latency is 30-60s+ — poll with the helper's 120s default, not
+    // the legacy Spark-sink-era 60s deadline.
+    expect(await icebergCount(eventId, BRAND_A, { min: 1, timeoutMs: 120_000 })).toBe(1); // positive control
+    expect(await icebergCount(eventId, BRAND_B, { timeoutMs: 3_000 })).toBe(0);           // cross-brand → 0
+  }, 150_000);
 });

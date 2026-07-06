@@ -1,5 +1,12 @@
 # Runbook — Production turn-on (ordered)
 
+> **SUPERSEDED (2026-07-06) — use `docs/runbooks/GO-LIVE.md`.** This document describes the
+> EC10 "declared-but-not-applied" baseline, which no longer exists: the prod modules were
+> UN-GATED (AUD-COST-001, `envs/prod/bootstrap.tf`), RDS was replaced by Aurora Serverless v2
+> (ADR-0009), Strimzi/Karpenter/pgbouncer prod apps now exist, and the `bronze-materialize`
+> CronWorkflow it references was removed — Bronze landing is the kafka-connect Deployment
+> (ADR-0010, `infra/argocd/envs/prod/kafka-connect.yaml`). Kept as historical context only.
+
 Bring the Brain V4 platform up in the **prod** AWS account (`ap-south-1`) from the
 EC10 "declared-but-not-applied" baseline to a serving stack. Grounded in
 `infra/terraform/envs/prod`, `infra/helm/*`, and `infra/argocd/envs/prod/*`.

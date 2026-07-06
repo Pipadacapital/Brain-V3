@@ -68,6 +68,9 @@ import { registerTrackingRoutes } from './routes/tracking.routes.js';
 import { registerConsentRoutes } from './routes/consent.routes.js';
 import { registerFeedbackRoutes } from './routes/feedback.routes.js';
 import { registerSegmentsRoutes } from './routes/segments.routes.js';
+import { registerAdminFlagsRoutes } from './routes/admin-flags.routes.js';
+import type { FlagService } from '@brain/platform-flags';
+import type { IdentityEventPublisher } from '../../../infrastructure/events/IdentityEventPublisher.js';
 
 export function registerBffRoutes(
   fastify: FastifyInstance,
@@ -85,6 +88,10 @@ export function registerBffRoutes(
   getCoreSaltHex?: (brandId: string) => Promise<string>,
   /** Brain V4 serving cache (Redis-fronted hot serving reads over the Trino seam). Trailing-optional. */
   servingCache?: ServingCacheReader,
+  /** SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed). Trailing-optional. */
+  flagService?: FlagService,
+  /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge. Trailing-optional. */
+  identityEventPublisher?: IdentityEventPublisher,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -237,8 +244,10 @@ export function registerBffRoutes(
     onboardingService,
     srPool,
     servingCache,
+    flagService,
     vaultService,
     identityReader,
+    identityEventPublisher,
     getCoreSaltHex,
     sessionPreHandler,
     bffProtectedPreHandler,
@@ -270,4 +279,5 @@ export function registerBffRoutes(
   registerConsentRoutes(fastify, deps);
   registerFeedbackRoutes(fastify, deps);
   registerSegmentsRoutes(fastify, deps);
+  registerAdminFlagsRoutes(fastify, deps); // SPEC: 0.5 — GET/PUT /api/v1/admin/flags
 }

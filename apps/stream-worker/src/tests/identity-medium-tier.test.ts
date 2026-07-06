@@ -86,3 +86,64 @@ describe('C2 medium-tier (device_id / anon_id) — resolve-only, never-merge', (
     expect(out.brainId).toBe(BRAIN_A);
   });
 });
+
+// SPEC: A.2.3.4 (WA-16) — shared-device guard. A shared anon must NOT pull a NEW strong id into a brain
+// already owned by a DIFFERENT strong identity (shared_device_family). The guard is active only when the
+// caller threads strongOwnedBrainIds (flag identity.shared_device_guard ON); absent ⇒ byte-identical.
+describe('A.2.3.4 shared-device guard (strongOwnedBrainIds)', () => {
+  // The event: a NEW member email (matches nothing) + the shared anon already linked to BRAIN_A.
+  // Per Option-A fetch, existingLinks only exposes the anon→BRAIN_A row; BRAIN_A's own email is NOT here —
+  // its strong ownership is conveyed solely via strongOwnedBrainIds.
+  const sharedDeviceEvent = () => [
+    id('email', 'emailMemberB', 'strong'),
+    id('anon_id', 'sharedFamilyAnon', 'medium'),
+  ];
+  const anonToBrainA: ExistingLink[] = [link(BRAIN_A, 'anon_id', 'sharedFamilyAnon', 'medium')];
+
+  it('GUARD ON + brain strong-owned → MINTS a new brain for the new email; anon stays with its owner', () => {
+    const out = r.resolve(
+      BRAND, sharedDeviceEvent(), anonToBrainA, new Map(), new Map(), cfg, new Set(),
+      undefined, undefined, new Set([BRAIN_A]), // BRAIN_A already owns a strong id (emailMemberA)
+    );
+    expect(out.action).toBe('minted');
+    expect(out.brainId).not.toBe(BRAIN_A);
+    // the new member email founds the new person …
+    expect(out.newLinks.some((l) => l.type === 'email' && l.hash === 'emailMemberB')).toBe(true);
+    // … but the SHARED anon is NOT re-linked onto it (it stays with BRAIN_A) — no merge via the device.
+    expect(out.newLinks.some((l) => l.type === 'anon_id' && l.hash === 'sharedFamilyAnon')).toBe(false);
+  });
+
+  it('GUARD ON + brain NOT strong-owned (anon_to_known) → still ADOPTS (LINK), journey preserved', () => {
+    // Same shape, but BRAIN_A was minted from an anonymous browse (no strong owner) → adoption is correct.
+    const out = r.resolve(
+      BRAND, sharedDeviceEvent(), anonToBrainA, new Map(), new Map(), cfg, new Set(),
+      undefined, undefined, new Set<string>(), // empty ⇒ BRAIN_A owns no strong id yet
+    );
+    expect(out.action).toBe('linked');
+    expect(out.brainId).toBe(BRAIN_A);
+  });
+
+  it('GUARD OFF (strongOwnedBrainIds undefined) → byte-identical legacy adoption (LINK to BRAIN_A)', () => {
+    const out = r.resolve(
+      BRAND, sharedDeviceEvent(), anonToBrainA, new Map(), new Map(), cfg, new Set(),
+      // no strongOwnedBrainIds arg → guard inert
+    );
+    expect(out.action).toBe('linked');
+    expect(out.brainId).toBe(BRAIN_A);
+  });
+
+  it('GUARD ON but the event strong id MATCHES the brain (multi_device) → adopts, anon linked', () => {
+    // emailA already owns BRAIN_A and is present on this event (matched, not new) + a fresh anon → the
+    // guard must NOT fire (no unmatched-new strong) → LINK, and the new anon is adopted onto BRAIN_A.
+    const out = r.resolve(
+      BRAND,
+      [id('email', 'emailA', 'strong'), id('anon_id', 'freshAnon', 'medium')],
+      [link(BRAIN_A, 'email', 'emailA', 'strong')],
+      new Map(), new Map(), cfg, new Set(),
+      undefined, undefined, new Set([BRAIN_A]),
+    );
+    expect(out.action).toBe('linked');
+    expect(out.brainId).toBe(BRAIN_A);
+    expect(out.newLinks.some((l) => l.type === 'anon_id' && l.hash === 'freshAnon')).toBe(true);
+  });
+});

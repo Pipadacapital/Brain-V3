@@ -36,6 +36,14 @@
  * Redis DEL on a non-existent key is a no-op. SCAN+DEL on already-evicted keys
  * returns 0 keys found. Re-delivering the same cache.invalidate event is always safe.
  *
+ * ── DURABLE-CONFIG EXEMPTION (SPEC: 0.5 / AMD-23) ────────────────────────────
+ * This consumer owns CACHE namespaces (derived, recomputable data). Durable
+ * per-brand CONFIG sharing the brand-first keyspace is NEVER deleted here:
+ * `{brand_id}:flag:{name}` (@brain/platform-flags) is skipped by every delete
+ * path. Without this, gold-rewritten-publish's per-brand scope.all on EVERY
+ * refresh-loop pass would silently revert all feature flags to OFF. Any future
+ * durable per-brand config namespace must be added to DURABLE_CONFIG_NAMESPACES.
+ *
  * ── PORT ─────────────────────────────────────────────────────────────────────
  * ICacheEvictionClient is a structural interface so tests can inject a fake without
  * standing up Redis. The concrete ioredis.Redis instance satisfies the interface.
@@ -77,6 +85,20 @@ export interface ICacheEvictionClient {
 }
 
 // ── Processing result ──────────────────────────────────────────────────────────
+
+// ── Durable-config namespace exemption (SPEC: 0.5 / AMD-23) ───────────────────
+
+/**
+ * Second key segments that are durable per-brand CONFIG (not cache) and therefore
+ * exempt from every eviction path. Keep in lockstep with the sanctioned key
+ * builders in @brain/tenant-context (flagKey → `{brand_id}:flag:{name}`).
+ */
+const DURABLE_CONFIG_NAMESPACES = ['flag'] as const;
+
+/** Is this brand-owned key durable config (never evicted by cache invalidation)? */
+function isDurableConfigKey(key: string, brandId: string): boolean {
+  return DURABLE_CONFIG_NAMESPACES.some((ns) => key.startsWith(`${brandId}:${ns}:`));
+}
 
 export type CacheInvalidateProcessResult =
   | { outcome: 'evicted'; brandId: string; keysDeleted: number; goldProduct: string }
@@ -178,6 +200,14 @@ export class AnalyticsCacheInvalidateConsumer {
             );
             continue;
           }
+          if (isDurableConfigKey(key, brandId)) {
+            // AMD-23: durable per-brand config (e.g. platform flags) is not cache — never evicted here.
+            log.warn(
+              '[cache-invalidate] scope.keys entry is a durable-config key — skipped (AMD-23)',
+              { key, brand_id: brandId, gold_product: goldProduct },
+            );
+            continue;
+          }
           const n = await this.cacheClient.del(key);
           totalDeleted += n;
         }
@@ -246,6 +276,11 @@ export class AnalyticsCacheInvalidateConsumer {
             '[cache-invalidate] SCAN returned a key not starting with brand_id — skipped',
             { key, brand_id: brandId, pattern },
           );
+          continue;
+        }
+        // AMD-23: durable per-brand config (`{brand_id}:flag:*`) is not cache — skip silently
+        // (scope.all legitimately SCANs over these keys on every refresh pass; not a warn).
+        if (isDurableConfigKey(key, brandId)) {
           continue;
         }
         const n = await this.cacheClient.del(key);

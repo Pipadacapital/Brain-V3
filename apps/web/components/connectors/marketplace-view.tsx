@@ -57,6 +57,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { SyncNowControl } from '@/components/connectors/sync-now-control';
 import { BackfillControl } from '@/components/connectors/backfill-control';
 import { ConnectorLogo } from '@/components/connectors/connector-logo';
+import { ByoAppSetupPanel } from './byo-app-setup-panel';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { useMarketplace, useConnectConnector, useDisconnectConnector, useActivateAdAccount } from '@/lib/hooks/use-connectors';
@@ -307,6 +308,10 @@ function ConnectorTile({
   const oauthAppFields = isOauth ? serverFields : [];
   const hasOauthAppFields = oauthAppFields.length > 0;
 
+  // BYO-required (Shopify): the catalog demands the brand's own app creds — fields render inline
+  // as REQUIRED (no disclosure), preceded by the Custom-App setup panel.
+  const byoRequired = Boolean(tile.byo_app_required && tile.byo_app_setup);
+
   const credsComplete = credentialFields.every((f) => f.optional || (creds[f.key] ?? '').trim().length > 0);
 
   function handleConnectError(err: unknown) {
@@ -531,6 +536,21 @@ function ConnectorTile({
           </Button>
         ) : isConnected ? (
           <div className="space-y-3">
+            {/* Reconnect banner: `includes` catches both 'BYO_APP_REQUIRED' and the colon-suffixed
+                'RECONNECT_REQUIRED: BYO_APP_REQUIRED' variant written by the boot-time migration. */}
+            {tile.id === 'shopify' && firstInstance?.last_error?.includes('BYO_APP_REQUIRED') && (
+              <div
+                role="alert"
+                className="mb-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning-subtle px-3 py-2 text-xs text-warning-subtle-foreground"
+                data-testid={`connector-tile-${tile.id}-reconnect-required`}
+              >
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                  <strong>Reconnect required.</strong> Brain&apos;s shared Shopify app was retired.
+                  Create your own Shopify Custom App and reconnect using its credentials.
+                </span>
+              </div>
+            )}
             {noneActive && (
               <div
                 role="status"
@@ -690,7 +710,8 @@ function ConnectorTile({
                 isConnecting ||
                 !emailVerified ||
                 (tile.id === 'shopify' && isOauth && !shopDomain.trim()) ||
-                (isCredential && !credsComplete)
+                (isCredential && !credsComplete) ||
+                (byoRequired && (!(creds['client_id'] ?? '').trim() || !(creds['client_secret'] ?? '').trim()))
               }
               aria-describedby={!emailVerified ? `connect-verify-hint-${tile.id}` : undefined}
               title={!emailVerified ? VERIFY_TO_CONNECT : undefined}
@@ -700,8 +721,16 @@ function ConnectorTile({
               {isConnecting ? 'Connecting…' : `Connect ${tile.display_name}`}
             </Button>
 
-            {/* OAuth BYO-app: optional Client ID/Secret tucked behind a disclosure (catalog-declared only). */}
-            {isOauth && hasOauthAppFields && (
+            {/* Shopify (or any byoAppRequired OAuth tile): setup panel + REQUIRED inline fields. */}
+            {isOauth && byoRequired && tile.byo_app_setup && (
+              <>
+                <ByoAppSetupPanel tileId={tile.id} displayName={tile.display_name} setup={tile.byo_app_setup} />
+                {renderFields(oauthAppFields)}
+              </>
+            )}
+
+            {/* Non-required (Meta / Google Ads): keep the existing optional disclosure. */}
+            {isOauth && !byoRequired && hasOauthAppFields && (
               <div className="space-y-3">
                 <button
                   type="button"

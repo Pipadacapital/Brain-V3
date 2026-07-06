@@ -464,6 +464,17 @@ export interface MarketplaceTileInstance {
   is_active?: boolean;
   /** Ad platform whose account has not been picked yet → UI prompts for a selection. */
   requires_activation?: boolean;
+  /** Last sync error (connector_sync_status.last_error). Drives e.g. the BYO reconnect banner. */
+  last_error?: string | null;
+}
+
+/** Declarative Custom-App setup instructions for byo_app_required OAuth tiles (server catalog). */
+export interface ByoAppSetup {
+  /** Exact OAuth callback the user pastes into their Custom App's allowed redirection URLs. */
+  redirect_url: string;
+  /** OAuth scopes the Custom App must enable. */
+  scopes: string[];
+  docs_url?: string | null;
 }
 
 /**
@@ -491,6 +502,10 @@ export interface MarketplaceTile {
   available: boolean;
   /** The credential/auth fields the connect form renders (single SoR — the server catalog). */
   auth_fields?: ConnectorAuthFieldDto[];
+  /** OAuth tile requires per-brand Client ID/Secret — env-app fallback refused (Shopify). */
+  byo_app_required?: boolean;
+  /** Custom-App setup instructions rendered when byo_app_required. */
+  byo_app_setup?: ByoAppSetup | null;
   /** null = not connected yet for this brand. Back-compat: first active instance. */
   instance: MarketplaceTileInstance | null;
   /** All active instances for this provider (Gap B — multi-account). Empty = not connected. */

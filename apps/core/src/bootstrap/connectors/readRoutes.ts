@@ -47,6 +47,17 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
         activeByProvider.set(inst.provider, list);
       }
 
+      // last_error per instance (connector_sync_status) — drives e.g. the BYO reconnect banner.
+      const lastErrorByInstance = new Map<string, string | null>();
+      await Promise.all(
+        instances
+          .filter((inst) => inst.status !== 'disconnected')
+          .map(async (inst) => {
+            const status = await syncStatusRepo.findByConnectorInstanceId(inst.id, brandId).catch(() => null);
+            lastErrorByInstance.set(inst.id, status?.lastError ?? null);
+          }),
+      );
+
       const tiles = CONNECTOR_CATALOG.map((def) => {
         const activeInstances = activeByProvider.get(def.id) ?? [];
         const firstInstance = activeInstances[0] ?? null;
@@ -75,6 +86,7 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
             activated_at: inst.activatedAt ? inst.activatedAt.toISOString() : null,
             is_active: isAdPlatformProvider(inst.provider) ? inst.isActive : true,
             requires_activation: isAdPlatformProvider(inst.provider) && !inst.isActive,
+            last_error: lastErrorByInstance.get(inst.id) ?? null,
           };
         };
 

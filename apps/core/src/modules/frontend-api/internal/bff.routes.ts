@@ -70,6 +70,7 @@ import { registerFeedbackRoutes } from './routes/feedback.routes.js';
 import { registerSegmentsRoutes } from './routes/segments.routes.js';
 import { registerAdminFlagsRoutes } from './routes/admin-flags.routes.js';
 import type { FlagService } from '@brain/platform-flags';
+import type { IdentityEventPublisher } from '../../../infrastructure/events/IdentityEventPublisher.js';
 
 export function registerBffRoutes(
   fastify: FastifyInstance,
@@ -89,6 +90,8 @@ export function registerBffRoutes(
   servingCache?: ServingCacheReader,
   /** SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed). Trailing-optional. */
   flagService?: FlagService,
+  /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge. Trailing-optional. */
+  identityEventPublisher?: IdentityEventPublisher,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -244,6 +247,7 @@ export function registerBffRoutes(
     flagService,
     vaultService,
     identityReader,
+    identityEventPublisher,
     getCoreSaltHex,
     sessionPreHandler,
     bffProtectedPreHandler,

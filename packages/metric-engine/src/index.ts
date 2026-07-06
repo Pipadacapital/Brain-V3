@@ -208,6 +208,11 @@ export type {
 export { computeJourneyPaths } from './journey-paths.js';
 export type { JourneyPathsResult, JourneyPathRow, JourneyPathLink } from './journey-paths.js';
 
+// Recent-journeys list — a thin keyset-paginated projection over the per-journey serving view
+// mv_gold_journey (one row per brand_id, brain_anon_id), newest-first by last_touch_at. NO money.
+export { computeJourneyList } from './journey-list.js';
+export type { JourneyListResult, JourneyListRow, JourneyListParams } from './journey-list.js';
+
 // Versioned journey-ledger CURRENT projection (mv_journey_events_current over
 // iceberg.brain_gold.journey_events) — the resolved-identity per-customer timeline,
 // keyset-paginated newest-first. Money = bigint minor string ONLY on composite rows.

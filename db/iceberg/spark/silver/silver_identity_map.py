@@ -46,7 +46,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # db/iceberg/spark — _identity_ref
 
-from _silver_base import ensure_silver_table, merge_on_pk, run_job  # noqa: E402
+from _silver_base import ensure_silver_table, run_job  # noqa: E402
 from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.functions import col, lit  # noqa: E402
 
@@ -107,6 +107,12 @@ IDENTITY_MAP_CYPHER = (
     "(rk = 'C') AS is_current"
 )
 
+# SPEC: A.1.5 — bi-temporality (AMD-07, R1 BINDING). system_from / system_to are the SYSTEM-TIME axis,
+# additive + nullable — the additive-reconcile ALTER in ensure_silver_table adds them to the live
+# 14,902-row table. effective_from/effective_to/is_current stay the untouched VALID-TIME axis. Writes are
+# now APPEND-PER-MUTATION (close the old system interval, open a new one) — never in-place validity
+# rewrites — so as-of(T_valid, T_system) becomes answerable from RETAINED rows (NOT Iceberg time-travel,
+# AMD-10). Access is ONLY via the sanctioned views identity_current_v / identity_asof (A.2.2).
 COLUMNS_SQL = """
           brand_id             string    NOT NULL,
           identifier_hash      string    NOT NULL,
@@ -119,8 +125,124 @@ COLUMNS_SQL = """
           replaced_by_brain_id string,
           merge_event_id       string,
           is_current           boolean,
+          system_from          timestamp,
+          system_to            timestamp,
           updated_at           timestamp NOT NULL
 """.strip("\n")
+
+# The projected columns whose CHANGE (null-safely compared) defines a "mutation" for a given valid-time PK.
+# Excludes the PK (brand_id, identifier_hash, brain_id, effective_from), the system-time axis, and updated_at.
+_PAYLOAD_COLS = [
+    "identifier_type",
+    "customer_ref",
+    "confidence",
+    "effective_to",
+    "replaced_by_brain_id",
+    "merge_event_id",
+    "is_current",
+]
+
+# The valid-time natural key — a version of a mapping is identified by these four; system_from/to record
+# WHEN we believed each version.
+_PK_COLS = ["brand_id", "identifier_hash", "brain_id", "effective_from"]
+
+
+def _backfill_system_time(spark, fqtn):
+    """ONE-TIME legacy backfill (AMD-07 R1, BEST-EFFORT — the amendment explicitly allows the approximation).
+
+    Rows landed by the prior BATCH-PROJECTION runs carry NULL system_from (the additive ALTER just added the
+    column). Give each a system interval:
+      - system_from = updated_at  (the row's last projection time — the honest lower bound for when we
+        recorded it; we have no earlier truth).
+      - system_to   = NULL for the live rows (is_current = true), else the SUPERSEDING row's system_from —
+        best-effort = the CURRENT row (same brand_id + identifier_hash) whose brain_id equals this row's
+        replaced_by_brain_id. This conflates the two axes for LEGACY superseded rows only (we cannot
+        reconstruct true system history that predates the column); it keeps identity_current_v correct
+        (is_current=false rows are excluded by the is_current predicate regardless) and gives identity_asof
+        SOME system bound for old merges. Going forward, append-per-mutation records the true system axis.
+
+    Idempotent + RE-ENTRANT: gated on "a system_from IS NULL row exists". CRUCIAL ordering — the step that
+    CLEARS the gate (system_from = updated_at) runs LAST, so a crash mid-backfill leaves system_from still
+    NULL and the whole block safely re-runs. append-per-mutation always stamps system_from on new rows, so
+    once complete this is a permanent no-op (append-era superseded rows correctly keep system_to = NULL —
+    the legacy approximation only ever touches rows that predate the system-time column)."""
+    try:
+        n = spark.sql(f"SELECT count(*) AS n FROM {fqtn} WHERE system_from IS NULL").collect()[0]["n"]
+    except Exception:  # noqa: BLE001 — table absent/empty → nothing to backfill
+        return
+    if not n:
+        return
+    print(f"[silver-identity-map] one-time system-time backfill of {n} legacy row(s) (AMD-07 best-effort)", flush=True)
+    # 1. superseded legacy rows: system_to = the superseding CURRENT row's system_from (== its updated_at,
+    #    the value step 2 will stamp) — sourced from updated_at so this is INDEPENDENT of step 2's ordering.
+    #    GROUP BY collapses the (brand_id, identifier_hash, brain_id) grain to ONE successor row (an identifier
+    #    can carry several current effective intervals) so the MERGE ON matches ≤ 1 source (no cardinality
+    #    violation). Runs BEFORE step 2 so the gate (system_from IS NULL) stays true until fully done.
+    spark.sql(
+        f"""
+        MERGE INTO {fqtn} t
+        USING (
+          SELECT brand_id, identifier_hash, brain_id AS succ_brain_id, min(updated_at) AS succ_updated_at
+          FROM {fqtn} WHERE is_current = true
+          GROUP BY brand_id, identifier_hash, brain_id
+        ) succ
+        ON t.brand_id = succ.brand_id
+           AND t.identifier_hash = succ.identifier_hash
+           AND t.replaced_by_brain_id = succ.succ_brain_id
+           AND t.is_current = false
+           AND t.system_to IS NULL
+        WHEN MATCHED THEN UPDATE SET t.system_to = succ.succ_updated_at
+        """
+    )
+    # 2. system_from = updated_at for every legacy row — LAST, since it clears the re-entrancy gate.
+    spark.sql(f"UPDATE {fqtn} SET system_from = updated_at WHERE system_from IS NULL")
+
+
+def _append_per_mutation(spark, fqtn, staged):
+    """Bi-temporal APPEND-PER-MUTATION (AMD-07 R1): never rewrite validity columns in place.
+
+    A "mutation" = the freshly-projected row for a valid-time PK differs (null-safely, on _PAYLOAD_COLS)
+    from the currently-KNOWN row (the open row, system_to IS NULL). Two MERGE passes:
+      Pass A — CLOSE the open row whose payload changed: system_to = the new row's system_from.
+      Pass B — INSERT the new version (system_from = now, system_to = NULL). Because Pass A already closed
+               the changed row, an UNCHANGED PK still has its open row (blocks the insert), a CHANGED PK no
+               longer has an open+same row (→ NOT MATCHED → insert the new version), and a BRAND-NEW PK has
+               no row at all (→ insert). Idempotent: an unchanged projection appends nothing.
+
+    Invariant preserved: at most ONE open (system_to IS NULL) row per valid-time PK, so every MERGE ON
+    matches ≤ 1 target row (no ambiguous-merge error). Batch-dedup first (a re-pull can emit a PK twice)."""
+    staged.createOrReplaceTempView("_idm_stage")
+    part = ", ".join(_PK_COLS)
+    spark.sql(
+        f"""
+        CREATE OR REPLACE TEMPORARY VIEW _idm_stage_dedup AS
+        SELECT * FROM (
+          SELECT *, row_number() OVER (PARTITION BY {part} ORDER BY system_from DESC) AS _rn
+          FROM _idm_stage
+        ) WHERE _rn = 1
+        """
+    )
+    on_pk = " AND ".join(f"t.{c} <=> s.{c}" for c in _PK_COLS)
+    same = " AND ".join(f"t.{c} <=> s.{c}" for c in _PAYLOAD_COLS)
+    proj = ", ".join(staged.columns)
+    # Pass A — close the superseded system interval (only when the payload actually changed).
+    spark.sql(
+        f"""
+        MERGE INTO {fqtn} t
+        USING (SELECT * FROM _idm_stage_dedup) s
+        ON {on_pk} AND t.system_to IS NULL
+        WHEN MATCHED AND NOT ({same}) THEN UPDATE SET t.system_to = s.system_from
+        """
+    )
+    # Pass B — insert brand-new PKs AND the new version of changed PKs (an unchanged open row blocks it).
+    spark.sql(
+        f"""
+        MERGE INTO {fqtn} t
+        USING (SELECT {proj} FROM _idm_stage_dedup) s
+        ON {on_pk} AND t.system_to IS NULL AND ({same})
+        WHEN NOT MATCHED THEN INSERT *
+        """
+    )
 
 
 def _ms_to_ts(col_ms):
@@ -139,6 +261,10 @@ def build(spark):
     _customer_ref = brain_ref_udf()
 
     fqtn = ensure_silver_table(spark, TABLE, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+
+    # System-time backfill runs BEFORE the append (and even in the data-thin path): the existing rows need
+    # their system interval regardless of whether Neo4j is reachable this run. One-time + idempotent.
+    _backfill_system_time(spark, fqtn)
 
     if not NEO4J_URI:
         print("[silver-identity-map] NEO4J_URI not set — created EMPTY table (data-thin path).", flush=True)
@@ -174,6 +300,11 @@ def build(spark):
             F.when(col("replaced_by_brain_id") == lit(""), F.lit(None).cast("string")).otherwise(col("replaced_by_brain_id")).alias("replaced_by_brain_id"),
             F.when(col("merge_event_id") == lit(""), F.lit(None).cast("string")).otherwise(col("merge_event_id")).alias("merge_event_id"),
             (col("is_current") == lit(True)).alias("is_current"),
+            # SPEC: A.1.5 — this run's SYSTEM-TIME stamp. Every projected row is a candidate new system
+            # version: system_from = now, system_to = NULL (open). _append_per_mutation decides whether it
+            # is actually a change worth appending.
+            F.current_timestamp().alias("system_from"),
+            F.lit(None).cast("timestamp").alias("system_to"),
             F.current_timestamp().alias("updated_at"),
         )
         .where(col("brand_id").isNotNull() & col("identifier_hash").isNotNull() & col("brain_id").isNotNull())
@@ -182,11 +313,9 @@ def build(spark):
         .withColumn("effective_from", F.coalesce(col("effective_from"), F.to_timestamp(lit("1970-01-01 00:00:00"))))
     )
 
-    merge_on_pk(
-        spark, fqtn, staged,
-        ["brand_id", "identifier_hash", "brain_id", "effective_from"],
-        order_by_desc=["updated_at"],
-    )
+    # SPEC: A.1.5 — bi-temporal append (close old system interval, open new); replaces the former
+    # merge_on_pk in-place UPDATE SET * (which rewrote validity columns and erased system history).
+    _append_per_mutation(spark, fqtn, staged)
     return fqtn, spark.table(fqtn).count()
 
 

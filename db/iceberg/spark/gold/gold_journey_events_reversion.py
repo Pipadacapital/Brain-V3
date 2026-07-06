@@ -62,29 +62,19 @@ from iceberg_base import (  # noqa: E402
     read_job_watermark,
     write_job_watermark,
 )
-from _gold_base import SILVER_NS, merge_on_pk, run_job, silver_exists  # noqa: E402
+from _gold_base import merge_on_pk, run_job, silver, silver_exists  # noqa: E402
+# SPEC: A.2.2 — the ONLY sanctioned Spark reads of silver_identity_map (identity-view-guard allowlist).
+from _identity_views import identity_map_exists, identity_raw  # noqa: E402
+# SPEC: A.2.4 (WA-19) — pyspark-free driver helpers (unit-tested without a Spark runtime).
+from _journey_reversion_pure import derive_unmerge_pairs, resolve_terminal as _resolve_terminal  # noqa: E402
 
 JOB_NAME = "gold_journey_events_reversion"   # silver_job_watermark key (distinct from the table's)
+# SPEC: A.2.4 (WA-19) — a SECOND, independent watermark for the UNMERGE un-reversion pass, keyed on
+# silver_identity_unmerge.unmerged_at (the merge pass keeps its silver_identity_map.updated_at key).
+UNMERGE_JOB_NAME = "gold_journey_events_reversion_unmerge"
+UNMERGE_SOURCE_TABLE = "silver_identity_unmerge"
 TABLE_NAME = "journey_events"                # the SAME ledger construction writes
 PK = ["brand_id", "touchpoint_id", "data_version"]
-
-
-def _resolve_terminal(pairs):
-    """Collapse merge CHAINS driver-side: [(brand, old, new), …] → old maps to its TERMINAL canonical
-    id (A→B + B→C becomes A→C and B→C). Cycle-guarded (a pathological A→B→A stops at the last id
-    before revisiting). Merge batches since a checkpoint are tiny, so a driver dict is fine."""
-    fwd = {}
-    for brand, old, new in pairs:
-        fwd[(brand, old)] = new
-    resolved = []
-    for (brand, old), new in fwd.items():
-        seen = {old}
-        terminal = new
-        while (brand, terminal) in fwd and terminal not in seen:
-            seen.add(terminal)
-            terminal = fwd[(brand, terminal)]
-        resolved.append((brand, old, terminal))
-    return resolved
 
 
 def _copies_sql(fqtn: str) -> str:
@@ -149,28 +139,42 @@ def _copies_sql(fqtn: str) -> str:
     """
 
 
-def build(spark: SparkSession):
-    fqtn = f"{CATALOG}.{GOLD_NAMESPACE}.{TABLE_NAME}"
+def _flip_and_copy(spark: SparkSession, fqtn: str) -> None:
+    """Steps 4-5 shared by BOTH passes: FLIP the affected latest-version rows is_current=false, then
+    INSERT the re-versioned copies (data_version + 1, new owner, recomputed sequence). Requires the
+    `_je_affected` (persisted, with a `new_brain_id` column) + `_merge_pairs` temp views to be set.
+    Flip-before-insert is crash-safe (a crash between leaves the latest version owned by the OLD id →
+    re-detected on the next run)."""
+    # 4. FLIP FIRST — the ONLY in-place mutation the ledger ever takes: is_current=false (+ audit stamp).
+    spark.sql(
+        f"""
+        MERGE INTO {fqtn} t
+        USING (SELECT brand_id, touchpoint_id, data_version FROM _je_affected) s
+        ON t.brand_id = s.brand_id
+       AND t.touchpoint_id = s.touchpoint_id
+       AND t.data_version = s.data_version
+        WHEN MATCHED AND t.is_current = true THEN
+            UPDATE SET t.is_current = false, t.updated_at = current_timestamp()
+        """
+    )
+    # 5. INSERT the re-versioned copies (data_version + 1, new owner, recomputed sequence).
+    copies = spark.sql(_copies_sql(fqtn))
+    merge_on_pk(spark, fqtn, copies, PK)
 
-    # The ledger must exist (construction runs first in the loop) — degrade gracefully if not.
-    try:
-        spark.table(fqtn).schema
-    except Exception:  # noqa: BLE001 — absent target → nothing to re-version yet
-        print(f"[{JOB_NAME}] target {fqtn} absent — run gold_journey_events first; no-op.", flush=True)
-        return fqtn, 0
 
-    if not silver_exists(spark, "silver_identity_map"):
-        print(f"[{JOB_NAME}] silver_identity_map absent — no merge events to fold; no-op.", flush=True)
-        return fqtn, spark.table(fqtn).count()
-
-    # 1. CHECKPOINT (silver_job_watermark side-table, keyed on silver_identity_map.updated_at).
+def _apply_merge(spark: SparkSession, fqtn: str) -> int:
+    """MERGE re-versioning: transfer an absorbed id's LATEST-version journey rows onto the canonical
+    survivor (data_version + 1). Detection from silver_identity_map (is_current=false + replaced_by).
+    Returns the number of rows re-versioned (0 = no-op). Advances its OWN watermark (JOB_NAME)."""
     full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
     wm = None if full_refresh else read_job_watermark(spark, JOB_NAME)
 
-    idm = spark.table(f"{CATALOG}.{SILVER_NS}.silver_identity_map")
+    # Merge-event detection needs the RAW interval rows (is_current=false + replaced_by set) — read via the
+    # sanctioned identity_raw accessor (A.2.2/AMD-07), not a direct spark.table on silver_identity_map.
+    idm = identity_raw(spark)
     new_wm = idm.selectExpr("max(updated_at) AS m").collect()[0]["m"]
 
-    # 2. DETECT merge events since the checkpoint.
+    # DETECT merge events since the checkpoint.
     merged = idm.where(
         (col("is_current") == lit(False))
         & col("replaced_by_brain_id").isNotNull()
@@ -186,7 +190,7 @@ def build(spark: SparkSession):
     if not pairs:
         write_job_watermark(spark, JOB_NAME, new_wm)
         print(f"[{JOB_NAME}] no merge events since checkpoint — 0 re-versions", flush=True)
-        return fqtn, spark.table(fqtn).count()
+        return 0
 
     resolved = _resolve_terminal(pairs)
     spark.createDataFrame(
@@ -194,8 +198,8 @@ def build(spark: SparkSession):
     ).createOrReplaceTempView("_merge_pairs")
     print(f"[{JOB_NAME}] {len(resolved)} merge pair(s) since checkpoint (chains resolved)", flush=True)
 
-    # 3. AFFECTED = ledger rows whose LATEST version is still owned by an old brain_id. Latest-version
-    #    ownership (not is_current) keys the detection so a crash between flip and insert is re-run-safe.
+    # AFFECTED = ledger rows whose LATEST version is still owned by an old brain_id. Latest-version
+    # ownership (not is_current) keys the detection so a crash between flip and insert is re-run-safe.
     affected = spark.sql(
         f"""
         WITH latest AS (
@@ -219,31 +223,116 @@ def build(spark: SparkSession):
         affected.unpersist()
         write_job_watermark(spark, JOB_NAME, new_wm)
         print(f"[{JOB_NAME}] merge pairs matched no owned journey rows — 0 re-versions", flush=True)
-        return fqtn, spark.table(fqtn).count()
+        return 0
 
-    # 4. FLIP FIRST — the ONLY in-place mutation the ledger ever takes: is_current=false (+ audit stamp).
-    spark.sql(
+    _flip_and_copy(spark, fqtn)
+    affected.unpersist()
+    write_job_watermark(spark, JOB_NAME, new_wm)
+    print(f"[{JOB_NAME}] re-versioned {n_affected} row(s) across {len(resolved)} merge pair(s)", flush=True)
+    return n_affected
+
+
+def _apply_unmerge(spark: SparkSession, fqtn: str) -> int:
+    """SPEC: A.2.4 (WA-19) — UN-REVERSION: the inverse of a merge. For every committed unmerge
+    (silver_identity_unmerge) move the journey rows the merge transferred from the absorbed id onto the
+    survivor BACK to the absorbed id, as a NEW version (data_version + 1) — the split journeys reappear,
+    history preserved (the merge-era versions survive is_current=false). Reuses the merge machinery: the
+    unmerge pairs become `_merge_pairs` with old=survivor (from), new=absorbed (to), and AFFECTED is the
+    latest-version rows currently owned by the survivor whose IMMEDIATELY-PRIOR version was owned by the
+    absorbed id (i.e. exactly the rows the merge moved). Latest-version-ownership keying (no is_current
+    filter) keeps it crash-safe + idempotent. Advances its OWN watermark (UNMERGE_JOB_NAME)."""
+    if not silver_exists(spark, UNMERGE_SOURCE_TABLE):
+        print(f"[{UNMERGE_JOB_NAME}] {UNMERGE_SOURCE_TABLE} absent — no unmerge events to fold; no-op.", flush=True)
+        return 0
+
+    full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
+    wm = None if full_refresh else read_job_watermark(spark, UNMERGE_JOB_NAME)
+
+    um = spark.table(silver(UNMERGE_SOURCE_TABLE))
+    new_wm = um.selectExpr("max(unmerged_at) AS m").collect()[0]["m"]
+    if new_wm is None:
+        print(f"[{UNMERGE_JOB_NAME}] {UNMERGE_SOURCE_TABLE} empty — 0 un-reversions", flush=True)
+        return 0
+
+    ev = um.where(
+        col("survivor_brain_id").isNotNull()
+        & (col("survivor_brain_id") != col("absorbed_brain_id"))
+    )
+    if wm is not None:
+        ev = ev.where(col("unmerged_at") > lit(wm))
+    # (brand, survivor=from-owner, absorbed=to-owner) — reuse the _merge_pairs (old→new) shape via the
+    # pure derive_unmerge_pairs helper (unit-tested without Spark).
+    pairs = derive_unmerge_pairs(
+        [r.asDict() for r in ev.select("brand_id", "survivor_brain_id", "absorbed_brain_id").distinct().collect()]
+    )
+    if not pairs:
+        write_job_watermark(spark, UNMERGE_JOB_NAME, new_wm)
+        print(f"[{UNMERGE_JOB_NAME}] no unmerge events since checkpoint — 0 un-reversions", flush=True)
+        return 0
+
+    spark.createDataFrame(
+        pairs, "brand_id string, old_brain_id string, new_brain_id string"
+    ).createOrReplaceTempView("_merge_pairs")
+    print(f"[{UNMERGE_JOB_NAME}] {len(pairs)} unmerge pair(s) since checkpoint", flush=True)
+
+    # AFFECTED = latest-version rows currently owned by the SURVIVOR (old_brain_id) whose data_version-1
+    # version was owned by the ABSORBED id (new_brain_id) — precisely the rows the merge transferred.
+    affected = spark.sql(
         f"""
-        MERGE INTO {fqtn} t
-        USING (SELECT brand_id, touchpoint_id, data_version FROM _je_affected) s
-        ON t.brand_id = s.brand_id
-       AND t.touchpoint_id = s.touchpoint_id
-       AND t.data_version = s.data_version
-        WHEN MATCHED AND t.is_current = true THEN
-            UPDATE SET t.is_current = false, t.updated_at = current_timestamp()
+        WITH latest AS (
+            SELECT brand_id, touchpoint_id, max(data_version) AS max_ver
+            FROM {fqtn}
+            GROUP BY brand_id, touchpoint_id
+        )
+        SELECT je.*, m.new_brain_id
+        FROM {fqtn} je
+        JOIN latest l
+          ON l.brand_id = je.brand_id AND l.touchpoint_id = je.touchpoint_id
+         AND je.data_version = l.max_ver
+        JOIN _merge_pairs m
+          ON m.brand_id = je.brand_id AND m.old_brain_id = je.brain_id
+        JOIN {fqtn} prev
+          ON prev.brand_id = je.brand_id AND prev.touchpoint_id = je.touchpoint_id
+         AND prev.data_version = je.data_version - 1
+         AND prev.brain_id = m.new_brain_id
         """
     )
+    affected.persist()
+    n_affected = affected.count()
+    affected.createOrReplaceTempView("_je_affected")
+    if n_affected == 0:
+        affected.unpersist()
+        write_job_watermark(spark, UNMERGE_JOB_NAME, new_wm)
+        print(f"[{UNMERGE_JOB_NAME}] unmerge pairs matched no transferred journey rows — 0 un-reversions", flush=True)
+        return 0
 
-    # 5. INSERT the re-versioned copies (data_version + 1, canonical owner, recomputed sequence).
-    copies = spark.sql(_copies_sql(fqtn))
-    merge_on_pk(spark, fqtn, copies, PK)
+    _flip_and_copy(spark, fqtn)
     affected.unpersist()
+    write_job_watermark(spark, UNMERGE_JOB_NAME, new_wm)
+    print(f"[{UNMERGE_JOB_NAME}] un-reversioned {n_affected} row(s) across {len(pairs)} unmerge pair(s)", flush=True)
+    return n_affected
 
-    # 6. Advance the checkpoint only after both steps committed.
-    write_job_watermark(spark, JOB_NAME, new_wm)
-    total = spark.table(fqtn).count()
-    print(f"[{JOB_NAME}] re-versioned {n_affected} row(s) across {len(resolved)} merge pair(s)", flush=True)
-    return fqtn, total
+
+def build(spark: SparkSession):
+    fqtn = f"{CATALOG}.{GOLD_NAMESPACE}.{TABLE_NAME}"
+
+    # The ledger must exist (construction runs first in the loop) — degrade gracefully if not.
+    try:
+        spark.table(fqtn).schema
+    except Exception:  # noqa: BLE001 — absent target → nothing to re-version yet
+        print(f"[{JOB_NAME}] target {fqtn} absent — run gold_journey_events first; no-op.", flush=True)
+        return fqtn, 0
+
+    # MERGE pass (silver_identity_map) then UNMERGE un-reversion pass (silver_identity_unmerge). Each has
+    # its OWN watermark + graceful no-op, so one being absent/empty never blocks the other.
+    if identity_map_exists(spark):
+        _apply_merge(spark, fqtn)
+    else:
+        print(f"[{JOB_NAME}] silver_identity_map absent — merge pass skipped.", flush=True)
+
+    _apply_unmerge(spark, fqtn)
+
+    return fqtn, spark.table(fqtn).count()
 
 
 def main() -> None:

@@ -58,6 +58,18 @@ export const PLATFORM_FLAGS = {
     spec: 'A.4',
     description: 'Redis touchpoint cache consumer ({brand}:tp:{brain} zset, deterministic-only).',
   },
+  'identity.priority_config': {
+    wave: 'A',
+    spec: 'A.1.5',
+    description:
+      'Per-brand ORDERED identity priority resolution (highest-priority match wins; lower-priority conflict → route to review, NEVER silent overwrite). OFF = fixed-tier union-find, byte-identical.',
+  },
+  'identity.shared_device_guard': {
+    wave: 'A',
+    spec: 'A.2.3.4',
+    description:
+      'Resolver shared-device guard: a medium (anon/device) signal may NOT pull a NEW strong identifier into a brain already owned by a DIFFERENT strong identifier — the new strong id mints its own person, so two family members on one device stay separate brains (stitch surfaces the conflict). OFF = legacy medium-adoption, byte-identical.',
+  },
 
   // ── Wave B — journey ────────────────────────────────────────────────────────
   'journey.engine': {

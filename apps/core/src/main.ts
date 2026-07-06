@@ -100,6 +100,7 @@ import { PgPixelStatusRepository } from './modules/connector/pixel/infrastructur
 import { registerWorkspaceAccess } from './bootstrap/registerWorkspaceAccess.js';
 import { registerConnectors } from './bootstrap/registerConnectors.js';
 import { createM1EventPublisher } from './infrastructure/events/M1EventPublisher.js';
+import { createIdentityEventPublisher } from './infrastructure/events/IdentityEventPublisher.js';
 
 // ── Secrets provider (HIGH-SECRETS-01) ───────────────────────────────────────
 import { AwsSecretsProvider } from './infrastructure/secrets/AwsSecretsProvider.js';
@@ -688,6 +689,18 @@ export async function main(): Promise<void> {
     },
   });
 
+  // SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge (identity.unmerged.v1).
+  // Reuses the same connected webhook producer (ONE per process). Wired into the BFF deps below.
+  const identityEventPublisher = createIdentityEventPublisher({
+    producer: webhookProducer,
+    env: config.kafkaEnv,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+      error: (obj, msg) => app.log.error(obj, msg),
+    },
+  });
+
   // Create application services.
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };
   const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool, emitEvent);
@@ -814,6 +827,7 @@ export async function main(): Promise<void> {
     onboardingService,
     piiVaultService,
     identityReader,
+    identityEventPublisher,
     getCoreSaltHex,
     flagService,
   });

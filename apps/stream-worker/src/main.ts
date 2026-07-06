@@ -21,8 +21,11 @@ import { assertRoleEnforcesRls } from '@brain/db';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import {
   buildTopic,
+  IDENTITY_MINTED_TOPIC_SUFFIX,
+  IDENTITY_LINKED_TOPIC_SUFFIX,
   IDENTITY_MERGED_TOPIC_SUFFIX,
   IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
+  IDENTITY_UNMERGED_TOPIC_SUFFIX,
 } from '@brain/contracts';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
@@ -32,9 +35,16 @@ import { createIdempotentProducer } from './infrastructure/kafka/idempotent-prod
 import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
 import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/IdentityChangeRecomputeConsumer.js';
 import { PgScopedRecomputeRepository } from './infrastructure/pg/ScopedRecomputeRepository.js';
+import { RestitchDirtyConsumer } from './interfaces/consumers/RestitchDirtyConsumer.js';
+import { PgRestitchDirtyRepository } from './infrastructure/pg/RestitchDirtyRepository.js';
 import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
 import { AnalyticsCacheInvalidateConsumer } from './interfaces/consumers/AnalyticsCacheInvalidateConsumer.js';
 import { Redis } from 'ioredis';
+import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
+import { RedisTouchpointCacheStore } from './touchpoint-cache/TouchpointCacheStore.js';
+import { IdentityStoreBrainIdResolver } from './touchpoint-cache/BrainIdResolver.js';
+import { TouchpointCacheService } from './touchpoint-cache/TouchpointCacheService.js';
+import { TouchpointCacheConsumer } from './touchpoint-cache/TouchpointCacheConsumer.js';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger } from '@brain/observability';
 import { loadStreamWorkerConfig } from '@brain/config';
@@ -326,6 +336,14 @@ export async function main(): Promise<void> {
   const confidenceEngine = new ConfidenceEngine({ matchers: matcherRegistry.enabled() });
   const decisionEngine = new DecisionEngine();
   const identityDecisionLog = new IdentityAuditDecisionLog(new PgPool({ connectionString: dbUrl, max: 3 }));
+  // SPEC A.1.5 (WA-12): per-brand feature-flag service gating the ordered identity-priority path.
+  // A dedicated ioredis client (mirrors cacheEvictionRedis / RetryCounterAdapter); the domain
+  // FlagService is fail-closed + DEFAULT OFF, so `identity.priority_config` reads OFF everywhere until
+  // an admin sets it → the legacy fixed-tier resolver runs byte-identically until then.
+  const flagRedis = new Redis(redisUrl);
+  const identityFlagService = createFlagService({
+    store: new RedisFlagStoreAdapter(flagRedis as unknown as RedisFlagClient),
+  });
   const resolveIdentityUseCase = new ResolveIdentityUseCase(
     saltProvider,
     identityRepo,
@@ -336,6 +354,7 @@ export async function main(): Promise<void> {
       decisionLog: identityDecisionLog,
       evidenceStore: identityDecisionLog,
     },
+    identityFlagService,
   );
   // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
   // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
@@ -377,6 +396,33 @@ export async function main(): Promise<void> {
     cacheInvalidatePublisher,
     identityRecomputeTopics,
     identityRecomputeGroupId,
+    retryCounter,
+  );
+
+  // ── Event-driven re-stitch dirty-set consumer (SPEC: A.2.3.5 / WA-18 / AMD-08) ──
+  // Consumes the SAME identity.{minted,linked,merged,unmerged}.v1 map-mutation lane under its OWN group
+  // (AMD-08 R1 unifies the lane; separate offsets from the recompute consumer). On each mutation it marks
+  // the affected (brand_id, identifier_hash | brain_id) keys dirty in ops.restitch_pending so the Spark
+  // stitch job (silver_session_identity.py) re-evaluates PAST sessions within the attribution lookback —
+  // the A.2.3(5) / A.5.5 "day-7 identify stitches day-1 sessions in one incremental run" lift.
+  //
+  // FLAG-GATED per-brand `stitch.v2` (DEFAULT OFF, fail-closed) via the SAME identityFlagService: with no
+  // brand opted in NOTHING is enqueued → the drain no-ops → golden outputs byte-identical (A.5.8). Reuses
+  // opsPool (brain_app; ops.restitch_pending is a cross-brand ETL queue, not RLS-forced, like
+  // ops.scoped_recompute_request) + the shared durable retryCounter (DLQ after 5).
+  const restitchDirtyRepo = new PgRestitchDirtyRepository(opsPool);
+  const restitchDirtyTopics = [
+    buildTopic(identityEventEnvPrefix, IDENTITY_MINTED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_LINKED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_UNMERGED_TOPIC_SUFFIX),
+  ];
+  const restitchDirtyConsumer = new RestitchDirtyConsumer(
+    kafka,
+    restitchDirtyRepo,
+    identityFlagService,
+    restitchDirtyTopics,
+    cfg.RESTITCH_DIRTY_CONSUMER_GROUP_ID,
     retryCounter,
   );
 
@@ -470,6 +516,30 @@ export async function main(): Promise<void> {
   );
   const backfillConsumer = new BackfillOrderConsumer(
     kafka, backfillProcessEvent, backfillTopic, backfillGroupId, retryCounter,
+  );
+
+  // ── Real-time touchpoint cache (SPEC: A.4 — flag identity.tp_cache, DEFAULT OFF) ──────────
+  // A NEW consumer group on the SAME live collector topic (touchpoint content) PLUS the
+  // identity.merged.v1 lane (merge invalidation) — no new topic, no new deployable (I-E05).
+  // Maintains the Redis zset `{brand_id}:tp:{brain_id}` (last 200 touchpoints, score=event-ts-ms).
+  // Best-effort HOT cache: every write is fail-safe (offset commits regardless) — journey APIs
+  // fall back to Iceberg (the truth). Per-brand gated by identity.tp_cache: with no brand opted
+  // in, this loop is an inert flag-check per message (byte-identical golden, flags-OFF invariant).
+  // Reuses identityFlagService (WA-12) + saltProvider + identityRepo — the resolver is a READ-ONLY
+  // deterministic lookup (never mints/links/merges; that stays the identity-bridge consumer's job).
+  const tpCacheStore = new RedisTouchpointCacheStore(redisUrl);
+  await tpCacheStore.connect();
+  const tpCacheService = new TouchpointCacheService(
+    identityFlagService,
+    new IdentityStoreBrainIdResolver(saltProvider, identityRepo),
+    tpCacheStore,
+    {
+      maxTouchpoints: cfg.TP_CACHE_MAX_TOUCHPOINTS,
+      ttlSeconds: cfg.TP_CACHE_TTL_DAYS * 24 * 60 * 60,
+    },
+  );
+  const touchpointCacheConsumer = new TouchpointCacheConsumer(
+    kafka, tpCacheService, topic, identityEventEnvPrefix, cfg.TP_CACHE_CONSUMER_GROUP_ID,
   );
 
   // ── MEDALLION REALIGNMENT (Epic 1 / decision B) ────────────────────────────
@@ -641,11 +711,13 @@ export async function main(): Promise<void> {
       consumer.stop(),
       identityConsumer.stop(),
       identityRecomputeConsumer.stop(),
+      restitchDirtyConsumer.stop(),
       analyticsCacheInvalidateConsumer.stop(),
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
       erasureOrchestratorConsumer.stop(),
       backfillConsumer.stop(),
+      touchpointCacheConsumer.stop(),
       // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
       ...bronzeBridgeConsumers.map((c) => c.stop()),
       syncRequestClaimer.stop(),
@@ -669,11 +741,13 @@ export async function main(): Promise<void> {
     await retryCounter.quit();
     await dedup.quit();
     await backfillDedup.quit();
+    await tpCacheStore.quit().catch(() => undefined);
     await bronze.end();
     await backfillBronze.end();
     await auditPool.end();
     await identityEventProducer.disconnect().catch(() => undefined);
     await cacheEvictionRedis.quit().catch(() => undefined);
+    await flagRedis.quit().catch(() => undefined);
     await opsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
@@ -710,6 +784,14 @@ export async function main(): Promise<void> {
   await analyticsCacheInvalidateConsumer.start();
   log.info('identity-recompute consumer running');
 
+  // ── Event-driven re-stitch dirty-set consumer (SPEC: A.2.3.5 / WA-18 MANDATORY WIRE) ──
+  // Subscribes to the identity.{minted,linked,merged,unmerged}.v1 map-mutation lane (same env prefix) and
+  // marks re-stitch dirty keys in ops.restitch_pending (per-brand stitch.v2 gated, DEFAULT OFF → inert).
+  // WIRED HERE: do NOT remove without verifying the restitch-dirty unit test + the Spark drain.
+  log.info(`starting restitch-dirty consumer — topics=${restitchDirtyTopics.join(',')} group=${cfg.RESTITCH_DIRTY_CONSUMER_GROUP_ID}`);
+  await restitchDirtyConsumer.start();
+  log.info('restitch-dirty consumer running');
+
   // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Projects consent_flags →
   // consent_record + consent_tombstone (the SoR can_contact() reads fail-closed).
@@ -741,6 +823,14 @@ export async function main(): Promise<void> {
   log.info(`starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
   await backfillConsumer.start();
   log.info('backfill consumer running');
+
+  // ── Touchpoint-cache consumer (SPEC: A.4 MANDATORY WIRE) ──────────────────────
+  // New group on the live collector topic + identity.merged.v1. Per-brand gated by
+  // identity.tp_cache (DEFAULT OFF). WIRED HERE: do NOT remove without updating
+  // touchpoint-cache.A4.test.ts.
+  log.info(`starting touchpoint-cache consumer — topic=${topic}+identity.merged group=${cfg.TP_CACHE_CONSUMER_GROUP_ID}`);
+  await touchpointCacheConsumer.start();
+  log.info('touchpoint-cache consumer running');
 
   // ── MEDALLION REALIGNMENT (Epic 1): live-ledger / settlement / gokwik-awb ledger bridges REMOVED.
   // The recognition ledger is built from Bronze by dbt (recognition-refresh). See the wiring note above.

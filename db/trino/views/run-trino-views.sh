@@ -26,14 +26,18 @@
 # Env:
 #   TRINO_URL   (default http://127.0.0.1:8090)   — Trino coordinator base URL
 #   TRINO_USER  (default brain)                   — X-Trino-User (no auth in dev)
-#   VIEW_GLOB   (default mv_*.sql)                — which view files to apply
+#   VIEW_GLOB   (default *.sql)                   — which view files to apply
 # ============================================================
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRINO_URL="${TRINO_URL:-http://127.0.0.1:8090}"
 TRINO_USER="${TRINO_USER:-brain}"
-VIEW_GLOB="${VIEW_GLOB:-mv_*.sql}"
+# Apply every *.sql view in this dir. The default was mv_*.sql, but the SANCTIONED identity accessors
+# (identity_current_v.sql / identity_asof.sql, A.2.2/AMD-07) intentionally are NOT mv_ serving projections —
+# they are governed views over silver_identity_map — so the glob must catch them too. Every .sql here is a
+# CREATE OR REPLACE VIEW (there are no non-view .sql files in this dir), so *.sql is safe + idempotent.
+VIEW_GLOB="${VIEW_GLOB:-*.sql}"
 
 # Run a single SQL statement against Trino. Prefer the trino CLI; fall back to the
 # REST API via curl (POST /v1/statement, follow nextUri until the query settles).

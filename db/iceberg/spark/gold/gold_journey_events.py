@@ -27,8 +27,9 @@ semi-join, so a changed brand's FULL timeline is restaged and sequence_number st
   - source = brain_silver.silver_touchpoint (grain brand_id, brain_anon_id, touch_seq);
   - sequence_number = row_number() over (partition by brand_id, brain_id order by occurred_at,
     touch_seq) — the resolved-identity timeline position;
-  - identity_confidence = max(confidence) of the is_current=true brain_silver.silver_identity_map
-    rows for (brand_id, brain_id); LEFT JOIN — NULL when unmapped/anonymous;
+  - identity_confidence = max(confidence) of the valid-now+known-now silver_identity_map rows for
+    (brand_id, brain_id), read via the sanctioned identity_current accessor; LEFT JOIN — NULL when
+    unmapped/anonymous;
   - AS-OF identity (DG-2, ADDITIVE v1): brain_id_asof / identity_confidence_asof = the
     POINT-IN-TIME resolution of the touchpoint AT occurred_at, from the bi-temporal
     silver_identity_map effective intervals. The canonical interval-covering predicate is the SAME
@@ -72,6 +73,7 @@ sys.path.insert(0, _GOLD_DIR)                               # _gold_base
 sys.path.insert(0, os.path.join(_SPARK_DIR, "silver"))      # _silver_technical (event_category SoT)
 
 from pyspark.sql import SparkSession  # noqa: E402
+from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.functions import expr  # noqa: E402
 from pyspark.sql.types import StringType  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
@@ -85,6 +87,8 @@ from _gold_base import (  # noqa: E402
     run_job,
     silver_exists,
 )
+# SPEC: A.2.2 — the ONLY sanctioned Spark reads of silver_identity_map (identity-view-guard allowlist).
+from _identity_views import identity_asof, identity_current  # noqa: E402
 # The SAME event_type → event_category mapping Silver uses (silver_collector_event.event_category).
 # Pure python (no Spark at import); shipped to workers by build_spark's addPyFile of every _*.py
 # helper under silver/ + gold/, and by this job's run script --py-files.
@@ -143,43 +147,23 @@ def _read_silver_touchpoint(spark: SparkSession):
 
 
 def _register_identity_confidence_view(spark: SparkSession) -> None:
-    """_je_identity_conf = max is_current confidence per (brand_id, brain_id) from the bitemporal
-    silver_identity_map (is_current=true ⇔ effective_to IS NULL). Empty view when the map is absent
-    (pre-identity-export environments) so the LEFT JOIN degrades to NULL confidence."""
-    if silver_exists(spark, "silver_identity_map"):
-        spark.sql(
-            f"""
-            SELECT brand_id, brain_id, max(confidence) AS identity_confidence
-            FROM {CATALOG}.{SILVER_NS}.silver_identity_map
-            WHERE is_current = true
-            GROUP BY brand_id, brain_id
-            """
-        ).createOrReplaceTempView("_je_identity_conf")
-    else:
-        spark.sql(
-            "SELECT cast(null AS string) AS brand_id, cast(null AS string) AS brain_id, "
-            "cast(null AS double) AS identity_confidence WHERE 1 = 0"
-        ).createOrReplaceTempView("_je_identity_conf")
+    """_je_identity_conf = max VALID-NOW+KNOWN-NOW confidence per (brand_id, brain_id) from the bi-temporal
+    identity map, read via the SANCTIONED accessor identity_current (is_current=true AND system_to IS NULL,
+    A.2.2/AMD-07). identity_current returns a correctly-shaped EMPTY frame when the map is absent, so the
+    groupBy yields no rows and the downstream LEFT JOIN degrades to NULL confidence — no explicit guard."""
+    identity_current(spark).groupBy("brand_id", "brain_id").agg(
+        F.max("confidence").alias("identity_confidence")
+    ).createOrReplaceTempView("_je_identity_conf")
 
 
 def _register_identity_asof_view(spark: SparkSession) -> None:
-    """_je_identity_asof = the FULL bi-temporal interval rows of silver_identity_map (current AND
-    superseded), for the DG-2 point-in-time (AS-OF) resolution — the interval-covering join against
-    occurred_at happens in _build_sql. Empty view when the map is absent so the AS-OF columns
-    degrade to NULL (pre-identity-export environments)."""
-    if silver_exists(spark, "silver_identity_map"):
-        spark.sql(
-            f"""
-            SELECT brand_id, brain_id, confidence, effective_from, effective_to
-            FROM {CATALOG}.{SILVER_NS}.silver_identity_map
-            """
-        ).createOrReplaceTempView("_je_identity_asof")
-    else:
-        spark.sql(
-            "SELECT cast(null AS string) AS brand_id, cast(null AS string) AS brain_id, "
-            "cast(null AS double) AS confidence, cast(null AS timestamp) AS effective_from, "
-            "cast(null AS timestamp) AS effective_to WHERE 1 = 0"
-        ).createOrReplaceTempView("_je_identity_asof")
+    """_je_identity_asof = the FULL bi-temporal interval rows (current AND superseded) for the DG-2
+    point-in-time (AS-OF) resolution — the interval-covering join against occurred_at happens in _build_sql.
+    Read via the SANCTIONED accessor identity_asof(spark) (both bounds None = the full interval set,
+    A.2.2/AMD-07). Empty-shaped frame when the map is absent so the AS-OF columns degrade to NULL."""
+    identity_asof(spark).select(
+        "brand_id", "brain_id", "confidence", "effective_from", "effective_to"
+    ).createOrReplaceTempView("_je_identity_asof")
 
 
 def _register_order_view(spark: SparkSession) -> None:

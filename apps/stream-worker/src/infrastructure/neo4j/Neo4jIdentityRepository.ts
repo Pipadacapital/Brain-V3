@@ -31,12 +31,21 @@ import type {
   SharedUtilityState,
   BrandPhoneGuardConfig,
   ResolveOutcome,
+  IdentityPriorityConfig,
+  IdentityPriorityClass,
 } from '../../domain/identity/IdentityResolver.js';
 import type { ConfidenceVerdict } from '@brain/contracts';
 import type { IdentityReadState, ReviewQueueItem } from '../../domain/identity/IdentityStore.js';
-import { RULE_VERSION } from '../../domain/identity/IdentityResolver.js';
+import { RULE_VERSION, DEFAULT_IDENTITY_PRIORITY } from '../../domain/identity/IdentityResolver.js';
+
+/** The identity-priority classes that may appear in a stored order (validated on read). */
+const KNOWN_PRIORITY_CLASSES: ReadonlySet<string> = new Set<string>(DEFAULT_IDENTITY_PRIORITY);
 
 const STRONG_TIERS = ['strong', 'strong_on_link'];
+// SPEC: A.2.3.4 — the identity_link identifier_TYPES that carry strong (person-defining) authority. A
+// brain owning any active edge of these types is "strong-owned"; the resolver's shared-device guard uses
+// that to refuse folding a NEW strong id into it via a shared medium (anon/device) signal.
+const STRONG_LINK_TYPES = ['email', 'phone', 'storefront_customer_id', 'pre_hashed_email', 'pre_hashed_phone'];
 
 // ── Structured confidence / provenance stamped on every graph edge + merge node ──────────────
 // Deterministic-first (D-5): the ONLY live matcher is the union-find resolver, so every committed
@@ -175,6 +184,23 @@ export class Neo4jIdentityRepository {
         }
       }
 
+      // SPEC: A.2.3.4 — of the brains those identifiers resolve to, which ALREADY own an active STRONG
+      // identifier. The resolver's shared-device guard consults this to refuse pulling a NEW strong id
+      // into a brain owned by a DIFFERENT strong identity via a shared medium (anon/device) bridge — the
+      // shared_device_family merge. Scoped to the (small) resolved-brain set, so it is cheap per event.
+      const strongOwnedBrainIds = new Set<string>();
+      const candidateBrains = [...new Set(existingLinks.map((l) => l.brain_id))];
+      if (candidateBrains.length > 0) {
+        const ownRes = await session.run(
+          `MATCH (c:Customer {brand_id:$brand}) WHERE c.brain_id IN $brains
+           MATCH (si:Identifier {brand_id:$brand})-[sr:IDENTIFIES]->(c)
+           WHERE sr.is_active = true AND si.type IN $strongTypes
+           RETURN DISTINCT c.brain_id AS brain_id`,
+          { brand: brandId, brains: candidateBrains, strongTypes: STRONG_LINK_TYPES },
+        );
+        for (const rec of ownRes.records) strongOwnedBrainIds.add(rec.get('brain_id') as string);
+      }
+
       const phoneHashes = identifierHashes.filter((i) => i.type === 'phone').map((i) => i.hash);
       const sharedUtilityMap = new Map<string, SharedUtilityState>();
       const phoneCount = new Map<string, number>();
@@ -219,7 +245,7 @@ export class Neo4jIdentityRepository {
       );
       const aliasChain = new Set(aliasRes.records.map((r) => r.get('observed') as string));
 
-      return { existingLinks, sharedUtilityMap, phoneCount, aliasChain, brandConfig };
+      return { existingLinks, sharedUtilityMap, phoneCount, aliasChain, brandConfig, strongOwnedBrainIds };
     } finally {
       await session.close();
     }
@@ -449,6 +475,43 @@ export class Neo4jIdentityRepository {
     }
   }
 
+  /**
+   * SPEC: A.1.5 (WA-12) — the brand's CURRENT ordered identity priority config, or null when the
+   * brand has never customized it (⇒ caller uses DEFAULT_IDENTITY_PRIORITY). The store is the
+   * append-only, versioned ops.brand_identity_priority (highest version = current). RLS-scoped: set
+   * the brand GUC in-txn (fail-closed → 0 rows) exactly like readBrandConfig. Any stored class the
+   * running code does not recognize is dropped (forward-compat); an empty/garbage order falls back
+   * to the default at the resolver (order.length === 0 ⇒ DEFAULT_IDENTITY_PRIORITY).
+   */
+  async readPriorityConfig(brandId: string): Promise<IdentityPriorityConfig | null> {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      const rows = await client.query<{ version: number; priority_order: unknown }>(
+        `SELECT version, priority_order
+           FROM ops.brand_identity_priority
+          WHERE brand_id = $1
+          ORDER BY version DESC
+          LIMIT 1`,
+        [brandId],
+      );
+      await client.query('COMMIT');
+      const row = rows.rows[0];
+      if (!row) return null;
+      const raw = Array.isArray(row.priority_order) ? row.priority_order : [];
+      const order = raw.filter(
+        (c): c is IdentityPriorityClass => typeof c === 'string' && KNOWN_PRIORITY_CLASSES.has(c),
+      );
+      return { version: Number(row.version), order };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   /** The two records that stay in PG: the immutable audit ledger + the encrypted raw-PII vault. */
   private async writePgAuditAndPii(
     brandId: string,
@@ -476,6 +539,9 @@ export class Neo4jIdentityRepository {
             identifier_types: identifiers.map((i) => i.type),
             action: outcome.action,
             store: 'neo4j', // the graph is the SoR; this PG row is the immutable audit trail
+            // SPEC A.1.5: stamp the per-brand priority config version when the ordered-priority path
+            // resolved this outcome (flag ON). Undefined on the legacy fixed-tier path → null (additive).
+            priority_config_version: outcome.priorityConfigVersion ?? null,
           }),
         ],
       );

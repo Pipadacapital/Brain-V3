@@ -78,6 +78,18 @@ async function registerSchemaWithBackoff(): Promise<void> {
     log.warn('Could not load pixel.identify.v1 JSON Schema — skipping its Apicurio registration', { err });
   }
 
+  // SPEC A.2.4 (WA-19, AMD-03/AMD-08): the identity.unmerged.v1 JSON Schema artifact — the ONE new
+  // identity program topic that gets a registry-registered JSON Schema under FULL_TRANSITIVE. Registered
+  // here on the collector's proven idempotent boot step (single governance site for the new JSON-Schema
+  // program artifacts; the event is PRODUCED by core). Missing file → log + skip (never blocks boot).
+  let identityUnmergedJson: string | null = null;
+  try {
+    const p = fileURLToPath(new URL('../../../packages/contracts/generated/json-schema/brain.identity.unmerged.v1.json', import.meta.url));
+    identityUnmergedJson = readFileSync(p, 'utf-8');
+  } catch (err) {
+    log.warn('Could not load identity.unmerged.v1 JSON Schema — skipping its Apicurio registration', { err });
+  }
+
   const apicurioConfig = {
     ...defaultApicurioConfig(),
     baseUrl: apicurioUrl,
@@ -101,6 +113,17 @@ async function registerSchemaWithBackoff(): Promise<void> {
         log.info('Apicurio schema registered', {
           artifact_id: identifyResult.artifactId,
           version: identifyResult.version,
+          rule: 'FULL_TRANSITIVE',
+        });
+      }
+      // SPEC A.2.4 (WA-19, AMD-03): identity.unmerged.v1 (JSON Schema) + its FULL_TRANSITIVE rule.
+      if (identityUnmergedJson) {
+        const unmergedConfig = { ...apicurioConfig, artifactId: 'identity.unmerged.v1' };
+        const unmergedResult = await registerSchema(unmergedConfig, identityUnmergedJson, 'JSON');
+        await ensureCompatibilityRule(unmergedConfig, 'FULL_TRANSITIVE');
+        log.info('Apicurio schema registered', {
+          artifact_id: unmergedResult.artifactId,
+          version: unmergedResult.version,
           rule: 'FULL_TRANSITIVE',
         });
       }

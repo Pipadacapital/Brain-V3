@@ -165,6 +165,12 @@ export type {
   JourneyPathLinkDto,
   JourneyPathsParams,
 } from './internal/application/queries/get-journey-paths.js';
+export { getJourneyList } from './internal/application/queries/get-journey-list.js';
+export type {
+  JourneyListResult,
+  JourneyListRowDto,
+  JourneyListParams,
+} from './internal/application/queries/get-journey-list.js';
 
 // D13 Consent / Compliance surface (feat-d13-consent-cancontact Track C) — the four
 // brand-scoped reads behind /settings/consent. Counts + hashes only (NO raw PII);

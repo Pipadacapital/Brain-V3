@@ -3,12 +3,20 @@
 #
 # Idempotent (ON CONFLICT DO NOTHING everywhere): owner user → org → 3 brands →
 # 3 pixel_installation rows whose install_token values are the FIXED constants the
-# generator stamps into every pixel event (R2 tenant derivation resolves them).
+# generator stamps into every pixel event (R2 tenant derivation resolves them) →
+# 3 tenancy.brand_identity_salt rows (KMS-wrapped deterministic dev salt).
 #
-# identity_salt_ciphertext stays NULL — the SAME posture as every live local brand
-# (verified: all 8 existing brands are NULL; salts resolve via resolveSaltHex).
+# Salt posture (matches tools/seed/prod-local-aws-bootstrap.sh provision_salt):
+# the prod-on-local stream-worker resolves per-brand salts from
+# tenancy.brand_identity_salt via KmsBrandSaltProvider and FAIL-CLOSES (D-2) on a
+# missing row — every golden event would retry 5× then DLQ without one. The salt
+# VALUE is resolveSaltHex(brandId)'s deterministic dev salt — the SAME salt the
+# golden generator uses for its salted connector hashes (src/scenarios.ts), so
+# identifier hashes are consistent and reproducible across stack rebuilds.
 #
-# Env: PG_CONTAINER (default brainv3-postgres-1), PG_USER/PG_DB (default brain/brain)
+# Env: PG_CONTAINER (default brainv3-postgres-1), PG_USER/PG_DB (default brain/brain),
+#      KMS_ALIAS (default alias/brain-connector-secrets), AWS_ENDPOINT_URL (default
+#      http://localhost:4566 — LocalStack), SKIP_SALT_PROVISION=1 to skip.
 set -euo pipefail
 
 PG_CONTAINER="${PG_CONTAINER:-brainv3-postgres-1}"
@@ -55,5 +63,49 @@ SELECT b.display_name, b.currency_code, pi.install_token
 FROM tenancy.brand b JOIN pixel.pixel_installation pi ON pi.brand_id = b.id
 WHERE b.id IN ('${AURORA_ID}', '${BAZAAR_ID}', '${CEDAR_ID}');
 SQL
+
+# ── identity salt provisioning (D-2 fail-closed guard needs a row per brand) ──
+# Mirrors tools/seed/prod-local-aws-bootstrap.sh provision_salt: KMS-wrap the
+# deterministic dev salt under the LocalStack CMK. ON CONFLICT DO NOTHING keeps
+# an existing (bootstrap-re-wrapped) row authoritative.
+if [ "${SKIP_SALT_PROVISION:-0}" != "1" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+  KMS_ALIAS="${KMS_ALIAS:-alias/brain-connector-secrets}"
+  AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://localhost:4566}"
+  export AWS_ENDPOINT_URL AWS_REGION="${AWS_REGION:-us-east-1}" \
+         AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
+
+  for B in "$AURORA_ID" "$BAZAAR_ID" "$CEDAR_ID"; do
+    HAS_ROW="$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+      "SELECT 1 FROM tenancy.brand_identity_salt WHERE brand_id = '${B}'")"
+    if [ "$HAS_ROW" = "1" ]; then
+      echo "[seed-golden-brands]   salt row exists for $B — leaving it authoritative"
+      continue
+    fi
+    WRAPPED_AND_ARN="$(cd "$REPO_ROOT/apps/core" && cat > ._wrapsalt_golden.mjs <<EOF
+import { resolveSaltHex } from '@brain/identity-core';
+import { KMSClient, EncryptCommand, DescribeKeyCommand } from '@aws-sdk/client-kms';
+const salt = Buffer.from(resolveSaltHex('$B'), 'hex');
+if (salt.length !== 32) { throw new Error('dev salt is not 32 bytes'); }
+const c = new KMSClient({ region: process.env.AWS_REGION });
+const k = await c.send(new DescribeKeyCommand({ KeyId: '$KMS_ALIAS' }));
+const r = await c.send(new EncryptCommand({ KeyId: k.KeyMetadata.Arn, Plaintext: salt }));
+process.stdout.write(Buffer.from(r.CiphertextBlob).toString('base64') + '\t' + k.KeyMetadata.Arn);
+EOF
+NODE_ENV='' node_modules/.bin/tsx ._wrapsalt_golden.mjs; rm -f ._wrapsalt_golden.mjs)"
+    WRAPPED="${WRAPPED_AND_ARN%%$'\t'*}"
+    KEY_ARN="${WRAPPED_AND_ARN##*$'\t'}"
+    if [ -z "$WRAPPED" ] || [ -z "$KEY_ARN" ]; then
+      echo "[seed-golden-brands] ✗ KMS salt wrap failed for $B — refusing to insert an empty salt row." >&2
+      exit 1
+    fi
+    docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" -c \
+      "INSERT INTO tenancy.brand_identity_salt (brand_id, kms_key_id, wrapped_salt_b64, key_version, is_active)
+       VALUES ('${B}', '${KEY_ARN}', '${WRAPPED}', 1, true)
+       ON CONFLICT (brand_id) DO NOTHING;" >/dev/null
+    echo "[seed-golden-brands]   identity salt provisioned for $B"
+  done
+fi
 
 echo "[seed-golden-brands] 3 golden brands seeded (idempotent)."

@@ -265,6 +265,9 @@ importers:
       '@brain/pii-vault':
         specifier: workspace:*
         version: link:../../packages/pii-vault
+      '@brain/platform-flags':
+        specifier: workspace:*
+        version: link:../../packages/platform-flags
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper

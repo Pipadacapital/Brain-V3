@@ -29,6 +29,7 @@
     "@brain/metric-engine": "workspace:*",
     "@brain/observability": "workspace:*",
     "@brain/pii-vault": "workspace:*",
+    "@brain/platform-flags": "workspace:*",
     "@brain/razorpay-mapper": "workspace:*",
     "@brain/shiprocket-mapper": "workspace:*",
     "@brain/shopflo-mapper": "workspace:*",

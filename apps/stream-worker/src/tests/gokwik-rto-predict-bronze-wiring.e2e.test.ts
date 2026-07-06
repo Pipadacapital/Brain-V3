@@ -107,8 +107,9 @@ describe('GoKwik RTO-Predict → Iceberg Bronze wiring (P0 follow-up, lakehouse)
     const landed = await pollIcebergBronzeCount(
       sr,
       { brandId: BRAND, eventIds: envs.map((e) => e.event_id), eventType: EVENT_NAME },
-      { min: 3, timeoutMs: 60_000 },
+      // ADR-0010: Connect-sink commit visibility is 30-60s+ under load — helper's 120s default.
+      { min: 3 },
     );
     expect(landed).toBeGreaterThanOrEqual(3); // all three reached Iceberg Bronze
-  }, 75_000);
+  }, 150_000);
 });

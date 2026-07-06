@@ -91,7 +91,8 @@ describe('shopflo.checkout_abandoned.v1 → Iceberg Bronze wiring (P0, lakehouse
     if (!infraUp) return;
     const env = shopfloEnvelope();
     await produceCollectorEvent(producer, env);
-    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND, eventId: env.event_id }, { min: 1, timeoutMs: 60_000 });
+    // ADR-0010: Connect-sink commit visibility is 30-60s+ under load — helper's 120s default.
+    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND, eventId: env.event_id }, { min: 1 });
     expect(landed).toBeGreaterThan(0);
-  }, 75_000);
+  }, 150_000);
 });

@@ -97,7 +97,11 @@ produce_file() { # $1=file $2=topic [$3=const key]
   local extra=()
   [ $# -ge 3 ] && extra=(--key "$3")
   log "producing $(basename "$1") → $2"
-  node "$SCRIPT_DIR/produce-jsonl.mjs" "$1" "${extra[@]}" | docker exec -i "$KAFKA_CONTAINER" \
+  # KAFKA_OPTS carries the broker's JMX javaagent; a second JVM in the same
+  # container can't bind the port and the agent System.exit()s the CLI → clear it.
+  # ${extra[@]+…} guard: bash 3.2 (macOS) + set -u errors on empty-array expansion.
+  node "$SCRIPT_DIR/produce-jsonl.mjs" "$1" ${extra[@]+"${extra[@]}"} | docker exec -i \
+    -e KAFKA_OPTS= -e KAFKA_JMX_OPTS= "$KAFKA_CONTAINER" \
     /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 \
     --topic "$2" --property parse.key=true --property "key.separator=	" >/dev/null
 }
@@ -154,6 +158,28 @@ fi
 # ── (c) refresh loop ONESHOT ───────────────────────────────────────────────────
 log "running refresh loop ONESHOT (identity-export → Silver → stitch → Gold → views)"
 (cd "$REPO_ROOT" && ONESHOT=1 pnpm dev:v4-refresh)
+
+# HONEST GUARD: the golden envelopes deliberately carry NO ingested_at (determinism — they are
+# produced straight to Kafka, bypassing the collector's ingest stamp). silver_collector_event's
+# incremental watermark filters on the payload-lifted ingested_at, and a NULL never satisfies
+# `ingested_at >= wm` — so on a stack whose Silver target is already NON-empty (live brands), an
+# incremental run SKIPS every golden row and the exports below would snapshot an empty baseline.
+# Fail loudly with the remediation instead of writing a hollow snapshot.
+SILVER_GOLDEN="$(trino_exec "SELECT count(*) FROM iceberg.brain_silver.silver_collector_event WHERE brand_id IN (${BRANDS_SQL})" | tail -1 | tr -d '\"' || echo 0)"
+if [ "${SILVER_GOLDEN:-0}" -eq 0 ]; then
+  cat >&2 <<'EOF'
+[capture-baseline] FATAL: refresh completed but silver_collector_event holds ZERO golden-brand rows.
+  Cause: golden envelopes have no ingested_at → the Silver incremental watermark filter drops them
+  when the target is already non-empty (live-brand stacks). Remediate with a ONE-TIME single-chunk
+  full refresh of the admission gate, then re-run this script:
+    FULL_REFRESH=1 SILVER_BATCH_TARGET_ROWS=<bronze_row_count+margin> SILVER_MAX_CHUNKS=1 \
+      bash db/iceberg/spark/silver/run-silver-collector-event.sh
+  (single chunk matters: the adaptive batch windows are ingested_at-bounded and would drop the
+  NULL-ingested_at rows again).
+EOF
+  exit 1
+fi
+log "golden rows admitted to Silver: ${SILVER_GOLDEN}"
 
 # ── (d) export snapshot CSVs ───────────────────────────────────────────────────
 # Stable-ref CTE: brain_id → min current identifier_hash (deterministic surrogate).

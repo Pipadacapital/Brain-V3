@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brain.identity.unmerged.v1",
+  "title": "identity.unmerged.v1",
+  "description": "SPEC A.2.4 (WA-19, AMD-08/AMD-09) — the admin unmerge (merge-reversal) envelope. Registered in Apicurio as brain/identity.unmerged.v1 (JSON Schema artifact under the FULL_TRANSITIVE rule, per AMD-03) — the ONE convention-following sibling AMD-08 sanctions on the live {env}.identity.*.v1 lane for a mutation class no existing topic fits. Partition key = brand_id (tenant-first, I-S01). PII discipline (I-S02): payload carries brain_ids, merge_id, rule_version, an operator actor id and an optional free-text reason — NEVER a raw email/phone/name/address. AMD-09: survivor = the lowest-UUID canonical the original merge chose (unchanged); the unmerge restores the ABSORBED id (restored_brain_id) to independent existence and closes the merge interval. Downstream: the journey re-version job un-reverts the affected brain_ids; the identity-change recompute consumer marks both dirty.",
+  "type": "object",
+  "required": ["brand_id", "merge_id", "canonical_brain_id", "restored_brain_id", "rule_version", "actor"],
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Tenant key — brand_id-first on every event (I-S01)."
+    },
+    "merge_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The ORIGINAL merge this unmerge reverses (identity_merge_event.merge_id / Neo4j MergeEvent.merge_id)."
+    },
+    "canonical_brain_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The surviving canonical identity the absorbed id had been folded into (unchanged by the split; the merge survivor, AMD-09 lowest-UUID)."
+    },
+    "restored_brain_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The identity being split back OUT and restored to independent existence (the former absorbed id)."
+    },
+    "rule_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Resolution rule-set version for the reversal (audit/replay), e.g. 'v1-admin-unmerge'."
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The operator who triggered the unmerge (the auth principal user id — audit, never raw PII)."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Optional operator-supplied reason for the reversal (free text, no PII by contract)."
+    }
+  },
+  "additionalProperties": true
+}

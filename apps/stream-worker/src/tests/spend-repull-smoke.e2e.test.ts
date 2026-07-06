@@ -47,6 +47,13 @@ const SMOKE_GROUP = `spend-emit-smoke-test-${Date.now()}`;
 /** Collected spend.live.v1 envelopes for SMK_BRAND, keyed by platform (the repull's real output). */
 const emittedByPlatform = new Map<string, number>();
 
+// A fresh (fromBeginning:false) group's position is only fixed at ASSIGNMENT+first fetch —
+// consumer.run() resolves BEFORE the group join, so an emit racing the join is silently missed
+// (tail-positioned after it). The sentinel handshake below (beforeAll) proves the consumer is
+// assigned and reading the topic tail BEFORE any test emits.
+const SENTINEL_ID = `spend-smoke-sentinel-${Date.now()}`;
+let sentinelSeen = false;
+
 function tcpReachable(host: string, port: number, timeoutMs = 2000): Promise<boolean> {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -76,10 +83,13 @@ async function pollUntil<T>(fn: () => Promise<T | null>, pred: (v: T) => boolean
 
 async function seedAdConnector(superPool: Pool, ciId: string, provider: 'meta' | 'google_ads', adAccountId: string): Promise<void> {
   const ref = `brain/connector/${provider}/${SMK_BRAND}/smoke`;
+  // activated_at MUST be set: list_ad_connectors_for_spend_repull() (migration 0106 — "only the
+  // chosen account ingests") filters `activated_at IS NOT NULL`; without it the repull enumerates
+  // zero connectors and exits before the fetch stub is ever hit.
   await superPool.query(
-    `INSERT INTO connector_instance (id, brand_id, provider, status, shop_domain, secret_ref, ad_account_id)
-     VALUES ($1,$2,$3,'connected','',$4,$5)
-     ON CONFLICT (id) DO UPDATE SET status='connected', provider=EXCLUDED.provider, secret_ref=EXCLUDED.secret_ref, ad_account_id=EXCLUDED.ad_account_id`,
+    `INSERT INTO connector_instance (id, brand_id, provider, status, shop_domain, secret_ref, ad_account_id, activated_at)
+     VALUES ($1,$2,$3,'connected','',$4,$5,now())
+     ON CONFLICT (id) DO UPDATE SET status='connected', provider=EXCLUDED.provider, secret_ref=EXCLUDED.secret_ref, ad_account_id=EXCLUDED.ad_account_id, activated_at=now()`,
     [ciId, SMK_BRAND, provider, ref, adAccountId],
   );
   await superPool.query(
@@ -134,15 +144,36 @@ beforeAll(async () => {
     eachMessage: async ({ message }) => {
       try {
         const env = JSON.parse(message.value?.toString() ?? '{}') as {
-          event_name?: string; brand_id?: string; payload?: { platform?: string };
+          event_name?: string; brand_id?: string; sentinel_id?: string;
+          properties?: { platform?: string };
         };
+        if (env.event_name === 'spend.smoke.sentinel' && env.sentinel_id === SENTINEL_ID) {
+          sentinelSeen = true;
+        }
         if (env.event_name === 'spend.live.v1' && env.brand_id === SMK_BRAND) {
-          const platform = env.payload?.platform ?? 'unknown';
+          // CollectorEventV1 carries the mapper output under `properties` (not `payload`).
+          const platform = env.properties?.platform ?? 'unknown';
           emittedByPlatform.set(platform, (emittedByPlatform.get(platform) ?? 0) + 1);
         }
       } catch { /* ignore non-JSON */ }
     },
   });
+
+  // Sentinel handshake: emit a marker and wait until THIS consumer sees it — only then is the
+  // tail position provably behind everything the tests will emit (fixes the join/emit race).
+  const sentinelProducer = kafka.producer();
+  await sentinelProducer.connect();
+  try {
+    const sentinel = JSON.stringify({ event_name: 'spend.smoke.sentinel', sentinel_id: SENTINEL_ID });
+    const deadline = Date.now() + 45_000;
+    while (!sentinelSeen && Date.now() < deadline) {
+      await sentinelProducer.send({ topic: TOPIC, messages: [{ key: SMK_BRAND, value: sentinel }] });
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    if (!sentinelSeen) throw new Error('[spend-repull-smoke.e2e] sentinel never observed — consumer not positioned');
+  } finally {
+    await sentinelProducer.disconnect().catch(() => undefined);
+  }
 }, 60_000);
 
 afterAll(async () => {

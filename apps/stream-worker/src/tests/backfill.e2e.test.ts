@@ -10,8 +10,10 @@
  *
  * Test coverage (A4 DoD + architecture-plan §7 Success Criteria):
  *
- * T1: Backfill event lands on BACKFILL topic (not live topic), Bronze idempotent on event_id.
- *     Re-run of same event → 0 new Bronze rows (dedup_hit or pk_conflict) (SC#5).
+ * T1: Backfill event lands on BACKFILL topic (not live topic). Bronze is APPEND-ONLY under
+ *     ADR-0010 (Kafka Connect sink, no Bronze dedup): re-delivery of the same (brand_id,
+ *     event_id) → TWO Bronze rows; the effectively-once collapse is the Silver admission MERGE
+ *     (silver_collector_event.py) — proven in bronze-dedup-effectively-once.live.test.ts. (SC#5)
  *
  * T2: Cursor advances — simulates page processing. records_processed is real, not 0 or fabricated (SC#6).
  *
@@ -204,8 +206,11 @@ afterAll(async () => {
 
 // ── T1: Backfill event → Bronze on backfill lane, idempotent re-run ──────────
 
-describe('T1: Backfill event lands in Iceberg Bronze idempotently (SC#5)', () => {
-  const SHOPIFY_ORDER_ID = '9990000001';
+describe('T1: Backfill event lands in Iceberg Bronze — append-only, no Bronze dedup (ADR-0010, SC#5)', () => {
+  // Per-run-unique order id: Bronze is append-only under the Connect sink (no cleanup, no MERGE),
+  // so a FIXED order id would accumulate rows across suite runs and poison exact-count asserts.
+  // Determinism of uuidV5FromOrderBackfill itself is proven in T2.
+  const SHOPIFY_ORDER_ID = `999${Date.now()}`;
   const EVENT_ID = uuidV5FromOrderBackfill(BRAND_A, SHOPIFY_ORDER_ID);
   const OCCURRED_AT = '2024-01-15T10:00:00.000Z'; // past date
 
@@ -224,20 +229,20 @@ describe('T1: Backfill event lands in Iceberg Bronze idempotently (SC#5)', () =>
     expect(true).toBe(true);
   });
 
-  it('order.backfill.v1 → exactly one Iceberg Bronze row; re-delivery is idempotent (Spark MERGE)', async () => {
+  it('order.backfill.v1 delivered twice → TWO Bronze rows (append-only; Silver owns effectively-once)', async () => {
     if (!infraUp) return;
-    // Deliver twice on the BACKFILL lane (same brand_id + event_id = the idempotency key). The Spark
-    // sink consumes the backfill topic and MERGEs WHEN NOT MATCHED → exactly one Bronze row (I-E02).
+    // Deliver twice on the BACKFILL lane (same brand_id + event_id — the BUSINESS idempotency key,
+    // two Kafka offsets). ADR-0010: the Connect sink APPENDS both — Bronze is the verbatim broker
+    // history with NO dedup. The collapse to exactly one row per (brand_id, event_id) happens at the
+    // Silver admission gate (silver_collector_event.py window+MERGE) — see
+    // bronze-dedup-effectively-once.live.test.ts.
     const msg = { key: BRAND_A, value: rawBuf, headers: { event_name: Buffer.from('order.backfill.v1') } };
     await kafkaProducer.send({ topic: BACKFILL_TOPIC, messages: [msg] });
     await kafkaProducer.send({ topic: BACKFILL_TOPIC, messages: [msg] });
 
-    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId: EVENT_ID }, { min: 1, timeoutMs: 60_000 });
-    expect(landed).toBeGreaterThanOrEqual(1);
-    await new Promise((r) => setTimeout(r, 14_000)); // settle ~1 extra trigger cycle for a 2nd-batch insert
-    const settled = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId: EVENT_ID }, { min: 1, timeoutMs: 5_000 });
-    expect(settled).toBe(1); // MERGE deduped the replay
-  }, 90_000);
+    const settled = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId: EVENT_ID }, { min: 2, timeoutMs: 150_000 });
+    expect(settled).toBe(2); // both deliveries landed — append-only, no Bronze-side dedup
+  }, 180_000);
 
   it('event on BACKFILL topic (not live topic) — topic constants are distinct', () => {
     // Structural: backfill topic suffix != live topic suffix
@@ -277,7 +282,9 @@ describe('T2: uuidV5FromOrderBackfill is deterministic and stable across runs (S
 // ── T4: Cross-brand isolation under brain_app (SC#12 / MT-2) ─────────────────
 
 describe('T4: Cross-brand read-seam isolation (brand_id predicate, SC#12/MT-2)', () => {
-  const SHOPIFY_ORDER_ID = '9990000040';
+  // Per-run-unique order id (append-only Bronze accumulates a FIXED id across runs → the
+  // positive-control exact count of 1 would drift upward run over run).
+  const SHOPIFY_ORDER_ID = `999004${Date.now()}`;
   const EVENT_ID = uuidV5FromOrderBackfill(BRAND_A, SHOPIFY_ORDER_ID);
   const OCCURRED_AT = '2024-03-15T10:00:00.000Z';
 
@@ -298,13 +305,15 @@ describe('T4: Cross-brand read-seam isolation (brand_id predicate, SC#12/MT-2)',
     });
 
     // Positive control: brand_A sees its own row (read-seam scoping = WHERE brand_id = brand_A).
-    const correct = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId: EVENT_ID }, { min: 1, timeoutMs: 60_000 });
+    // ADR-0010: the Connect sink commits on a ~30s interval and visibility can take 30-60s+ under
+    // load — use the helper's 120s default rather than a legacy Spark-sink-era 60s deadline.
+    const correct = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId: EVENT_ID }, { min: 1 });
     expect(correct).toBe(1);
 
     // Negative control: the same event under a brand_B-scoped predicate → 0 rows (tenant isolation).
     const wrongBrand = await pollIcebergBronzeCount(sr, { brandId: BRAND_B, eventId: EVENT_ID }, { min: 1, timeoutMs: 3_000 });
     expect(wrongBrand).toBe(0);
-  }, 75_000);
+  }, 150_000);
 });
 
 // ── T5: money-utils — integer arithmetic, no parseFloat (D-13 / I-S07) ────────

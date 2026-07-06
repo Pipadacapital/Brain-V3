@@ -42,3 +42,9 @@ db/iceberg/spark/gold/__pycache__/
 infra/terraform/bootstrap/terraform.tfstate*
 infra/terraform/bootstrap/*.plan
 infra/terraform/envs/*/*.plan
+
+# Golden baseline row-level dumps — bulky (10s of MB), regenerable via the golden harness and
+# verified by checksums.sha256 (capture-baseline.sh --compare diffs checksums, not the raw CSVs).
+packages/testing-golden/snapshots/baseline/silver_collector_event.csv
+packages/testing-golden/snapshots/baseline/journey_events.csv
+packages/testing-golden/snapshots/baseline/silver_touchpoint.csv

@@ -97,7 +97,7 @@ async function seedDisconnectedInstance(brandId: string): Promise<string> {
           'arn:aws:secretsmanager:us-east-1:000000000000:secret:brain/connector/shopify/e2e-fake',
           'disconnected', 'Disconnected', 'safe',
           NOW() - INTERVAL '1 hour', NOW())
-       ON CONFLICT (brand_id, provider) DO UPDATE
+       ON CONFLICT (brand_id, provider, account_key) DO UPDATE
          SET status = 'disconnected',
              health_state = 'Disconnected',
              safety_rating = 'safe',
@@ -170,7 +170,11 @@ test(
 
       const connectBtn = page.getByTestId('connector-tile-shopify-connect');
       await expect(connectBtn).toBeVisible({ timeout: 10_000 });
-      // Button is enabled once domain is filled — defect #1 revert-RED assertion.
+      // BYO-required (shopify-byo-app-required): Shopify now ALSO needs the brand's own
+      // Client ID + Client Secret before Connect enables — fill them like a real merchant would.
+      await page.getByTestId('input-shopify-client_id').fill('e2e-brand-app-id');
+      await page.getByTestId('input-shopify-client_secret').fill('e2e-brand-app-secret');
+      // Button is enabled once domain + creds are filled — defect #1 revert-RED assertion.
       await expect(
         connectBtn,
         'Connect button must be enabled for a disconnected instance (defect #1)',
@@ -224,8 +228,12 @@ test(
     await expect(connectBtn).toBeVisible();
     await expect(connectBtn).toBeDisabled();
 
-    // After filling the domain it enables
+    // BYO-required (shopify-byo-app-required): domain alone no longer enables Connect —
+    // the brand's own Client ID + Client Secret are required too.
     await page.getByTestId('input-shop-shopify').fill('fresh-brand.myshopify.com');
+    await expect(connectBtn).toBeDisabled();
+    await page.getByTestId('input-shopify-client_id').fill('e2e-brand-app-id');
+    await page.getByTestId('input-shopify-client_secret').fill('e2e-brand-app-secret');
     await expect(connectBtn).toBeEnabled();
 
     // No health badge (never connected → no instance → no badge)
@@ -276,5 +284,68 @@ test(
     await metaConnectBtn.click({ force: true });
     const fired = await postPromise;
     expect(fired, 'No POST must fire for coming-soon tile').toBeNull();
+  },
+);
+
+// ── C1d/C1e: BYO-app required (shopify-byo-app-required Task 11) ────────────────
+
+test(
+  'Shopify tile shows setup panel + REQUIRED Client ID/Secret fields',
+  async ({ page }) => {
+    /**
+     * BYO-required contract (spec §7): the Shopify tile renders the Custom-App setup panel
+     * (copy-buttoned redirect URL + scopes) and the Client ID / Client Secret fields INLINE
+     * (no disclosure), and Connect stays disabled until shop domain + BOTH creds are filled.
+     */
+    await onboardToDashboard(page, 'clf-byo-required');
+    await page.goto('/settings/connectors');
+    await expect(page.getByTestId('marketplace-page')).toBeVisible({ timeout: 15_000 });
+
+    const tile = page.getByTestId('connector-tile-shopify');
+    await expect(tile).toBeVisible({ timeout: 10_000 });
+
+    // Setup panel is visible (not hidden behind a disclosure)
+    await expect(tile.getByTestId('byo-setup-shopify')).toBeVisible();
+
+    // Copy buttons for redirect URL + scopes are present
+    await expect(tile.getByTestId('byo-shopify-redirect-copy')).toBeVisible();
+    await expect(tile.getByTestId('byo-shopify-scopes-copy')).toBeVisible();
+
+    // The required Client ID + Client Secret fields are visible inline
+    await expect(tile.getByTestId('input-shopify-client_id')).toBeVisible();
+    await expect(tile.getByTestId('input-shopify-client_secret')).toBeVisible();
+
+    // Connect stays disabled until shop domain + Client ID + Client Secret are ALL filled
+    const connectBtn = tile.getByTestId('connector-tile-shopify-connect');
+    await expect(connectBtn).toBeDisabled();
+
+    await tile.getByTestId('input-shop-shopify').fill('demo-store.myshopify.com');
+    await expect(connectBtn).toBeDisabled(); // still missing client_id + client_secret
+
+    await tile.getByTestId('input-shopify-client_id').fill('brand-app-id');
+    await expect(connectBtn).toBeDisabled(); // still missing client_secret
+
+    await tile.getByTestId('input-shopify-client_secret').fill('brand-app-secret');
+    await expect(connectBtn).toBeEnabled();
+  },
+);
+
+test(
+  'Meta tile keeps the OPTIONAL disclosure (regression guard for byoAppRequired=false)',
+  async ({ page }) => {
+    await onboardToDashboard(page, 'clf-byo-meta');
+    await page.goto('/settings/connectors');
+    await expect(page.getByTestId('marketplace-page')).toBeVisible({ timeout: 15_000 });
+
+    const tile = page.getByTestId('connector-tile-meta');
+    await expect(tile).toBeVisible({ timeout: 10_000 });
+
+    // Meta (byoAppRequired=false) must NEVER render the BYO setup panel. On a fresh brand the
+    // ads category is progressively LOCKED (unlocks after store + pixel + data), so the connect
+    // form — and its optional disclosure — cannot render here; the disclosure branch itself is
+    // pinned by the catalog contract (readRoutes.test.ts: meta byo_app_required falsy) + the
+    // view's byoRequired split. Assert the truthful fresh-brand state: no panel, locked tile.
+    await expect(tile.getByTestId('byo-setup-meta')).toHaveCount(0);
+    await expect(tile.getByTestId('connector-tile-meta-locked')).toBeVisible();
   },
 );

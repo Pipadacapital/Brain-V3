@@ -100,70 +100,91 @@ Evidence = code file:line or live metadata (see 00-foundation-synthesis.md for f
 Each per §0.4: conflicting spec text vs ground truth, two candidate resolutions, recommendation. File as `knowledge-base/amendments/AMD-<n>-<slug>.md` before the dependent work item starts.
 
 **AMD-01 — salt model (A.1.3/§1.3) [BLOCKS: identity-normalization pkg, connector rewiring, backfill, stitch keys]**
+**FILED → AMD-01-salt-model.md (R1: dual-convention ratified — plain=interop incl. pixel + pre_hashed_*, salted=internal — plus connector dual-write of the interop hash; fixes the live anon→known bridge).**
 Spec: uniform plain SHA-256. Ground truth: THREE conventions — per-brand SALTED sha256(salt||'||'||normalized) in all 4 mappers + Spark twins (identity-core:219, _raw_normalize.py:146; cross-brand-uncorrelatability a tested invariant); plain UNSALTED client-side in pixel (pixel-asset.route.ts:270–295); hash_salted_bytes for AWB/UTR. **Live bug:** pixel's unsalted hash can never match the connectors' salted `hashed_customer_email` — the anon→known bridge is broken today. (R1) Ratify dual-convention: plain sha256 = interop space (pixel + platform-hashed), salted = internal space; resolver keeps them as distinct tiers; ADD connector-side dual-write of the unsalted interop hash so pixel↔connector joins work. (R2) Migrate everything to plain sha256 — orphans every existing salted stitch key, destroys cross-brand-uncorrelatability, impossible to salt client-side anyway. **Recommend R1.**
 
 **AMD-02 — identity field names (A.1.4)**
+**FILED → AMD-02-identity-field-names.md (R1: existing names ratified; all mappers converge on the canonical pre_hashed_identifiers slot).**
 Spec: email_sha256/phone_sha256/platform_customer_id. Ground truth: hashed_customer_email/hashed_customer_phone/storefront_customer_id live in resolver + Silver jobs (+ Shopflo legacy names; unused canonical pre_hashed_identifiers slot). (R1) Amend spec to adopt existing names; move mappers onto the canonical slot as the single mechanism. (R2) Introduce spec names verbatim → second parallel namespace in identity links + migration. **Recommend R1.**
 
 **AMD-03 — schema governance posture (§1.7)**
+**FILED → AMD-03-schema-governance.md (R1: FULL_TRANSITIVE doctrine; JSON+zod sanctioned for non-collector lanes; new program topics registry-registered JSON Schema; 404-no-op = WA-05 fix item).**
 Spec: Avro everywhere, BACKWARD. Ground truth: 1 registered artifact; NO live compat rule (env var doesn't materialize one); repo doctrine FULL_TRANSITIVE; ~48 topics JSON+zod; compat client 404→pass no-op bug. (R1) FULL_TRANSITIVE for Avro artifacts + ratify JSON+zod for existing non-collector lanes; new program envelopes (pixel.identify.v1, action.*) Avro-registered; fix rule-creation (idempotent boot step) + client URL bug. (R2) Wholesale Avro+BACKWARD migration of 48 topics — huge, out-of-scope churn. **Recommend R1.**
 
 **AMD-04 — consent default (A.1.2/§1.3)**
+**FILED → AMD-04-consent-default.md (R1: migration seeds existing brands to current effective behavior; NEW brands default off; denied-VALUE drop added — no live install goes dark).**
 Spec: per-brand identity_capture default OFF. Ground truth: PIXEL_CONSENT_DEFAULT=granted collector-wide env, load-bearing for CMP-less stores; enforcement is presence-quarantine not value-drop. (R1) Per-brand config with migration seeding each existing brand's current effective behavior; default OFF for NEW brands only; add denied-VALUE drop for identifies. (R2) Flip default OFF globally → zeroes pixel identity data for live installs. **Recommend R1.**
 
 **AMD-05 — "Silver canonical envelope Avro fields" (A.1.4)**
+**FILED → AMD-05-silver-canonical-envelope.md (R1: payload properties + promoted nullable Iceberg columns ratified as the envelope mechanism).**
 Ground truth: silver_collector_event is an Iceberg table (payload JSON varchar), not Avro; additive mechanism = payload properties + promoted nullable columns (anonymous_id/device_id precedent with widen-backfill MERGE). (R1) Amend wording to that mechanism. (R2) Introduce real Avro envelope for Silver — re-architecture, violates additive rule. **Recommend R1.**
 
 **AMD-06 — Neo4j graph model (A.1.5)**
+**FILED → AMD-06-neo4j-graph-model.md (R1: Identifier→IDENTIFIES→Customer ratified; edge gains first_seen/last_seen/source/count additively).**
 Spec: (:BrainId) + OBSERVED_WITH{first_seen,last_seen,source,count}. Ground truth: (:Identifier)-[:IDENTIFIES{tier,is_active,created_at}]->(:Customer) with 15k live nodes. (R1) Ratify existing model; add first_seen/last_seen/source/count to IDENTIFIES. (R2) Parallel edge type — duplicates 15k-edge graph. **Recommend R1.**
 
 **AMD-07 — bi-temporality of silver_identity_map (§1.5)**
+**FILED → AMD-07-identity-map-bitemporality.md (R1: additive system_from/system_to + append-per-mutation; access only via sanctioned views; replay from retained rows + intervals, NOT snapshot time-travel).**
 Spec: valid+system time appends. Ground truth: valid-time-only batch projection of Neo4j. (R1) Add system_from/system_to columns + append-per-mutation semantics (additive). (R2) Declare Iceberg snapshots the system axis — conflicts with 7-day snapshot TTL (AMD-10). **Recommend R1** (R2 only with a per-table retention exemption).
 
 **AMD-08 — identity.map.changed.v1 (A.2.3(5)/B.2)**
+**FILED → AMD-08-identity-map-changed-topic.md (R1: EXTEND the live {env}.identity.*.v1 lane + existing recompute consumer, keyed brand_id+identifier_hash; spec→live mapping documented).**
 Spec assumes the topic. Ground truth: 5-topic lane {env}.identity.{minted,linked,merged,suppressed,review_queued}.v1 + recompute consumer already live. (R1) Extend existing lane: emit map-mutation events keyed brand_id+identifier_hash on the existing topics (or one new sibling following the discovered convention), consumers unified. (R2) Add the 6th overlapping topic verbatim. **Recommend R1.**
 
 **AMD-09 — merge survivor rule (A.2.4)**
+**FILED → AMD-09-merge-survivor-rule.md (R1: lowest-UUID survivor kept and documented; changing survivorship of a live graph is not additive).**
 Spec: survivor = older brain_id. Ground truth: LOWEST-UUID canonical (IdentityResolver.ts:286–288); deterministic merge_id + replay idempotency depend on it; 3 MergeEvents + 11 ALIAS_OF live. (R1) Keep lowest-UUID, amend spec. (R2) Switch to older-id → invalidates replay determinism for existing MergeEvents. **Recommend R1.**
 
 **AMD-10 — replay via Iceberg time-travel (B.4)**
+**FILED → AMD-10-replay-time-travel.md (R1: as-of reconstructed from retained version rows + identity intervals + snap seam; NOT Iceberg time-travel beyond snapshot TTL).**
 Spec: ?as_of= time-travel. Ground truth: SNAPSHOT_TTL_MS=7d swept daily; live journey_events snapshots span <1h. (R1) Reconstruct as-of from retained version history + bi-temporal identity intervals + snap_identity_link seam (all fully retained). (R2) Per-table snapshot-retention exemption for journey_events — storage growth, still bounded. **Recommend R1.**
 
 **AMD-11 — journey_version grain (B.1/B.2)**
+**FILED → AMD-11-journey-version-grain.md (R1: keep (touchpoint_id, data_version) key; derived journey-level version for X-Journey-Version + journey_version_log).**
 Spec: per-journey journey_version, MERGE on (brand_id, brain_id, journey_version, event_id). Ground truth: per-touchpoint data_version+is_current, PK (brand_id, touchpoint_id, data_version) — same event-sourced intent, incompatible key; PK change violates §0.5. (R1) Keep data_version; expose derived journey-level version (max(data_version)) for X-Journey-Version + journey_version_log. (R2) New PK → breaking. **Recommend R1.**
 
 **AMD-12 — Splink vs rule-based matcher (A.3)**
+**FILED → AMD-12-splink-vs-rule-matcher.md (R1: Splink sits beside the rule-based matcher as its own matcher_id, exclusively owning silver_probabilistic_stitch).**
 Ground truth: review-gated Fellegi–Sunter rule matcher live (never auto-merges). (R1) Splink sits beside it (matcher-registry supports multiple matcher_ids); rule matcher keeps feeding MergeReview; Splink owns silver_probabilistic_stitch. (R2) Replace — loses working review pipeline. **Recommend R1.**
 
 **AMD-13 — stitch input table (B.1)**
+**FILED → AMD-13-stitch-input-table.md (R1: journey builder keeps silver_touchpoint until stitch v2 lands, then flag-switch with golden parity).**
 Spec input silver_session_identity (v2) doesn't exist; live input is sessionized silver_touchpoint. (R1) journey builder keeps silver_touchpoint until stitch v2 lands, then flag-switch. (R2) Block Wave B on Wave A entirely. **Recommend R1** (matches wave ordering anyway).
 
 **AMD-14 — journey API paths (B.3) + "Analytics Gateway"**
+**FILED → AMD-14-journey-api-paths.md (R1: extend/alias existing BFF analytics-journey routes; compare is net-new in the same namespace).**
 Spec paths /v1/customers/{brain_id}/journey etc. on a standalone gateway. Ground truth: /api/v1/analytics/journey/{events,timeline} live on the core BFF; no standalone gateway exists (ADR-0007 seam; analytics-gateway removed #295). (R1) Extend/alias existing routes on the BFF seam. (R2) Parallel-build spec paths — duplicates two endpoints. **Recommend R1.**
 
 **AMD-15 — recognition language (C.1)**
+**FILED → AMD-15-recognition-language.md (R1: provisional/finalized two-stage language adopted; no ledger change).**
 Spec "prepaid at capture". Ground truth: two-stage provisional_recognition-at-booking → finalization-after-horizon. (R1) Adopt provisional/finalized language. (R2) Add a capture trigger — changes a live ledger. **Recommend R1.**
 
 **AMD-16 — gold_measurement_* namespace (C.2)**
+**FILED → AMD-16-gold-measurement-namespace.md (R1: extend/repoint existing facts; alias/view-map into the measurement namespace where the spec name is load-bearing).**
 Ground truth: silver_refund/settlement/marketing_spend/inventory_level + gold_settlement_summary/contribution_margin already exist. (R1) Extend/repoint existing tables; alias or view-map into the measurement namespace where the spec name is load-bearing. (R2) Parallel greenfield namespace — duplicate facts, parity burden. **Recommend R1.**
 
 **AMD-17 — CM naming collision (C.3)**
+**FILED → AMD-17-cm-naming-collision.md (R1 per WA-00 binding: spec CM1/2/3 adopted in the NEW gold_order_economics with explicit mapping doc; live gold_contribution_margin untouched + deprecation-mapped in Wave D).**
 Live CM1 = spec CM2; live CM2 = spec CM3, in a SERVED metric (metric-engine twin). (R1) Adopt spec numbering in NEW gold_order_economics; map/rename live outputs with an explicit re-labelling release note + contract version bump. (R2) Keep live numbering, amend spec. Either is viable; **recommend R1** (spec numbering is the industry convention) — but it must be an explicit, tested rename, never silent.
 
 **AMD-18 — cache key/TTL shape (§1.11.2)**
+**FILED → AMD-18-cache-key-ttl-shape.md (R1: live key/TTL shape ratified as a §1.11.2 superset; add no-cache tier + erasure→cache.invalidate).**
 Live implementation is a superset (metricId + servingVersion segments, 5 tiers, version-bump invalidation). (R1) Ratify live shape as satisfying §1.11.2; add no-cache tier. (R2) Adopt spec verbatim — regression. **Recommend R1.**
 
 **AMD-19 — feature store vs "features are RUNTIME" invariant (E)**
+**FILED → AMD-19-feature-store-invariant.md (DEFERRED to E-scaffold time per the plan; CONTRACT-E written store-agnostic; CI guard untouched meanwhile).**
 CI guard (v4-naming-guard) forbids feature precompute; CLAUDE.md invariant; RETIRED_feature_customer_daily.md. (R1) Sanctioned exception for the E offline store with PIT semantics, named allowlist in the guard. (R2) Training reads = as-of over Silver/Gold, no table. **Recommend decide at E-scaffold time; contracts can be written either way.**
 
 **AMD-20 — MCP "no Trino client dependency" (CONTRACT-F)**
+**FILED → AMD-20-mcp-no-trino-dep.md (R1 now: contract restated seam-only + dependency-graph test; R2 re-home over compiled semantic views post-D.2).**
 False-by-construction: ai-gateway-client's sole dep IS metric-engine (contains trino-adapter). Real tested invariant: no SQL emission, certified seams only. (R1) Restate contract as seam-only + dependency-graph test. (R2) Re-home MCP over compiled semantic views post-D.2. **Recommend R1 now, R2 later.**
 
 **AMD-21 — G's 501 stub vs shipped recommendations**
+**FILED → AMD-21-recommendations-501-stub.md (R1: shipped surface grandfathered; 501 stub scoped to the NEW gold_recommendations-backed endpoint only).**
 A working recommend-only surface ships (decisions.routes.ts + ledger + UI). (R1) Grandfather it; 501 stub scoped to the NEW gold_recommendations-backed endpoint. (R2) Verbatim spec — regresses shipped feature. **Recommend R1.**
 
 **Non-amendment defects surfaced (fix, don't amend):**
-- Gate command `pnpm turbo build lint test` doesn't match turbo task names (test:unit etc.) — fix the gate definition.
+- Gate command `pnpm turbo build lint test` doesn't match turbo task names (test:unit etc.) — fix the gate definition. **FILED → AMD-22-gate-command.md (gate = `pnpm turbo build lint test:unit test:contract` + the wave's spec-named tests).**
 - validateSchemaCompatibility 404→compatible no-op (events/index.ts:130–136) — bug.
 - Shopify refund mapper occurred_at=1970 epoch fallback → 100% refund quarantine — bug, C.2.1 prerequisite.
 - lint:boundaries 16 pre-existing errors — debt to pay before it gates.

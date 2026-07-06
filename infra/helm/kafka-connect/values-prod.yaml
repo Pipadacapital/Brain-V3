@@ -1,0 +1,42 @@
+# kafka-connect — PROD overrides (ADR-0010: the SOLE Bronze landing writer).
+# Sync order: AFTER strimzi-kafka (broker) + iceberg-rest (catalog); BEFORE cronworkflows
+# depends on nothing here (bronze-maintenance reads the tables Connect creates).
+# IRSA supplies S3 credentials — the local-dev access-key sinkDefaults are overridden to
+# the IRSA chain by OMITTING s3 keys (S3FileIO falls back to the pod role, AUD-COST-022).
+enabled: true
+
+replicas: 1
+
+worker:
+  # Strimzi KRaft cluster `brain-prod-kafka` in ns `kafka` (strimzi-kafka/values-prod.yaml).
+  bootstrapServers: "brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
+  groupId: brain-bronze-connect
+  configStorageTopic: _connect-configs
+  offsetStorageTopic: _connect-offsets
+  statusStorageTopic: _connect-status
+  storageReplicationFactor: "3"
+
+# Same catalog the Spark medallion + Trino use (iceberg-rest/values-prod.yaml): ONE REST
+# server over the single warehouse bucket. Bucket name is account-suffixed — the deploy
+# fills the terraform output `warehouse_bucket_name` here (placeholder guard enforces).
+icebergCatalog:
+  iceberg.catalog.type: "rest"
+  iceberg.catalog.uri: "http://iceberg-rest.iceberg.svc.cluster.local:8181"
+  iceberg.catalog.warehouse: "s3://REPLACE_WITH_WAREHOUSE_BUCKET/"
+  iceberg.catalog.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
+  iceberg.catalog.client.region: "ap-south-1"
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations:
+    # IRSA: S3 RW on the warehouse prefixes (same policy family as spark-jobs/iceberg-rest).
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/brain-prod-spark-jobs"
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1280Mi
+  limits:
+    cpu: "1"
+    memory: 1792Mi

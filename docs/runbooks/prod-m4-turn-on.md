@@ -126,7 +126,7 @@ The IRSA roles (Phase 1) grant the apps read access. Seed:
 ## 6. Phase 5 — Medallion bring-up + smoke test
 
 ```bash
-# Bronze sinks + Silver/Gold run as Argo CronWorkflows (cronworkflows app, already synced).
+# Bronze landing is the kafka-connect Deployment (ADR-0010; kafka-connect-prod app); Silver/Gold + bronze-maintenance run as Argo CronWorkflows (cronworkflows app, already synced).
 # Trigger one cycle manually to seed the serving views on a cold catalog:
 argo submit -n argo --from cronworkflow/v4-silver ; argo submit -n argo --from cronworkflow/v4-gold
 # Apply the Trino serving views:
@@ -155,7 +155,7 @@ TRINO_URL=http://<trino-coordinator-svc>:8080 bash db/trino/views/run-trino-view
 
 ## 8. Rollback / teardown
 - **Pause compute, keep data (cheapest safe state):** scale EKS node groups + Aurora min-capacity down; `argocd app set <app> --sync-policy none`.
-- **Full teardown:** `terraform destroy` in `envs/prod` (data in S3/Aurora is deleted — Bronze S3 has the WORM/7yr retention, so those objects resist deletion by design; empty/override before destroy if truly tearing down).
+- **Full teardown:** `terraform destroy` in `envs/prod` (data in S3/Aurora is deleted — the AUDIT bucket has WORM/7yr retention and resists deletion by design (the warehouse bucket has NO Object Lock per AUD-COST-016); empty/override before destroy if truly tearing down).
 - **Decision reversions (one flag each):** managed NAT instead of fck-nat → `network { enable_nat_gateway = true }` + drop `nat_instance`/`vpc_endpoints`; RDS instead of Aurora → swap `module.aurora` → `module.rds`.
 
 ---

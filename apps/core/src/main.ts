@@ -91,6 +91,7 @@ import { PgPixelStatusRepository } from './modules/connector/pixel/infrastructur
 // ── Bounded-context registrars (CQ-2) + the M1 event publisher (EV-2) ─────────
 import { registerWorkspaceAccess } from './bootstrap/registerWorkspaceAccess.js';
 import { registerConnectors } from './bootstrap/registerConnectors.js';
+import { runReconnectShopifyByoMigration } from './bootstrap/reconnect-shopify-byo.js';
 import { createM1EventPublisher } from './infrastructure/events/M1EventPublisher.js';
 
 // ── Secrets provider (HIGH-SECRETS-01) ───────────────────────────────────────
@@ -850,6 +851,21 @@ export async function main(): Promise<void> {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // One-shot idempotent data migration: flip existing Shopify installs (env-app) to
+  // RECONNECT_REQUIRED so the connect UI prompts the merchant. Safe to re-run — guarded by
+  // ops.migration_state. Failure is logged but does not block boot (belt-and-braces).
+  try {
+    await runReconnectShopifyByoMigration({
+      pool: rawPgPool,
+      secrets: connectorSecretsManager,
+      emit: (name, payload) => emitEvent(name, payload),
+    });
+  } catch (err) {
+    app.log.warn(
+      `[main] reconnect-shopify-byo boot task failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
   // Start server.
   try {

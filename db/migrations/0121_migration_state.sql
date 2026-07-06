@@ -18,3 +18,8 @@ CREATE TABLE IF NOT EXISTS ops.migration_state (
 
 COMMENT ON TABLE ops.migration_state IS
   'Boot-time data migration idempotency markers. See apps/core/src/bootstrap/*.ts.';
+
+-- The Core API boot task runs as brain_app (NOSUPERUSER): it must read the marker and insert
+-- it after applying. No UPDATE/DELETE — markers are write-once (0116 grant pattern).
+GRANT USAGE ON SCHEMA ops TO brain_app;
+GRANT SELECT, INSERT ON ops.migration_state TO brain_app;

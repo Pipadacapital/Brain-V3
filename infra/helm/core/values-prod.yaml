@@ -1,7 +1,7 @@
 replicaCount: 3
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
@@ -11,13 +11,13 @@ envSecretName: core-env
 # (host-routed, ACM TLS).
 ingress:
   enabled: true
-  host: REPLACE_WITH_CORE_HOSTNAME   # e.g. api.<apex-domain>
+  host: api.brain.pipadacapital.com   # e.g. api.<apex-domain>
   groupName: brain-prod
   certificateArn: REPLACE_WITH_ACM_CERT_ARN
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-core
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-core
 
 # AUD-COST-011: migrations run as a PreSync hook before every core sync.
 # core-env must carry DATABASE_URL_DIRECT (Aurora endpoint, NOT pgbouncer) —

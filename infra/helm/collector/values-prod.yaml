@@ -1,7 +1,7 @@
 replicaCount: 3
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-collector-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-collector-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
@@ -17,13 +17,13 @@ metrics:
 # shared brain-prod ALB (host-routed); TLS = ACM at the ALB.
 ingress:
   enabled: true
-  host: REPLACE_WITH_COLLECTOR_HOSTNAME   # e.g. px.<apex-domain>
+  host: px.brain.pipadacapital.com   # e.g. px.<apex-domain>
   groupName: brain-prod
   certificateArn: REPLACE_WITH_ACM_CERT_ARN
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-collector
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-collector
 
 # AUD-PROD-006: the 99.95%-SLA ingest front rides the streaming pool (t4g.large
 # Spot, WhenEmpty consolidation — live pods are never bin-packed off a node; the

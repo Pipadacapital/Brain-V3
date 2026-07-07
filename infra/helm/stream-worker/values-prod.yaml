@@ -1,7 +1,7 @@
 replicaCount: 3
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
@@ -15,7 +15,7 @@ metrics:
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-stream-worker
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-stream-worker
 
 # AUD-PROD-006: the live Kafka consumers ride the streaming pool (t4g.large Spot,
 # WhenEmpty consolidation — never bin-packs live consumers off a node; the HPA

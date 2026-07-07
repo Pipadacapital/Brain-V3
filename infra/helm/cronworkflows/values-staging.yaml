@@ -1,10 +1,10 @@
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-staging
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-staging
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
 streamWorkerImage:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-staging
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-staging
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
@@ -13,7 +13,7 @@ streamWorkerImage:
 # the kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
 sparkBronze:
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-staging
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-staging
     tag: ""
     digest: ""
 
@@ -21,7 +21,7 @@ sparkBronze:
 # COPYs the V4 marts). GATED OFF by default; flip sparkV4.enabled once the V4 cluster + digest are ready.
 sparkV4:
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-staging
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-staging
     tag: ""
     digest: ""
 
@@ -32,4 +32,4 @@ envSecretName: core-env
 serviceAccount:
   name: brain-jobs
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-staging-jobs
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-staging-jobs

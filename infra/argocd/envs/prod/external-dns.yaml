@@ -42,12 +42,12 @@ spec:
         txtOwnerId: brain-prod
         # Only manage the Brain zone — never touch anything else.
         domainFilters:
-          - REPLACE_WITH_APEX_DOMAIN
+          - brain.pipadacapital.com
         serviceAccount:
           create: true
           name: external-dns
           annotations:
-            eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-external-dns
+            eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-external-dns
         nodeSelector:
           role: system
         resources:

@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-collector-staging
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-collector-staging
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
@@ -9,7 +9,7 @@ envSecretName: collector-env
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-staging-collector
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-staging-collector
 
 resources:
   requests:

@@ -61,7 +61,7 @@ spec:
         serviceAccount:
           name: karpenter
           annotations:
-            eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-karpenter-controller
+            eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-karpenter-controller
         settings:
           # MUST equal aws_eks_cluster.main.name (project-environment).
           clusterName: brain-prod

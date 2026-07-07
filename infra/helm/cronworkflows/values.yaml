@@ -6,14 +6,14 @@
 
 # Default image (the core image — most jobs are core entrypoints). Per-job `image:` overrides this.
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 
 # Stream-worker image (for jobs whose entrypoint ships in that deployable, e.g. revenue-finalization).
 streamWorkerImage:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
@@ -58,7 +58,7 @@ sparkBronze:
   # (ADR-0010). Maintenance must run regardless of who lands Bronze, so it defaults ON.
   enabled: true
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
@@ -112,7 +112,7 @@ sparkV4:
   # (collector_events_connect + <lane>_raw_connect) — fixed in the jobs, no BRONZE_SOURCE
   # switch (rollback = git revert).
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # same image — Dockerfile now carries the V4 marts
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze   # same image — Dockerfile now carries the V4 marts
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent

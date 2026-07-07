@@ -12,7 +12,7 @@ import {
   IdentityEvidenceItemSchema,
 } from './journey-api.v1.js';
 
-describe('B3 CustomerJourneyTimeline (1) /v1/customers/:brainId/journey', () => {
+describe('B3 CustomerJourneyTimeline (1) /api/v1/customers/:brainId/journey', () => {
   it('accepts an honest no_data with no has_data fields', () => {
     expect(CustomerJourneyTimelineSchema.parse({ state: 'no_data' })).toEqual({ state: 'no_data' });
   });
@@ -56,7 +56,7 @@ describe('B3 CustomerJourneyTimeline (1) /v1/customers/:brainId/journey', () => 
   });
 });
 
-describe('B3 JourneyTrace (2) /v1/journeys/trace', () => {
+describe('B3 JourneyTrace (2) /api/v1/journeys/trace', () => {
   it('accepts a has_data trace with lookback touches + identity_evidence', () => {
     const parsed = JourneyTraceSchema.parse({
       state: 'has_data',
@@ -84,7 +84,7 @@ describe('B3 JourneyTrace (2) /v1/journeys/trace', () => {
   });
 });
 
-describe('B3 JourneyCompare (3) /v1/journeys/compare', () => {
+describe('B3 JourneyCompare (3) /api/v1/journeys/compare', () => {
   it('accepts two journeys; t_minus_conversion_ms nullable + sequence_number bigint-string', () => {
     const parsed = JourneyCompareSchema.parse({
       left: {

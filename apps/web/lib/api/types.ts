@@ -1411,3 +1411,88 @@ export interface AnalyticsRecordsResponse {
   detailColumns: AnalyticsRecordColumn[];
   rows: Array<Record<string, string | null>>;
 }
+
+// ── Wave B — Journey deep-dive (contract types, re-exported for UI hooks/pages) ──────────────
+export type {
+  CustomerJourneyTimeline,
+  CustomerJourneyItem,
+  JourneyTrace,
+  TraceTouch,
+  IdentityEvidenceItem,
+  JourneyCompare,
+  CompareJourney,
+  CompareTouch,
+} from '@brain/contracts';
+
+// ── Wave C — Metric lineage ("prove this number": the source facts behind a metric) ─────────
+export interface MetricLineageFact {
+  catalog: 'iceberg';
+  schema: 'brain_gold' | 'brain_silver';
+  table: string;
+  /** fully-qualified 'iceberg.<schema>.<table>' */
+  fqtn: string;
+  /** what this fact contributes to the metric (human description) */
+  role: string;
+  /** the date column filtered for the as-of read, or null (all-time) */
+  date_column: string | null;
+  /** brand + as-of scoped row count (honest 0 for a table that has not materialized) */
+  row_count: number;
+  /** distinct producing Spark job version(s) — provenance */
+  job_versions: string[];
+  job_version_source: 'column' | 'producer';
+}
+export type MetricLineageResult =
+  | { state: 'unknown_metric'; metric: string; supported: string[] }
+  | {
+      state: 'ok';
+      metric: string;
+      description: string;
+      /** echoed as-of date (YYYY-MM-DD) or null (all-time counts) */
+      date: string | null;
+      facts: MetricLineageFact[];
+      traces_to_measurement: boolean;
+    };
+
+// ── Wave C — Contribution margin (true profit: revenue → COGS → CM1 → marketing → CM2) ──────
+// All money is bigint minor units as a string, paired with currency_code (never a float).
+export interface ContributionMarginBlock {
+  currency_code: string;
+  net_revenue_minor: string;
+  cogs_minor: string;
+  /** cogs + shipping + packaging (variable cost of goods) */
+  variable_cost_minor: string;
+  /** net_revenue − cogs */
+  cm1_minor: string;
+  /** allocated marketing spend */
+  marketing_minor: string;
+  /** cm1 − variable_cost − marketing */
+  cm2_minor: string;
+  cost_confidence: 'Trusted' | 'Estimated' | 'Insufficient';
+}
+export type ContributionMarginResponse =
+  | { state: 'no_data'; as_of: string }
+  | { state: 'has_data'; as_of: string; margin: ContributionMarginBlock };
+
+// ── Wave D — Semantic metric catalog (the certified, governed metric definitions) ───────────
+export interface SemanticMetricEntry {
+  name: string;
+  version: string;
+  entity: string;
+  grain: string[];
+  dimensions_allowed: string[];
+  currency_handling: string;
+  identity_basis: string;
+  interactive: boolean;
+  owner: string;
+  description: string;
+  examples: string[];
+  deterministic_exclusion: string;
+}
+export interface SemanticMetricsCatalog {
+  spec: string;
+  generator: string;
+  count: number;
+  /** the per-brand semantic.serving flag state (informational; discovery is flag-agnostic) */
+  semantic_serving_flag: boolean;
+  metrics: SemanticMetricEntry[];
+}

@@ -4,14 +4,14 @@
  * sanctioned core BFF seam (AMD-14 R1: no standalone gateway; these are additive routes that
  * reuse the existing analytics use-cases — NOT a parallel implementation).
  *
- *   1. GET /v1/customers/:brainId/journey?cursor=&limit=
+ *   1. GET /api/v1/customers/:brainId/journey?cursor=&limit=
  *        newest-first paginated timeline; items {ts,type,channel,campaign?,url_path?,session_id,
  *        matched_via,journey_version} + an X-Journey-Version response header. Served from the A.4
  *        Redis touchpoint cache (hot) with the Trino ledger as the §1.11 cold fallback.
- *   2. GET /v1/journeys/trace?order_id=
+ *   2. GET /api/v1/journeys/trace?order_id=
  *        the attribution-lookback touchpoints preceding an order + per-touch matched_via +
  *        identity_evidence [{identifier_type,first_seen,source}] — the explainability surface.
- *   3. GET /v1/journeys/compare?left=&right=
+ *   3. GET /api/v1/journeys/compare?left=&right=
  *        two resolved journeys with t_minus_conversion_ms per touch.
  *
  * TENANT: brand_id is ALWAYS from the auth session (D-1) — NEVER a query param. The :brainId path
@@ -42,9 +42,9 @@ export function registerJourneyApiRoutes(fastify: FastifyInstance, deps: BffDeps
   const cachedRead = <T>(brandId: string, metricId: string, params: unknown, compute: () => Promise<T>): Promise<T> =>
     servingCache ? servingCache.read(brandId, metricId, params, compute) : compute();
 
-  // ── (1) GET /v1/customers/:brainId/journey — paginated newest-first timeline ──────────────
+  // ── (1) GET /api/v1/customers/:brainId/journey — paginated newest-first timeline ──────────
   fastify.get(
-    '/v1/customers/:brainId/journey',
+    '/api/v1/customers/:brainId/journey',
     {
       preHandler: [bffProtectedPreHandler],
       schema: {
@@ -100,9 +100,9 @@ export function registerJourneyApiRoutes(fastify: FastifyInstance, deps: BffDeps
     },
   );
 
-  // ── (2) GET /v1/journeys/trace?order_id= — lookback touchpoints + identity evidence ───────
+  // ── (2) GET /api/v1/journeys/trace?order_id= — lookback touchpoints + identity evidence ────
   fastify.get(
-    '/v1/journeys/trace',
+    '/api/v1/journeys/trace',
     {
       preHandler: [bffProtectedPreHandler],
       schema: {
@@ -153,9 +153,9 @@ export function registerJourneyApiRoutes(fastify: FastifyInstance, deps: BffDeps
     },
   );
 
-  // ── (3) GET /v1/journeys/compare?left=&right= — two journeys with t_minus_conversion_ms ────
+  // ── (3) GET /api/v1/journeys/compare?left=&right= — two journeys with t_minus_conversion_ms ─
   fastify.get(
-    '/v1/journeys/compare',
+    '/api/v1/journeys/compare',
     {
       preHandler: [bffProtectedPreHandler],
       schema: {

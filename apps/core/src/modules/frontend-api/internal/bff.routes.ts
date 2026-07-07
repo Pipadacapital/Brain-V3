@@ -293,7 +293,7 @@ export function registerBffRoutes(
   registerAnalyticsMarketingRoutes(fastify, deps);
   registerAnalyticsLogisticsRoutes(fastify, deps);
   registerAnalyticsJourneyRoutes(fastify, deps);
-  registerJourneyApiRoutes(fastify, deps); // SPEC: B.3 (AMD-14) — /v1/customers/:brainId/journey, /v1/journeys/{trace,compare}
+  registerJourneyApiRoutes(fastify, deps); // SPEC: B.3 (AMD-14) — /api/v1/customers/:brainId/journey, /api/v1/journeys/{trace,compare}
   registerTrackingRoutes(fastify, deps);
   registerConsentRoutes(fastify, deps);
   registerFeedbackRoutes(fastify, deps);

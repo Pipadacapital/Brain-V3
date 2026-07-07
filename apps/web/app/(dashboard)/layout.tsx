@@ -64,6 +64,9 @@ import {
   FileCheck,
   UserCog,
   CreditCard,
+  Route,
+  Coins,
+  Ruler,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -139,6 +142,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: '/behaviour', label: 'Behaviour', icon: MousePointerClick },
       { href: '/journeys', label: 'Journeys', icon: Footprints, centerKey: 'journey' },
+      { href: '/journeys/explorer', label: 'Journey Explorer', icon: Route, centerKey: 'journey' },
       { href: '/analytics/products', label: 'Products', icon: Package },
       { href: '/analytics/search', label: 'Search & Forms', icon: Search },
       { href: '/analytics/checkout', label: 'Checkout', icon: ShoppingCart },
@@ -154,6 +158,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/analytics/revenue', label: 'Revenue', icon: IndianRupee },
       { href: '/analytics/orders', label: 'Orders', icon: Receipt },
       { href: '/analytics/margin', label: 'Margin & Costs', icon: Percent },
+      { href: '/analytics/profit', label: 'Profit & Margin', icon: Coins },
       { href: '/analytics/settlements', label: 'Settlements', icon: Landmark },
       { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
       { href: '/analytics/order-status', label: 'Order Status', icon: PackageCheck },
@@ -168,6 +173,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: '/data/quality', label: 'Data Quality', icon: ShieldCheck },
       { href: '/operations', label: 'Operations', icon: Activity },
       { href: '/ml', label: 'Models', icon: Boxes },
+      { href: '/metrics', label: 'Metrics Catalog', icon: Ruler },
     ],
   },
   {

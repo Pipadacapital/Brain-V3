@@ -1,6 +1,6 @@
 // SPEC: B.3
 /**
- * B3 — Wave-B Journey API routes (AMD-14): /v1/customers/:brainId/journey, /v1/journeys/{trace,compare}.
+ * B3 — Wave-B Journey API routes (AMD-14): /api/v1/customers/:brainId/journey, /api/v1/journeys/{trace,compare}.
  *
  * Uses the REAL registerJourneyApiRoutes + REAL analytics use-cases + REAL metric-engine seams over
  * fake Trino/zset pools, with a stub session preHandler (the shape bffProtectedPreHandler produces).
@@ -79,14 +79,14 @@ async function buildApp(deps: Partial<BffDeps> & { brandId?: string | null }): P
   return app;
 }
 
-describe('B3 (1) GET /v1/customers/:brainId/journey', () => {
+describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
   it('serves the A.4 cache hot path (source=cache; matched_via/journey_version null; NO version header)', async () => {
     const tp = fakeTpCache([
       JSON.stringify({ type: 'page.viewed', channel: 'direct', url_path: '/p2', ts: 200, session_id: 's' }),
       JSON.stringify({ type: 'page.viewed', channel: 'direct', url_path: '/p1', ts: 100, session_id: 's' }),
     ]);
     const app = await buildApp({ srPool: fakeSrPool(() => []), touchpointCacheReader: tp });
-    const res = await app.inject({ method: 'GET', url: `/v1/customers/${BRAIN}/journey?limit=10` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey?limit=10` });
     expect(res.statusCode).toBe(200);
     const data = res.json().data;
     expect(data.state).toBe('has_data');
@@ -101,7 +101,7 @@ describe('B3 (1) GET /v1/customers/:brainId/journey', () => {
       srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(2, { data_version: 3 }), ledgerRow(1)] : [])),
       touchpointCacheReader: fakeTpCache([]), // cold
     });
-    const res = await app.inject({ method: 'GET', url: `/v1/customers/${BRAIN}/journey?limit=10` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey?limit=10` });
     expect(res.statusCode).toBe(200);
     const data = res.json().data;
     expect(data.source).toBe('trino');
@@ -114,58 +114,58 @@ describe('B3 (1) GET /v1/customers/:brainId/journey', () => {
     const app = await buildApp({
       srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(1)] : [])),
     });
-    const res = await app.inject({ method: 'GET', url: `/v1/customers/${BRAIN}/journey` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey` });
     expect(res.json().data.source).toBe('trino');
     await app.close();
   });
 
   it('honest no_data when neither cache nor ledger has rows', async () => {
     const app = await buildApp({ srPool: fakeSrPool(() => []), touchpointCacheReader: fakeTpCache([]) });
-    const res = await app.inject({ method: 'GET', url: `/v1/customers/${BRAIN}/journey` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey` });
     expect(res.json().data).toEqual({ state: 'no_data' });
     await app.close();
   });
 
   it('400 on a non-UUID brainId', async () => {
     const app = await buildApp({ srPool: fakeSrPool(() => []) });
-    const res = await app.inject({ method: 'GET', url: `/v1/customers/not-a-uuid/journey` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/not-a-uuid/journey` });
     expect(res.statusCode).toBe(400);
     await app.close();
   });
 
   it('no session brand → honest no_data (tenant from session only)', async () => {
     const app = await buildApp({ brandId: null, srPool: fakeSrPool(() => []) });
-    const res = await app.inject({ method: 'GET', url: `/v1/customers/${BRAIN}/journey` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey` });
     expect(res.json().data).toEqual({ state: 'no_data' });
     await app.close();
   });
 
   it('503 when the serving tier is absent', async () => {
     const app = await buildApp({ srPool: undefined });
-    const res = await app.inject({ method: 'GET', url: `/v1/customers/${BRAIN}/journey` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey` });
     expect(res.statusCode).toBe(503);
     await app.close();
   });
 });
 
-describe('B3 (2) GET /v1/journeys/trace', () => {
+describe('B3 (2) GET /api/v1/journeys/trace', () => {
   it('400 when order_id is missing', async () => {
     const app = await buildApp({ srPool: fakeSrPool(() => []) });
-    const res = await app.inject({ method: 'GET', url: `/v1/journeys/trace` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/trace` });
     expect(res.statusCode).toBe(400);
     await app.close();
   });
 
   it('honest no_data when the order resolves to no stitched journey (no PG pool)', async () => {
     const app = await buildApp({ srPool: fakeSrPool(() => []) }); // no rawPool → order→anon cannot resolve
-    const res = await app.inject({ method: 'GET', url: `/v1/journeys/trace?order_id=ord-1` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/trace?order_id=ord-1` });
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toEqual({ state: 'no_data' });
     await app.close();
   });
 });
 
-describe('B3 (3) GET /v1/journeys/compare', () => {
+describe('B3 (3) GET /api/v1/journeys/compare', () => {
   it('compares two journeys with t_minus_conversion_ms anchored on the latest composite touch', async () => {
     // Both sides read the ledger; the order.placed row (is_composite) is the conversion anchor.
     const app = await buildApp({
@@ -182,7 +182,7 @@ describe('B3 (3) GET /v1/journeys/compare', () => {
         return []; // right brain: no journey
       }),
     });
-    const res = await app.inject({ method: 'GET', url: `/v1/journeys/compare?left=${BRAIN}&right=${BRAIN2}` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/compare?left=${BRAIN}&right=${BRAIN2}` });
     expect(res.statusCode).toBe(200);
     const data = res.json().data;
     expect(data.left.brain_id).toBe(BRAIN);
@@ -196,7 +196,7 @@ describe('B3 (3) GET /v1/journeys/compare', () => {
 
   it('400 when left/right are not customer UUIDs', async () => {
     const app = await buildApp({ srPool: fakeSrPool(() => []) });
-    const res = await app.inject({ method: 'GET', url: `/v1/journeys/compare?left=x&right=y` });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/compare?left=x&right=y` });
     expect(res.statusCode).toBe(400);
     await app.close();
   });

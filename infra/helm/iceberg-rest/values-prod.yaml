@@ -7,7 +7,7 @@ catalog:
   # NAMESPACES brain_{bronze,silver,gold} under it — there are NO per-layer
   # buckets. 380254378136 is the standard fill token (infra/helm/PLACEHOLDERS.md §1).
   warehouse: "s3://brain-bronze-prod-380254378136/"
-  jdbcHost: "REPLACE_WITH_AURORA_ENDPOINT"   # module.aurora.endpoint
+  jdbcHost: "brain-prod-postgres.cluster-cjy6iicow625.ap-south-1.rds.amazonaws.com"   # module.aurora.endpoint
   jdbcPort: 5432
   jdbcDatabase: iceberg_catalog
   s3Region: ap-south-1

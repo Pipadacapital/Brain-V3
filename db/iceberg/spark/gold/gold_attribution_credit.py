@@ -79,6 +79,23 @@ RECOGNITION_EVENT_TYPES = ("finalization", "cod_delivery_confirmed")
 # already uses — Iceberg-sole-SoR, no StarRocks MySQL-wire JDBC, no brain_gold.* StarRocks reference.
 GOLD_REVENUE_LEDGER = f"{CATALOG}.{GOLD_NAMESPACE}.gold_revenue_ledger"
 
+# SPEC:B — B.5.4 / AMD-13: attribution touchpoint-input SOURCE switch (DEFAULT OFF = silver_touchpoint).
+# When ATTRIBUTION_SOURCE=journey the fold sources its per-touch input from the Journey-domain output
+# (iceberg.brain_gold.journey_events, is_current + deterministic-only) INSTEAD of silver_touchpoint,
+# projected into the EXACT silver_touchpoint column shape the fold already consumes. With the identity
+# input held constant (journey.engine OFF at journey construction), journey_events.brain_id equals the
+# legacy silver_touchpoint.stitched_brain_id per touch, so the projection is byte-identical and the credit
+# ledger is unchanged — a refactor of the input plumbing, NOT a semantics change (AMD-13 R1). This env is
+# the Spark-driver twin of the per-brand `journey.engine` flag the TS reconcile driver reads
+# (apps/core/.../reconcile-attribution.ts). Anything but 'journey' → legacy silver_touchpoint (default OFF).
+ATTRIBUTION_SOURCE_JOURNEY = "journey"
+JOURNEY_EVENTS_TABLE = f"{CATALOG}.{GOLD_NAMESPACE}.journey_events"
+
+
+def _attribution_source_is_journey() -> bool:
+    """B.5.4 — read the ATTRIBUTION_SOURCE env (default OFF). Never raises → default legacy source."""
+    return (os.environ.get("ATTRIBUTION_SOURCE") or "").strip().lower() == ATTRIBUTION_SOURCE_JOURNEY
+
 # Column contract — db/starrocks/gold_attribution_credit.sql column order (the PK ledger). brand_id first.
 _COLUMNS = """
           brand_id               string    NOT NULL,
@@ -131,6 +148,66 @@ def _read_silver_touchpoint(spark: SparkSession):
                 f"silver_touchpoint Spark mart first."
             )
         raise
+
+
+def _read_journey_touchpoints(spark: SparkSession):
+    """SPEC:B — B.5.4: the Journey-domain touchpoint input, projected into the silver_touchpoint column
+    shape the attribution fold consumes. Reads iceberg.brain_gold.journey_events WHERE is_current (exactly
+    one live version per touchpoint) AND identity_basis='deterministic' (§1.4 / invariant 5 — the canonical
+    ledger is deterministic-only, so ZERO probabilistic rows ever reach attribution/revenue).
+
+    Byte-identical mapping (identity held constant → journey.engine OFF at construction):
+      - brain_anon_id / touch_seq  ← recovered from source_event_ref (brand_id||brain_anon_id||touch_seq).
+      - channel                    ← journey_events.channel (verbatim).
+      - utm_campaign               ← journey_events.campaign (a straight passthrough of the touch utm_campaign).
+      - utm_medium/fbclid/gclid/ttclid ← the attribution_signals map (empty/NULL entries were dropped by the
+        build map_filter → a missing key reads NULL, which the fold's is_deterministic_channel treats the
+        SAME as silver's empty string — only the boolean signal matters, these are never stored in a credit row).
+      - stitched_brain_id          ← the resolved brain_id, with the 'anonymous_<anon>' placeholder mapped
+        back to NULL (unstitched). With journey.engine OFF the resolved brain_id == the legacy stitched_brain_id."""
+    try:
+        spark.table(JOURNEY_EVENTS_TABLE).schema  # probe — raises if the table doesn't exist yet
+    except (AnalysisException, Exception) as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if any(s in msg for s in ("not found", "does not exist", "no such", "nosuchtable", "cannot be found")):
+            raise SystemExit(
+                f"[gold_attribution_credit] ATTRIBUTION_SOURCE=journey but the required Iceberg table "
+                f"{JOURNEY_EVENTS_TABLE} is absent — build the Wave-B journey ledger first "
+                f"(run-gold-journey-events.sh)."
+            )
+        raise
+    return spark.sql(
+        f"""
+        SELECT
+            brand_id,
+            split(source_event_ref, '[|][|]')[1]              AS brain_anon_id,
+            cast(split(source_event_ref, '[|][|]')[2] AS int) AS touch_seq,
+            channel                                            AS channel,
+            campaign                                           AS utm_campaign,
+            attribution_signals['utm_medium']                  AS utm_medium,
+            attribution_signals['fbclid']                      AS fbclid,
+            attribution_signals['gclid']                       AS gclid,
+            attribution_signals['ttclid']                      AS ttclid,
+            CASE WHEN substr(brain_id, 1, 10) = 'anonymous_' THEN NULL ELSE brain_id END AS stitched_brain_id
+        FROM {JOURNEY_EVENTS_TABLE}
+        WHERE is_current = true AND identity_basis = 'deterministic'
+        """
+    )
+
+
+def _read_touchpoints(spark: SparkSession):
+    """SPEC:B — B.5.4: the attribution touchpoint input from the flag-selected source (DEFAULT OFF =
+    silver_touchpoint, byte-identical pre-wave). Returns (df, source_tables); source_tables drives the
+    partition-incremental watermark. Both branches expose the SAME columns the fold's tp.select() reads,
+    so materialize() is unchanged downstream."""
+    if _attribution_source_is_journey():
+        print(
+            "[gold_attribution_credit] ATTRIBUTION_SOURCE=journey → touchpoint input = journey_events "
+            "(is_current, deterministic-only) [B.5.4]",
+            flush=True,
+        )
+        return _read_journey_touchpoints(spark), ["journey_events", "gold_revenue_ledger"]
+    return _read_silver_touchpoint(spark), ["silver_touchpoint", "gold_revenue_ledger"]
 
 
 def _read_recognized_basis(spark: SparkSession):
@@ -256,9 +333,9 @@ def materialize(spark: SparkSession) -> str:
         spark, GOLD_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(8, brand_id)"
     )
 
-    tp = _read_silver_touchpoint(spark)
+    tp, source_tables = _read_touchpoints(spark)  # SPEC:B — B.5.4 flag-selected touchpoint source
     tp, _commit_wm = gold_partition_filter(
-        spark, tp, table_name=TABLE_NAME, source_tables=["silver_touchpoint", "gold_revenue_ledger"],
+        spark, tp, table_name=TABLE_NAME, source_tables=source_tables,
     )
     basis_df = _read_recognized_basis(spark)
 

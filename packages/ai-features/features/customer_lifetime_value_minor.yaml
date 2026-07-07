@@ -1,0 +1,10 @@
+# SPEC: E — feature declaration (customer LTV, MONEY / long minor units)
+name: customer_lifetime_value_minor
+entity: customer
+dtype: long
+source: metric:ltv_realized
+freshness_sla: daily
+owner: measurement-team
+currency: INR
+pii: false
+description: Σ recognized order value for the customer, MINOR units (sibling currency required).

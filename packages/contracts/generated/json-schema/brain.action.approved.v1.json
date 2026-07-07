@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brain.action.approved.v1",
+  "title": "action.approved.v1",
+  "description": "SPEC I (Wave I, AMD-03) — Action Platform envelope: a requested action has been human-APPROVED for execution under a named policy version. Registered in Apicurio as brain/action.approved.v1 (JSON Schema artifact under FULL_TRANSITIVE, AMD-03 R1). Partition key = brand_id (I-S01). SCAFFOLD ONLY — no executor runs. GOVERNANCE: approval binds the action to policy_version + approved_by; execution_mode 'auto' still requires holdout support + per-executor rollback to be reachable (Wave-I gate). PII (I-S02): approved_by is an auth-principal id, never raw PII; money in payload is bigint minor + currency_code.",
+  "type": "object",
+  "required": ["brand_id", "action_id", "executor", "execution_mode", "payload", "approved_by", "policy_version"],
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Tenant key — brand_id-first (I-S01). Kafka partition key."
+    },
+    "action_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The action being approved (same id as its action.requested.v1). Idempotency key = (brand_id, action_id)."
+    },
+    "decision_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "OPTIONAL gold_decisions back-reference (Wave H)."
+    },
+    "executor": {
+      "type": "string",
+      "enum": ["shopify-discount", "meta-audience", "messaging", "webhook"],
+      "description": "Targeted executor adapter (matches an @brain/action-core ExecutorPort name)."
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["suggest", "approve", "auto"],
+      "default": "suggest",
+      "description": "Mode this approval authorizes. 'auto' is only meaningful once the Wave-I governance gate is satisfied."
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Executor-specific instruction body (money = bigint minor + currency_code; no raw PII)."
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "REQUIRED auth-principal user id of the human approver (audit, never raw PII). Governance: no 'auto' execution without a human-approved policy version — this field + policy_version are that record."
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "REQUIRED versioned decision-policy id that authorizes this action (packages/decision-policies, Wave H). Governance gate precondition for autonomous execution."
+    },
+    "holdout_group": {
+      "type": "string",
+      "description": "OPTIONAL incrementality cohort label (carried from day one)."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "OPTIONAL distributed-trace correlation id (ADR-009)."
+    },
+    "approved_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "OPTIONAL ISO-8601 UTC timestamp of the approval."
+    }
+  },
+  "additionalProperties": true
+}

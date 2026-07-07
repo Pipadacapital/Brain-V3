@@ -1,0 +1,24 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: ltv_realized
+version: v1
+entity: semantic_customer
+time_column: last_activity_at
+grain: [all]
+dimensions_allowed: []
+currency_handling: ratio_same_currency
+identity_basis: deterministic_only
+interactive: false
+owner: measurement-team
+description: >-
+  Realized lifetime value per customer, per currency: SUM(lifetime_value_minor) / COUNT(DISTINCT
+  brain_id). The honest realized-revenue-per-customer figure (NOT a predicted/discounted LTV — no
+  model). semantic_customer carries a physical identity_basis → the compiler injects
+  identity_basis='deterministic' (§1.4). Null when zero customers.
+measures:
+  - name: lifetime_value_minor
+    agg: SUM(lifetime_value_minor)
+  - name: customer_count
+    agg: COUNT(DISTINCT brain_id)
+expression: lifetime_value_minor / NULLIF(customer_count, 0)
+examples:
+  - "Realized LTV per customer in INR."

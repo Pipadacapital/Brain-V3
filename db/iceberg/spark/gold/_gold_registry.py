@@ -398,6 +398,57 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         enabled=True,
         grain="brand_currency",
     ),
+    # ── Wave C (SPEC:C.3, AMD-17) — NEW per-order/product contribution-margin engine ──
+    # Spec CM1/CM2/CM3 numbering (industry convention); the live gold_contribution_margin above is left
+    # UNTOUCHED (cm-mapping.md: live CM1 ≙ spec CM2, live CM2 ≙ spec CM3). Fact-based, per-order grain.
+    GoldMartSpec(
+        name="gold_order_economics",
+        phase="bi",
+        module="gold_order_economics.py",
+        pk=["brand_id", "order_id"],
+        mv_name=None,  # net-new mart; not yet served (Wave-C serving/migration is C.4, flag-gated)
+        # recognized/reversal money SoR + the WC-C2 facts (degraded to 0 where not yet built) + spend.
+        reads_from=[
+            "gold_revenue_ledger", "silver_order_state", "silver_marketing_spend",
+            "silver_order_line", "gold_product_costs", "gold_measurement_costs", "gold_measurement_fees",
+        ],
+        money_columns=[
+            MoneyColumn("net_revenue_minor"),   # signed: recognized net (negative for a reversed order)
+            MoneyColumn("cogs_minor"),
+            MoneyColumn("shipping_fwd_minor"),
+            MoneyColumn("shipping_rev_minor"),
+            MoneyColumn("packaging_minor"),
+            MoneyColumn("fees_minor"),
+            MoneyColumn("cm1_minor"),
+            MoneyColumn("cm2_minor"),
+            MoneyColumn("marketing_minor"),
+            MoneyColumn("cm3_minor"),
+        ],
+        enabled=True,
+        grain="brand_order",
+    ),
+    GoldMartSpec(
+        name="gold_product_economics",
+        phase="bi",
+        module="gold_product_economics.py",
+        pk=["brand_id", "product_key", "econ_date", "currency_code"],
+        mv_name=None,  # net-new rollup; not yet served
+        reads_from=["gold_order_economics", "silver_order_line"],
+        money_columns=[
+            MoneyColumn("net_revenue_minor"),
+            MoneyColumn("cogs_minor"),
+            MoneyColumn("shipping_fwd_minor"),
+            MoneyColumn("shipping_rev_minor"),
+            MoneyColumn("packaging_minor"),
+            MoneyColumn("fees_minor"),
+            MoneyColumn("cm1_minor"),
+            MoneyColumn("cm2_minor"),
+            MoneyColumn("marketing_minor"),
+            MoneyColumn("cm3_minor"),
+        ],
+        enabled=True,
+        grain="brand_product_day_currency",
+    ),
     GoldMartSpec(
         name="gold_logistics_performance",
         phase="bi",

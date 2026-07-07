@@ -1,0 +1,24 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: identified_purchase_rate
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: none
+identity_basis: deterministic_only
+interactive: false
+owner: identity-team
+description: >-
+  Share of recognised orders that resolve to a KNOWN (identified) customer rather than an anonymous
+  placeholder brain_id: orders whose brain_id is not an 'anonymous%' placeholder, over all orders.
+  A count ratio (no currency). Deterministic order spine only (§1.4). The identity-resolution quality
+  signal on the purchase path. Null when there are zero orders.
+measures:
+  - name: identified_orders
+    agg: SUM(CASE WHEN brain_id NOT LIKE 'anonymous%' THEN 1 ELSE 0 END)
+  - name: total_orders
+    agg: COUNT(DISTINCT order_id)
+expression: CAST(identified_orders AS double) / NULLIF(total_orders, 0)
+examples:
+  - "Identified purchase rate at grain=month."

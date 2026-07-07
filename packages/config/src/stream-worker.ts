@@ -104,6 +104,19 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .string()
     .default('stream-worker-restitch-dirty'),
 
+  /**
+   * SPEC: B.2 (WB-B2, AMD-08, AMD-11) — consumer group for the event-driven cross-device JOURNEY
+   * re-version dirty-set consumer. It consumes the SAME identity.{linked,merged,unmerged}.v1 lane under
+   * its OWN group (AMD-08 R1 unifies the map-mutation lane; separate offsets from the recompute + restitch
+   * consumers) and marks the affected BRAIN_IDS dirty in ops.journey_reversion_pending so the Spark
+   * reversion job rebuilds those brains' journeys as version N+1 + writes journey_version_log. Per-brand
+   * gated by `journey.engine` (DEFAULT OFF): with no brand opted in it is an inert flag-check (nothing
+   * enqueued, byte-identical golden journeys).
+   */
+  JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-journey-reversion-dirty'),
+
   // ── Real-time touchpoint cache (SPEC: A.4 / flag identity.tp_cache, default OFF) ──
   /**
    * Consumer group for the touchpoint-cache consumer. Reads the SAME live collector topic

@@ -108,6 +108,9 @@ importers:
       '@aws-sdk/client-ses':
         specifier: ^3.600.0
         version: 3.1075.0
+      '@brain/ai-features':
+        specifier: workspace:*
+        version: link:../../packages/ai-features
       '@brain/ai-gateway-client':
         specifier: workspace:*
         version: link:../../packages/ai-gateway-client
@@ -165,6 +168,9 @@ importers:
       '@brain/razorpay-mapper':
         specifier: workspace:*
         version: link:../../packages/razorpay-mapper
+      '@brain/semantic-metrics':
+        specifier: workspace:*
+        version: link:../../packages/semantic-metrics
       '@brain/shiprocket-mapper':
         specifier: workspace:*
         version: link:../../packages/shiprocket-mapper
@@ -418,6 +424,18 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@25.9.3)
 
+  packages/action-core:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
+
   packages/ad-spend-mapper:
     dependencies:
       '@brain/connector-core':
@@ -434,11 +452,33 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@20.19.43)
 
+  packages/ai-features:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
+
   packages/ai-gateway-client:
     dependencies:
       '@brain/metric-engine':
         specifier: workspace:*
         version: link:../metric-engine
+
+  packages/ai-platform:
+    dependencies:
+      '@brain/money':
+        specifier: workspace:*
+        version: link:../money
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
 
   packages/attribution-writer:
     dependencies:
@@ -523,6 +563,15 @@ importers:
       '@types/pg':
         specifier: ^8.11.6
         version: 8.20.0
+
+  packages/decision-policies:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
 
   packages/domain-journey:
     devDependencies:
@@ -710,6 +759,15 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@25.9.3)
 
+  packages/prompt-loader:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@25.9.3)
+
   packages/razorpay-mapper:
     dependencies:
       '@brain/connector-core':
@@ -719,6 +777,28 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
+
+  packages/semantic-metrics:
+    dependencies:
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      tsx:
+        specifier: ^4.19.0
+        version: 4.22.4
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -7067,7 +7147,7 @@ snapshots:
 
   '@types/connect@3.4.36':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 20.19.43
 
   '@types/d3-array@3.2.2': {}
 
@@ -7099,7 +7179,7 @@ snapshots:
 
   '@types/mysql@2.15.26':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 20.19.43
 
   '@types/node@20.19.43':
     dependencies:
@@ -7119,13 +7199,13 @@ snapshots:
 
   '@types/pg@8.20.0':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 20.19.43
       pg-protocol: 1.14.0
       pg-types: 2.2.0
 
   '@types/pg@8.6.1':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 20.19.43
       pg-protocol: 1.14.0
       pg-types: 2.2.0
 
@@ -7137,7 +7217,7 @@ snapshots:
 
   '@types/tedious@4.0.14':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 20.19.43
 
   '@types/use-sync-external-store@0.0.6': {}
 
@@ -8593,7 +8673,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.1
-      '@types/node': 25.9.3
+      '@types/node': 20.19.43
       long: 5.3.2
 
   proxy-addr@2.0.7:

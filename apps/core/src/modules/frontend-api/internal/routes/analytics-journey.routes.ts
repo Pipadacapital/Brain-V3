@@ -15,6 +15,7 @@ import {
   getJourneyStitchRate,
   getJourneyTimeline,
   getJourneyEvents,
+  getJourneyReplay,
   getJourneyPaths,
   getJourneyList,
   getShipmentOutcomes,
@@ -43,6 +44,7 @@ import type {
   FormConversion as ContractFormConversion,
   JourneyTimeline as ContractJourneyTimeline,
   JourneyEventsLedger as ContractJourneyEventsLedger,
+  JourneyReplay as ContractJourneyReplay,
   JourneyStitchRate as ContractJourneyStitchRate,
 } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
@@ -51,7 +53,12 @@ import type { BffDeps } from './_shared.js';
 import { queryConnectorRecords, CONNECTOR_RECORD_ENTITIES } from '@brain/metric-engine';
 
 export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, srPool, rawPool } = deps;
+  const { bffProtectedPreHandler, srPool, rawPool, flagService } = deps;
+
+  // SPEC: B.4 — the per-brand flag gating the NEW replay (?as_of=) behavior on the journey ledger route
+  // (DEFAULT OFF, fail-closed — §0.5). The existing current-projection read (no as_of) is grandfathered
+  // and stays flag-free (flags-OFF is byte-identical). Wave B journey engine = 'journey.engine'.
+  const JOURNEY_ENGINE_FLAG = 'journey.engine' as const;
 
   // ── Records browser — paginated canonical connector records (orders/shipments/ad-spend) ──────
   // GET /api/v1/analytics/records/:entity?from&to&search&page — newest-first, 20/page. Thin brand-
@@ -979,12 +986,19 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
   );
 
   /**
-   * GET /api/v1/analytics/journey/events?brainId=<uuid>&cursor=&limit=
+   * GET /api/v1/analytics/journey/events?brainId=<uuid>&cursor=&limit=&as_of=<iso>
    * The versioned journey LEDGER for ONE resolved customer — the current (is_current=true)
    * projection of iceberg.brain_gold.journey_events via brain_serving.mv_journey_events_current.
    * Keyed by brain_id (the RESOLVED identity, same key as Customer 360 — post-merge canonical),
    * newest-first, keyset-paginated (opaque next_cursor; an invalid cursor degrades to the first
    * page). MONEY: revenue_minor bigint-minor-string + sibling currency_code, composite rows only.
+   *
+   * SPEC: B.4 REPLAY — with `?as_of=<iso>` this becomes the batch-only replay surface (AMD-14: the
+   * spec's GET /v1/customers/{brain_id}/journey?as_of= maps onto this live BFF route): the journey AS
+   * KNOWN AT as_of, reconstructed from RETAINED version history + identity_asof intervals (AMD-10,
+   * NOT Iceberg time-travel). NEW behavior → gated by the per-brand `journey.engine` flag (DEFAULT
+   * OFF, fail-closed); NO cache (Cache-Control: no-store); response carries replayed:true. The
+   * no-as_of current-projection path is grandfathered (flag-free, byte-identical when flags OFF).
    */
   fastify.get(
     '/api/v1/analytics/journey/events',
@@ -1000,6 +1014,8 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
             },
             cursor: { type: 'string', maxLength: 512 },
             limit:  { type: 'integer', minimum: 1, maximum: 100 },
+            // SPEC: B.4 — replay wall-clock (ISO-8601). Presence switches to the replay path.
+            as_of: { type: 'string', minLength: 1, maxLength: 40 },
           },
           required: ['brainId'],
           additionalProperties: false,
@@ -1025,7 +1041,49 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
       }
 
-      const query = request.query as { brainId: string; cursor?: string; limit?: number };
+      const query = request.query as { brainId: string; cursor?: string; limit?: number; as_of?: string };
+
+      // ── SPEC: B.4 — REPLAY path (?as_of=) — batch-only, flag-gated, never cached ──────────────────
+      if (query.as_of !== undefined) {
+        // Fail-closed: NEW behavior gated by the per-brand journey.engine flag (DEFAULT OFF).
+        const enabled = flagService
+          ? await flagService.isFlagEnabled(auth.brandId, JOURNEY_ENGINE_FLAG)
+          : false;
+        if (!enabled) {
+          return reply.code(404).send({
+            request_id: requestId,
+            error: {
+              code: 'NOT_ENABLED',
+              message: 'Journey replay (?as_of=) is gated by the journey.engine flag (OFF for this brand).',
+            },
+          });
+        }
+
+        // The as_of must be a real instant (reconstruction is time-anchored). Reject an unparseable value.
+        const asOfMs = Date.parse(query.as_of);
+        if (Number.isNaN(asOfMs)) {
+          return reply.code(400).send({
+            request_id: requestId,
+            error: { code: 'INVALID_PARAMS', message: 'as_of must be an ISO-8601 timestamp.' },
+          });
+        }
+
+        const replay: ContractJourneyReplay = await getJourneyReplay(
+          auth.brandId,
+          { srPool },
+          {
+            brainId: query.brainId,
+            asOf: new Date(asOfMs).toISOString(),
+            cursor: query.cursor ?? null,
+            limit: query.limit ?? 50,
+            dataSource: 'live',
+          },
+        );
+
+        // Batch-path only (B.4): replay is reconstructed, never a cacheable live read.
+        reply.header('Cache-Control', 'no-store');
+        return reply.send({ request_id: requestId, data: replay });
+      }
 
       const result: ContractJourneyEventsLedger = await getJourneyEvents(
         auth.brandId,

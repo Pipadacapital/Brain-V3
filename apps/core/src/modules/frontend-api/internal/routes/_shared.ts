@@ -14,7 +14,7 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import type { DbPool } from '@brain/db';
 import type { Pool as PgPool } from 'pg';
-import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
+import type { SilverPool, ServingCacheReader, TouchpointZsetClient, SemanticServingRouter } from '@brain/metric-engine';
 import type {
   AuthService,
   OnboardingService,
@@ -68,6 +68,19 @@ export interface BffDeps {
    * known-metric read as getOrSet(buildCacheKey(brandId, metricId, paramsHash, servingVersion)).
    */
   servingCache?: ServingCacheReader;
+  /**
+   * SPEC: B.3 / A.4 — the Redis touchpoint-cache read client (the shared ioredis at the root,
+   * satisfying the zrevrange/zcard structural port). Optional: absent → the B.3 journey timeline
+   * reads the durable Trino ledger directly (the §1.11 cold-path fallback).
+   */
+  touchpointCacheReader?: TouchpointZsetClient;
+  /**
+   * SPEC: D.3 — the semantic-serving flag switch. Every migrated metric read routes through it:
+   * flag `semantic.serving` OFF (default) → legacy mv_gold_* mart read (BYTE-IDENTICAL); ON +
+   * compiled read → compiled semantic view. Optional: absent → routes call the legacy read directly
+   * (identical to pre-Wave-D). FAIL-CLOSED (flag error → legacy). See semantic-serving.ts.
+   */
+  semanticRouter?: SemanticServingRouter;
   vaultService?: ContactPiiVaultService;
   identityReader?: IdentityReader;
   /**

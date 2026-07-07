@@ -41,6 +41,12 @@ export interface JourneyEventDto {
   /** 0..1 double — NOT money. */
   identity_confidence: number | null;
   data_version: number;
+  /** SPEC: B.4 — HOW this event's identity was matched: 'order'|'deterministic'|'anonymous'. */
+  matched_via: string;
+  /** SPEC: B.4 / DG-2 — brain_id that owned the identity AT occurred_at; null = anonymous/pre-identity. */
+  brain_id_asof: string | null;
+  /** SPEC: B.4 / A.3 — probabilistic-overlay marker (false on deterministic canonical rows). */
+  estimated: boolean;
 }
 
 export type JourneyEventsResult =
@@ -135,6 +141,9 @@ export async function getJourneyEvents(
     is_composite: e.isComposite,
     identity_confidence: e.identityConfidence,
     data_version: e.dataVersion,
+    matched_via: e.matchedVia,
+    brain_id_asof: e.brainIdAsof,
+    estimated: e.estimated,
   }));
 
   return {

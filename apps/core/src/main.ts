@@ -29,10 +29,14 @@ import pg from 'pg';
 // (Wave B repoints those to PG). The serving reads are fronted by the Redis analytics cache.
 import {
   createTrinoPool,
+  createPerBrandTrinoGate,
+  createSemanticServingRouter,
   IoredisCacheAdapter,
   createServingCacheReader,
   type SilverPool,
   type ServingCacheReader,
+  type SemanticServingRouter,
+  type TouchpointZsetClient,
 } from '@brain/metric-engine';
 // SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed).
 import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
@@ -422,12 +426,32 @@ export async function main(): Promise<void> {
   // Gold/Silver. The ${BRAND_PREDICATE} injection at the withSilverBrand seam is the load-bearing
   // per-brand isolation (Trino has no native row policy — proven non-inert by the isolation-fuzz test).
   // The adapter satisfies @brain/metric-engine SilverPool (now an alias of the Trino query PORT).
-  const srPool: SilverPool = createTrinoPool({
+  const trinoPool: SilverPool = createTrinoPool({
     baseUrl: `http://${cfg.TRINO_HOST}:${cfg.TRINO_PORT}`,
     catalog: 'iceberg',
     schema: 'brain_serving',
     user: 'brain_core',
   });
+
+  // ── SPEC: §1.11.3 / D.3 — per-brand Trino admission gate at the single serving chokepoint ──
+  // Wrap the pool with a per-brand concurrency gate (max-concurrent + FIFO queue + acquire-timeout,
+  // brand_id read from the LAST query param — the ${BRAND_PREDICATE} seam invariant). ADDITIVE +
+  // DEFAULT-PERMISSIVE: normal load is untouched; a single brand's fan-out can no longer starve the
+  // shared coordinator (a full queue / timeout REJECTS fail-loud). This is a LIVENESS control, NOT
+  // the isolation mechanism — isolation stays the ${BRAND_PREDICATE} injection (isolation-fuzz test).
+  const srPool: SilverPool =
+    cfg.TRINO_BRAND_GATE_ENABLED === 'true'
+      ? createPerBrandTrinoGate(trinoPool, {
+          maxConcurrentPerBrand: cfg.TRINO_BRAND_GATE_MAX_CONCURRENT,
+          maxQueuePerBrand: cfg.TRINO_BRAND_GATE_MAX_QUEUE,
+          acquireTimeoutMs: cfg.TRINO_BRAND_GATE_ACQUIRE_TIMEOUT_MS,
+        })
+      : trinoPool;
+  log.info(
+    `[core] per-brand Trino gate ${cfg.TRINO_BRAND_GATE_ENABLED === 'true' ? 'ENABLED' : 'disabled'} ` +
+      `(maxConcurrent=${cfg.TRINO_BRAND_GATE_MAX_CONCURRENT}, maxQueue=${cfg.TRINO_BRAND_GATE_MAX_QUEUE}, ` +
+      `acquireTimeoutMs=${cfg.TRINO_BRAND_GATE_ACQUIRE_TIMEOUT_MS})`,
+  );
 
   // ── Brain V4 serving cache (Redis-fronted hot serving reads) ─────────────────
   // Front the KNOWN-metric serving reads with the analytics cache (brand_id-leading keys,
@@ -458,6 +482,16 @@ export async function main(): Promise<void> {
   // overloaded `set` signature. Redis down → every flag reads false → pre-wave behavior.
   const flagService = createFlagService({
     store: new RedisFlagStoreAdapter(redis as unknown as RedisFlagClient),
+  });
+
+  // ── SPEC: D.3 — semantic-serving router (compiled-view migration switch, DEFAULT OFF) ──
+  // The single additive switch every migrated metric read passes through. flag `semantic.serving`
+  // OFF (default) → legacy mv_gold_* mart read, BYTE-IDENTICAL; ON + compiled read present →
+  // compiled semantic view. A metric with no compiled read yet stays on legacy even with the flag
+  // ON (safe per-metric migration). FAIL-CLOSED: a flag-read error → legacy. Injected into the BFF
+  // route bundle; the OFF path is a pure pass-through, so the whole wave ships dark by default.
+  const semanticRouter: SemanticServingRouter = createSemanticServingRouter({
+    flags: { isFlagEnabled: (brandId, flag) => flagService.isFlagEnabled(brandId, flag as never) },
   });
 
   // Create DB pool (3-GUC middleware — NN-1). assertRlsEnforcingRole (P2.3): refuse to start if
@@ -818,6 +852,9 @@ export async function main(): Promise<void> {
     rawPgPool,
     srPool,
     servingCache,
+    // SPEC: B.3 / A.4 — the B.3 journey timeline reads the A.4 touchpoint zset from the SAME shared
+    // ioredis client (structural TouchpointZsetClient: zrevrange/zcard). Cold cache → Trino fallback.
+    touchpointCacheReader: redis as unknown as TouchpointZsetClient,
     rateLimiter,
     auditWriter,
     authService,
@@ -830,6 +867,9 @@ export async function main(): Promise<void> {
     identityEventPublisher,
     getCoreSaltHex,
     flagService,
+    // SPEC: D.3 — the semantic-serving flag switch (DEFAULT OFF, legacy pass-through). Migrated
+    // metric reads route through it; a metric with no compiled view yet stays on legacy even ON.
+    semanticRouter,
   });
 
   // ── CQ-2: register the connector + pixel context (HIGH-MOUNT-01) ────────────

@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brain.action.failed.v1",
+  "title": "action.failed.v1",
+  "description": "SPEC I (Wave I, AMD-03) — Action Platform envelope: an action FAILED (rejected pre-execution, or errored during execution). Registered in Apicurio as brain/action.failed.v1 (JSON Schema artifact under FULL_TRANSITIVE, AMD-03 R1). Partition key = brand_id (I-S01). SCAFFOLD ONLY — the fail-closed NotImplemented adapters make this the EXPECTED terminal envelope for any wired action today (error_code = 'NOT_IMPLEMENTED' or 'EXECUTOR_DISABLED'). PII (I-S02): error_message is operator-facing diagnostic text, never raw PII; money in payload is bigint minor + currency_code.",
+  "type": "object",
+  "required": ["brand_id", "action_id", "executor", "execution_mode", "error_code"],
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Tenant key — brand_id-first (I-S01). Kafka partition key."
+    },
+    "action_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The action that failed. Idempotency key = (brand_id, action_id)."
+    },
+    "decision_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "OPTIONAL gold_decisions back-reference (Wave H)."
+    },
+    "executor": {
+      "type": "string",
+      "enum": ["shopify-discount", "meta-audience", "messaging", "webhook"],
+      "description": "The executor adapter targeted (matches an @brain/action-core ExecutorPort name)."
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["suggest", "approve", "auto"],
+      "default": "suggest",
+      "description": "Mode under which the action was attempted."
+    },
+    "error_code": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable machine-readable failure code (e.g. 'NOT_IMPLEMENTED', 'EXECUTOR_DISABLED', 'GOVERNANCE_BLOCKED', 'UPSTREAM_ERROR'). Scaffold adapters fail-closed with 'NOT_IMPLEMENTED' / 'EXECUTOR_DISABLED'."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "OPTIONAL human/operator diagnostic text (no raw PII, I-S02)."
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "OPTIONAL echo of the attempted instruction body for triage (money = bigint minor + currency_code; no raw PII)."
+    },
+    "holdout_group": {
+      "type": "string",
+      "description": "OPTIONAL incrementality cohort label (preserved across the lifecycle)."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "OPTIONAL distributed-trace correlation id (ADR-009)."
+    },
+    "failed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "OPTIONAL ISO-8601 UTC timestamp of the failure."
+    }
+  },
+  "additionalProperties": true
+}

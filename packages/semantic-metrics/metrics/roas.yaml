@@ -1,0 +1,24 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: roas
+version: v1
+entity: semantic_campaign
+time_column: updated_at
+grain: [all]
+dimensions_allowed: [platform]
+currency_handling: ratio_same_currency
+identity_basis: deterministic_only
+interactive: false
+owner: marketing-team
+description: >-
+  Return On Ad Spend: DETERMINISTIC-attributed campaign revenue divided by spend, per currency
+  (optionally per platform). Attribution consumes deterministic identity links only (§1.4 / the
+  gold_campaign_attribution ledger). Null when spend is zero. Empty attribution on golden → null
+  (honest, never a fabricated ROAS).
+measures:
+  - name: attributed_revenue_minor
+    agg: SUM(attributed_revenue_minor)
+  - name: spend_minor
+    agg: SUM(spend_minor)
+expression: CAST(attributed_revenue_minor AS double) / NULLIF(spend_minor, 0)
+examples:
+  - "ROAS by platform in INR."

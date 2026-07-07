@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brain.action.requested.v1",
+  "title": "action.requested.v1",
+  "description": "SPEC I (Wave I, AMD-03) — Action Platform envelope: an action has been REQUESTED (proposed) for execution. Registered in Apicurio as brain/action.requested.v1 (JSON Schema artifact under the FULL_TRANSITIVE rule, per AMD-03 R1, which enumerates action.*.v1 among the NEW program topics that get registry-registered JSON Schema — NOT Avro). Partition key = brand_id (tenant-first, I-S01). SCAFFOLD ONLY: no executor runs off this envelope — the executor adapters are NotImplemented and fail-closed behind per-executor flags (default OFF). GOVERNANCE (Wave-I gate precondition): execution_mode 'auto' is UNREACHABLE until a human-approved policy version + holdout support + a per-executor rollback implementation all exist; until then only 'suggest'/'approve' are meaningful. holdout_group is carried in the envelope from day one so incrementality is measurable the moment execution goes live. PII (I-S02): payload carries no raw email/phone/name/address; money in payload is bigint minor units + a sibling currency_code, never a float, never blended.",
+  "type": "object",
+  "required": ["brand_id", "action_id", "executor", "execution_mode", "payload"],
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Tenant key — brand_id-first on every event/key (I-S01). Also the Kafka partition key for this lane."
+    },
+    "action_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Stable id for this action across its whole lifecycle (requested → approved → executed | failed → rolled_back). Idempotency key = (brand_id, action_id)."
+    },
+    "decision_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "OPTIONAL back-reference to the gold_decisions row (Wave H) that selected this action — the road-taken link for audit. Null for actions not originated by the decision engine."
+    },
+    "executor": {
+      "type": "string",
+      "enum": ["shopify-discount", "meta-audience", "messaging", "webhook"],
+      "description": "Which executor adapter is targeted. MUST match an ExecutorPort adapter name in @brain/action-core; each is gated by its own platform flag (actions.executor.*, default OFF)."
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["suggest", "approve", "auto"],
+      "default": "suggest",
+      "description": "SPEC F/I — suggest (surface only) | approve (human approval required before execute) | auto (autonomous). Default 'suggest'. 'auto' is UNREACHABLE until the Wave-I governance gate is satisfied (approved policy version + holdout + per-executor rollback)."
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Executor-specific instruction body (e.g. discount spec, audience delta, message template ref, webhook target). Money fields are bigint minor units + a sibling currency_code (never a float/blended). No raw PII (I-S02)."
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "OPTIONAL auth-principal user id of the human approver (audit, never raw PII). Absent at request time; present only once an approval has occurred."
+    },
+    "holdout_group": {
+      "type": "string",
+      "description": "OPTIONAL incrementality cohort label (e.g. 'holdout' | 'treatment' | a bucket id). Carried from day one so lift is measurable when execution goes live; null when no holdout applies."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "OPTIONAL distributed-trace correlation id (ADR-009)."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "OPTIONAL ISO-8601 UTC timestamp the request was raised."
+    }
+  },
+  "additionalProperties": true
+}

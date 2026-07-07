@@ -23,8 +23,12 @@ import {
   getContributionMargin,
   listCostInputs,
   upsertCostInput,
+  parseCostSheetCsv,
+  ingestProductCosts,
+  listProductCosts,
   fxRateService,
 } from '../../../analytics/index.js';
+import type { ProductCostRow } from '../../../analytics/index.js';
 import { withBrandTxn } from '@brain/metric-engine';
 import type {
   OrderStatusMix as ContractOrderStatusMix,
@@ -37,7 +41,12 @@ import type {
 import type { BffDeps } from './_shared.js';
 
 export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, rawPool, srPool, servingCache } = deps;
+  const { bffProtectedPreHandler, rawPool, srPool, servingCache, semanticRouter } = deps;
+
+  // SPEC:D.3 — route a metric read through the semantic-serving flag switch (`semantic.serving`,
+  // DEFAULT OFF → legacy compute, BYTE-IDENTICAL). No compiled view yet (D.2-gated) → pass-through.
+  const routeMetric = <T>(brandId: string, metricId: string, legacy: () => Promise<T>): Promise<T> =>
+    semanticRouter ? semanticRouter.route(brandId, metricId, legacy) : legacy();
 
   // Redis serving-cache wrapper (same shape as analytics-core.routes.ts) — wraps a Trino read so
   // repeated loads hit Redis (5-min TTL) instead of re-querying Trino. No-op when cache is absent.
@@ -245,17 +254,22 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
       const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result: ContractOrderStatusMix = await getOrderStatusMix(
-        auth.brandId,
-        { srPool },
-        {
-          from: new Date(`${fromStr}T00:00:00Z`),
-          to: new Date(`${toStr}T23:59:59Z`),
-          fromStr,
-          toStr,
-          // Dev: the order ledger's cod_* rows folded into Silver are synthetic (real shape).
-          dataSource: 'synthetic',
-        },
+      // SPEC:D.3 — served through the semantic-serving switch (metricId 'order_status_mix'). Flag OFF
+      // (default) → this exact legacy read; the compiled order_status_mix view (D.2) migrates it later.
+      const brandId = auth.brandId; // const-capture preserves the !brandId guard across the closure
+      const result: ContractOrderStatusMix = await routeMetric(brandId, 'order_status_mix', () =>
+        getOrderStatusMix(
+          brandId,
+          { srPool },
+          {
+            from: new Date(`${fromStr}T00:00:00Z`),
+            to: new Date(`${toStr}T23:59:59Z`),
+            fromStr,
+            toStr,
+            // Dev: the order ledger's cod_* rows folded into Silver are synthetic (real shape).
+            dataSource: 'synthetic',
+          },
+        ),
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -416,6 +430,73 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
           return reply.code(409).send({ request_id: requestId, error: { code: 'COST_ALREADY_RECORDED', message: 'This cost has already been recorded.' } });
         }
         return reply.code(500).send({ request_id: requestId, error: { code: 'INTERNAL_ERROR', message: 'Could not save cost input.' } });
+      }
+    },
+  );
+
+  /**
+   * SPEC:C.2.4 — per-SKU COGS cost sheet (gold_product_costs, 0126).
+   *
+   * GET  /api/v1/costs/product-sheet — the brand's currently-open per-SKU unit costs.
+   * POST /api/v1/costs/product-sheet — CSV ingest (versioned, bi-temporal, idempotent). Body is
+   *   EITHER application/json { csv: "<file contents>" } OR { rows: [{sku,cost_minor,currency_code,
+   *   valid_from,valid_to?}] }. Brand from session (D-1); RLS-scoped; validated (bad currency /
+   *   negative cost / overlapping validity rejected per-row). Returns {inserted, updated, rejected[]}.
+   */
+  fastify.get(
+    '/api/v1/costs/product-sheet',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) return reply.send({ request_id: requestId, data: { product_costs: [] } });
+      if (!rawPool) return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
+      const product_costs = await listProductCosts(auth.brandId, { pool: rawPool });
+      return reply.send({ request_id: requestId, data: { product_costs } });
+    },
+  );
+
+  fastify.post(
+    '/api/v1/costs/product-sheet',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            csv: { type: 'string', maxLength: 5_000_000 },
+            rows: { type: 'array', maxItems: 50_000 },
+          },
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: 'Invalid cost-sheet body.' } });
+      }
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) return reply.code(409).send({ request_id: requestId, error: { code: 'NO_ACTIVE_BRAND', message: 'Select a brand first.' } });
+      if (!rawPool) return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool not available' } });
+      const body = request.body as { csv?: string; rows?: ProductCostRow[] };
+      let rows: ProductCostRow[];
+      try {
+        rows = body.csv != null ? parseCostSheetCsv(body.csv) : Array.isArray(body.rows) ? body.rows : [];
+      } catch (err) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_CSV', message: (err as Error).message } });
+      }
+      if (rows.length === 0) {
+        return reply.code(400).send({ request_id: requestId, error: { code: 'EMPTY_UPLOAD', message: 'No cost rows supplied (send `csv` or `rows`).' } });
+      }
+      try {
+        const result = await ingestProductCosts(auth.brandId, rows, { pool: rawPool });
+        return reply.send({ request_id: requestId, data: result });
+      } catch (err) {
+        request.log.error({ err }, 'product cost-sheet ingest failed');
+        return reply.code(500).send({ request_id: requestId, error: { code: 'INTERNAL_ERROR', message: 'Could not ingest cost sheet.' } });
       }
     },
   );

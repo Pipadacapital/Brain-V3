@@ -10,7 +10,7 @@
 import { type FastifyInstance } from 'fastify';
 import type { DbPool } from '@brain/db';
 import type pg from 'pg';
-import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
+import type { SilverPool, ServingCacheReader, TouchpointZsetClient, SemanticServingRouter } from '@brain/metric-engine';
 import type { AuditWriter } from '@brain/audit';
 import type { FlagService } from '@brain/platform-flags';
 
@@ -43,6 +43,8 @@ export interface RegisterWorkspaceAccessDeps {
   srPool: SilverPool;
   /** Brain V4 serving cache (Redis-fronted hot serving reads over the Trino seam). */
   servingCache: ServingCacheReader;
+  /** SPEC: B.3 / A.4 — the Redis touchpoint-cache read client (shared ioredis). Optional. */
+  touchpointCacheReader?: TouchpointZsetClient;
   rateLimiter: RateLimiter;
   auditWriter: AuditWriter;
   authService: AuthService;
@@ -58,6 +60,8 @@ export interface RegisterWorkspaceAccessDeps {
   flagService?: FlagService;
   /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge (identity.unmerged.v1). */
   identityEventPublisher?: IdentityEventPublisher;
+  /** SPEC: D.3 — semantic-serving flag switch (compiled-view migration; DEFAULT OFF, legacy pass-through). */
+  semanticRouter?: SemanticServingRouter;
 }
 
 export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWorkspaceAccessDeps): void {
@@ -68,6 +72,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     rawPgPool,
     srPool,
     servingCache,
+    touchpointCacheReader,
     rateLimiter,
     auditWriter,
     authService,
@@ -80,6 +85,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     getCoreSaltHex,
     flagService,
     identityEventPublisher,
+    semanticRouter,
   } = deps;
 
   // Register workspace-access + BFF routes.
@@ -87,7 +93,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityEventPublisher);
+  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityEventPublisher, touchpointCacheReader, semanticRouter);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   registerConsentRoutes(app, {

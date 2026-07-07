@@ -63,6 +63,25 @@ model_list:
       model: openai/gpt-4o
       api_key: os.environ/OPENAI_API_KEY
 
+# ── Task-class routing table (SPEC:F.1 — model aliases per task class) ────────────────────────────
+# CONTRACT-F scaffold. Maps a TASK CLASS (what the caller is doing) → the model-tier alias that
+# serves it, so callsites request a task_class and never name a concrete model (a tier swap is one
+# edit here). CONFIG only: no router runs against it in the scaffold (the litellm compose service is
+# commented out until Wave F; ai.gateway.call_logging flag default OFF).
+#
+# Each task class MUST map to a declared model_list alias above:
+#   nlq_resolve    — resolve an NL question → a constrained metric binding (short, structured). small.
+#   classify       — bounded label / routing decisions (short output). small.
+#   summarize      — compact deterministic summaries over provided context. small.
+#   conversational — multi-turn copilot orchestration (git-backed copilot.system prompt). large.
+#   synthesis      — multi-step reasoning / narrative synthesis over several tool results. large.
+task_class_routing:
+  nlq_resolve: small_model
+  classify: small_model
+  summarize: small_model
+  conversational: large_model
+  synthesis: large_model
+
 router_settings:
   # Fallback chain: small_model → small_model_fallback; large_model → large_model_fallback.
   # This is the "keep a known-good model in the fallback chain" invariant: a failed swap or
@@ -133,12 +152,26 @@ virtual_keys:
   # ── Production template (replace brand_id + key value per tenant) ─────────────────────────────
   # Each production brand gets its own key + budget enforced by the gateway.
   # Monthly cap = product plan's model-spend tier; align with Canon pricing tiers (THE-MOAT.md).
+  #
+  # PER-BRAND BUDGET + RATE-LIMIT KEY SHAPE (SPEC:F.1 — scaffold; the platform provisioner writes
+  # this shape per brand). One virtual key per brand carries BOTH the spend cap AND request-rate
+  # limits, all keyed by brand_id (I-S01 — the tenant key is first-class on the gateway key too):
+  #   max_budget       — monthly spend hard-stop, MAJOR-unit USD (gateway internal; app-facing cost
+  #                      is logged to ops_llm_calls in bigint MINOR units + currency per §1.2).
+  #   budget_duration  — rolling budget window (monthly).
+  #   rpm_limit        — requests-per-minute ceiling for this brand's key (rate-limit shape).
+  #   tpm_limit        — tokens-per-minute ceiling for this brand's key (rate-limit shape).
+  #   models           — the alias policies this key may call (tier restriction).
+  #   metadata.brand_id— the tenant this key bills/limits (REQUIRED per brand key).
   - key: sk-brain-prod-template
     max_budget: 20.00         # $20.00/month — starter production tier (adjust per plan)
     budget_duration: monthly
+    rpm_limit: 60             # per-brand requests/min ceiling (scaffold default; tune per plan)
+    tpm_limit: 200000         # per-brand tokens/min ceiling (scaffold default; tune per plan)
     models: ["small_model", "large_model"]
     metadata:
       tenant_tier: production
+      brand_id: 00000000-0000-0000-0000-000000000000  # REPLACE per brand (tenant key on the gateway key)
       description: Production tenant template — clone per brand; set brand_id + key from Secrets Manager
 
 general_settings:

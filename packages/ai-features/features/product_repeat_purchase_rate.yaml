@@ -1,0 +1,9 @@
+# SPEC: E — feature declaration (product-entity ratio / double)
+name: product_repeat_purchase_rate
+entity: product
+dtype: double
+source: metric:repeat_rate
+freshness_sla: daily
+owner: measurement-team
+pii: false
+description: Fraction of buyers of this product who repurchase (ratio derived from integer counts).

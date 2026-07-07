@@ -1,0 +1,24 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: cac_new
+version: v1
+entity: semantic_campaign
+time_column: updated_at
+grain: [all]
+dimensions_allowed: [platform]
+currency_handling: ratio_same_currency
+identity_basis: deterministic_only
+interactive: false
+owner: marketing-team
+description: >-
+  New-customer CAC: ad spend divided by the count of new-customer orders DETERMINISTICALLY attributed
+  to the campaign (semantic_campaign.new_customer_orders_attributed), per currency (optionally per
+  platform). Integer minor units (integer division). Deterministic attribution only (§1.4). Null when
+  zero attributed new-customer orders.
+measures:
+  - name: spend_minor
+    agg: SUM(spend_minor)
+  - name: new_customer_orders
+    agg: SUM(new_customer_orders_attributed)
+expression: spend_minor / NULLIF(new_customer_orders, 0)
+examples:
+  - "CAC(new) by platform in INR."

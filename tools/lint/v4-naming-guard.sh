@@ -81,6 +81,7 @@ is_excluded() {
     db/starrocks/teardown/*) return 0 ;;            # names the retired DBs on purpose
     tools/lint/v4-naming-guard.sh) return 0 ;;      # this guard + its self-test corpus
     tools/lint/v4-naming-guard.selftest.*) return 0 ;;
+    tools/lint/identity-view-guard.sh) return 0 ;;  # sibling guard: names silver_identity_map in its docstring/self-test fixtures on purpose (A.2.2)
     tools/isolation-fuzz/*) return 0 ;;             # tenant-isolation fuzz fixtures
     *.test.ts|*.spec.ts|*.test.tsx|*.spec.tsx) return 0 ;;
     */test/*|*/tests/*|*/__tests__/*) return 0 ;;

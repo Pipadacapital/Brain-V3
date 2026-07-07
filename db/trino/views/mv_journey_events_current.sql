@@ -49,6 +49,11 @@ SELECT
   is_composite,
   composite_order_key,
   ingested_at,
-  updated_at
+  updated_at,
+  -- SPEC: B.1 — identity-link provenance for the resolved brain_id (matched_via[]) + identity_basis
+  -- ('deterministic' — the canonical ledger is deterministic-only per §1.4; probabilistic overlays
+  -- live in a separate view). The B.3 journey APIs surface matched_via per touchpoint.
+  matched_via,
+  identity_basis
 FROM iceberg.brain_gold.journey_events
 WHERE is_current = true;

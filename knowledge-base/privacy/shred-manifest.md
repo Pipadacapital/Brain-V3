@@ -49,6 +49,76 @@ Redis (non-table, for completeness): `{brand_id}:tp:{brain_id}` touchpoint zset 
 and DELeted for the absorbed key on merge/unmerge; erasure removes the subject's key in the re-projection
 step. `{brand_id}:restitch:pending` dirty-set — transient, hash-only.
 
+<!-- SPEC: B.2 — Wave B journey re-version ledger + dirty-set (invariant 3). -->
+### Wave B additions (B.1–B.5) — registered by this change
+Two NEW subject-linked artifacts land with Wave B's versioned journey ledger. Both are `brain_id`-grain,
+hash-only (no raw PII, no identifier hashes — `brain_id` is an opaque UUID, I-S02), and both are
+flag-gated on `journey.engine` (default OFF → EMPTY on golden, so flags-OFF is byte-identical).
+
+| Table | Store | Subject key | Key-envelope | Erasure |
+|---|---|---|---|---|
+| `journey_version_log` | Iceberg (Gold) | `brand_id`, `brain_id`, `to_version` (PK) | none (hash-only; `brain_id` opaque UUID, no PII, no money) | `unlinkable` + `reproject` (audit of re-version transitions, rederived from `silver_identity_map` + `journey_events` on FULL_REFRESH; severed when the subject keyring is destroyed) |
+| `ops.journey_reversion_pending` | PG (`ops`) | `brand_id`, `brain_id` (PK) | none (transient dirty-set; `cause`/`trigger_event`/`source_event_id` only) | `delete` (transient queue, drained each Spark reversion run; migration `0125`) |
+
+`journey_events` itself (the versioned event-sourced ledger, B.1) inherits the lake-tier hash-only model:
+`brand_id`+`brain_id`(opaque UUID)+touchpoint hash, revenue as `revenue_minor` bigint + `currency_code`,
+`attribution_signals` are `utm_*`/click-ids (marketing params, not subject PII) — `unlinkable` + `reproject`
+(rebuilt from the Silver spine; superseded versions survive as `is_current=false`, neutralized by keyring
+destruction). No new raw PII or un-hashed identifier is introduced (satisfies invariants 2 & 4).
+
+<!-- SPEC: C.2 — Wave C measurement fact tables (invariant 3). -->
+### Wave C additions (C.2 measurement facts) — registered by this change
+The gold_measurement_* facts are ORDER-linked, HASH-ONLY-by-indirection (they carry `brand_id` + an opaque
+store `order_id` — NOT a `brain_id`, a raw contact, an identifier hash, or any PII). Money is `*_minor`
+bigint + `currency_code` (never blended/float). Their subject link is purely through the order→customer edge
+resolved elsewhere (the lake-tier hash-only model), so — like the ancestral `silver_refund` — they are
+neutralized `unlinkable` when the subject's `contact_pii` keyring is destroyed, and `reproject` (rederived
+from the Silver spine on FULL_REFRESH). No new raw PII / un-hashed identifier is introduced (invariants 2, 4).
+
+| Table | Store | Subject key | Key-envelope | Erasure |
+|---|---|---|---|---|
+| `gold_measurement_refunds` | Iceberg (Gold) | `brand_id`, `order_id` (opaque store ref) | none (hash-only-by-indirection; no PII/brain_id) | `unlinkable` + `reproject` (rederived from `silver_refund` + the RTO logistics lane) |
+| `gold_measurement_settlements` | Iceberg (Gold) | `brand_id`, `order_id` (opaque) | none | `unlinkable` + `reproject` (rederived from `silver_settlement`) |
+| `gold_measurement_fees` | Iceberg (Gold) | `brand_id`, `order_id` (opaque) | none | `unlinkable` + `reproject` (rederived from `silver_settlement`) |
+| `gold_measurement_costs` | Iceberg (Gold) | `brand_id`, `order_id` (opaque) | none | `unlinkable` + `reproject` (rederived from cost config + order/line spine) |
+
+NOT subject-linked (registered for completeness, no erasure obligation): `gold_product_costs` (brand×SKU cost
+dimension — no subject), `gold_measurement_spend` (a VIEW alias onto `silver_marketing_spend`, day×channel —
+no subject), `gold_measurement_inventory` (brand×product×variant stock movement — no subject). None carry a
+`brain_id`, identifier hash, or raw PII. The extended `silver_refund` (new taxonomy/lineage columns) inherits
+its existing GAP-table posture (opaque refs only; no new PII).
+
+<!-- SPEC: C.3 — Wave C measurement engine (invariant 3). -->
+### Wave C additions (C.3 economics) — registered by this change
+The NEW per-order/product contribution-margin marts. `gold_order_economics` is `brain_id`-linked (a
+subject key), hash-only in the sense that `brain_id` is an opaque UUID (I-S02 — no PII, no raw/hashed
+identifier). `gold_product_economics` is product×day grain and carries NO subject key (rolled up away from
+`brain_id`), listed here only for completeness. All money is bigint minor units + `currency_code`.
+
+| Table | Store | Subject key | Key-envelope | Erasure |
+|---|---|---|---|---|
+| `gold_order_economics` | Iceberg (Gold) | `brand_id`, `order_id` (PK); `brain_id` (subject link) | none (hash-only; `brain_id` opaque UUID, money as bigint minor + `currency_code`) | `unlinkable` + `reproject` (fully rederived from `gold_revenue_ledger` + Silver facts each run; `brain_id` inherited from the ledger/`silver_order_state`, which are neutralized by subject-keyring destruction — the economics row's person link is severed transitively) |
+| `gold_product_economics` | Iceberg (Gold) | `brand_id`, `product_key`, `econ_date`, `currency_code` (PK) | none (NO subject key — apportioned rollup away from `brain_id`; no PII, no identifier) | `unlinkable` + `reproject` (rederived from `gold_order_economics`; carries no person link) |
+
+`gold_order_economics` introduces no NEW raw PII, no un-hashed identifier, and no new key-envelope
+(satisfies invariants 2 & 4): it is a DERIVED mart whose only subject reference (`brain_id`) is copied
+from already-registered, keyring-neutralized upstreams (`gold_revenue_ledger`, `silver_order_state`).
+
+### Wave E additions (AI Feature Layer — CONTRACT-E, scaffold-only)
+Registered now so the contract is complete; NOTHING is materialized in the scaffold (AMD-19 posture R2:
+as-of over Silver/Gold, no precompute table). These become live only when Wave-E logic ships.
+
+| Subject-linked artifact | Store | Subject key | Key-envelope | Erasure |
+|---|---|---|---|---|
+| `gold_ai_features` (logical PIT EAV, deferred) | Iceberg (logical) | `brand_id`, `entity_type`, `entity_id` (customer→`brain_id`) | none (hash-only entity ids; no raw PII) | `unlinkable` + `reproject` (rederived as-of from the Silver/Gold spine) |
+| `{brand_id}:feat:{entity_type}:{entity_id}` online hash | Redis | `brand_id`, `entity_type`, `entity_id` | none (hash-only) | `reproject` (subject key DELeted on erase; cache, not truth) |
+
+PII-flagged FEATURES (registry `pii: true`, `packages/ai-features/features/*.yaml`) join this manifest — a
+feature that derives from / exposes subject PII is neutralized by the same subject crypto-shred:
+| PII feature | Entity | Derived from | Erasure |
+|---|---|---|---|
+| `customer_email_domain` | customer | the customer's identifier (email) | `unlinkable` (materialized value keyed to `brain_id`; severed when the subject keyring is destroyed) |
+
 ## Notes
 - No Wave A table stores raw PII, a monetary column, or an un-hashed identifier (satisfies invariants 2, 4).
 - The probabilistic table is quarantined (§1.4 / invariant 5): it never reaches attribution/revenue inputs,

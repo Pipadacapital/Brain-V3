@@ -1,0 +1,21 @@
+# SPEC:D.2 (AMD-17 spec numbering) — certified metric. Change ONLY via PR + recompile.
+name: cm3
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: per_currency
+identity_basis: deterministic_only
+interactive: true
+owner: measurement-team
+description: >-
+  Contribution Margin 3 per period, per currency: SUM of gold_order_economics cm3_minor
+  (CM2 minus allocated marketing spend; SPEC/AMD-17 numbering). Deterministic order spine only (§1.4).
+  Never blended across currency. RTO orders carry negative CM3 (reverse-logistics cost).
+measures:
+  - name: cm3_minor
+    agg: SUM(cm3_minor)
+expression: cm3_minor
+examples:
+  - "CM3 in INR at grain=month."

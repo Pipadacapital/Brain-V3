@@ -45,7 +45,8 @@ export type AdSpendTimeseriesResult =
 export async function getAdSpendTimeseries(
   brandId: string,
   params: { fromDate: Date; toDate: Date; grain: TimeGrain; platform?: AdPlatform },
-  deps: { srPool: SilverPool },
+  // SPEC:C.4 — measurementMartsMigration threads the marts-migration flag to the spend read (default OFF → legacy view).
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<AdSpendTimeseriesResult> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string;
   const toStr = params.toDate.toISOString().split('T')[0] as string;

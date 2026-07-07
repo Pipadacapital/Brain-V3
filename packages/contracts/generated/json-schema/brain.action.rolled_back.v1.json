@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brain.action.rolled_back.v1",
+  "title": "action.rolled_back.v1",
+  "description": "SPEC I (Wave I, AMD-03) — Action Platform envelope: a previously executed action was ROLLED BACK (side effect reversed) by its executor adapter. Registered in Apicurio as brain/action.rolled_back.v1 (JSON Schema artifact under FULL_TRANSITIVE, AMD-03 R1). Partition key = brand_id (I-S01). SCAFFOLD ONLY — no adapter implements rollback yet (ExecutorPort.rollback is NotImplemented, supportsRollback=false). GOVERNANCE: a working rollback for an executor is one of the three preconditions ('auto' policy version + holdout + rollback) before autonomous execution of that executor is permitted; this envelope is the audited reversal record. rollback_ref echoes the action.executed.v1 execution_ref that was reversed. PII (I-S02): rolled_back_by is an auth-principal id, reason is free text with no PII.",
+  "type": "object",
+  "required": ["brand_id", "action_id", "executor", "rollback_ref"],
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Tenant key — brand_id-first (I-S01). Kafka partition key."
+    },
+    "action_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The action being rolled back (same id as its action.executed.v1). Idempotency key = (brand_id, action_id)."
+    },
+    "decision_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "OPTIONAL gold_decisions back-reference (Wave H)."
+    },
+    "executor": {
+      "type": "string",
+      "enum": ["shopify-discount", "meta-audience", "messaging", "webhook"],
+      "description": "The executor adapter that performed the reversal (matches an @brain/action-core ExecutorPort name)."
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["suggest", "approve", "auto"],
+      "default": "suggest",
+      "description": "Mode of the original execution being reversed."
+    },
+    "rollback_ref": {
+      "type": "string",
+      "description": "The action.executed.v1 execution_ref (executor-returned handle) that this rollback reversed — the reversal audit link."
+    },
+    "rolled_back_by": {
+      "type": "string",
+      "description": "OPTIONAL auth-principal id of whoever triggered the rollback (human operator or an automated safety controller); never raw PII."
+    },
+    "reason": {
+      "type": "string",
+      "description": "OPTIONAL free-text reason for the reversal (no PII by contract, I-S02)."
+    },
+    "holdout_group": {
+      "type": "string",
+      "description": "OPTIONAL incrementality cohort label (preserved across the lifecycle)."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "OPTIONAL distributed-trace correlation id (ADR-009)."
+    },
+    "rolled_back_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "OPTIONAL ISO-8601 UTC timestamp of the reversal."
+    }
+  },
+  "additionalProperties": true
+}

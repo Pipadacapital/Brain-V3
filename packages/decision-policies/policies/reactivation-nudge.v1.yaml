@@ -1,0 +1,59 @@
+# SPEC: H
+# Sample versioned decision policy (Wave H SCAFFOLD — inert).
+#
+# A decision policy declares, for a subject, the candidate actions to arbitrate among, each
+# candidate's expected-value yardstick, and the hard guardrails every SELECTED candidate must satisfy.
+# Guardrails + EV yardsticks reference CERTIFIED metrics ONLY BY NAME (Wave D launch set) — which is
+# why Wave D precedes Wave H runtime. This file is DATA: nothing evaluates it (the evaluation engine,
+# EV models, and arbitration are DEFERRED). The compiler skeleton only validates this SHAPE.
+#
+# Identity: (metadata.name, metadata.version) → policy_version "reactivation-nudge@1" persisted in
+# gold_decisions.policy_version. Bump `version` (monotonic) for any change; never edit in place.
+
+apiVersion: brain.decision/v1
+kind: DecisionPolicy
+
+metadata:
+  name: reactivation-nudge
+  version: 1
+  owner: growth-team
+  description: >-
+    Choose the best reactivation action for a lapsing customer, subject to margin + return-risk
+    guardrails. Candidates and constraints are declarative; scoring/arbitration are DEFERRED.
+
+spec:
+  subject:
+    type: customer
+
+  # The candidate action set. ALL of these (winners AND losers) are persisted per decision in
+  # gold_decisions.candidates with their per-candidate expected_value_minor + constraint evaluations.
+  candidates:
+    - id: whatsapp_nudge
+      action_type: messaging          # → Wave I messaging executor
+      expected_value:
+        metric: ltv_realized          # EV yardstick (certified). The predicting MODEL is DEFERRED.
+
+    - id: discount_10
+      action_type: shopify-discount   # → Wave I shopify-discount executor
+      expected_value:
+        metric: ltv_realized
+
+    - id: no_action
+      action_type: webhook            # the honest null-action candidate (baseline / holdout-aligned)
+      expected_value:
+        metric: ltv_realized
+
+  # Hard guardrails. Reference certified metrics ONLY BY NAME. Evaluation is DEFERRED — the compiler
+  # only checks the metric is certified + the op/threshold shape is well-formed.
+  constraints:
+    - metric: cm2_pct                 # contribution-margin-2 percentage must stay healthy
+      op: gte
+      threshold: 0.20
+    - metric: rto_rate                # return-to-origin risk ceiling (India COD reality)
+      op: lte
+      threshold: 0.15
+
+  # Arbitration DECLARATION only — no strategy is implemented in the scaffold.
+  arbitration:
+    strategy: max_expected_value
+    tie_breaker: lowest_cost

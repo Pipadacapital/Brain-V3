@@ -23,6 +23,7 @@
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 import type { AttributionModelId } from './attribution-models.js';
+import { spendView } from './measurement-migration.js';
 
 /** Format an exact BIGINT ratio to a fixed-precision decimal string (no float). */
 function exactRatioString(numerator: bigint, denominator: bigint, fractionalDigits = 4): string {
@@ -81,7 +82,7 @@ interface SpendRow { platform: string; currency_code: string; spend_minor: strin
 export async function computeChannelRoas(
   brandId: string,
   params: { model: AttributionModelId; fromDate: Date; toDate: Date },
-  deps: { srPool: SilverPool },
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<ChannelRoasRow[]> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string; // Date-formatted → injection-safe
   const toStr = params.toDate.toISOString().split('T')[0] as string;
@@ -102,7 +103,7 @@ export async function computeChannelRoas(
     // Spend per (platform, currency) — the ad_spend_as_of math.
     const spendRows = await scope.runScoped<SpendRow>(
       `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
-         FROM brain_serving.mv_silver_marketing_spend
+         FROM ${spendView(deps.measurementMartsMigration)}
         WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY platform, currency_code`,

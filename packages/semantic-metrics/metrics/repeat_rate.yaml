@@ -1,0 +1,23 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: repeat_rate
+version: v1
+entity: semantic_customer
+time_column: last_activity_at
+grain: [all]
+dimensions_allowed: []
+currency_handling: none
+identity_basis: deterministic_only
+interactive: false
+owner: measurement-team
+description: >-
+  Repeat-purchase rate: customers with >=2 lifetime orders divided by all customers. A count ratio
+  (no currency). semantic_customer carries a physical identity_basis → the compiler injects
+  identity_basis='deterministic' (probabilistic rows provably excluded, §1.4). Null when zero customers.
+measures:
+  - name: repeat_customers
+    agg: SUM(CASE WHEN lifetime_orders >= 2 THEN 1 ELSE 0 END)
+  - name: total_customers
+    agg: COUNT(DISTINCT brain_id)
+expression: CAST(repeat_customers AS double) / NULLIF(total_customers, 0)
+examples:
+  - "Repeat rate across all customers."

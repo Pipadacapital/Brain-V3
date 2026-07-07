@@ -21,6 +21,7 @@
 
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+import { spendView } from './measurement-migration.js';
 import type { TimeGrain } from './revenue-timeseries.js';
 
 export type AdPlatform = 'meta' | 'google_ads';
@@ -48,7 +49,7 @@ export interface AdSpendTimeseriesBucket {
 export async function computeAdSpendTimeseries(
   brandId: string,
   params: { fromDate: Date; toDate: Date; grain: TimeGrain; platform?: AdPlatform },
-  deps: { srPool: SilverPool },
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<AdSpendTimeseriesBucket[]> {
   const fromStr = params.fromDate.toISOString().split('T')[0]; // Date-formatted → injection-safe
   const toStr = params.toDate.toISOString().split('T')[0];
@@ -72,7 +73,7 @@ export async function computeAdSpendTimeseries(
               platform,
               currency_code,
               SUM(spend_minor) AS spend_minor
-         FROM brain_serving.mv_silver_marketing_spend
+         FROM ${spendView(deps.measurementMartsMigration)}
         WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           ${platformPredicate}
           AND ${BRAND_PREDICATE}

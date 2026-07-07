@@ -1,0 +1,21 @@
+# SPEC:D.2 (AMD-17 spec numbering) — certified metric. Change ONLY via PR + recompile.
+name: cm2
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: per_currency
+identity_basis: deterministic_only
+interactive: true
+owner: measurement-team
+description: >-
+  Contribution Margin 2 per period, per currency: SUM of gold_order_economics cm2_minor
+  (CM1 minus shipping fwd+rev, packaging, payment/platform fees; SPEC/AMD-17 numbering). Deterministic
+  order spine only (§1.4). Never blended across currency.
+measures:
+  - name: cm2_minor
+    agg: SUM(cm2_minor)
+expression: cm2_minor
+examples:
+  - "CM2 in INR at grain=month."

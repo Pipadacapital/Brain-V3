@@ -28,6 +28,9 @@ import {
   LifecycleStateSchema,
   DataSourceSchema,
 } from './_money.js';
+// SPEC: B.4 — the identity_evidence item is the SHARED explainability type owned by the WB-B3
+// journey-api contract (trace endpoint). Replay reuses it verbatim (one shape across B.3 + B.4).
+import { IdentityEvidenceItemSchema } from './journey-api.v1.js';
 
 // ── #1 GET /v1/dashboard/realized-revenue ─────────────────────────────────────
 // @see apps/core/.../analytics/internal/domain/metrics/revenue-snapshot.ts:35-47 (RevenueSnapshot)
@@ -270,8 +273,51 @@ export const JourneyEventDtoSchema = z.object({
   is_composite: z.boolean(),
   identity_confidence: z.number().nullable(), // 0..1 double — NOT money
   data_version: z.number(),
+  // SPEC: B.4 EXPLAINABILITY (additive) — every journey item carries matched_via: HOW this event's
+  // identity was matched onto the resolved brain_id. Coarse derived basis until B.1's mart column lands
+  // (AMD-13 R1): 'order' | 'deterministic' | 'anonymous'. Never null (explainability on every row).
+  matched_via: z.string(),
+  // SPEC: B.4 / DG-2 — point-in-time identity: the brain_id that owned this event's identity AT
+  // occurred_at (bi-temporal map interval). null = the event predates the identity / is anonymous.
+  brain_id_asof: z.string().nullable(),
+  // SPEC: B.4 / A.3 — probabilistic-overlay marker. Canonical deterministic journeys set false;
+  // a probabilistic overlay view sets true and supplies `confidence` (auto `estimated:true`, §A.3).
+  estimated: z.boolean(),
+  // SPEC: B.4 — overlay confidence (0..1). Present ONLY on probabilistic overlay rows; omitted on
+  // deterministic canonical rows (optional — additive, never breaks the deterministic contract).
+  confidence: z.number().nullable().optional(),
 });
 export type JourneyEventDto = z.infer<typeof JourneyEventDtoSchema>;
+
+// ── #7c SPEC: B.4 — Journey Replay (?as_of=) + Explainability (identity_evidence) ─────────────────
+// AMD-10 (BINDING, R1): replay is reconstructed from RETAINED journey_events version history +
+// bi-temporal identity intervals (identity_asof, WA-14) — NEVER Iceberg time-travel (7-day snapshot
+// TTL). Batch-path only, NO cache; responses carry replayed:true. A pre-identification as_of returns
+// the shorter anonymous-era journey (B.5.3). Shared with the WB-B3 trace endpoint (identity_evidence).
+
+// identity_evidence = the SHARED [{identifier_type, first_seen, source}] item (IdentityEvidenceItemSchema,
+// imported from journey-api.v1 — owned by the WB-B3 trace contract; reused here verbatim).
+// The identity map state as known at as_of (both temporal axes pinned) — the replay's identity axis.
+export const IdentityAsOfStateSchema = z.object({
+  identified: z.boolean(), // false ⇒ the customer was still anonymous at as_of
+  evidence: z.array(IdentityEvidenceItemSchema),
+});
+export type IdentityAsOfState = z.infer<typeof IdentityAsOfStateSchema>;
+
+export const JourneyReplaySchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), replayed: z.literal(true), as_of: z.string() }),
+  z.object({
+    state: z.literal('has_data'),
+    replayed: z.literal(true), // ALWAYS true on this surface (batch reconstruction, not a live read)
+    as_of: z.string(), // the replay wall-clock echoed back (ISO-8601)
+    brain_id: z.string(),
+    events: z.array(JourneyEventDtoSchema), // journey AS KNOWN AT as_of (occurred_at <= as_of)
+    identity_asof: IdentityAsOfStateSchema, // what identity resolution was known at as_of
+    next_cursor: z.string().nullable(), // opaque keyset cursor; null = last page
+    data_source: DataSourceSchema,
+  }),
+]);
+export type JourneyReplay = z.infer<typeof JourneyReplaySchema>;
 
 export const JourneyEventsLedgerSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('no_data') }),

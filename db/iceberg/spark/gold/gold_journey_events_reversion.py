@@ -54,7 +54,7 @@ sys.path.insert(0, os.path.dirname(_GOLD_DIR))  # iceberg_base
 sys.path.insert(0, _GOLD_DIR)                   # _gold_base
 
 from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import col, lit  # noqa: E402
+from pyspark.sql.functions import col, current_timestamp, lit  # noqa: E402
 
 from iceberg_base import (  # noqa: E402
     CATALOG,
@@ -62,11 +62,17 @@ from iceberg_base import (  # noqa: E402
     read_job_watermark,
     write_job_watermark,
 )
-from _gold_base import merge_on_pk, run_job, silver, silver_exists  # noqa: E402
+from _gold_base import ensure_gold_table, merge_on_pk, run_job, silver, silver_exists  # noqa: E402
 # SPEC: A.2.2 — the ONLY sanctioned Spark reads of silver_identity_map (identity-view-guard allowlist).
 from _identity_views import identity_map_exists, identity_raw  # noqa: E402
 # SPEC: A.2.4 (WA-19) — pyspark-free driver helpers (unit-tested without a Spark runtime).
 from _journey_reversion_pure import derive_unmerge_pairs, resolve_terminal as _resolve_terminal  # noqa: E402
+# SPEC: B.2 (WB-B2, AMD-11) — journey_version_log version-bump helper (pyspark-free, unit-tested).
+from _journey_version_log_pure import version_log_rows  # noqa: E402
+# SPEC: 0.5 / B.2 — per-brand journey.engine gate (fail-closed DEFAULT OFF): journey_version_log rows are
+# written ONLY for flag-ON brands, so with every brand default-OFF this side-effect is inert (byte-identical
+# golden). Mirrors the stitch.v2 Spark gate.
+from _platform_flags import is_flag_enabled  # noqa: E402
 
 JOB_NAME = "gold_journey_events_reversion"   # silver_job_watermark key (distinct from the table's)
 # SPEC: A.2.4 (WA-19) — a SECOND, independent watermark for the UNMERGE un-reversion pass, keyed on
@@ -75,6 +81,19 @@ UNMERGE_JOB_NAME = "gold_journey_events_reversion_unmerge"
 UNMERGE_SOURCE_TABLE = "silver_identity_unmerge"
 TABLE_NAME = "journey_events"                # the SAME ledger construction writes
 PK = ["brand_id", "touchpoint_id", "data_version"]
+JOURNEY_ENGINE_FLAG = "journey.engine"
+
+# SPEC: B.2 (WB-B2, AMD-11) — journey_version_log: the brain-grain audit of every re-version transition.
+# ADDITIVE Iceberg Gold table; brand_id FIRST (I-S01). One row per (brand_id, brain_id, to_version): a
+# re-version pass bumps the journey-level version N -> N+1 (AMD-11 R1 — the version is derived as
+# max(data_version) over the brain's current rows). Read by B.3 to serve the X-Journey-Version header.
+LOG_TABLE_NAME = "journey_version_log"
+LOG_PK = ["brand_id", "brain_id", "to_version"]   # idempotent under FULL_REFRESH re-scan
+LOG_COLUMNS_SQL = (
+    "brand_id string, brain_id string, "
+    "from_version int, to_version int, "
+    "cause string, at timestamp"
+)
 
 
 def _copies_sql(fqtn: str) -> str:
@@ -131,7 +150,9 @@ def _copies_sql(fqtn: str) -> str:
             a.is_composite,
             a.composite_order_key,
             a.ingested_at,
-            current_timestamp() AS updated_at
+            current_timestamp() AS updated_at,
+            a.matched_via,          -- SPEC: B.1 — identity-link provenance carries VERBATIM (a merge
+            a.identity_basis        -- moves ownership, never provenance; basis stays 'deterministic')
         FROM _je_affected a
         JOIN seq s
           ON s.brand_id = a.brand_id AND s.brain_id = a.new_brain_id
@@ -139,12 +160,62 @@ def _copies_sql(fqtn: str) -> str:
     """
 
 
-def _flip_and_copy(spark: SparkSession, fqtn: str) -> None:
+def _write_version_log(spark: SparkSession, cause: str) -> int:
+    """SPEC: B.2 (WB-B2, AMD-11) — write the journey_version_log rows for this re-version pass. Reads the
+    pre-flip `_je_affected` snapshot (persisted BEFORE the flip, so data_version is still the OLD version),
+    aggregates to ONE row per re-versioned brain (from_version = max(data_version) over the transferred
+    rows for that canonical owner), and records the N -> N+1 bump with the pass `cause` ('merge'|'unmerge').
+
+    FLAG GATE (§0.5): only brands with journey.engine ON get a log row — driver-side is_flag_enabled filter
+    (merge/unmerge batches since a checkpoint are tiny, so a per-brand check is cheap). With every brand
+    default-OFF NOTHING is written → this side-effect is inert and golden journeys are byte-identical.
+
+    Idempotent: MERGE on LOG_PK (brand_id, brain_id, to_version) — a FULL_REFRESH re-scan re-derives the
+    same rows. Returns the number of log rows written. NEVER raises into the re-version path (audit must not
+    break the ledger transfer): on any error it logs and returns 0."""
+    try:
+        agg = spark.sql(
+            """
+            SELECT brand_id, new_brain_id AS brain_id, cast(max(data_version) AS int) AS from_version
+            FROM _je_affected
+            GROUP BY brand_id, new_brain_id
+            """
+        ).collect()
+        # Flag-gate driver-side (fail-closed): keep only journey.engine-ON brands.
+        flagged = [
+            {"brand_id": r["brand_id"], "brain_id": r["brain_id"], "from_version": r["from_version"]}
+            for r in agg
+            if r["brand_id"] is not None
+            and r["brain_id"] is not None
+            and is_flag_enabled(r["brand_id"], JOURNEY_ENGINE_FLAG)
+        ]
+        rows = version_log_rows(flagged, cause=cause, at=None)  # `at` set in Spark (current_timestamp)
+        if not rows:
+            return 0
+        log_fqtn = ensure_gold_table(
+            spark, LOG_TABLE_NAME, LOG_COLUMNS_SQL, partitioned_by="bucket(64, brand_id)"
+        )
+        staged = (
+            spark.createDataFrame(
+                [(r["brand_id"], r["brain_id"], r["from_version"], r["to_version"], r["cause"]) for r in rows],
+                "brand_id string, brain_id string, from_version int, to_version int, cause string",
+            )
+            .withColumn("at", current_timestamp())
+        )
+        merge_on_pk(spark, log_fqtn, staged, LOG_PK)
+        print(f"[{JOB_NAME}] journey_version_log: {len(rows)} row(s) written (cause={cause})", flush=True)
+        return len(rows)
+    except Exception as exc:  # noqa: BLE001 — audit log must NEVER break the re-version transfer
+        print(f"[{JOB_NAME}] journey_version_log write skipped (non-fatal): {exc}", flush=True)
+        return 0
+
+
+def _flip_and_copy(spark: SparkSession, fqtn: str, cause: str) -> None:
     """Steps 4-5 shared by BOTH passes: FLIP the affected latest-version rows is_current=false, then
     INSERT the re-versioned copies (data_version + 1, new owner, recomputed sequence). Requires the
     `_je_affected` (persisted, with a `new_brain_id` column) + `_merge_pairs` temp views to be set.
     Flip-before-insert is crash-safe (a crash between leaves the latest version owned by the OLD id →
-    re-detected on the next run)."""
+    re-detected on the next run). `cause` ('merge'|'unmerge') is recorded on journey_version_log."""
     # 4. FLIP FIRST — the ONLY in-place mutation the ledger ever takes: is_current=false (+ audit stamp).
     spark.sql(
         f"""
@@ -160,6 +231,8 @@ def _flip_and_copy(spark: SparkSession, fqtn: str) -> None:
     # 5. INSERT the re-versioned copies (data_version + 1, new owner, recomputed sequence).
     copies = spark.sql(_copies_sql(fqtn))
     merge_on_pk(spark, fqtn, copies, PK)
+    # 5b. SPEC: B.2 (WB-B2, AMD-11) — record the journey-level N->N+1 transition (flag-gated audit).
+    _write_version_log(spark, cause)
 
 
 def _apply_merge(spark: SparkSession, fqtn: str) -> int:
@@ -225,7 +298,7 @@ def _apply_merge(spark: SparkSession, fqtn: str) -> int:
         print(f"[{JOB_NAME}] merge pairs matched no owned journey rows — 0 re-versions", flush=True)
         return 0
 
-    _flip_and_copy(spark, fqtn)
+    _flip_and_copy(spark, fqtn, cause="merge")
     affected.unpersist()
     write_job_watermark(spark, JOB_NAME, new_wm)
     print(f"[{JOB_NAME}] re-versioned {n_affected} row(s) across {len(resolved)} merge pair(s)", flush=True)
@@ -306,7 +379,7 @@ def _apply_unmerge(spark: SparkSession, fqtn: str) -> int:
         print(f"[{UNMERGE_JOB_NAME}] unmerge pairs matched no transferred journey rows — 0 un-reversions", flush=True)
         return 0
 
-    _flip_and_copy(spark, fqtn)
+    _flip_and_copy(spark, fqtn, cause="unmerge")
     affected.unpersist()
     write_job_watermark(spark, UNMERGE_JOB_NAME, new_wm)
     print(f"[{UNMERGE_JOB_NAME}] un-reversioned {n_affected} row(s) across {len(pairs)} unmerge pair(s)", flush=True)

@@ -90,6 +90,30 @@ async function registerSchemaWithBackoff(): Promise<void> {
     log.warn('Could not load identity.unmerged.v1 JSON Schema — skipping its Apicurio registration', { err });
   }
 
+  // SPEC I (Wave I, AMD-03): the five action.*.v1 envelopes — NEW program topics registered as
+  // JSON Schema artifacts under FULL_TRANSITIVE (AMD-03 R1 enumerates action.*.v1 among the new
+  // JSON-Schema program topics; NOT Avro). Loaded here on the collector's proven idempotent boot
+  // step (single governance site for new JSON-Schema artifacts; the events are produced by the
+  // Wave-I action platform, not the collector). Missing file → log + skip (never blocks boot).
+  const actionArtifactIds = [
+    'action.requested.v1',
+    'action.approved.v1',
+    'action.executed.v1',
+    'action.failed.v1',
+    'action.rolled_back.v1',
+  ] as const;
+  const actionSchemas: Array<{ artifactId: string; json: string }> = [];
+  for (const artifactId of actionArtifactIds) {
+    try {
+      const p = fileURLToPath(
+        new URL(`../../../packages/contracts/generated/json-schema/brain.${artifactId}.json`, import.meta.url),
+      );
+      actionSchemas.push({ artifactId, json: readFileSync(p, 'utf-8') });
+    } catch (err) {
+      log.warn(`Could not load ${artifactId} JSON Schema — skipping its Apicurio registration`, { err });
+    }
+  }
+
   const apicurioConfig = {
     ...defaultApicurioConfig(),
     baseUrl: apicurioUrl,
@@ -124,6 +148,18 @@ async function registerSchemaWithBackoff(): Promise<void> {
         log.info('Apicurio schema registered', {
           artifact_id: unmergedResult.artifactId,
           version: unmergedResult.version,
+          rule: 'FULL_TRANSITIVE',
+        });
+      }
+      // SPEC I (Wave I, AMD-03): action.{requested,approved,executed,failed,rolled_back}.v1 (JSON
+      // Schema) + their FULL_TRANSITIVE rules. Scaffold-only envelopes; no executor consumes them yet.
+      for (const { artifactId, json } of actionSchemas) {
+        const actionConfig = { ...apicurioConfig, artifactId };
+        const actionResult = await registerSchema(actionConfig, json, 'JSON');
+        await ensureCompatibilityRule(actionConfig, 'FULL_TRANSITIVE');
+        log.info('Apicurio schema registered', {
+          artifact_id: actionResult.artifactId,
+          version: actionResult.version,
           rule: 'FULL_TRANSITIVE',
         });
       }

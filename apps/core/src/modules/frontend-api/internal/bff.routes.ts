@@ -44,7 +44,7 @@ import { getDataHealth, freshnessFromIngest, type FoundationSignals } from '../.
 import { getMetricTrust } from '../../data-quality/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
 import type { IdentityReader, ContactPiiVaultService } from '../../identity/index.js';
-import type { SilverPool, ServingCacheReader } from '@brain/metric-engine';
+import type { SilverPool, ServingCacheReader, TouchpointZsetClient, SemanticServingRouter } from '@brain/metric-engine';
 
 import {
   type BffDeps,
@@ -59,11 +59,18 @@ import { registerIdentityRoutes } from './routes/identity.routes.js';
 import { registerAskRoutes } from './routes/ask.routes.js';
 import { registerBillingRoutes } from './routes/billing.routes.js';
 import { registerDecisionsRoutes } from './routes/decisions.routes.js';
+// SPEC: G (AMD-21) — NEW gold_recommendations-backed 501 stub; separate from the grandfathered decisions surface.
+import { registerRecommendationsGeneratedRoutes } from './routes/recommendations-generated.routes.js';
+// SPEC: E — AI Feature Layer online-serving 501 stub (behind features.online_serving).
+import { registerFeaturesRoutes } from './routes/features.routes.js';
+// SPEC: D.2 — semantic metric catalog discovery (GET /api/v1/semantic/metrics + per-metric).
+import { registerSemanticMetricsRoutes } from './routes/semantic-metrics.routes.js';
 import { registerAttributionRoutes } from './routes/attribution.routes.js';
 import { registerAnalyticsCoreRoutes } from './routes/analytics-core.routes.js';
 import { registerAnalyticsMarketingRoutes } from './routes/analytics-marketing.routes.js';
 import { registerAnalyticsLogisticsRoutes } from './routes/analytics-logistics.routes.js';
 import { registerAnalyticsJourneyRoutes } from './routes/analytics-journey.routes.js';
+import { registerJourneyApiRoutes } from './routes/journey-api.routes.js'; // SPEC: B.3 (AMD-14)
 import { registerTrackingRoutes } from './routes/tracking.routes.js';
 import { registerConsentRoutes } from './routes/consent.routes.js';
 import { registerFeedbackRoutes } from './routes/feedback.routes.js';
@@ -92,6 +99,10 @@ export function registerBffRoutes(
   flagService?: FlagService,
   /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge. Trailing-optional. */
   identityEventPublisher?: IdentityEventPublisher,
+  /** SPEC: B.3 / A.4 — the Redis touchpoint-cache read client (shared ioredis). Trailing-optional. */
+  touchpointCacheReader?: TouchpointZsetClient,
+  /** SPEC: D.3 — semantic-serving flag switch (compiled-view migration; DEFAULT OFF). Trailing-optional. */
+  semanticRouter?: SemanticServingRouter,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -244,6 +255,8 @@ export function registerBffRoutes(
     onboardingService,
     srPool,
     servingCache,
+    touchpointCacheReader,
+    semanticRouter,
     flagService,
     vaultService,
     identityReader,
@@ -270,11 +283,17 @@ export function registerBffRoutes(
   registerAskRoutes(fastify, deps);
   registerBillingRoutes(fastify, deps);
   registerDecisionsRoutes(fastify, deps);
+  // SPEC: G (AMD-21) — additive; the shipped /api/v1/recommendations surface above is untouched.
+  registerRecommendationsGeneratedRoutes(fastify, deps);
+  // SPEC: E — GET /api/v1/features/:entity_type/:entity_id → 501 behind features.online_serving.
+  registerFeaturesRoutes(fastify, deps);
+  registerSemanticMetricsRoutes(fastify, deps); // SPEC: D.2 — GET /api/v1/semantic/metrics
   registerAttributionRoutes(fastify, deps);
   registerAnalyticsCoreRoutes(fastify, deps);
   registerAnalyticsMarketingRoutes(fastify, deps);
   registerAnalyticsLogisticsRoutes(fastify, deps);
   registerAnalyticsJourneyRoutes(fastify, deps);
+  registerJourneyApiRoutes(fastify, deps); // SPEC: B.3 (AMD-14) — /api/v1/customers/:brainId/journey, /api/v1/journeys/{trace,compare}
   registerTrackingRoutes(fastify, deps);
   registerConsentRoutes(fastify, deps);
   registerFeedbackRoutes(fastify, deps);

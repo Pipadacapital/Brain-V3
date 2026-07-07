@@ -17,6 +17,7 @@ import {
   resolveBrandPrimaryCurrency,
   blendToPrimary,
   roasFromMinor,
+  getMetricLineage,
 } from '../../../analytics/index.js';
 import { getDataQualitySummary, getServingFreshness } from '../../../data-quality/index.js';
 import type { DataQualitySummary as ContractDataQualitySummary } from '@brain/contracts';
@@ -24,7 +25,20 @@ import type { AdPlatform, TimeGrain } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
 
 export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, rawPool, srPool } = deps;
+  const { bffProtectedPreHandler, rawPool, srPool, flagService, semanticRouter } = deps;
+
+  // SPEC:C.4 — resolve the per-brand marts-migration flag (default OFF, fail-closed). ON → ad-spend /
+  // blended-ROAS spend reads switch to the Wave-C measurement spend view (parity-safe alias; AMD-16).
+  const martsMigrationEnabled = (brandId: string): Promise<boolean> =>
+    flagService ? flagService.isFlagEnabled(brandId, 'measurement.marts_migration') : Promise.resolve(false);
+
+  // SPEC:D.3 — route a metric read through the semantic-serving flag switch. flag `semantic.serving`
+  // OFF (default) → the legacy compute runs (BYTE-IDENTICAL); ON + a compiled semantic view for the
+  // metric → the compiled read. With no compiled view yet (D.2-gated) `semanticCompute` is omitted, so
+  // the switch is a pure legacy pass-through — migrating an endpoint is byte-identical while the flag
+  // is OFF. Absent router (test/legacy build) → the legacy compute directly. See semantic-serving.ts.
+  const routeMetric = <T>(brandId: string, metricId: string, legacy: () => Promise<T>): Promise<T> =>
+    semanticRouter ? semanticRouter.route(brandId, metricId, legacy) : legacy();
 
   // ── Ad-connectors (Slice 1 Track 3) — spend + blended ROAS ────────────────────
   // ADR-002 sole-read-path: routes call analytics wrappers → metric engine (ad_spend_as_of
@@ -84,7 +98,7 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
       const result = await getAdSpendTimeseries(
         auth.brandId,
         { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`), grain, platform },
-        { srPool },
+        { srPool, measurementMartsMigration: await martsMigrationEnabled(auth.brandId) },
       );
 
       // FX convenience view (display-only): per-platform + total spend blended to the brand's PRIMARY
@@ -170,10 +184,17 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
       const defaultFrom = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result = await getBlendedRoas(
-        auth.brandId,
-        { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
-        { srPool },
+      // SPEC:D.3 — served through the semantic-serving switch (metricId 'blended_roas'). Flag OFF
+      // (default) → this exact legacy read; when the compiled blended_roas view lands (D.2) it is
+      // wired as the semanticCompute and the flag migrates it, parity-pinned to the minor unit.
+      const brandId = auth.brandId; // const-capture preserves the !brandId guard across the awaits/closure
+      const martsMigration = await martsMigrationEnabled(brandId);
+      const result = await routeMetric(brandId, 'blended_roas', () =>
+        getBlendedRoas(
+          brandId,
+          { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
+          { srPool, measurementMartsMigration: martsMigration },
+        ),
       );
 
       // FX convenience view (display-only): a SINGLE blended ROAS in the brand's primary currency.
@@ -345,6 +366,64 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
 
       const result = await getSettlementSummary(auth.brandId, asOf, { srPool });
 
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── SPEC:C.5.1 — measurement lineage (machine-readable audit) ─────────────────
+  /**
+   * GET /api/v1/metrics/:metric/lineage?date=YYYY-MM-DD
+   * Returns the Measurement fact tables a metric derives from, each with a brand+as-of-scoped row
+   * count and the producing job version(s). Every executive metric traces to Measurement facts.
+   * Brand from session (D-1). Unknown metric → 404 with the supported-metric catalog.
+   */
+  fastify.get(
+    '/api/v1/metrics/:metric/lineage',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        params: {
+          type: 'object',
+          properties: { metric: { type: 'string', pattern: '^[a-z0-9_]{1,64}$' } },
+          required: ['metric'],
+          additionalProperties: false,
+        },
+        querystring: {
+          type: 'object',
+          properties: { date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' } },
+          additionalProperties: false,
+        },
+      },
+      attachValidation: true,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_PARAMS', message: 'metric must be [a-z0-9_]; date must be YYYY-MM-DD.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.code(403).send({ request_id: requestId, error: { code: 'NO_BRAND', message: 'No brand in session.' } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+      }
+
+      const { metric } = request.params as { metric: string };
+      const { date } = request.query as { date?: string };
+
+      const result = await getMetricLineage(auth.brandId, metric, date ?? null, { srPool });
+      if (result.state === 'unknown_metric') {
+        return reply.code(404).send({
+          request_id: requestId,
+          error: { code: 'UNKNOWN_METRIC', message: `No measurement lineage for metric "${metric}".`, supported: result.supported },
+        });
+      }
       return reply.send({ request_id: requestId, data: result });
     },
   );

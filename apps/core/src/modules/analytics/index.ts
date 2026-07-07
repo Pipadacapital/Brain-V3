@@ -71,6 +71,22 @@ export { getContributionMargin } from './internal/application/queries/get-contri
 export type { ContributionMarginResult, ContributionMarginDto } from './internal/application/queries/get-contribution-margin.js';
 export { listCostInputs, upsertCostInput } from './internal/application/queries/cost-inputs.js';
 export type { CostInputDto, UpsertCostInputInput, CostScope, CostType } from './internal/application/queries/cost-inputs.js';
+// SPEC:C.2.4 — per-SKU cost-sheet CSV ingest → gold_product_costs (versioned COGS source).
+export {
+  parseCostSheetCsv,
+  validateRows as validateProductCostRows,
+  ingestProductCosts,
+  listProductCosts,
+} from './internal/application/queries/product-costs.js';
+export type {
+  ProductCostRow,
+  ProductCostDto,
+  IngestResult as ProductCostIngestResult,
+  CostRowError as ProductCostRowError,
+} from './internal/application/queries/product-costs.js';
+// SPEC:C.5.1 — measurement-lineage endpoint (every executive metric → its Measurement facts).
+export { getMetricLineage } from './internal/application/queries/get-metric-lineage.js';
+export type { MetricLineageResult } from './internal/application/queries/get-metric-lineage.js';
 // Top products — per-SKU rollup over Silver order-line (feat-shopify-order-depth).
 export { getTopProducts } from './internal/application/queries/get-top-products.js';
 export type { TopProductsResult, TopProductDto } from './internal/application/queries/get-top-products.js';
@@ -156,6 +172,23 @@ export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } f
 // one resolved customer's canonical timeline, newest-first, keyset-paginated (opaque cursor).
 export { getJourneyEvents } from './internal/application/queries/get-journey-events.js';
 export type { JourneyEventsResult, JourneyEventDto, JourneyEventsQueryParams } from './internal/application/queries/get-journey-events.js';
+// SPEC: B.3 — Wave-B Journey APIs (AMD-14): per-customer timeline (cache→Trino fallback), per-order
+// trace (explainability), two-journey compare (t_minus_conversion_ms). Tenant from session (D-1).
+export { getCustomerJourney } from './internal/application/queries/get-customer-journey.js';
+export type { CustomerJourneyParams } from './internal/application/queries/get-customer-journey.js';
+export { getJourneyTrace, DEFAULT_TRACE_LOOKBACK_DAYS } from './internal/application/queries/get-journey-trace.js';
+export type { JourneyTraceParams } from './internal/application/queries/get-journey-trace.js';
+export { getJourneyCompare } from './internal/application/queries/get-journey-compare.js';
+export type { JourneyCompareParams } from './internal/application/queries/get-journey-compare.js';
+// SPEC: B.4 — Journey Replay (?as_of=) + Explainability: the same customer's journey AS KNOWN AT
+// as_of (retained version history, AMD-10) + identity_asof evidence. Batch-only, replayed:true.
+export { getJourneyReplay } from './internal/application/queries/get-journey-replay.js';
+export type {
+  JourneyReplayResult,
+  JourneyReplayQueryParams,
+  IdentityAsOfStateDto,
+  IdentityEvidenceDto,
+} from './internal/application/queries/get-journey-replay.js';
 // #32a — aggregate journey-path Sankey (top-N ordered channel paths + edges + drop-off) over
 // gold_journey_paths via the metric-engine seam. NO money (paths are behavioral).
 export { getJourneyPaths } from './internal/application/queries/get-journey-paths.js';

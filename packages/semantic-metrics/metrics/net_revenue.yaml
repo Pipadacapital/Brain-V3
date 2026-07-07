@@ -1,0 +1,22 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: net_revenue
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: per_currency
+identity_basis: deterministic_only
+interactive: true
+owner: measurement-team
+description: >-
+  Net revenue recognised per period, per currency: SUM of gold_order_economics net_revenue_minor
+  (gross minus refunds/returns) over orders whose economics are recognised (conversion_at set).
+  Deterministic order spine only (§1.4). Never blended across currency.
+measures:
+  - name: net_revenue_minor
+    agg: SUM(net_revenue_minor)
+expression: net_revenue_minor
+examples:
+  - "Net revenue in INR for July 2026 at grain=month."
+  - "Daily net revenue broken down by attributed channel."

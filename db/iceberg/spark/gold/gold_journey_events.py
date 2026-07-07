@@ -19,8 +19,27 @@ GRAIN + VERSIONING CONTRACT (event-sourced):
     reversion job has already produced a higher version for a touchpoint (identity merge), the staged
     v1 row is DEMOTED to is_current=false so a construction re-run can never resurrect a superseded
     version. Rows are never deleted; is_current is the only mutable flag.
-  - brain_id = COALESCE(stitched_brain_id, CONCAT('anonymous_', brain_anon_id)) — the spec's
+  - brain_id = COALESCE(<resolved_stitch>, CONCAT('anonymous_', brain_anon_id)) — the spec's
     anonymous placeholder for pre-stitch visitors (merges never target the anonymous_ namespace).
+
+SPEC: B.1 — CANONICAL JOURNEY GENERATION (Wave B, per-brand flag `journey.engine`, DEFAULT OFF; AMD-13
+R1 / AMD-11 R1). This construction job IS the canonical journey generator: it groups touchpoints by
+(brand_id, brain_id) and assigns the per-brain journey position (sequence_number) — the versioned
+event-sourced journey ledger. Two ADDITIVE, nullable columns extend the contract (create_iceberg_table
+additive reconcile ALTERs them onto the live table): `matched_via array<string>` (the identity-link
+provenance for the row's resolved brain_id) and `identity_basis` (always 'deterministic' — the canonical
+table is deterministic-only per §1.4; the probabilistic overlay is a SEPARATE view, never this table).
+IDENTITY-RESOLUTION INPUT SWITCH (AMD-13 R1, per-brand, default OFF):
+  - flag OFF (legacy / pre-wave): resolved stitch = silver_touchpoint.stitched_brain_id; matched_via is
+    DERIVED from the resolved brain_id's silver_identity_map identifier_type set (via identity_current);
+    sequence tie-break = (occurred_at, touch_seq). Byte-identical to pre-wave on every pre-existing
+    column (§1.9 invariant 8) — the two new columns are absent from the golden baseline snapshot.
+  - flag ON: resolved stitch = the Wave-A v2 stitch `silver_session_identity` (joined on the session key
+    concat(brain_anon_id,':',session_id_raw)); matched_via = that session's stitch `matched_via[]`; an
+    unstitched session resolves to NO row → brain_id falls to the anonymous_ placeholder (journey-eligible
+    only after re-stitch lifts it); sequence tie-break = (occurred_at, session_id, touch_seq).
+The MERGE key is UNCHANGED — PK (brand_id, touchpoint_id, data_version); the journey-level version is a
+DERIVED max(data_version) served as X-Journey-Version (AMD-11 R1), never a new PK column.
 
 THE TRANSFORM (incremental via gold_partition_filter on silver_touchpoint.updated_at — brand-level
 semi-join, so a changed brand's FULL timeline is restaged and sequence_number stays complete):
@@ -89,6 +108,8 @@ from _gold_base import (  # noqa: E402
 )
 # SPEC: A.2.2 — the ONLY sanctioned Spark reads of silver_identity_map (identity-view-guard allowlist).
 from _identity_views import identity_asof, identity_current  # noqa: E402
+# SPEC: B.1 / 0.5 / AMD-13 — per-brand journey.engine flag gate (Python twin of @brain/platform-flags).
+from _platform_flags import is_flag_enabled, FLAG_JOURNEY_ENGINE  # noqa: E402
 # The SAME event_type → event_category mapping Silver uses (silver_collector_event.event_category).
 # Pure python (no Spark at import); shipped to workers by build_spark's addPyFile of every _*.py
 # helper under silver/ + gold/, and by this job's run script --py-files.
@@ -126,7 +147,9 @@ _COLUMNS = """
           is_composite        boolean,
           composite_order_key string,
           ingested_at         timestamp,
-          updated_at          timestamp NOT NULL
+          updated_at          timestamp NOT NULL,
+          matched_via         array<string>,
+          identity_basis      string
 """.strip("\n")
 
 
@@ -147,13 +170,63 @@ def _read_silver_touchpoint(spark: SparkSession):
 
 
 def _register_identity_confidence_view(spark: SparkSession) -> None:
-    """_je_identity_conf = max VALID-NOW+KNOWN-NOW confidence per (brand_id, brain_id) from the bi-temporal
-    identity map, read via the SANCTIONED accessor identity_current (is_current=true AND system_to IS NULL,
-    A.2.2/AMD-07). identity_current returns a correctly-shaped EMPTY frame when the map is absent, so the
-    groupBy yields no rows and the downstream LEFT JOIN degrades to NULL confidence — no explicit guard."""
+    """_je_identity_conf = per (brand_id, brain_id) from the bi-temporal identity map, read via the
+    SANCTIONED accessor identity_current (is_current=true AND system_to IS NULL, A.2.2/AMD-07):
+      - identity_confidence = max VALID-NOW+KNOWN-NOW confidence, and
+      - matched_via_derived  = the SORTED distinct identifier_type set backing that brain_id — the B.1
+        flag-OFF `matched_via` provenance (derived from silver_identity_map identifier_type per AMD-13 R1;
+        flag-ON rows override this with the stitch's own matched_via[]).
+    identity_current returns a correctly-shaped EMPTY frame when the map is absent, so the groupBy yields
+    no rows and the downstream LEFT JOIN degrades to NULL confidence / empty matched_via — no explicit guard."""
     identity_current(spark).groupBy("brand_id", "brain_id").agg(
-        F.max("confidence").alias("identity_confidence")
+        F.max("confidence").alias("identity_confidence"),
+        F.array_sort(F.collect_set("identifier_type")).alias("matched_via_derived"),
     ).createOrReplaceTempView("_je_identity_conf")
+
+
+def _enabled_brands(spark: SparkSession, tp) -> "list[str]":
+    """SPEC: B.1 / 0.5 / AMD-13 — the DISTINCT brands in the (already partition-filtered) touchpoint
+    universe whose `journey.engine` flag is ON. Default-OFF + FAIL-CLOSED (a Redis miss → OFF → the brand
+    keeps the legacy silver_touchpoint identity input). Driver-side only (no addPyFile needed)."""
+    try:
+        brands = [r["brand_id"] for r in tp.select("brand_id").distinct().collect() if r["brand_id"]]
+    except Exception as exc:  # noqa: BLE001 — degrade to all-OFF (legacy path) on any read error
+        print(f"[gold_journey_events] brand enumeration failed ({exc}); journey.engine treated OFF", flush=True)
+        return []
+    on = [b for b in brands if is_flag_enabled(b, FLAG_JOURNEY_ENGINE)]
+    print(f"[gold_journey_events] journey.engine gate: {len(on)}/{len(brands)} brand(s) ON", flush=True)
+    return on
+
+
+def _register_flag_and_session_identity_views(spark: SparkSession, on_brands: "list[str]") -> None:
+    """SPEC: B.1 / AMD-13 R1 — register the two flag-ON-only views the construction SQL LEFT JOINs:
+      - _je_flag_on_brands(brand_id): the ON set; a NON-NULL match flips a row to the v2 stitch input.
+      - _je_session_identity(brand_id, session_id, v2_brain_id, v2_matched_via): the Wave-A stitch v2
+        table `silver_session_identity` restricted to ON brands (1 row per (brand_id, session_id) — its
+        MERGE key — so the LEFT JOIN never fans a touchpoint out). Both are EMPTY when no brand is ON /
+        the stitch table is absent → the SQL degrades to the byte-identical legacy path."""
+    spark.createDataFrame(
+        [(b,) for b in on_brands], "brand_id string"
+    ).createOrReplaceTempView("_je_flag_on_brands")
+
+    empty = (
+        "SELECT cast(null AS string) AS brand_id, cast(null AS string) AS session_id, "
+        "cast(null AS string) AS v2_brain_id, cast(array() AS array<string>) AS v2_matched_via WHERE 1 = 0"
+    )
+    if on_brands and silver_exists(spark, "silver_session_identity"):
+        si = (
+            spark.table(f"{CATALOG}.{SILVER_NS}.silver_session_identity")
+            .where(F.col("brand_id").isin(on_brands))
+            .select(
+                F.col("brand_id"),
+                F.col("session_id"),
+                F.col("brain_id").alias("v2_brain_id"),
+                F.coalesce(F.col("matched_via"), F.array().cast("array<string>")).alias("v2_matched_via"),
+            )
+        )
+        si.createOrReplaceTempView("_je_session_identity")
+    else:
+        spark.sql(empty).createOrReplaceTempView("_je_session_identity")
 
 
 def _register_identity_asof_view(spark: SparkSession) -> None:
@@ -194,25 +267,42 @@ def _build_sql(fqtn: str) -> str:
     return f"""
         WITH e AS (
             SELECT
-                brand_id,
-                brain_anon_id,
-                touch_seq,
-                -- spec's anonymous placeholder: pre-stitch visitors get a stable anonymous_ brain_id
-                coalesce(stitched_brain_id, concat('anonymous_', brain_anon_id)) AS brain_id,
+                tp.brand_id,
+                tp.brain_anon_id,
+                tp.touch_seq,
+                -- SPEC: B.1 / AMD-13 R1 — identity-resolution INPUT switch (per-brand flag, default OFF):
+                --   flag ON  (fob matched) → the Wave-A v2 stitch silver_session_identity.brain_id;
+                --   flag OFF (fob NULL)    → the legacy silver_touchpoint.stitched_brain_id.
+                -- Both then COALESCE to the anonymous_ placeholder (unstitched → journey-eligible only
+                -- after re-stitch). fob NULL for every OFF brand → byte-identical legacy resolution.
+                coalesce(
+                    CASE WHEN fob.brand_id IS NOT NULL THEN ssi.v2_brain_id ELSE tp.stitched_brain_id END,
+                    concat('anonymous_', tp.brain_anon_id)
+                ) AS brain_id,
+                (fob.brand_id IS NOT NULL) AS journey_engine_on,
+                -- the stable, brand-unique session key that maps a touch to its stitched session (B.1)
+                concat_ws(':', tp.brain_anon_id, tp.session_id_raw) AS session_id,
+                ssi.v2_matched_via AS v2_matched_via,
                 -- deterministic, rerun-stable touchpoint identity
-                sha2(concat_ws('||', brand_id, brain_anon_id, cast(touch_seq AS string)), 256) AS touchpoint_id,
-                concat_ws('||', brand_id, brain_anon_id, cast(touch_seq AS string)) AS source_event_ref,
-                occurred_at,
-                session_key,
-                event_type,
-                channel,
-                utm_source, utm_medium, utm_campaign, utm_term, utm_content,
-                fbclid, gclid, ttclid, msclkid, gbraid, wbraid, dclid,
-                product_handle,
-                coalesce(is_composite, false) AS is_composite,
-                composite_order_key
-            FROM _je_touchpoint
-            WHERE brand_id IS NOT NULL AND brain_anon_id IS NOT NULL AND touch_seq IS NOT NULL
+                sha2(concat_ws('||', tp.brand_id, tp.brain_anon_id, cast(tp.touch_seq AS string)), 256) AS touchpoint_id,
+                concat_ws('||', tp.brand_id, tp.brain_anon_id, cast(tp.touch_seq AS string)) AS source_event_ref,
+                tp.occurred_at,
+                tp.session_key,
+                tp.event_type,
+                tp.channel,
+                tp.utm_source, tp.utm_medium, tp.utm_campaign, tp.utm_term, tp.utm_content,
+                tp.fbclid, tp.gclid, tp.ttclid, tp.msclkid, tp.gbraid, tp.wbraid, tp.dclid,
+                tp.product_handle,
+                coalesce(tp.is_composite, false) AS is_composite,
+                tp.composite_order_key
+            FROM _je_touchpoint tp
+            -- flag-ON-only views (both EMPTY when no brand is ON / stitch absent → legacy path unchanged)
+            LEFT JOIN _je_flag_on_brands fob
+                ON fob.brand_id = tp.brand_id
+            LEFT JOIN _je_session_identity ssi
+                ON ssi.brand_id = tp.brand_id
+               AND ssi.session_id = concat_ws(':', tp.brain_anon_id, tp.session_id_raw)
+            WHERE tp.brand_id IS NOT NULL AND tp.brain_anon_id IS NOT NULL AND tp.touch_seq IS NOT NULL
         ),
         existing AS (  -- highest version already materialized per touchpoint (reversion output)
             SELECT brand_id, touchpoint_id, max(data_version) AS max_ver
@@ -249,9 +339,15 @@ def _build_sql(fqtn: str) -> str:
             cast(1 AS int) AS data_version,
             -- demote when a merge re-versioning already superseded v1 (never resurrect old identity)
             (x.max_ver IS NULL OR x.max_ver = 1) AS is_current,
+            -- SPEC: B.1 — per-brain journey position (journey_seq). Tie-break switches with the flag:
+            --   flag OFF → (occurred_at, touch_seq)  [legacy — byte-identical];
+            --   flag ON  → (occurred_at, session_id, touch_seq)  [spec tie-break (session_id, event_seq)].
+            -- flag OFF makes the session_id key a constant NULL, which never reorders the legacy result.
             cast(row_number() OVER (
                 PARTITION BY e.brand_id, e.brain_id
-                ORDER BY e.occurred_at ASC, e.touch_seq ASC
+                ORDER BY e.occurred_at ASC,
+                         CASE WHEN e.journey_engine_on THEN e.session_id END ASC,
+                         e.touch_seq ASC
             ) AS bigint) AS sequence_number,
             e.occurred_at,
             e.session_key,
@@ -285,7 +381,17 @@ def _build_sql(fqtn: str) -> str:
             e.is_composite,
             e.composite_order_key,
             coalesce(p.ingested_at, current_timestamp()) AS ingested_at,
-            current_timestamp() AS updated_at
+            current_timestamp() AS updated_at,
+            -- SPEC: B.1 / AMD-13 R1 — identity-link provenance for the resolved brain_id. flag ON → the
+            -- stitch's own matched_via[]; flag OFF → DERIVED from the map's identifier_type set (c). Empty
+            -- array (never NULL) for anonymous_/unmapped rows. array_sort → deterministic reruns.
+            CASE WHEN e.journey_engine_on
+                 THEN array_sort(coalesce(e.v2_matched_via, cast(array() AS array<string>)))
+                 ELSE coalesce(c.matched_via_derived, cast(array() AS array<string>))
+            END AS matched_via,
+            -- SPEC: 1.4 — the canonical journey ledger is DETERMINISTIC-ONLY (probabilistic overlay is a
+            -- separate view). identity_basis is the constant 'deterministic' on every canonical row.
+            cast('deterministic' AS string) AS identity_basis
         FROM e
         LEFT JOIN _je_identity_conf c
             ON c.brand_id = e.brand_id AND c.brain_id = e.brain_id
@@ -322,6 +428,12 @@ def build(spark: SparkSession):
 
     # The SoT categorization (silver_collector_event.event_category via _silver_technical) as a UDF.
     spark.udf.register("brain_event_category", event_category, StringType())
+
+    # SPEC: B.1 / 0.5 / AMD-13 — per-brand journey.engine gate (default OFF). The flag-ON brands switch
+    # their identity-resolution input to the Wave-A v2 stitch (silver_session_identity); everyone else
+    # keeps the legacy silver_touchpoint.stitched_brain_id input, byte-identical to pre-wave.
+    on_brands = _enabled_brands(spark, tp)
+    _register_flag_and_session_identity_views(spark, on_brands)
 
     _register_identity_confidence_view(spark)
     _register_identity_asof_view(spark)

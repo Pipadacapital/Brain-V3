@@ -41,7 +41,8 @@ export type BlendedRoasResult =
 export async function getBlendedRoas(
   brandId: string,
   params: { fromDate: Date; toDate: Date },
-  deps: { srPool: SilverPool },
+  // SPEC:C.4 — measurementMartsMigration threads the marts-migration flag to the spend read (default OFF → legacy view).
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<BlendedRoasResult> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string;
   const toStr = params.toDate.toISOString().split('T')[0] as string;

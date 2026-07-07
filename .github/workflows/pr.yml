@@ -142,6 +142,13 @@ jobs:
         run: tools/lint/identity-view-guard.sh --selftest
       - name: Run the identity-view guard over the tree (A.2.2)
         run: tools/lint/identity-view-guard.sh
+      # Deprecation guard (D.4.5 / D.5) — Wave-D semantic layer freezes the legacy Gold/Silver marts for
+      # NEW consumers (they stay live; existing readers migrate route-by-route in D.3). Fails on any NEW
+      # app/BFF/metric-engine reference to a deprecated mart outside tools/lint/deprecation-guard-allowlist.txt.
+      - name: Self-test the deprecation guard (proves catch + allowlist)
+        run: tools/lint/deprecation-guard.sh --selftest
+      - name: Run the deprecation guard over the tree (D.4.5)
+        run: tools/lint/deprecation-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # Prod placeholder guard (AUD-COST-007) — renders every prod chart

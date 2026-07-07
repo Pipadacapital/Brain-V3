@@ -37,6 +37,8 @@ import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/Identity
 import { PgScopedRecomputeRepository } from './infrastructure/pg/ScopedRecomputeRepository.js';
 import { RestitchDirtyConsumer } from './interfaces/consumers/RestitchDirtyConsumer.js';
 import { PgRestitchDirtyRepository } from './infrastructure/pg/RestitchDirtyRepository.js';
+import { JourneyReversionDirtyConsumer } from './interfaces/consumers/JourneyReversionDirtyConsumer.js';
+import { PgJourneyReversionDirtyRepository } from './infrastructure/pg/JourneyReversionDirtyRepository.js';
 import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
 import { AnalyticsCacheInvalidateConsumer } from './interfaces/consumers/AnalyticsCacheInvalidateConsumer.js';
 import { Redis } from 'ioredis';
@@ -426,6 +428,32 @@ export async function main(): Promise<void> {
     retryCounter,
   );
 
+  // ── Event-driven cross-device JOURNEY re-version dirty-set consumer (SPEC: B.2 / WB-B2 / AMD-08/11) ──
+  // Consumes the SAME identity.{linked,merged,unmerged}.v1 map-mutation lane under its OWN group (separate
+  // offsets from the recompute + restitch consumers). On each mutation it marks the affected BRAIN_IDS
+  // dirty in ops.journey_reversion_pending with the re-version CAUSE (merge|unmerge|restitch) so the Spark
+  // reversion job (gold_journey_events_reversion.py) rebuilds those brains' journeys as version N+1 and
+  // writes journey_version_log {brand_id, brain_id, from_version, to_version, cause, at} (AMD-11).
+  //
+  // FLAG-GATED per-brand `journey.engine` (DEFAULT OFF, fail-closed) via the SAME identityFlagService:
+  // with no brand opted in NOTHING is enqueued → the drain no-ops → golden journeys byte-identical. Reuses
+  // opsPool (brain_app; ops.journey_reversion_pending is a cross-brand ETL queue, not RLS-forced, like
+  // ops.restitch_pending) + the shared durable retryCounter (DLQ after 5).
+  const journeyReversionDirtyRepo = new PgJourneyReversionDirtyRepository(opsPool);
+  const journeyReversionDirtyTopics = [
+    buildTopic(identityEventEnvPrefix, IDENTITY_LINKED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_UNMERGED_TOPIC_SUFFIX),
+  ];
+  const journeyReversionDirtyConsumer = new JourneyReversionDirtyConsumer(
+    kafka,
+    journeyReversionDirtyRepo,
+    identityFlagService,
+    journeyReversionDirtyTopics,
+    cfg.JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID,
+    retryCounter,
+  );
+
   // ── Analytics cache-invalidation consumer (the CONSUMER side of cache.invalidate.v1) ──
   // The identity-recompute consumer EMITS cache.invalidate.v1 after an identity merge/suppress;
   // this consumer evicts the brand-scoped serving-cache keys so the serving tier never serves
@@ -712,6 +740,7 @@ export async function main(): Promise<void> {
       identityConsumer.stop(),
       identityRecomputeConsumer.stop(),
       restitchDirtyConsumer.stop(),
+      journeyReversionDirtyConsumer.stop(),
       analyticsCacheInvalidateConsumer.stop(),
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
@@ -791,6 +820,14 @@ export async function main(): Promise<void> {
   log.info(`starting restitch-dirty consumer — topics=${restitchDirtyTopics.join(',')} group=${cfg.RESTITCH_DIRTY_CONSUMER_GROUP_ID}`);
   await restitchDirtyConsumer.start();
   log.info('restitch-dirty consumer running');
+
+  // ── Event-driven cross-device JOURNEY re-version dirty-set consumer (SPEC: B.2 / WB-B2 MANDATORY WIRE) ──
+  // Subscribes to the identity.{linked,merged,unmerged}.v1 map-mutation lane and marks affected brain_ids
+  // dirty in ops.journey_reversion_pending (per-brand journey.engine gated, DEFAULT OFF → inert). WIRED
+  // HERE: do NOT remove without verifying the journey-reversion-dirty unit test + the Spark drain.
+  log.info(`starting journey-reversion-dirty consumer — topics=${journeyReversionDirtyTopics.join(',')} group=${cfg.JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID}`);
+  await journeyReversionDirtyConsumer.start();
+  log.info('journey-reversion-dirty consumer running');
 
   // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Projects consent_flags →

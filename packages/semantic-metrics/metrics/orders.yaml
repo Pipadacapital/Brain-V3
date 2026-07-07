@@ -1,0 +1,21 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: orders
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: none
+identity_basis: deterministic_only
+interactive: true
+owner: measurement-team
+description: >-
+  Count of distinct recognised orders per period. Deterministic order spine only (§1.4). No currency
+  axis (a count, not money).
+measures:
+  - name: order_count
+    agg: COUNT(DISTINCT order_id)
+expression: order_count
+examples:
+  - "Order count per day for the last 30 days."
+  - "Orders per channel at grain=week."

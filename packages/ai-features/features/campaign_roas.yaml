@@ -1,0 +1,9 @@
+# SPEC: E — feature declaration (campaign-entity ratio / double)
+name: campaign_roas
+entity: campaign
+dtype: double
+source: metric:roas
+freshness_sla: hourly
+owner: marketing-team
+pii: false
+description: Deterministic-attributed return on ad spend for the campaign (ratio from integer money inputs).

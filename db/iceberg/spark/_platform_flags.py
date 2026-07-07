@@ -36,6 +36,13 @@ import socket
 # packages/platform-flags/src/registry.ts). Informational — unknown names simply read False.
 FLAG_STITCH_V2 = "stitch.v2"
 FLAG_IDENTITY_PROBABILISTIC = "identity.probabilistic"
+# SPEC: B.1 — canonical journey generation reads silver_session_identity (Stitch v2) as its identity
+# resolution input when this per-brand flag is ON; OFF (default) keeps the legacy silver_touchpoint
+# stitched_brain_id input, byte-identical to pre-wave (AMD-13 R1).
+FLAG_JOURNEY_ENGINE = "journey.engine"
+# SPEC: C.2.6 — per-brand gate for the OPTIONAL gold_measurement_inventory movement fact. OFF (default) →
+# the brand emits no movement rows (byte-identical to pre-wave: an empty fact).
+FLAG_MEASUREMENT_INVENTORY_MOVEMENT = "measurement.inventory_movement"
 
 _ENABLED_VALUE = b"true"
 _DEFAULT_REDIS_URL = "redis://localhost:6379"

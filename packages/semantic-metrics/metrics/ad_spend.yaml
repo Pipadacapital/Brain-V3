@@ -1,0 +1,21 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: ad_spend
+version: v1
+entity: semantic_campaign
+time_column: updated_at
+grain: [all]
+dimensions_allowed: [platform]
+currency_handling: per_currency
+identity_basis: any
+interactive: false
+owner: marketing-team
+description: >-
+  Total advertising spend, per currency (optionally per platform): SUM of semantic_campaign
+  spend_minor (BIGINT minor units). Spend is NOT identity-linked (identity_basis: any). Never blended
+  across currency. The denominator behind MER/ROAS/CAC.
+measures:
+  - name: spend_minor
+    agg: SUM(spend_minor)
+expression: spend_minor
+examples:
+  - "Total ad spend by platform in INR."

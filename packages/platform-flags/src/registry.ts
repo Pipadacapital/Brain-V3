@@ -84,6 +84,13 @@ export const PLATFORM_FLAGS = {
     spec: 'C.4',
     description: 'CAC/ROAS/executive marts read gold_measurement_* (parity-gated vs legacy).',
   },
+  'measurement.inventory_movement': {
+    wave: 'C',
+    spec: 'C.2.6',
+    description:
+      'Per-brand gold_measurement_inventory movement fact (derived from silver_inventory_level ' +
+      'level-deltas). OPTIONAL, default OFF → the movement fact is EMPTY for the brand.',
+  },
 
   // ── Wave D — semantic serving ───────────────────────────────────────────────
   'semantic.serving': {
@@ -103,6 +110,66 @@ export const PLATFORM_FLAGS = {
     spec: 'G',
     description:
       'GET /v1/recommendations over gold_recommendations (501 stub per AMD-21 until models ship).',
+  },
+
+  // ── Wave F — AI platform infrastructure (SPEC:F; scaffold-only, OFF by construction) ──
+  'ai.gateway.call_logging': {
+    wave: 'F',
+    spec: 'F.2',
+    description:
+      'LiteLLM success/failure callback logs each model call to ops_llm_calls (prompt HASH + ' +
+      'redacted-PII prompt store via the masking hook). OFF = no logger, no ops_llm_calls writes. ' +
+      'Adapter is NotImplemented until Wave F logic ships.',
+  },
+  'ai.copilot.tools': {
+    wave: 'F',
+    spec: 'F.3',
+    description:
+      'MCP copilot tool surface exposed to an agent runtime (read-only tools over the semantic ' +
+      'catalog + Journey/Feature APIs; NEVER Trino/raw tables). OFF = registry inert, no agent ' +
+      'runtime mounts the tools. execution_mode `auto` code path remains unreachable (Wave I gate).',
+  },
+
+  // ── Wave H — decision engine (SPEC:H; scaffold-only, OFF by construction) ──
+  'decision.engine': {
+    wave: 'H',
+    spec: 'H',
+    description:
+      'Decision engine over gold_decisions (versioned-policy-compiled arbitration; candidates + ' +
+      'per-candidate EV + constraint evaluations persisted). OFF = decision-policies compiler is ' +
+      'shape-validation only, NO evaluator/EV/arbitration runs and NO gold_decisions rows are ' +
+      'written. Evaluator adapter is NotImplemented until Wave H logic ships.',
+  },
+
+  // ── Wave I — action platform (SPEC:I; per-executor, fail-closed; adapters are NotImplemented) ──
+  'actions.executor.shopify_discount': {
+    wave: 'I',
+    spec: 'I',
+    description:
+      'Expose the shopify-discount ExecutorPort adapter (@brain/action-core). OFF + adapter ' +
+      'NotImplemented until the Wave-I governance gate (human-approved policy version + holdout ' +
+      'support + per-executor rollback) is met; execution_mode `auto` stays unreachable meanwhile.',
+  },
+  'actions.executor.meta_audience': {
+    wave: 'I',
+    spec: 'I',
+    description:
+      'Expose the meta-audience ExecutorPort adapter (@brain/action-core). OFF + adapter ' +
+      'NotImplemented until the Wave-I governance gate is met.',
+  },
+  'actions.executor.messaging': {
+    wave: 'I',
+    spec: 'I',
+    description:
+      'Expose the messaging ExecutorPort adapter (@brain/action-core). OFF + adapter ' +
+      'NotImplemented until the Wave-I governance gate is met.',
+  },
+  'actions.executor.webhook': {
+    wave: 'I',
+    spec: 'I',
+    description:
+      'Expose the webhook ExecutorPort adapter (@brain/action-core). OFF + adapter ' +
+      'NotImplemented until the Wave-I governance gate is met.',
   },
 } as const satisfies Record<string, FlagDefinition>;
 

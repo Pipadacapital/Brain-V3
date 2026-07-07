@@ -1,0 +1,23 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: cm1_pct
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: ratio_same_currency
+identity_basis: deterministic_only
+interactive: false
+owner: measurement-team
+description: >-
+  CM1 margin as a fraction of net revenue, per currency: SUM(cm1_minor) / SUM(net_revenue_minor).
+  Margin ratios are per-currency (never blended without FX). Deterministic order spine only (§1.4).
+  Null when net revenue is zero.
+measures:
+  - name: cm1_minor
+    agg: SUM(cm1_minor)
+  - name: net_revenue_minor
+    agg: SUM(net_revenue_minor)
+expression: CAST(cm1_minor AS double) / NULLIF(net_revenue_minor, 0)
+examples:
+  - "CM1 % of net revenue in INR at grain=month."

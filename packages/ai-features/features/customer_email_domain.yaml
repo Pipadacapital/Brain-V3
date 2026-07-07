@@ -1,0 +1,9 @@
+# SPEC: E — feature declaration (PII-derived → MUST be in the shred manifest)
+name: customer_email_domain
+entity: customer
+dtype: string
+source: entity:customer.email_domain
+freshness_sla: daily
+owner: identity-team
+pii: true
+description: Email domain derived from the customer's identifier. PII-flagged; joins the shred manifest.

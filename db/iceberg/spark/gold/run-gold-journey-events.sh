@@ -66,6 +66,7 @@ docker run --rm \
   -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \
   -e AWS_REGION="${AWS_REGION:-us-east-1}" \
   -e V4_CORRELATION_ID="${V4_CORRELATION_ID:-}" \
+  -e REDIS_URL="${REDIS_URL:-redis://redis:6379}" \
   -e SPARK_DRIVER_MEMORY="${SPARK_DRIVER_MEMORY:-4g}" \
   -e FULL_REFRESH="${FULL_REFRESH:-}" \
   -e SILVER_INCREMENTAL_OVERLAP_HOURS="${SILVER_INCREMENTAL_OVERLAP_HOURS:-2}" \
@@ -77,7 +78,7 @@ docker run --rm \
     --driver-memory "${SPARK_DRIVER_MEMORY:-4g}" \
     --packages "${PACKAGES}" \
     --conf spark.jars.ivy=/root/.ivy2 \
-    --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/silver/_silver_technical.py \
+    --py-files /opt/spark-src/iceberg_base.py,/opt/spark-src/silver/_silver_technical.py,/opt/spark-src/_identity_views.py,/opt/spark-src/_platform_flags.py \
     "/opt/spark-src/gold/${MODEL}.py"
 
 echo ""

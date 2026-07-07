@@ -35,7 +35,7 @@ spec:
         clusterName: brain-prod
         region: ap-south-1
         # Explicit VPC id (terraform output vpc_id) — avoids IMDS dependence.
-        vpcId: REPLACE_WITH_VPC_ID
+        vpcId: vpc-06ded56ae87bd2b68
         replicaCount: 2
         serviceAccount:
           create: true

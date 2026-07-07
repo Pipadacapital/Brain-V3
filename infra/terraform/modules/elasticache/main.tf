@@ -70,7 +70,7 @@ resource "aws_elasticache_replication_group" "redis" {
   replication_group_id       = "${var.project}-${var.environment}-redis"
   description                = "Brain Redis cache (${var.environment})"
   engine                     = "redis"
-  engine_version             = "7.2"
+  engine_version             = "7.1"
   node_type                  = var.node_type
   num_cache_clusters         = var.num_cache_nodes
   automatic_failover_enabled = var.num_cache_nodes > 1

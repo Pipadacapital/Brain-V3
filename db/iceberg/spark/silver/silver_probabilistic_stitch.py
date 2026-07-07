@@ -198,7 +198,16 @@ def _score(spark: SparkSession, feats):
     (has det_person) and the other is unstitched → (session_id = unstitched anon, probabilistic_brain_id
     = identified det_person, confidence = match probability) ≥ OUTPUT_FLOOR. Returns a Spark DataFrame in
     the _COLUMNS shape (possibly empty — the golden reality: max prob ≈ 0.04)."""
-    from splink.spark.linker import SparkLinker
+    # §1.4 optional weak-signal matcher — DEGRADE SAFELY when splink is absent from the Spark image.
+    # The quarantined table then stays empty (identical to the flag-OFF write path), the refresh exits
+    # clean, and no deterministic output is affected. Only brands with identity.probabilistic ON would
+    # ever consume this table, and the import is the sole hard dependency on the library.
+    try:
+        from splink.spark.linker import SparkLinker
+    except ModuleNotFoundError:
+        print("[silver_probabilistic_stitch] splink not installed — skipping probabilistic scoring "
+              "(quarantined table stays empty; §1.4 optional weak-signal matcher)", flush=True)
+        return None
 
     feats = feats.persist()
     n_labeled = feats.where(F.col("det_person").isNotNull()).limit(1).count()

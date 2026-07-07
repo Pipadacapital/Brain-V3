@@ -8,8 +8,8 @@ import { useCurrentUser, useLogout } from '@/lib/hooks/use-auth';
 /**
  * Sidebar footer: shows the signed-in user's email and a Log out control.
  * Logout revokes the session server-side and clears the httpOnly cookie, then
- * redirects to /login. Even if the request errors, we still navigate to /login
- * so the user is never stranded in a half-authenticated shell.
+ * lands on the public home page. Even if the request errors, we still navigate
+ * home so the user is never stranded in a half-authenticated shell.
  */
 export function UserMenu() {
   const router = useRouter();
@@ -19,10 +19,20 @@ export function UserMenu() {
   const email = data?.user?.email;
 
   function handleLogout() {
-    logout(undefined, {
-      onSuccess: () => router.replace('/login'),
-      onError: () => router.replace('/login'),
-    });
+    // Best-effort BFF revoke, then ALWAYS clear the local httpOnly session cookie
+    // via the web /logout route — so logout works even when the BFF is unreachable
+    // (otherwise the cookie survives and the app still looks logged-in). refresh()
+    // then busts the Next router cache so "/" re-renders in its signed-out state.
+    const finish = async () => {
+      try {
+        await fetch('/logout', { method: 'POST' });
+      } catch {
+        /* ignore — navigate regardless so the user is never stranded */
+      }
+      router.replace('/');
+      router.refresh();
+    };
+    logout(undefined, { onSuccess: finish, onError: finish });
   }
 
   return (

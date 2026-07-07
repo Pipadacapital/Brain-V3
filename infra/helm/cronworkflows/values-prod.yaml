@@ -1,10 +1,10 @@
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
 streamWorkerImage:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
 
@@ -13,7 +13,7 @@ streamWorkerImage:
 # kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
 sparkBronze:
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
     digest: ""
   # AUD-PROD-006: Spark cron pods → the batch Karpenter pool (t4g.xlarge Spot).
@@ -26,7 +26,7 @@ sparkBronze:
 # V4 marts). Flip enabled:true once the prod V4 cluster + digest are ready (gated off by default).
 sparkV4:
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
     digest: ""
   # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the batch pool.
@@ -39,4 +39,4 @@ envSecretName: core-env
 serviceAccount:
   name: brain-jobs
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-jobs
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-jobs

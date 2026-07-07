@@ -5,15 +5,15 @@ catalog:
   # Object Lock). Exactly like local (compose CATALOG_WAREHOUSE=s3://brain-bronze/):
   # ONE REST server, ONE warehouse, and Bronze/Silver/Gold are the Iceberg
   # NAMESPACES brain_{bronze,silver,gold} under it — there are NO per-layer
-  # buckets. ACCOUNT_ID is the standard fill token (infra/helm/PLACEHOLDERS.md §1).
-  warehouse: "s3://brain-bronze-prod-ACCOUNT_ID/"
+  # buckets. 380254378136 is the standard fill token (infra/helm/PLACEHOLDERS.md §1).
+  warehouse: "s3://brain-bronze-prod-380254378136/"
   jdbcHost: "REPLACE_WITH_AURORA_ENDPOINT"   # module.aurora.endpoint
   jdbcPort: 5432
   jdbcDatabase: iceberg_catalog
   s3Region: ap-south-1
 
 serviceAccount:
-  roleArn: "arn:aws:iam::ACCOUNT_ID:role/brain-prod-iceberg-rest"   # IRSA: S3 RW on the warehouse namespace prefixes
+  roleArn: "arn:aws:iam::380254378136:role/brain-prod-iceberg-rest"   # IRSA: S3 RW on the warehouse namespace prefixes
 
 resources:
   requests:

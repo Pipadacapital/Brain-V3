@@ -69,4 +69,4 @@ iceberg:
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-trino
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-trino

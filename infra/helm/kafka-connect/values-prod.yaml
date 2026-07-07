@@ -22,7 +22,7 @@ worker:
 icebergCatalog:
   iceberg.catalog.type: "rest"
   iceberg.catalog.uri: "http://iceberg-rest.iceberg.svc.cluster.local:8181"
-  iceberg.catalog.warehouse: "s3://REPLACE_WITH_WAREHOUSE_BUCKET/"
+  iceberg.catalog.warehouse: "s3://brain-bronze-prod-380254378136/"
   iceberg.catalog.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
   iceberg.catalog.client.region: "ap-south-1"
 
@@ -31,7 +31,7 @@ serviceAccount:
   name: ""
   annotations:
     # IRSA: S3 RW on the warehouse prefixes (same policy family as spark-jobs/iceberg-rest).
-    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/brain-prod-spark-jobs"
+    eks.amazonaws.com/role-arn: "arn:aws:iam::380254378136:role/brain-prod-spark-jobs"
 
 resources:
   requests:

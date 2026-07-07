@@ -58,7 +58,7 @@ prometheus:
     # AccessDenied for the Thanos sidecar's S3 uploads.
     name: kube-prometheus-stack-prometheus
     annotations:
-      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-thanos
+      eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-thanos
   prometheusSpec:
     nodeSelector:
       role: system
@@ -113,7 +113,7 @@ prometheus:
         secret:
           type: S3
           config:
-            bucket: brain-metrics-prod-ACCOUNT_ID
+            bucket: brain-metrics-prod-380254378136
             endpoint: s3.ap-south-1.amazonaws.com
             region: ap-south-1
       resources:

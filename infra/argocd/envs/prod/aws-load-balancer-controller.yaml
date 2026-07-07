@@ -41,7 +41,7 @@ spec:
           create: true
           name: aws-load-balancer-controller
           annotations:
-            eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-aws-load-balancer-controller
+            eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-aws-load-balancer-controller
         # The ingress data path must never sit on Spot capacity it also fronts.
         nodeSelector:
           role: system

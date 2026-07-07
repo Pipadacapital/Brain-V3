@@ -31,21 +31,13 @@ provider "aws" {
   # assume_role { role_arn = "arn:aws:iam::<PROD_ACCOUNT_ID>:role/TerraformApply" }
 
   # AUD-NAME-001: mandatory PascalCase tag set (Environment/Service/Owner/
-  # CostCenter + Project/ManagedBy) from modules/_shared, MERGED over the
-  # legacy lowercase keys so already-applied resources see tag ADDITIONS only
-  # (in-place update, no replacement). Per-module `Service` overrides win on
-  # collision (default_tags + resource tags merge, resource value wins).
-  # Follow-up per docs/infra/naming-and-tagging.md §6: strip the lowercase
-  # duplicates once nothing keys on them.
+  # CostCenter + Project/ManagedBy) from modules/_shared. The legacy lowercase
+  # duplicates (project/environment/managed_by) are DROPPED here: prod was never
+  # applied with them, and IAM treats tag keys as case-insensitive, so
+  # project/Project (etc.) collided as duplicate keys on every IAM role
+  # (CreateRole InvalidInput: "Duplicate tag keys found"). PascalCase only.
   default_tags {
-    tags = merge(
-      {
-        project     = local.project
-        environment = local.environment
-        managed_by  = "terraform"
-      },
-      module.tags.common_tags,
-    )
+    tags = module.tags.common_tags
   }
 }
 

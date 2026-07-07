@@ -125,8 +125,6 @@ resource "aws_eks_cluster" "main" {
   ]
 
   tags = {
-    project     = var.project
-    environment = var.environment
   }
 }
 
@@ -226,7 +224,6 @@ resource "aws_eks_node_group" "system" {
 
   labels = {
     role        = "system"
-    environment = var.environment
   }
 
   depends_on = [
@@ -236,8 +233,6 @@ resource "aws_eks_node_group" "system" {
   ]
 
   tags = {
-    project     = var.project
-    environment = var.environment
     role        = "system"
   }
 }
@@ -283,8 +278,6 @@ resource "aws_iam_role" "ebs_csi" {
   assume_role_policy = data.aws_iam_policy_document.ebs_csi_trust.json
 
   tags = {
-    project     = var.project
-    environment = var.environment
     workload    = "ebs-csi-driver"
   }
 }
@@ -312,8 +305,6 @@ resource "aws_eks_addon" "ebs_csi" {
   depends_on = [aws_eks_node_group.system]
 
   tags = {
-    project     = var.project
-    environment = var.environment
   }
 }
 
@@ -344,8 +335,6 @@ resource "aws_ecr_repository" "services" {
   }
 
   tags = {
-    project     = var.project
-    environment = var.environment
     service     = each.key
   }
 }

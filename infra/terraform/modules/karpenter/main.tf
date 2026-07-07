@@ -68,8 +68,6 @@ locals {
   # Environment was the missing 4th). Lowercase project/environment kept for
   # continuity with the applied resources until the doc's §6 duplicate-strip.
   common_tags = {
-    project     = var.project
-    environment = var.environment
     Environment = var.environment
     Service     = "karpenter"
     Owner       = "data-team"

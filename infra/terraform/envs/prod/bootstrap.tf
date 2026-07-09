@@ -167,10 +167,25 @@ module "aurora" {
   project                    = local.project
   vpc_id                     = module.network.vpc_id
   subnet_ids                 = module.network.private_subnet_ids
-  ingress_security_group_ids = [module.network.rds_sg_id]
+  # The EKS-managed cluster SG is what node/pod traffic actually egresses from —
+  # nodes are NOT in the network module's eks_nodes_sg, so rds_sg alone left every
+  # workload→Aurora connection timing out. Allow the real node SG too.
+  ingress_security_group_ids = [module.network.rds_sg_id, module.eks.cluster_primary_security_group_id]
   kms_key_arn                = module.kms.root_kms_key_arn
   min_capacity               = var.aurora_min_capacity
   max_capacity               = var.aurora_max_capacity
+}
+
+# ElastiCache Redis: same fix — allow 6379 from the EKS-managed cluster SG. The
+# network elasticache_sg only admitted the (unused) eks_nodes_sg.
+resource "aws_security_group_rule" "redis_from_eks_cluster_sg" {
+  type                     = "ingress"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = module.network.elasticache_sg_id
+  source_security_group_id = module.eks.cluster_primary_security_group_id
+  description              = "Redis from EKS-managed cluster SG (real node traffic)"
 }
 
 ###############################################################################

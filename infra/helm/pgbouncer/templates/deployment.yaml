@@ -16,6 +16,12 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        # edoburu/pgbouncer runs as the image's "postgres" user (uid/gid 70).
+        # runAsNonRoot needs a NUMERIC user or kubelet refuses to start the pod
+        # ("image has non-numeric user (postgres)").
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
         seccompProfile:
           type: RuntimeDefault
       containers:

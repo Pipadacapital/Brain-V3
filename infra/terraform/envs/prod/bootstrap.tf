@@ -188,6 +188,18 @@ resource "aws_security_group_rule" "redis_from_eks_cluster_sg" {
   description              = "Redis from EKS-managed cluster SG (real node traffic)"
 }
 
+# Karpenter selects node SGs by the karpenter.sh/discovery tag, which lives on the
+# network module's eks_nodes SG — but that SG is NOT the one the EKS control plane
+# trusts for the private API endpoint (nor the one our Aurora/Redis ingress rules
+# allow). Result: Karpenter nodes booted but never registered (NodeNotFound). Tag
+# the EKS-managed cluster SG (what system MNG nodes use + our DB rules trust) so
+# Karpenter nodes attach it and can reach the API + the databases.
+resource "aws_ec2_tag" "cluster_sg_karpenter_discovery" {
+  resource_id = module.eks.cluster_primary_security_group_id
+  key         = "karpenter.sh/discovery"
+  value       = "brain-prod"
+}
+
 # EC2 Spot service-linked role — Karpenter's controller role cannot create it, so
 # the FIRST Spot launch on a fresh account fails with
 # AuthFailure.ServiceLinkedRoleCreationNotPermitted. Create it once here.

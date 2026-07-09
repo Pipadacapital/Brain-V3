@@ -38,12 +38,15 @@ neo4j:
     cpu: "2"
     memory: 4Gi
 
+# AUD-COST-018: pin the identity SoR to the ON-DEMAND Karpenter pool. The upstream
+# neo4j chart reads nodeSelector at TOP LEVEL (only tolerations live under podSpec)
+# — putting it under podSpec silently dropped it, so the pod floated to the
+# untainted `trino` (Spot) pool. Both the selector (land there) and the toleration
+# (be allowed past the taint) are required.
+nodeSelector:
+  brain.platform/pool: ondemand
+
 podSpec:
-  # AUD-COST-018: pin the identity SoR to the ON-DEMAND Karpenter pool. The
-  # pool is tainted, so BOTH the selector (land there) and the toleration
-  # (be allowed there) are required.
-  nodeSelector:
-    brain.platform/pool: ondemand
   tolerations:
     - key: brain.platform/pool
       operator: Equal

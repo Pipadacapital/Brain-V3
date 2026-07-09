@@ -188,6 +188,13 @@ resource "aws_security_group_rule" "redis_from_eks_cluster_sg" {
   description              = "Redis from EKS-managed cluster SG (real node traffic)"
 }
 
+# EC2 Spot service-linked role — Karpenter's controller role cannot create it, so
+# the FIRST Spot launch on a fresh account fails with
+# AuthFailure.ServiceLinkedRoleCreationNotPermitted. Create it once here.
+resource "aws_iam_service_linked_role" "spot" {
+  aws_service_name = "spot.amazonaws.com"
+}
+
 # iceberg-rest catalog image (apache/iceberg-rest-fixture + the PG JDBC driver the
 # fixture omits — see db/iceberg/rest/Dockerfile). Not a pnpm app, so it's outside
 # the eks module's brain-<svc>-prod ECR set; same IMMUTABLE, KMS-encrypted posture.

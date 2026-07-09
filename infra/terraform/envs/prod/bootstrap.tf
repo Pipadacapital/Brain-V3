@@ -188,6 +188,21 @@ resource "aws_security_group_rule" "redis_from_eks_cluster_sg" {
   description              = "Redis from EKS-managed cluster SG (real node traffic)"
 }
 
+# iceberg-rest catalog image (apache/iceberg-rest-fixture + the PG JDBC driver the
+# fixture omits — see db/iceberg/rest/Dockerfile). Not a pnpm app, so it's outside
+# the eks module's brain-<svc>-prod ECR set; same IMMUTABLE, KMS-encrypted posture.
+resource "aws_ecr_repository" "iceberg_rest" {
+  name                 = "brain-iceberg-rest-prod"
+  image_tag_mutability = "IMMUTABLE"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = module.kms.root_kms_key_arn
+  }
+}
+
 ###############################################################################
 # Secrets Manager + S3 Iceberg medallion WAREHOUSE + S3 Audit (WORM).
 # AUD-COST-016: ONE warehouse bucket, NO Object Lock. The local lakehouse runs

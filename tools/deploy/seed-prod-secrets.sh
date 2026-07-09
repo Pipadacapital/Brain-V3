@@ -57,6 +57,9 @@ END \$\$;
 GRANT ALL ON DATABASE brain TO brain_app;
 GRANT ALL ON SCHEMA public TO brain_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO brain_app;
+-- PG16: brainadmin (rds_superuser, not superuser) can only CREATE DATABASE ...
+-- OWNER iceberg_catalog if it is a member of that role. Grant the membership.
+GRANT iceberg_catalog TO brainadmin;
 SQL
 
 # CREATE DATABASE cannot run inside a txn/DO block — do it conditionally, separately.
@@ -65,7 +68,14 @@ kubectl -n default run "pgseed2-$$" --image=postgres:16 --restart=Never --rm -i 
   bash -lc "psql 'host=$AUR user=brainadmin dbname=brain sslmode=require' -tAc \"SELECT 1 FROM pg_database WHERE datname='iceberg_catalog'\" | grep -q 1 || psql 'host=$AUR user=brainadmin dbname=brain sslmode=require' -c 'CREATE DATABASE iceberg_catalog OWNER iceberg_catalog'"
 
 echo "[4/4] Seeding Secrets Manager (6 entries; core-env deferred to app tier)..."
-put() { aws secretsmanager put-secret-value --region "$REGION" --secret-id "$1" --secret-string "$2" >/dev/null && echo "  seeded $1"; }
+# Verifies every write: refuses an empty payload, then reads back AWSCURRENT length.
+put() {
+  local id="$1" val="$2"
+  if [ -z "$val" ] || [ "$val" = "{}" ]; then echo "  FATAL: empty JSON for $id (a builder failed)"; exit 1; fi
+  aws secretsmanager put-secret-value --region "$REGION" --secret-id "$id" --secret-string "$val" >/dev/null
+  local n; n=$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$id" --query 'length(SecretString)' --output text 2>/dev/null || echo 0)
+  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then echo "  seeded $id (AWSCURRENT len=$n)"; else echo "  FATAL: $id has no AWSCURRENT value after put"; exit 1; fi
+}
 
 PGBOUNCER=$(python3 -c 'import json,os;print(json.dumps({"DB_USER":"brain_app","DB_PASSWORD":os.environ["APP_PW"]}))')
 put brain/prod/k8s/pgbouncer-env "$PGBOUNCER"

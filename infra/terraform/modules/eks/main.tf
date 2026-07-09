@@ -369,6 +369,14 @@ output "cluster_endpoint" {
   value = aws_eks_cluster.main.endpoint
 }
 
+# The EKS-managed "cluster security group" — auto-created by EKS and attached to
+# managed-node-group nodes (and cross-node/pod traffic). Data-plane clients
+# (Aurora, ElastiCache) must allow ingress from THIS sg, since the nodes are not
+# members of the network module's eks_nodes_sg. (Fixes workload→DB timeouts.)
+output "cluster_primary_security_group_id" {
+  value = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+}
+
 output "cluster_ca" {
   value = aws_eks_cluster.main.certificate_authority[0].data
 }

@@ -54,7 +54,11 @@ tags:
 # WhenEmptyOrUnderutilized so idle batch/serving capacity is reclaimed all the way to zero.
 nodePools:
   streaming:
-    instanceType: t4g.large          # 2 vCPU / 8 GiB — collector + live stream-worker consumers
+    # Range so Karpenter right-sizes per workload: light consumers → t4g.large
+    # (2/8), a Kafka broker (6Gi req / 4Gi heap) → t4g.xlarge (4/16). Pinning a
+    # single t4g.large left the brokers permanently unschedulable.
+    instanceTypes: ["t4g.large", "t4g.xlarge"]
+    instanceType: t4g.large          # fallback (unused when instanceTypes is set)
     capacityType: spot
     consolidationPolicy: WhenEmpty
     consolidateAfter: 5m

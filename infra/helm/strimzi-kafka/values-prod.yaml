@@ -17,20 +17,21 @@ kafka:
       class: gp3
       deleteClaim: false
     resources:
-      # The broker pins to the `streaming` Karpenter pool (t4g.large, 2 vCPU /
-      # ~1930m allocatable). A 2-vCPU REQUEST can never fit that node, so brokers
-      # stayed Pending (Karpenter: "no instance type satisfied resources"). Trim
-      # the request to 1 vCPU (still bursts to the limit=4, i.e. the whole node);
-      # bump this or widen the streaming pool to t4g.xlarge if real traffic needs it.
+      # Sized to fit the CHEAPER streaming node (t4g.large, 2 vCPU / 8 GiB,
+      # ~6.3Gi allocatable after Karpenter overhead): cpu request 1 (bursts to
+      # limit 4 = whole node), memory request 5Gi / limit 6Gi around a 3Gi JVM
+      # heap (below). With the streaming pool's t4g.large|t4g.xlarge range,
+      # Karpenter picks the cheaper t4g.large. Raise heap+memory (→ t4g.xlarge)
+      # if real traffic needs more.
       requests:
         cpu: "1"
-        memory: 6Gi
+        memory: 5Gi
       limits:
         cpu: "4"
-        memory: 8Gi
+        memory: 6Gi
     jvm:
-      xms: 4096m
-      xmx: 4096m
+      xms: 3072m
+      xmx: 3072m
     # AUD-PROD-006: pin the KRaft broker pods (stateful, 'no event loss') to the
     # streaming Karpenter pool — its WhenEmpty consolidation NEVER bin-packs live
     # brokers off a node, unlike the batch/trino pools' WhenEmptyOrUnderutilized.

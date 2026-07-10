@@ -29,7 +29,17 @@ spec:
           values: [{{ $pool.capacityType | quote }}]
         - key: node.kubernetes.io/instance-type
           operator: In
+          # Accept a LIST (instanceTypes) so Karpenter right-sizes per workload
+          # (e.g. a 6Gi Kafka broker → t4g.xlarge, a light consumer → t4g.large),
+          # falling back to the single instanceType for pools that pin one.
+          {{- if $pool.instanceTypes }}
+          values:
+          {{- range $pool.instanceTypes }}
+            - {{ . | quote }}
+          {{- end }}
+          {{- else }}
           values: [{{ $pool.instanceType | quote }}]
+          {{- end }}
         - key: kubernetes.io/arch
           operator: In
           values: ["arm64"]

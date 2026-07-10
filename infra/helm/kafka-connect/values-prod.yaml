@@ -21,7 +21,7 @@ worker:
 # fills the terraform output `warehouse_bucket_name` here (placeholder guard enforces).
 icebergCatalog:
   iceberg.catalog.type: "rest"
-  iceberg.catalog.uri: "http://iceberg-rest.iceberg.svc.cluster.local:8181"
+  iceberg.catalog.uri: "http://brain-prod-iceberg-rest.iceberg-rest.svc.cluster.local:8181"
   iceberg.catalog.warehouse: "s3://brain-bronze-prod-380254378136/"
   iceberg.catalog.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
   iceberg.catalog.client.region: "ap-south-1"

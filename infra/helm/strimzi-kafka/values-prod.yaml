@@ -17,8 +17,13 @@ kafka:
       class: gp3
       deleteClaim: false
     resources:
+      # The broker pins to the `streaming` Karpenter pool (t4g.large, 2 vCPU /
+      # ~1930m allocatable). A 2-vCPU REQUEST can never fit that node, so brokers
+      # stayed Pending (Karpenter: "no instance type satisfied resources"). Trim
+      # the request to 1 vCPU (still bursts to the limit=4, i.e. the whole node);
+      # bump this or widen the streaming pool to t4g.xlarge if real traffic needs it.
       requests:
-        cpu: "2"
+        cpu: "1"
         memory: 6Gi
       limits:
         cpu: "4"

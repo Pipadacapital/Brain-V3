@@ -150,6 +150,8 @@ export interface EraseSubjectResult {
 
 // ── Use case ──────────────────────────────────────────────────────────────────
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export class EraseSubjectUseCase {
   constructor(
     private readonly saltProvider: SaltProvider,
@@ -204,25 +206,44 @@ export class EraseSubjectUseCase {
       return { outcome: 'not_an_erasure', brandId, eventId };
     }
 
-    // ── Subject extraction + hash ─────────────────────────────────────────────
-    const regionCode =
-      typeof parsed['region_code'] === 'string' ? parsed['region_code'] : 'IN';
+    // ── Subject resolution ────────────────────────────────────────────────────
+    // PRIMARY path: raw email/phone → salt-hash → graph lookup. The hash ALSO keys the
+    // STEP-4 Bronze raw sweep, so it is computed whenever a raw subject is present.
+    // AUD-OPS-036 direct addressing: the core erasure-trigger bridge carries an
+    // already-resolved properties.brain_id for entry points that hold NO raw identifier
+    // (the UI erase route hard-deletes contact_pii synchronously, so no email/phone exists
+    // to re-derive) — used when the event has no raw subject, or the raw subject is not
+    // linked in the graph but the entry point resolved the brain_id another way (e.g. the
+    // Shopify redact resolves via storefront_customer_id). Tenant isolation holds: EVERY
+    // downstream write is scoped to the exact (brand_id, brain_id) pair from THIS event —
+    // a mismatched/foreign pair matches 0 rows (never cross-brand).
+    const directBrainId = this.extractDirectBrainId(parsed);
     const subject = this.extractSubject(parsed);
-    if (!subject) {
-      return { outcome: 'no_subject', brandId, eventId };
+    let brainId: string | null = null;
+    let subjectHash: string | undefined;
+
+    if (subject) {
+      const regionCode =
+        typeof parsed['region_code'] === 'string' ? parsed['region_code'] : 'IN';
+
+      // HARD CRASH on salt failure (D-2): the subject_hash must equal the hash stored in
+      // identity_link / subject_keyring — never hash with a bad salt.
+      const saltHex = await this.saltProvider.saltHexForBrand(brandId);
+      subjectHash = hashIdentifier(subject.value, subject.type, saltHex, regionCode);
+
+      // ── Brain-ID resolution ─────────────────────────────────────────────────
+      // Throws if the identity store is unavailable → consumer retries (fail-closed).
+      // Returns null if subject not found → fall back to direct addressing below.
+      brainId = await this.brainIdLookup.findBrainId(brandId, subjectHash, subject.type);
     }
 
-    // HARD CRASH on salt failure (D-2): the subject_hash must equal the hash stored in
-    // identity_link / subject_keyring — never hash with a bad salt.
-    const saltHex = await this.saltProvider.saltHexForBrand(brandId);
-    const subjectHash = hashIdentifier(subject.value, subject.type, saltHex, regionCode);
-
-    // ── Brain-ID resolution ───────────────────────────────────────────────────
-    // Throws if the identity store is unavailable → consumer retries (fail-closed).
-    // Returns null if subject not found → skip with 'no_brain_id' (logged as WARN).
-    const brainId = await this.brainIdLookup.findBrainId(brandId, subjectHash, subject.type);
+    if (!brainId && directBrainId) {
+      brainId = directBrainId;
+    }
     if (!brainId) {
-      return { outcome: 'no_brain_id', brandId, eventId };
+      // Same skip semantics as pre-bridge: unaddressable event → 'no_subject';
+      // addressable-but-unknown subject → 'no_brain_id' (logged as WARN by the consumer).
+      return { outcome: subject ? 'no_brain_id' : 'no_subject', brandId, eventId };
     }
 
     // ── ORDERED ERASURE SEQUENCE ──────────────────────────────────────────────
@@ -274,7 +295,7 @@ export class EraseSubjectUseCase {
     // message retries (→ DLQ@MAX_RETRY), and steps 5/6 never run, so an erasure whose Bronze
     // sweep was not submitted is never marked complete. Never a silent success.
     let bronzeRawWorkflow: string | undefined;
-    if (this.bronzeRawErasure) {
+    if (this.bronzeRawErasure && subjectHash) {
       const { anonIds, deviceIds } = this.extractRawSubjectIds(parsed);
       const submitted = await this.bronzeRawErasure.submit({
         brandId,
@@ -284,7 +305,12 @@ export class EraseSubjectUseCase {
       });
       bronzeRawWorkflow = submitted.workflowName;
     } else {
-      // NOT CONFIGURED (dev/tests — no ARGO_SERVER_URL): the original registered-DISABLED seam.
+      // NOT CONFIGURED (dev/tests — no ARGO_SERVER_URL) — OR a brain_id-only trigger
+      // (AUD-OPS-036 direct addressing: the raw identifier was hard-deleted at the entry
+      // point, so there is no identifier hash to key the Bronze sweep on; NEVER fabricate
+      // one). Falls to the original registered-DISABLED seam so the step stays honest about
+      // doing nothing. Follow-up (tracked in the AUD-OPS-036 PR): carry the graph's
+      // identifier hashes on the brain_id-addressed trigger to close this residual.
       // shredIcebergSnapshots always throws NotImplementedYet; catch it and continue — the
       // primary erasure is done (DEK shredded + hard delete). Do NOT claim I-S05 conformance
       // for this configuration. The consumer will NOT retry or DLQ for this.
@@ -363,6 +389,19 @@ export class EraseSubjectUseCase {
       anonIds: collect(['brain_anon_id', 'anon_id']),
       deviceIds: collect(['device_id', '$device_id']),
     };
+  }
+
+  /**
+   * AUD-OPS-036: extract the already-resolved brain_id the core erasure-trigger bridge places
+   * in properties.brain_id (direct addressing for entry points with no raw identifier).
+   * Returns null unless the value is a well-formed UUID — a malformed value falls through to
+   * the normal subject-hash path (never a garbage key into the erasure sequence).
+   */
+  private extractDirectBrainId(parsed: Record<string, unknown>): string | null {
+    const payload = (parsed['payload'] as Record<string, unknown>) ?? parsed;
+    const props = (payload['properties'] as Record<string, unknown>) ?? {};
+    const raw = props['brain_id'];
+    return typeof raw === 'string' && UUID_RE.test(raw) ? raw : null;
   }
 
   private extractSubject(

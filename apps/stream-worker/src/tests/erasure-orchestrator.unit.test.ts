@@ -729,6 +729,172 @@ describe('EraseSubjectUseCase — Bronze raw erasure submit (AUD-OPS-037, STEP 4
   });
 });
 
+describe('EraseSubjectUseCase — direct brain_id addressing (AUD-OPS-036 erasure-trigger bridge)', () => {
+  /**
+   * The core ErasureEventPublisher addresses subjects that have NO raw identifier at the entry
+   * point (the UI erase route hard-deletes contact_pii synchronously) by carrying the
+   * already-resolved brain_id in properties.brain_id. The orchestrator must run the full
+   * ordered sequence WITHOUT the salt-hash-graph lookup.
+   */
+  function makeBrainIdAddressedEvent(brandId: string, brainId: string): Buffer {
+    return Buffer.from(
+      JSON.stringify({
+        brand_id: brandId,
+        event_id: randomUUID(),
+        event_name: 'privacy.erasure.requested',
+        consent_flags: {
+          analytics: false,
+          marketing: false,
+          personalization: false,
+          ai_processing: false,
+        },
+        properties: { source: 'identity.erase', reason: 'erasure', brain_id: brainId },
+      }),
+      'utf8',
+    );
+  }
+
+  it('erases via properties.brain_id — full sequence runs on the exact (brand, brain) pair', async () => {
+    const erasureRepo = new InMemoryErasureRepository();
+    const scopedRecomputeRepo = makeScopedRecomputeRepo();
+    const capiUseCase = makeCapiDeletionUseCase();
+    const { useCase } = buildUseCaseForA({ erasureRepo, scopedRecomputeRepo, capiUseCase });
+
+    const result = await useCase.execute(
+      makeBrainIdAddressedEvent(BRAND_A, BRAIN_ID_A),
+      new Date().toISOString(),
+    );
+
+    expect(result.outcome).toBe('erased');
+    expect(result.brainId).toBe(BRAIN_ID_A);
+    expect(erasureRepo.shredCalls).toEqual([{ brandId: BRAND_A, brainId: BRAIN_ID_A }]);
+    expect(erasureRepo.completeCalls).toHaveLength(1);
+    expect(scopedRecomputeRepo.calls[0]!.affected_brain_ids).toContain(BRAIN_ID_A);
+  });
+
+  it('skips the salt + graph lookup entirely (no raw identifier needed)', async () => {
+    const brainIdLookup = makeBrainIdLookup([]); // would return null for everything
+    const saltProvider = makeSaltProvider({}); // would THROW for every brand (no salt configured)
+    const erasureRepo = new InMemoryErasureRepository();
+
+    const useCase = new EraseSubjectUseCase(
+      saltProvider,
+      erasureRepo,
+      brainIdLookup,
+      makeScopedRecomputeRepo(),
+      makeCapiDeletionUseCase() as unknown as RequestCapiDeletionUseCase,
+    );
+
+    const result = await useCase.execute(
+      makeBrainIdAddressedEvent(BRAND_A, BRAIN_ID_A),
+      new Date().toISOString(),
+    );
+
+    expect(result.outcome).toBe('erased');
+    expect(saltProvider.saltHexForBrand).not.toHaveBeenCalled();
+    expect(brainIdLookup.findBrainId).not.toHaveBeenCalled();
+  });
+
+  it('malformed properties.brain_id falls through to the subject-hash path (never a garbage key)', async () => {
+    const { useCase, brainIdLookup } = buildUseCaseForA();
+    const event = Buffer.from(
+      JSON.stringify({
+        brand_id: BRAND_A,
+        event_id: randomUUID(),
+        event_name: 'privacy.erasure.requested',
+        consent_flags: { analytics: false, marketing: false, personalization: false, ai_processing: false },
+        properties: { brain_id: 'not-a-uuid', email: EMAIL_A },
+      }),
+      'utf8',
+    );
+
+    const result = await useCase.execute(event, new Date().toISOString());
+    // Resolved through the NORMAL hash path (lookup consulted), not the malformed direct id.
+    expect(result.outcome).toBe('erased');
+    expect(result.brainId).toBe(BRAIN_ID_A);
+    expect(brainIdLookup.findBrainId).toHaveBeenCalledTimes(1);
+  });
+
+  it('raw subject NOT in the graph but direct brain_id present (Shopify redact, unlinked email) → resolves via the direct id', async () => {
+    const brainIdLookup = makeBrainIdLookup([]); // email hash not linked in the graph
+    const erasureRepo = new InMemoryErasureRepository();
+    const useCase = new EraseSubjectUseCase(
+      makeSaltProvider({ [BRAND_A]: SALT_HEX_A }),
+      erasureRepo,
+      brainIdLookup,
+      makeScopedRecomputeRepo(),
+      makeCapiDeletionUseCase() as unknown as RequestCapiDeletionUseCase,
+    );
+
+    const event = Buffer.from(
+      JSON.stringify({
+        brand_id: BRAND_A,
+        event_id: randomUUID(),
+        event_name: 'privacy.erasure.requested',
+        consent_flags: { analytics: false, marketing: false, personalization: false, ai_processing: false },
+        properties: { email: EMAIL_A, brain_id: BRAIN_ID_A, source: 'shopify.customers_redact' },
+      }),
+      'utf8',
+    );
+
+    const result = await useCase.execute(event, new Date().toISOString());
+    expect(result.outcome).toBe('erased');
+    expect(result.brainId).toBe(BRAIN_ID_A);
+    expect(brainIdLookup.findBrainId).toHaveBeenCalledTimes(1); // hash path tried FIRST
+    expect(erasureRepo.shredCalls).toEqual([{ brandId: BRAND_A, brainId: BRAIN_ID_A }]);
+  });
+
+  it('brain_id-only trigger with a WIRED Bronze submitter: completes via the honest fallback seam, NO hash-less submit (AUD-OPS-037 interplay)', async () => {
+    const submissions: unknown[] = [];
+    const submitter = {
+      submit: vi.fn(async (sub: unknown) => {
+        submissions.push(sub);
+        return { workflowName: 'should-not-happen' };
+      }),
+    };
+    const erasureRepo = new InMemoryErasureRepository();
+    const useCase = new EraseSubjectUseCase(
+      makeSaltProvider({ [BRAND_A]: SALT_HEX_A }),
+      erasureRepo,
+      makeBrainIdLookup([{ brandId: BRAND_A, brainId: BRAIN_ID_A }]),
+      makeScopedRecomputeRepo(),
+      makeCapiDeletionUseCase() as unknown as RequestCapiDeletionUseCase,
+      undefined, // invalidateSubjectDek
+      submitter,
+    );
+
+    const result = await useCase.execute(
+      makeBrainIdAddressedEvent(BRAND_A, BRAIN_ID_A),
+      new Date().toISOString(),
+    );
+
+    // No identifier hash exists on a brain_id-only trigger — the Bronze sweep MUST NOT be
+    // submitted with a fabricated hash; the step falls to the registered-DISABLED seam and
+    // the primary erasure still completes.
+    expect(result.outcome).toBe('erased');
+    expect(result.bronzeRawWorkflow).toBeUndefined();
+    expect(submissions).toHaveLength(0);
+    expect(erasureRepo.completeCalls).toHaveLength(1);
+  });
+
+  it('brain_id-addressed event WITHOUT the erasure signal is still skipped (predicate unchanged)', async () => {
+    const { useCase, erasureRepo } = buildUseCaseForA();
+    const event = Buffer.from(
+      JSON.stringify({
+        brand_id: BRAND_A,
+        event_id: randomUUID(),
+        event_name: 'consent.update',
+        consent_flags: { analytics: false, marketing: false, personalization: false, ai_processing: false },
+        properties: { brain_id: BRAIN_ID_A },
+      }),
+      'utf8',
+    );
+    const result = await useCase.execute(event, new Date().toISOString());
+    expect(result.outcome).toBe('not_an_erasure');
+    expect(erasureRepo.shredCalls).toHaveLength(0);
+  });
+});
+
 describe('Subject hash derivation — same salt + subject = same hash across consumers', () => {
   it('hashIdentifier produces a deterministic 64-hex string (parity with identity bridge)', () => {
     const hash1 = hashIdentifier(EMAIL_A, 'email', SALT_HEX_A, 'IN');

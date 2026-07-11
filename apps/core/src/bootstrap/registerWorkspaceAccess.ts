@@ -34,6 +34,7 @@ import { registerDevRoutes, registerConsentRoutes } from '../modules/notificatio
 import type { ContactPiiVaultService } from '../modules/identity/index.js';
 import type { Neo4jIdentityReader } from '../modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 import type { IdentityEventPublisher } from '../infrastructure/events/IdentityEventPublisher.js';
+import type { ErasureEventPublisher } from '../infrastructure/events/ErasureEventPublisher.js';
 
 export interface RegisterWorkspaceAccessDeps {
   nodeEnv: string;
@@ -60,6 +61,12 @@ export interface RegisterWorkspaceAccessDeps {
   flagService?: FlagService;
   /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge (identity.unmerged.v1). */
   identityEventPublisher?: IdentityEventPublisher;
+  /**
+   * AUD-OPS-036 — the RTBF erasure-trigger bridge (privacy.erasure.requested on the collector
+   * lane). Optional: absent → the consent-withdraw + identity-erase entry points still perform
+   * their synchronous partial erase but emit no trigger (pre-bridge behavior; tests omit it).
+   */
+  erasureEventPublisher?: ErasureEventPublisher;
   /** SPEC: D.3 — semantic-serving flag switch (compiled-view migration; DEFAULT OFF, legacy pass-through). */
   semanticRouter?: SemanticServingRouter;
 }
@@ -85,6 +92,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     getCoreSaltHex,
     flagService,
     identityEventPublisher,
+    erasureEventPublisher,
     semanticRouter,
   } = deps;
 
@@ -93,7 +101,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityEventPublisher, touchpointCacheReader, semanticRouter);
+  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityEventPublisher, touchpointCacheReader, semanticRouter, erasureEventPublisher);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   registerConsentRoutes(app, {
@@ -101,6 +109,8 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     audit: auditWriter,
     saltFn: getCoreSaltHex,
     sessionPreHandler: validateSessionPreHandler(authService),
+    // AUD-OPS-036: withdraw(reason=erasure) also publishes the RTBF trigger event.
+    erasurePublisher: erasureEventPublisher,
   });
 
   // DEV-ONLY: surface email action links (verify/reset/invite) for browser testing.

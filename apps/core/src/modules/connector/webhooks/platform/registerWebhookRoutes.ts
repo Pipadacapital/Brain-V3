@@ -19,6 +19,7 @@ import type { ISecretsManager } from '@brain/connector-secrets';
 
 import { WebhookPipeline, type WebhookPipelineDeps } from './WebhookPipeline.js';
 import type { WebhookIdentityReader } from './IWebhookStrategy.js';
+import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
 import { ShopifyWebhookStrategy } from '../strategies/ShopifyWebhookStrategy.js';
 import { resolveBrandOAuthAppCreds } from '../../oauth-app-creds.js';
 import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.js';
@@ -37,6 +38,11 @@ export interface WebhookRegistrationDeps {
   regionCode?: string;
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j identity reader for GDPR redact side-effects. */
   identityReader?: WebhookIdentityReader;
+  /**
+   * AUD-OPS-036 — the RTBF erasure-trigger bridge for Shopify customers/redact. Optional:
+   * absent → the redact side-effect keeps its pre-bridge (synchronous-only) behavior.
+   */
+  erasureEventPublisher?: ErasureEventPublisher;
   /**
    * SPEC: A.1.4 (WA-09) — per-brand `connector.identity_fields` flag resolver (platform-flags).
    * OPTIONAL + FAIL-CLOSED (absent → flag OFF → today's envelope byte-identical).
@@ -106,7 +112,9 @@ export function registerAllWebhookRoutes(
   // Topic param injected as x-wh-topic header for the Strategy.
   {
     const pipeline = new WebhookPipeline(
-      new ShopifyWebhookStrategy(shopifyHmacSecretResolver),
+      // AUD-OPS-036: the erasure publisher lets customers/redact bridge to the async
+      // full-erasure orchestrator (in addition to the synchronous eraseCustomer side-effect).
+      new ShopifyWebhookStrategy(shopifyHmacSecretResolver, deps.erasureEventPublisher),
       {
         path: '/api/v1/webhooks/shopify/:topic', // used only as config label here
         resolverFn: 'resolve_connector_by_shop_domain',

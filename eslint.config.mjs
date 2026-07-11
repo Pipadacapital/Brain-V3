@@ -12,6 +12,7 @@
  */
 import boundaries from 'eslint-plugin-boundaries';
 import tsParser from '@typescript-eslint/parser';
+import tsPlugin from '@typescript-eslint/eslint-plugin';
 import noFloatMoney from './tools/eslint-rules/no-float-money.mjs';
 import noRawRedisKey from './tools/eslint-rules/no-raw-redis-key.mjs';
 import noPciCardFields from './tools/eslint-rules/no-pci-card-fields.mjs';
@@ -34,6 +35,13 @@ export default [
     files: ['**/*.ts', '**/*.tsx'],
     plugins: {
       boundaries,
+      // Registered so rule NAMES resolve: files carry
+      // `eslint-disable @typescript-eslint/no-explicit-any` comments, and an
+      // unregistered plugin makes ESLint 9 hard-error "Definition for rule
+      // not found" on every such comment (broke lint tree-wide on the first
+      // post-migration CI run). No @typescript-eslint rules are ENABLED —
+      // registration is name-resolution only.
+      '@typescript-eslint': tsPlugin,
       'brain-money': { rules: { 'no-float-money': noFloatMoney } },
       'brain-redis': { rules: { 'no-raw-redis-key': noRawRedisKey } },
       'brain-pci':   { rules: { 'no-pci-card-fields': noPciCardFields } },

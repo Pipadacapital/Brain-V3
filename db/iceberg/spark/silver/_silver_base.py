@@ -110,6 +110,23 @@ def prop(pj_col: str, path: str):
     return get_json_object(col(pj_col), f"$.properties.{path}")
 
 
+def _staleness_guard(order_by_desc: "list[str]", windowed: bool) -> str:
+    """AUD-IMPL-011 — the WHEN MATCHED staleness predicate for a WINDOWED (bounded ingested_at slice)
+    batch. A bounded HISTORICAL replay (targeted backfill, partial reprocess after a quarantine release)
+    can stage a version of a PK that is OLDER than the target's current row; an unconditional
+    `WHEN MATCHED UPDATE SET *` would regress the entity to stale data. Guarding on the recency axis
+    (order_by_desc[0], e.g. ingested_at) makes latest-ingested-wins hold across ANY slice order.
+
+    Applied ONLY in windowed mode: a full pass dedups the whole source (latest already wins) and an
+    ENTITY-incremental pass stages a FULL-history refold whose recency column may LEGITIMATELY regress
+    (e.g. an RTBF erasure removed the entity's newest event) — there the refold is authoritative and
+    must overwrite unconditionally. Returns '' (no guard) when not windowed."""
+    if not windowed:
+        return ""
+    c0 = order_by_desc[0]
+    return f" AND (t.{c0} IS NULL OR s.{c0} >= t.{c0})"
+
+
 def merge_on_pk(
     spark: SparkSession,
     fqtn: str,
@@ -123,6 +140,8 @@ def merge_on_pk(
     Dedups within the batch first (a re-pull can emit the same PK twice) keeping the latest by
     `order_by_desc` (e.g. ingested_at DESC), then MERGE: WHEN MATCHED UPDATE * (carry the latest version),
     WHEN NOT MATCHED INSERT * — replay-safe, the Bronze MERGE discipline lifted to an entity grain.
+    In WINDOWED incremental mode the MATCHED update additionally carries the AUD-IMPL-011 staleness guard
+    (see _staleness_guard) so replaying an older ingested_at slice can never regress an entity.
     """
     staged.createOrReplaceTempView("_silver_stage")
     # Explicit column list (NOT *): the dedup window adds a transient _rn we must NOT carry into the
@@ -137,6 +156,7 @@ def merge_on_pk(
             FROM _silver_stage
           ) WHERE _rn = 1
     """
+    guard = _staleness_guard(order_by_desc, windowed=_CURRENT_WINDOW is not None)
     spark.sql(
         f"""
         MERGE INTO {fqtn} t
@@ -144,7 +164,7 @@ def merge_on_pk(
         {deduped_sql}
         ) s
         ON {on_clause}
-        WHEN MATCHED THEN UPDATE SET *
+        WHEN MATCHED{guard} THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
     )

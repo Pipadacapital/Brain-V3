@@ -100,7 +100,13 @@ put brain/prod/k8s/collector-env "$COLLECTOR"
 STREAMWORKER=$(python3 <<'PY'
 import json, os
 print(json.dumps({
- "BRAIN_APP_DATABASE_URL": "postgres://brain_app:%s@%s:5432/brain?sslmode=require" % (os.environ["APP_PW"], os.environ["AUR"]),
+ # pgbouncer (fronts Aurora as brain_app) — NOT Aurora-direct. A direct
+ # ...@AUR:5432?sslmode=require URL fails at runtime: pg-connection-string v3
+ # treats sslmode=require as verify-full, and the Amazon RDS CA is not in
+ # Node's trust store → "unable to get local issuer certificate". pgbouncer
+ # terminates client TLS in-cluster and handles the Aurora TLS server-side
+ # (matches collector-env above / seed-core-env.sh).
+ "BRAIN_APP_DATABASE_URL": "postgres://brain_app:%s@%s/brain" % (os.environ["APP_PW"], os.environ["PGB"]),
  "REDIS_URL": os.environ["REDIS_URL"],
  "KAFKA_BROKERS": os.environ["KAFKA"],
  "TRINO_HOST": os.environ["TRINO_HOST"],

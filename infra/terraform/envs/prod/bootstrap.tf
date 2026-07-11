@@ -523,6 +523,25 @@ module "irsa_spark_jobs" {
   ]
 }
 
+# Kafka Connect Iceberg sink (ADR-0010 Bronze landing writer). AUD-W1-001:
+# the connect SA annotation pointed at a role that was NEVER created
+# (brain-prod-spark-jobs) — every sink task died on
+# sts:AssumeRoleWithWebIdentity 403 and Bronze landing was down. Same
+# medallion RW policy family as the Spark jobs (warehouse prefixes only).
+module "irsa_kafka_connect" {
+  source               = "../../modules/irsa"
+  role_name            = "kafka-connect"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "kafka"
+  service_account_name = "kafka-connect-prod-kafka-connect"
+  environment          = local.environment
+  project              = local.project
+  policy_arns = [
+    module.s3_iceberg.spark_medallion_rw_policy_arn,
+  ]
+}
+
 ###############################################################################
 # Outputs — the post-apply fill pass reads these (helm values-prod placeholders,
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.

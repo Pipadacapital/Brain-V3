@@ -23,7 +23,16 @@ serviceAccount:
 # core-env must carry DATABASE_URL_DIRECT (Aurora endpoint, NOT pgbouncer) —
 # see infra/helm/external-secrets-config/README.md.
 migrations:
-  enabled: true
+  # DISABLED for this single-account prod: the PreSync hook runs `pnpm migrate:up`
+  # as brain_app over DATABASE_URL_DIRECT, which cannot work by design — (1) the
+  # Brain migrations are owner-only DDL that REVOKE from brain_app + own the
+  # pgmigrations meta-table as role `brain`, and (2) DATABASE_URL_DIRECT uses
+  # sslmode=require (pg verify-full) against Aurora's Amazon-RDS-CA cert that is
+  # absent from Node's trust store. Migrations are applied OUT-OF-BAND via
+  # tools/deploy/run-migrations.sh (brainadmin + `-c role=brain` + TLS-skip), the
+  # same privileged path used at go-live (schema is current through 0126).
+  # Re-enable only once the hook is reworked to run as a privileged owner role.
+  enabled: false
   appEnv: prod
   databaseUrlFromKey: DATABASE_URL_DIRECT
 

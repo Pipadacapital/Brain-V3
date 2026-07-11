@@ -1,5 +1,9 @@
 # Spark medallion jobs image (ADR-0002 Slice 3; ADR-0010 Connect-era scope).
 #
+# build-trigger: first prod build of brain-spark-bronze-prod — the image was
+# never built (no db/iceberg/spark change had landed), so the cronworkflows
+# chart fail-closed on an empty sparkV4.image.digest. Safe to remove later.
+#
 # ADR-0010: Bronze LANDING is the Kafka Connect Iceberg sink — the Spark-SS landing jobs (and the
 # PG⇄Iceberg parity oracle/inspector that read them) are REMOVED. This image carries the Bronze
 # MAINTENANCE jobs (compaction/snapshot-expiry, raw retention, erasure) plus the V4 Silver/Gold

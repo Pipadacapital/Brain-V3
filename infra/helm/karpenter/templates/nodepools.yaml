@@ -26,7 +26,13 @@ spec:
       requirements:
         - key: karpenter.sh/capacity-type
           operator: In
-          values: [{{ $pool.capacityType | quote }}]
+          # capacityType may be a single string ("spot") or a list
+          # (["spot", "on-demand"]) — a list lets Karpenter prefer Spot but fall
+          # back to on-demand when the pinned Spot instance types have no capacity
+          # (the go-live spot-reclaim incident left Kafka/app pods unschedulable).
+          values: [{{- if kindIs "slice" $pool.capacityType -}}
+            {{- range $i, $ct := $pool.capacityType }}{{ if $i }}, {{ end }}{{ $ct | quote }}{{- end }}
+            {{- else }}{{ $pool.capacityType | quote }}{{- end }}]
         - key: node.kubernetes.io/instance-type
           operator: In
           # Accept a LIST (instanceTypes) so Karpenter right-sizes per workload

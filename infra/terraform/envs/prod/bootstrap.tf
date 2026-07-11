@@ -72,8 +72,8 @@ module "oidc_github" {
   project     = local.project
   # AUD-COST-002: MUST match the real remote (git remote -v) or every OIDC
   # role assumption is rejected — was brain-platform/brain (repo doesn't exist).
-  github_org       = "Pipadacapital"
-  github_repo      = "Brain-V3"
+  github_org  = "Pipadacapital"
+  github_repo = "Brain-V3"
   # RELEASE-LAYER (2026-07-11): image builds moved to `release` (deploy.yml);
   # master keeps the prod-promote lane (promote-prod.yml) + workflow_dispatch.
   allowed_branches = ["master", "release"]

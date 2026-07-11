@@ -1,0 +1,14 @@
+# brain-observability — PROD overrides (AUD-INFRA-030/-032).
+# Deployed to ns `monitoring` (next to kube-prometheus-stack) by
+# infra/argocd/envs/prod/observability.yaml. Sync AFTER kube-prometheus-stack (needs the
+# ServiceMonitor CRD + the Grafana dashboard sidecar) and trino (the exporter's query target) —
+# though the exporter degrades honestly if Trino is unreachable (brain_data_freshness_up=0 →
+# BrainFreshnessExporterDown, by design).
+freshnessExporter:
+  enabled: true
+  # The sole serving engine's coordinator Service (trino chart, ns trino) — same endpoint the
+  # BFF uses, queried the same way (X-Trino-User over /v1/statement).
+  trinoUrl: "http://brain-prod-trino.trino.svc.cluster.local:8080"
+
+dashboards:
+  enabled: true

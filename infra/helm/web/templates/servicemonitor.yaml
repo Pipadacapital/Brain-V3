@@ -1,0 +1,32 @@
+{{- /*
+ServiceMonitor (AUD-INFRA-033): web — the user-facing Next.js tier — was unscraped, so
+up{job=~"brain-.*"} could never mark it down (BrainTargetDown has no series for a never-scraped
+job). Web serves a minimal, honest process-gauge exposition at /api/metrics
+(apps/web/app/api/metrics/route.ts — /metrics itself is the dashboard metrics PAGE), so the
+path is parameterized here unlike the collector/core monitors. The job relabel pins "brain-web"
+so BrainTargetDown's brain-.* regex matches.
+
+Selected by the monitoring Prometheus via serviceMonitorSelector {} + namespaceSelector {}
+(kube-prometheus-stack values-prod sets serviceMonitorSelectorNilUsesHelmValues: false), so the
+monitor lives HERE, in the app's own namespace/chart — the team that owns the port owns the scrape.
+*/ -}}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "brain.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.metrics.serviceMonitor.path }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: {{ .Values.metrics.serviceMonitor.jobLabel }}
+{{- end }}

@@ -69,3 +69,9 @@ iceberg:
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-trino
+
+# AUD-INFRA-030: scrape the sole serving engine (coordinator JMX exporter + PodMonitor,
+# job "trino") — lights up TrinoServingDown / TrinoQueryFailureRateHigh in
+# kube-prometheus-stack values-prod.
+metrics:
+  enabled: true

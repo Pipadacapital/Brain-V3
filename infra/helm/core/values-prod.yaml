@@ -7,6 +7,12 @@ image:
 
 envSecretName: core-env
 
+# AUD-INFRA-033: scrape the API/BFF tier (job brain-core → BrainTargetDown coverage +
+# the WebhookPipeline/job counters core already records).
+metrics:
+  serviceMonitor:
+    enabled: true
+
 # The core Service (and the api.brain ingress backend, which reuses service.port)
 # must expose 3001 — the container port AND the port every consumer targets
 # (web BFF_BASE_URL/CORE_API_URL, seed-prod-secrets.sh). The chart default of 80

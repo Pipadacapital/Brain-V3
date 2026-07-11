@@ -1,5 +1,10 @@
 name: pr
-on: pull_request
+# RELEASE-LAYER: checks run ONLY on the release → master promotion PR
+# (owner-requested 2026-07-11). Feature → release PRs and release pushes run
+# nothing; the cumulative diff is validated once, at promotion time.
+on:
+  pull_request:
+    branches: [master]
 
 permissions:
   contents: read

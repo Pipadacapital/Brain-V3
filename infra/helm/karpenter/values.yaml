@@ -48,10 +48,10 @@ tags:
 
 # ── Node pools (match the blueprint node groups) ────────────────────────────────────────────────
 # All pools are arm64 + Spot. Karpenter naturally scales a pool to ZERO when no pod requires it,
-# bounded above by `limits`. "no scale-to-zero" for streaming is achieved by consolidationPolicy:
-# WhenEmpty (only reclaim a node once it is fully empty — never bin-pack live consumers off it) PLUS
-# the streaming workload pinning a warm baseline of replicas (see README). batch/trino use
-# WhenEmptyOrUnderutilized so idle batch/serving capacity is reclaimed all the way to zero.
+# bounded above by `limits`. "no scale-to-zero" for streaming is achieved by the streaming workload
+# pinning a warm baseline of replicas (see README); all Spot pools use WhenEmptyOrUnderutilized so
+# idle capacity is reclaimed AND on-demand fallback nodes re-consolidate to Spot (AUD-INFRA-013) —
+# streaming just gets a much longer consolidateAfter so live consumers aren't thrashed.
 nodePools:
   streaming:
     # Range so Karpenter right-sizes per workload: light consumers → t4g.large
@@ -64,8 +64,15 @@ nodePools:
     # go-live), Karpenter provisions on-demand instead of leaving pods Pending;
     # it consolidates back to Spot once capacity returns.
     capacityType: ["spot", "on-demand"]
-    consolidationPolicy: WhenEmpty
-    consolidateAfter: 5m
+    # AUD-INFRA-013: WhenEmpty never re-consolidated an on-demand FALLBACK node
+    # back to Spot — one capacity blip became a permanent ~3× price increase
+    # (measured: an 11h-old on-demand t4g.xlarge sitting beside 2 Spot nodes).
+    # WhenEmptyOrUnderutilized lets Karpenter replace it once Spot returns;
+    # the GENEROUS 15m consolidateAfter keeps live consumers from thrashing
+    # (streaming pods restart cleanly per consumer-group semantics, but frequent
+    # rebalances cost lag). Rollback: WhenEmpty / 5m.
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 15m
     expireAfter: 720h                # 30d node rotation for patching
     weight: 30                       # prefer the smaller streaming node for general pods
     limits:                          # upper bound (no fixed minimum → Karpenter has no idle floor)

@@ -103,9 +103,9 @@ resource "aws_iam_role" "this" {
   assume_role_policy = data.aws_iam_policy_document.trust.json
 
   tags = {
-    workload    = var.role_name
-    namespace   = var.namespace
-    sa          = var.service_account_name
+    workload  = var.role_name
+    namespace = var.namespace
+    sa        = var.service_account_name
   }
 }
 

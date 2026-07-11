@@ -103,27 +103,39 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
+      # The EKS nodes are arm64 (Graviton t4g, cost-optimized). A plain `docker
+      # build` on the amd64 runner produces an amd64 image → "exec format error"
+      # on the nodes. Build linux/arm64 via buildx (QEMU emulation) and push.
+      - name: Set up QEMU (arm64 emulation)
         if: steps.affected.outputs.skip == 'false'
-        run: |
-          docker build \
-            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:${{ github.sha }} \
-            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:latest \
-            --label "git.sha=${{ github.sha }}" \
-            --label "git.ref=${{ github.ref }}" \
-            -f apps/${{ matrix.app }}/Dockerfile \
-            .
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
-      - name: Push to ECR (immutable digest — PLAYBOOK-deploy §Artifact promotion)
+      - name: Set up Docker Buildx
+        if: steps.affected.outputs.skip == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push arm64 image (immutable digest — PLAYBOOK-deploy §Artifact promotion)
         if: steps.affected.outputs.skip == 'false'
         id: push
         run: |
           set -euo pipefail
           REPO="${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}"
-          docker push "${REPO}:${{ github.sha }}"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${REPO}:${{ github.sha }}" | cut -d@ -f2)
+          docker buildx build \
+            --platform linux/arm64 \
+            --provenance=false \
+            -t "${REPO}:${{ github.sha }}" \
+            -t "${REPO}:latest" \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref }}" \
+            -f apps/${{ matrix.app }}/Dockerfile \
+            --push \
+            --metadata-file /tmp/meta.json \
+            .
           # Pinned, immutable reference: <registry>/<repo>@sha256:<...> — consumed by the
           # gitops job to bump the Helm chart values (image.repository + image.digest).
+          DIGEST=$(jq -r '."containerimage.digest"' /tmp/meta.json)
           mkdir -p /tmp/imgref
           echo "${REPO}@${DIGEST}" > "/tmp/imgref/${{ matrix.app }}"
 
@@ -210,23 +222,33 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
+      # arm64 (Graviton nodes) — same rationale as the app images above.
+      - name: Set up QEMU (arm64 emulation)
         if: steps.affected.outputs.skip == 'false'
-        run: |
-          docker build \
-            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.image }}-${{ vars.ENVIRONMENT }}:${{ github.sha }} \
-            --label "git.sha=${{ github.sha }}" \
-            --label "git.ref=${{ github.ref }}" \
-            -f ${{ matrix.dockerfile }} \
-            ${{ matrix.context }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
-      - name: Push to ECR (immutable digest)
+      - name: Set up Docker Buildx
+        if: steps.affected.outputs.skip == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push arm64 image (immutable digest)
         if: steps.affected.outputs.skip == 'false'
         run: |
           set -euo pipefail
           REPO="${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.image }}-${{ vars.ENVIRONMENT }}"
-          docker push "${REPO}:${{ github.sha }}"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${REPO}:${{ github.sha }}" | cut -d@ -f2)
+          docker buildx build \
+            --platform linux/arm64 \
+            --provenance=false \
+            -t "${REPO}:${{ github.sha }}" \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref }}" \
+            -f ${{ matrix.dockerfile }} \
+            --push \
+            --metadata-file /tmp/meta.json \
+            ${{ matrix.context }}
+          DIGEST=$(jq -r '."containerimage.digest"' /tmp/meta.json)
           mkdir -p /tmp/imgref
           echo "${REPO}@${DIGEST}" > "/tmp/imgref/${{ matrix.image }}"
 

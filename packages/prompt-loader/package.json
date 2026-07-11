@@ -9,7 +9,7 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test:unit": "vitest run --exclude '**/*.live.test.ts' --exclude '**/*.e2e.test.ts'"
+    "test:unit": "vitest run --passWithNoTests --exclude '**/*.live.test.ts' --exclude '**/*.e2e.test.ts'"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

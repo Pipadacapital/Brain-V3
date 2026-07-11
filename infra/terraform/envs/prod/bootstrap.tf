@@ -162,11 +162,11 @@ module "karpenter" {
 # managed HA), NOT plain RDS. PG is operational-only; the workload is spiky.
 ###############################################################################
 module "aurora" {
-  source                     = "../../modules/aurora"
-  environment                = local.environment
-  project                    = local.project
-  vpc_id                     = module.network.vpc_id
-  subnet_ids                 = module.network.private_subnet_ids
+  source      = "../../modules/aurora"
+  environment = local.environment
+  project     = local.project
+  vpc_id      = module.network.vpc_id
+  subnet_ids  = module.network.private_subnet_ids
   # The EKS-managed cluster SG is what node/pod traffic actually egresses from —
   # nodes are NOT in the network module's eks_nodes_sg, so rds_sg alone left every
   # workload→Aurora connection timing out. Allow the real node SG too.

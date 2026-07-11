@@ -19,7 +19,7 @@
 
 CREATE NAMESPACE IF NOT EXISTS brain_gold;
 
-CREATE TABLE IF NOT EXISTS brain_gold.gold_recommendations (
+CREATE TABLE IF NOT EXISTS brain_gold_local.gold_recommendations (
   -- ── Tenant (FIRST — §0.5/§1 brand_id-first invariant; partition bucket source; RLS anchor) ──
   brand_id               STRING     NOT NULL COMMENT 'UUID — tenant key. Partition bucket source. Brand-isolation anchor.',
 
@@ -76,5 +76,5 @@ TBLPROPERTIES (
 -- ============================================================
 
 -- VERIFICATION (after creation):
--- DESCRIBE EXTENDED brain_gold.gold_recommendations;
--- SHOW TBLPROPERTIES brain_gold.gold_recommendations;
+-- DESCRIBE EXTENDED brain_gold_local.gold_recommendations;
+-- SHOW TBLPROPERTIES brain_gold_local.gold_recommendations;

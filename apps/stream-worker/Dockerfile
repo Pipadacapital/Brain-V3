@@ -71,7 +71,7 @@ COPY . .
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM base AS runtime
-RUN groupadd -r brain && useradd -r -g brain -m brain
+RUN groupadd -r -g 1001 brain && useradd -r -u 1001 -g brain -m brain
 COPY --from=deps --chown=brain:brain /repo /repo
 WORKDIR /repo/apps/stream-worker
 USER brain

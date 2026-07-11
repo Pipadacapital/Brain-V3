@@ -30,7 +30,7 @@
 
 CREATE NAMESPACE IF NOT EXISTS brain_gold;
 
-CREATE TABLE IF NOT EXISTS brain_gold.gold_decisions (
+CREATE TABLE IF NOT EXISTS brain_gold_local.gold_decisions (
   -- ── Tenant + identity (brand_id FIRST — §1) ──────────────────────────────────
   brand_id         STRING     NOT NULL COMMENT 'UUID — tenant key. Partition bucket source. RLS anchor. FIRST column (§1).',
   decision_id      STRING     NOT NULL COMMENT 'UUID — idempotency key component: (brand_id, decision_id). One row per decision.',
@@ -95,6 +95,6 @@ TBLPROPERTIES (
 
 -- ============================================================
 -- VERIFICATION (after creation)
---   DESCRIBE EXTENDED brain_gold.gold_decisions;
---   SHOW TBLPROPERTIES brain_gold.gold_decisions;
+--   DESCRIBE EXTENDED brain_gold_local.gold_decisions;
+--   SHOW TBLPROPERTIES brain_gold_local.gold_decisions;
 -- ============================================================

@@ -61,6 +61,7 @@ import {
 } from '@brain/shopify-mapper';
 import { redactShopifyPii } from '../../sources/storefront/shopify/domain/redactPii.js';
 import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
+import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
 
 const ORDER_TOPICS = new Set([
   'orders/create',
@@ -107,9 +108,14 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
    * @param resolveHmacSecret OPTIONAL — resolves the brand's Shopify app `client_secret` for `shopDomain`
    *   (the real webhook signing key; CRIT-2). Injected by the composition root (registerWebhookRoutes)
    *   with access to the connector resolver + Secrets Manager. Omitted by the pure payloadMap unit tests.
+   * @param erasurePublisher OPTIONAL (AUD-OPS-036) — the RTBF erasure-trigger bridge. When present,
+   *   customers/redact ALSO publishes the canonical privacy.erasure.requested event (subject
+   *   email/phone from the Shopify payload + the resolved brain_id) so the stream-worker
+   *   orchestrator runs the FULL crypto-shred sequence. Omitted by the pure payloadMap unit tests.
    */
   constructor(
     private readonly resolveHmacSecret?: (shopDomain: string) => Promise<string>,
+    private readonly erasurePublisher?: ErasureEventPublisher,
   ) {}
 
   async signatureVerify(
@@ -189,13 +195,43 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         throw err;
       }
 
-      const customerId = body['customer'] != null
-        ? (body['customer'] as Record<string, unknown>)['id']
+      const customerObj = body['customer'] != null
+        ? (body['customer'] as Record<string, unknown>)
         : null;
+      const customerId = customerObj?.['id'];
       const shopifyCustomerId = customerId != null ? String(customerId) : null;
+      // AUD-OPS-036: Shopify's customers/redact payload carries the subject's raw email/phone —
+      // exactly the envelope shape the erasure orchestrator salt-hashes. Captured for the
+      // trigger emit below; never logged, never stored by this strategy.
+      const customerEmail =
+        typeof customerObj?.['email'] === 'string' && customerObj['email'].length > 0
+          ? (customerObj['email'] as string)
+          : undefined;
+      const customerPhone =
+        typeof customerObj?.['phone'] === 'string' && customerObj['phone'].length > 0
+          ? (customerObj['phone'] as string)
+          : undefined;
       const capturedBrandId = brandId;
       const capturedCorrelationId = correlationId;
       const capturedRequestId = requestId;
+      const erasurePublisher = this.erasurePublisher;
+
+      // AUD-OPS-036: bridge customers/redact to the async full-erasure orchestrator. Runs even
+      // when the synchronous graph erase cannot (no identity graph / customer never converted):
+      // the orchestrator resolves the subject from email/phone itself and is skip-safe when the
+      // subject is unknown. Fail-open inside the publisher (Shopify is acked regardless).
+      const emitErasureTrigger = async (resolvedBrainId?: string): Promise<void> => {
+        if (!erasurePublisher) return;
+        if (!customerEmail && !customerPhone && !resolvedBrainId) return; // unaddressable
+        await erasurePublisher.emitErasureRequested({
+          brandId: capturedBrandId,
+          subjectEmail: customerEmail,
+          subjectPhone: customerPhone,
+          brainId: resolvedBrainId,
+          source: 'shopify.customers_redact',
+          correlationId: capturedCorrelationId,
+        });
+      };
 
       const sideEffect = async (
         _brandId: string,
@@ -204,7 +240,9 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         identityReader?: { resolveBrainIdByStorefrontCustomerId(b: string, h: string): Promise<string | null>; eraseCustomer(b: string, id: string): Promise<{ erased: boolean }> },
       ): Promise<void> => {
         if (!shopifyCustomerId || !identityReader) {
-          // No customer.id in payload, or no identity graph wired — nothing to erase. Fast-exit.
+          // No customer.id in payload, or no identity graph wired — nothing to erase in the
+          // graph, but the async orchestrator can still act on a raw email/phone subject.
+          await emitErasureTrigger();
           return;
         }
 
@@ -216,7 +254,12 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         // a second direct resolveSaltHex — so the redact path resolves identically to the order path
         // and works for runtime-created prod brands (which have no IDENTITY_SALT env).
         const salt = saltHex;
-        if (!salt || salt.length !== 64) return; // bad salt → cannot match; never crash the webhook
+        if (!salt || salt.length !== 64) {
+          // Bad salt → cannot match in the graph; never crash the webhook. The async
+          // orchestrator resolves the subject with its own salt path — still bridge it.
+          await emitErasureTrigger();
+          return;
+        }
         // storefront_customer_id is hashed under identity-core's 'external_id' type (matches the resolver).
         const hash = hashIdentifier(
           normalizeIdentifier(shopifyCustomerId, 'external_id'),
@@ -225,12 +268,18 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         );
         const brainId = await identityReader.resolveBrainIdByStorefrontCustomerId(capturedBrandId, hash);
         if (!brainId) {
-          // Customer not in our identity graph — nothing to erase (never converted). Correct no-op.
+          // Customer not in our identity graph via storefront id — nothing to erase in the graph,
+          // but the subject may still be linked by email/phone: let the orchestrator decide.
+          await emitErasureTrigger();
           return;
         }
         await identityReader.eraseCustomer(capturedBrandId, brainId);
 
-        void capturedCorrelationId; void capturedRequestId;
+        // AUD-OPS-036: synchronous partial erase done (graph tombstone + contact_pii) — now
+        // trigger the full ordered sequence (DEK shred / audit log / surrogate / CAPI).
+        await emitErasureTrigger(brainId);
+
+        void capturedRequestId;
       };
 
       return {

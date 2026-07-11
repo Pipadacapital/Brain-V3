@@ -31,6 +31,7 @@ import { StubDltRegistry, StubNcprRegistry } from './stubs.js';
 import { FunctionSaltPort } from './salt.adapter.js';
 import { ConsentWriter } from './consent-write.js';
 import type { ContactChannel, ContactPurpose } from './contact-types.js';
+import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
 
 // ── Manual validation (no zod dep in core) ──────────────────────────────────
 const CHANNELS: ContactChannel[] = [
@@ -69,6 +70,13 @@ export interface ConsentRoutesDeps {
   saltFn: (brandId: string) => Promise<string>;
   /** Session-asserting preHandler (validateSessionPreHandler(authService)). */
   sessionPreHandler: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
+  /**
+   * AUD-OPS-036 — the RTBF erasure-trigger bridge. When present, withdraw(reason='erasure')
+   * ALSO publishes the canonical privacy.erasure.requested event (raw recipient in the
+   * envelope — the shape the stream-worker orchestrator salt-hashes) so the full crypto-shred
+   * sequence runs. Optional: absent → pre-bridge behavior (PG consent SoR write only).
+   */
+  erasurePublisher?: ErasureEventPublisher;
 }
 
 export function registerConsentRoutes(
@@ -232,6 +240,20 @@ export function registerConsentRoutes(
           correlationId,
           idempotencyKey,
         });
+        // AUD-OPS-036: an erasure-reason withdrawal is an RTBF request — bridge it to the
+        // async crypto-shred orchestrator. The raw recipient is passed through (hashed by the
+        // orchestrator with the same brand salt; never stored/logged by the publisher). The
+        // channel tells us which identifier type the recipient is. Fail-open inside the
+        // publisher: the consent SoR write above is already durable.
+        if (reason === 'erasure' && deps.erasurePublisher) {
+          const isPhoneChannel = channel === 'whatsapp' || channel === 'sms';
+          await deps.erasurePublisher.emitErasureRequested({
+            brandId,
+            ...(isPhoneChannel ? { subjectPhone: recipient } : { subjectEmail: recipient }),
+            source: 'consent.withdraw',
+            correlationId,
+          });
+        }
         return reply.code(201).send({
           request_id: requestId,
           subject_hash: subjectHash,

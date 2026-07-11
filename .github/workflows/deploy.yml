@@ -351,9 +351,15 @@ jobs:
     environment: production
 
     steps:
+      # Check out the LATEST master, not the triggering SHA: gitops-staging (a
+      # prior job in THIS run) just committed the staging digests to master, and
+      # promote reads them from values-staging. Without ref: master this job
+      # checks out the pre-staging-bump commit → empty staging digests → promotes
+      # nothing (prod digests never pinned).
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: master
           token: ${{ secrets.GITOPS_TOKEN }}
 
       # Same as gitops-staging: no AWS call in this job — skip while unset.

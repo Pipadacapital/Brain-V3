@@ -10,7 +10,7 @@ on:
 # infra/terraform/README.md "Prod go-live" + docs/runbooks/GO-LIVE.md):
 #   vars.AWS_ECR_PUSH_ROLE_ARN  = `terraform output github_ecr_push_role_arn`
 #                                 (role brain-prod-github-ecr-push; OIDC trust =
-#                                 push to master on Rishabhporwal/Brain-V4).
+#                                 push to master on Pipadacapital/Brain-V3).
 #   vars.ENVIRONMENT            = prod — MUST be "prod": the push role is scoped
 #                                 to the brain-*-prod ECR repositories (modules/
 #                                 eks creates brain-{collector,stream-worker,core,

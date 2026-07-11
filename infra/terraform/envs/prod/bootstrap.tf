@@ -72,8 +72,8 @@ module "oidc_github" {
   project     = local.project
   # AUD-COST-002: MUST match the real remote (git remote -v) or every OIDC
   # role assumption is rejected — was brain-platform/brain (repo doesn't exist).
-  github_org       = "Rishabhporwal"
-  github_repo      = "Brain-V4"
+  github_org       = "Pipadacapital"
+  github_repo      = "Brain-V3"
   allowed_branches = ["master"] # repo default branch (workflow_dispatch runs here) — was "main" (mismatch)
 
   # ECR-push + terraform-apply CI roles (deploy.yml / prod-apply.yml). After apply,

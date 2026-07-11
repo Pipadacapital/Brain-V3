@@ -37,7 +37,7 @@ spec:
         releaseName: neo4j
         valueFiles:
           - $values/infra/helm/neo4j/values-prod.yaml
-    - repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    - repoURL: https://github.com/Pipadacapital/Brain-V3.git
       targetRevision: master
       ref: values
   destination:

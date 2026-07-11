@@ -9,9 +9,11 @@
  * timeline projection, then trims to the lookback window before the conversion touch.
  *
  * identity_evidence is read over the bi-temporal identity map for the stitched brain_id
- * (identifier_type + first_seen + provenance; hash-only, never a value). matched_via is honestly
- * NULL (blocked on the B.1 stitch-provenance column). brand_id is from the SESSION (D-1), the
- * order_id is a lookup key WITHIN the brand (the stitch read is brand-scoped by RLS).
+ * (identifier_type + first_seen + provenance; hash-only, never a value). matched_via (AUD-JE-35)
+ * is the per-touch coarse stitch-provenance basis derived by the metric-engine timeline read
+ * ('deterministic' when the touch carries a stitched_brain_id, else 'anonymous' — never null).
+ * brand_id is from the SESSION (D-1), the order_id is a lookup key WITHIN the brand (the stitch
+ * read is brand-scoped by RLS).
  *
  * Honest no_data when the order resolves to zero stitched touches.
  *
@@ -81,7 +83,9 @@ export async function getJourneyTrace(
       event_type: t.eventType,
       utm_campaign: t.utmCampaign,
       landing_path: t.landingPath,
-      matched_via: null, // B.1 gap — honest null until stitch-provenance lands
+      // AUD-JE-35 — per-touch coarse stitch-provenance basis ('deterministic'|'anonymous');
+      // derived from the touch's stitched_brain_id by the timeline read (never null).
+      matched_via: t.matchedVia,
     }));
 
   // identity_evidence for the resolved customer (best-effort; anon-only → empty).

@@ -51,11 +51,27 @@ export const CollectorEnvSchema = CommonEnvSchema.extend({
   EDGE_RATE_MAX_PER_WINDOW: z.coerce.number().int().min(1).default(600),
   /** Edge rate limit window (ms). */
   EDGE_RATE_WINDOW_MS: z.coerce.number().int().min(1).default(60_000),
-  /** Comma-separated origin allowlist; empty string ⇒ no allowlist (all origins). */
+  /**
+   * Comma-separated origin allowlist; empty string ⇒ no allowlist (all origins).
+   * AUD-INFRA-025: an empty allowlist in production is LOUDLY warned at startup
+   * (edgePostureWarnings) — set it to the known storefront origins in prod.
+   */
   EDGE_ORIGIN_ALLOWLIST: z
     .string()
     .default('')
     .transform((s) => s.split(',').map((o) => o.trim()).filter((o) => o.length > 0)),
+  /**
+   * install_token→brand_id binding posture on the ingest routes (AUD-INFRA-025).
+   * 'enforce' (default): a body presenting BOTH a well-formed install_token AND brand_id whose
+   *   pairing is not registered (leaked/forged token writing another brand's lane) is rejected
+   *   403 TOKEN_BRAND_MISMATCH before the spool. Fail-open: incomplete pairs and PG outages
+   *   ADMIT (accept-before-validate — infrastructure failure never drops events).
+   * 'log': same checks; mismatches are logged + counted but ADMITTED (instant rollback posture).
+   * 'off': kill switch — no oracle lookups.
+   */
+  EDGE_TOKEN_BINDING_MODE: z.enum(['off', 'log', 'enforce']).default('enforce'),
+  /** TTL (ms) of the in-process token→brand binding verdict cache. */
+  EDGE_TOKEN_BINDING_TTL_MS: z.coerce.number().int().min(1_000).default(60_000),
 
   // ── Spool retention reaper (DB-AUDIT M6) ─────────────────────────────────────
   /** Drained-row trail window (seconds) before the reaper purges them. Default 24h. */

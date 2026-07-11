@@ -30,8 +30,10 @@ serviceAccount:
   create: true
   name: ""
   annotations:
-    # IRSA: S3 RW on the warehouse prefixes (same policy family as spark-jobs/iceberg-rest).
-    eks.amazonaws.com/role-arn: "arn:aws:iam::380254378136:role/brain-prod-spark-jobs"
+    # IRSA: S3 RW on the warehouse prefixes (module irsa_kafka_connect, envs/prod
+    # bootstrap.tf). AUD-W1-001: the previous ARN (brain-prod-spark-jobs) never
+    # existed — sink tasks failed sts:AssumeRoleWithWebIdentity, Bronze landing down.
+    eks.amazonaws.com/role-arn: "arn:aws:iam::380254378136:role/brain-prod-kafka-connect"
 
 resources:
   requests:

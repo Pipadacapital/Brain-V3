@@ -51,7 +51,7 @@ defaults:
 # Kafka Connect Iceberg sink — the infra/helm/kafka-connect chart is the SOLE landing writer; the
 # former bronze-landing CronWorkflow (bronze_landing.py, Spark-SS) was REMOVED 2026-07-05 with the
 # whole Spark-SS landing path (rollback = git revert). What remains here is bronze-maintenance:
-# small-file compaction + 24-month snapshot-expiry over the Bronze tables, including the
+# small-file compaction + snapshot-expiry (7d; 14d durable collector lane, AUD-OPS-015) over the Bronze tables, including the
 # Connect-written collector_events_connect / <lane>_raw_connect tables.
 sparkBronze:
   # `enabled` gates the bronze-maintenance CronWorkflow; landing is the kafka-connect chart
@@ -62,7 +62,7 @@ sparkBronze:
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
+  maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + snapshot-expiry (Slice 7; 7d / 14d durable lane)
   activeDeadlineSeconds: 1800
   # ── Raw-lane PII retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038) ──────────────────────────────
   # bronze_raw_retention.py: row-TTL DELETE + snapshot expiry over the *_raw_connect lanes so raw
@@ -81,11 +81,17 @@ sparkBronze:
   # PySpark + Iceberg machinery don't OOM on a big compaction pass. Keep a margin below the pod
   # memory limit for non-heap overhead.
   driverMemory: "3g"
-  # Non-secret extra env for the maintenance run (none needed by default). Secrets (envSecretName)
+  # Non-secret extra env for the maintenance run. Secrets (envSecretName)
   # MUST include ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
   # anymore — those belonged to the removed Spark-SS landing; Kafka Connect keeps its offsets in the
   # Iceberg snapshots + its own topics.
-  env: []
+  # AUD-OPS-015: the durable collector lane (collector_events_connect — append-only SoR, rows never
+  # deleted) keeps a 14-day Iceberg time-travel window (range 14–30d per the audit; default 7d stays
+  # for everything else, incl. the PII *_raw_connect lanes whose short window is a privacy contract).
+  # Pinned here explicitly so the recovery window is auditable from values — see docs/runbooks/DR.md.
+  env:
+    - { name: DURABLE_SNAPSHOT_TTL_MS, value: "1209600000" } # 14d
+    - { name: DURABLE_TABLES, value: "collector_events_connect" }
   # Workflow-pod placement (AUD-PROD-006). Empty by default (staging/kind unchanged);
   # values-prod pins the Spark cron pods to the batch pool.
   nodeSelector: {}

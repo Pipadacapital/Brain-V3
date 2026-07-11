@@ -280,14 +280,30 @@ argocd app sync trino-prod                     # serving engine; iceberg.s3.regi
 **Rollback (any app):** `argocd app rollback <app>` to the previous synced
 revision — every app is a discrete manual gate, so blast radius is one app.
 
-## 11. Migrations + serving views (AUD-COST-011)
+## 11. Migrations + serving views (AUD-COST-011, AUD-OPS-017)
 
-Migrations run automatically as the core chart's **PreSync hook Job**
-(`migrations.enabled: true` in values-prod): syncing `core-prod` in step 12
-runs `pnpm migrate:up` (all `db/migrations`) against `DATABASE_URL_DIRECT`
-(direct Aurora — the advisory lock breaks through pgbouncer) **before** the
-Deployment rolls. Nothing to run by hand; on failure inspect the hook Job:
-`kubectl -n core logs jobs/<release>-migrate`.
+The core chart's PreSync migration hook is **DISABLED** in prod
+(`migrations.enabled: false` in values-prod — the Brain migrations are
+owner-only DDL that REVOKE from brain_app, so they cannot run as brain_app).
+Migrations are applied **out-of-band as brainadmin**. Two scripts; only one
+is routine:
+
+- **ROUTINE (this step, and every later deploy that ships new
+  `db/migrations`):** `bash tools/deploy/run-migrations.sh` — NON-DESTRUCTIVE
+  and idempotent. It creates a short-lived `migrate-admin-dburl` secret from
+  the RDS-managed master secret, applies `tools/deploy/db-migrate-job.yaml`
+  (`pnpm migrate:up` against Aurora direct, as brainadmin with
+  `-c role=brain`, advisory-locked), tails the Job log, and deletes the
+  secret.
+- **FIRST BOOT ONLY (fresh, EMPTY database):**
+  `bash tools/deploy/reset-and-migrate.sh` — **DESTRUCTIVE**: drops every
+  user schema, recreates the public schema + the `brain` owner-role
+  scaffolding, then runs the routine path. It **refuses to run if any user
+  table has rows**; overriding the guard requires
+  `FORCE_DESTRUCTIVE_RESET=yes-i-mean-it` and permanently destroys all
+  tenant data. Never part of a routine deploy.
+
+On failure inspect the Job: `kubectl -n stream-worker logs job/db-migrate-once`.
 
 Trino serving views are NOT in any sync wave — apply once after `trino-prod`
 is up (idempotent, `CREATE OR REPLACE VIEW`):
@@ -310,7 +326,8 @@ maintenance-only (bronze-maintenance / raw-retention / erasure — there is no
 bronze-landing cron).
 
 ```bash
-argocd app sync core-prod                       # runs the migration PreSync Job first (step 11)
+argocd app sync core-prod                       # migrations already applied out-of-band in step 11
+                                                # (the PreSync hook is disabled in prod)
 argocd app sync web-prod collector-prod stream-worker-prod
 # Bronze landing writer (ADR-0010): deploy the infra/helm/kafka-connect chart
 # (fill worker.bootstrapServers etc. per its values.yaml; add an ArgoCD app for it

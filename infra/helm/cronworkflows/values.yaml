@@ -229,14 +229,14 @@ sparkV4:
 jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
-    command: ["node", "dist/jobs/recommendation-detectors.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/recommendation-detectors.ts"]
   - name: identity-export
     schedule: "2 * * * *"          # hourly at :02 — ATTRIBUTION CHAIN step -1: materialize the identity graph
-    command: ["node", "dist/jobs/identity-export/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/identity-export/run.ts"]
     useStreamWorkerImage: true
   - name: journey-stitch-export
     schedule: "3 * * * *"          # hourly at :03 — materialize the PG cart-stitch → silver_journey_stitch
-    command: ["node", "dist/jobs/journey-stitch-export/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/journey-stitch-export/run.ts"]
     useStreamWorkerImage: true
     # MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map (PG capture) →
     # silver_journey_stitch (lakehouse Silver), so silver_touchpoint reads the lakehouse, not a
@@ -253,7 +253,7 @@ jobs:
   # read, served by the brain_serving mv_* Trino views over Iceberg.
   - name: journey-stitch-from-identity
     schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
-    command: ["node", "dist/jobs/journey-stitch-from-identity.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/journey-stitch-from-identity.ts"]
     useStreamWorkerImage: true
     # Deterministic identity-graph stitch (GAP-1): silver_touchpoint anon → identity_link(anon_id)→
     # brain_id ∩ realized_revenue_ledger(order→brain_id), UNAMBIGUOUS-ONLY (skips multi-anon customers,
@@ -262,7 +262,7 @@ jobs:
     # has no journeys to credit.
   - name: attribution-reconcile
     schedule: "30 * * * *"         # hourly at :30 — ATTRIBUTION CHAIN step 3: credit + clawback
-    command: ["node", "dist/jobs/attribution-reconcile.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/attribution-reconcile.ts"]
     # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
     # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
     # MEDALLION REALIGNMENT (Brain V4): the attribution serving marts (gold_marketing_attribution /
@@ -270,7 +270,7 @@ jobs:
     # :25), not a dbt `attribution-gold-refresh` cron — Spark is the sole compute, dbt is gone.
   - name: meta-token-refresh
     schedule: "0 3 * * *"          # daily 03:00 — proactively re-exchange Meta long-lived tokens
-    command: ["node", "dist/jobs/meta-token-refresh/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/meta-token-refresh/run.ts"]
     useStreamWorkerImage: true
     # Re-exchanges (fb_exchange_token) any connected Meta connector whose token is older than the
     # threshold, BEFORE the ~60-day expiry — closes the silent spend-stale gap (feat-meta-token-refresh).
@@ -278,7 +278,7 @@ jobs:
     # job records an app_creds_missing error and no-ops (dev-safe).
   - name: shopify-token-refresh
     schedule: "30 3 * * *"         # daily 03:30 — proactively refresh Shopify offline tokens (mirrors meta-token-refresh)
-    command: ["node", "dist/jobs/shopify-token-refresh/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/shopify-token-refresh/run.ts"]
     useStreamWorkerImage: true
     # Shopify offline-token expiry mandate (2026-04-01 → 1y expiry; 2027-01-01 → ALL expire). Enumerates
     # connected Shopify connectors whose token is older than the threshold and exchanges it for a fresh
@@ -286,7 +286,7 @@ jobs:
     # cron, offline tokens silently expire → Shopify sync dies. Idempotent (skips fresh tokens).
   - name: phone-guard-reeval
     schedule: "50 * * * *"         # hourly at :50 — re-evaluate expired phone-guard suppression windows
-    command: ["node", "dist/jobs/phone-guard-reeval.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/phone-guard-reeval.ts"]
     useStreamWorkerImage: true
     # Windowed re-eval of the phone-guard SharedUtility state (Neo4j identity SoR + PG brand config):
     # un-suppress a phone hash once its window slides below the per-brand distinct-brain_id threshold,
@@ -294,13 +294,13 @@ jobs:
     # Needs NEO4J_* + BRAIN_APP_DATABASE_URL. Idempotent; Forbid + startingDeadline make retries safe.
   - name: audit-checkpoint
     schedule: "15 * * * *"         # hourly at :15 — WORM-anchor the audit hash-chain head to S3 (R-19)
-    command: ["node", "dist/jobs/audit-checkpoint.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/audit-checkpoint.ts"]
     # Activation needs AUDIT_CHECKPOINT_BUCKET (= terraform output s3-audit.audit_bucket_name) +
     # AWS_REGION in the pod env (via core-env secret). The brain-jobs IRSA role already grants
     # Put/Get/List on checkpoints/* (s3-audit). Unset → the job safely no-ops (dev).
   - name: partition-maintenance
     schedule: "30 2 * * *"         # daily 02:30 IST — BEFORE any month rolls over (C4 audit finding)
-    command: ["node", "dist/jobs/partition-maintenance.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/partition-maintenance.ts"]
     useStreamWorkerImage: true
     env:
       # CREATE-AHEAD horizon. >=3 so writes NEVER fall into *_pdefault even if the controller is

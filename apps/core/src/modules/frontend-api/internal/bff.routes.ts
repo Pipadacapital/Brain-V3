@@ -78,6 +78,7 @@ import { registerSegmentsRoutes } from './routes/segments.routes.js';
 import { registerAdminFlagsRoutes } from './routes/admin-flags.routes.js';
 import type { FlagService } from '@brain/platform-flags';
 import type { IdentityEventPublisher } from '../../../infrastructure/events/IdentityEventPublisher.js';
+import type { ErasureEventPublisher } from '../../../infrastructure/events/ErasureEventPublisher.js';
 
 export function registerBffRoutes(
   fastify: FastifyInstance,
@@ -103,6 +104,8 @@ export function registerBffRoutes(
   touchpointCacheReader?: TouchpointZsetClient,
   /** SPEC: D.3 — semantic-serving flag switch (compiled-view migration; DEFAULT OFF). Trailing-optional. */
   semanticRouter?: SemanticServingRouter,
+  /** AUD-OPS-036 — RTBF erasure-trigger bridge (identity erase route). Trailing-optional. */
+  erasureEventPublisher?: ErasureEventPublisher,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -261,6 +264,7 @@ export function registerBffRoutes(
     vaultService,
     identityReader,
     identityEventPublisher,
+    erasureEventPublisher,
     getCoreSaltHex,
     sessionPreHandler,
     bffProtectedPreHandler,

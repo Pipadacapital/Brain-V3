@@ -543,6 +543,70 @@ module "irsa_kafka_connect" {
 }
 
 ###############################################################################
+# Cost guardrails — AUD-OPS-027: the pre-existing brain-prod-monthly-cap budget
+# (console-created, IncludeCredit=true) nets promotional credits into "actual"
+# spend, so with credits covering the bill it reads $0 and can NEVER fire until
+# the credits exhaust. This SECOND budget tracks REAL usage (credits + refunds
+# excluded) so the ~2x-target burn rate is visible while credits still mask the
+# cash bill. Alerts-only (no budget actions), matching the account guardrail
+# posture.
+###############################################################################
+resource "aws_budgets_budget" "usage_real" {
+  name         = "${local.project}-${local.environment}-usage-real"
+  budget_type  = "COST"
+  limit_amount = "1000"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_types {
+    include_credit = false
+    include_refund = false
+  }
+
+  # 50 / 80 / 100% of ACTUAL usage spend → email.
+  dynamic "notification" {
+    for_each = [50, 80, 100]
+    content {
+      comparison_operator        = "GREATER_THAN"
+      notification_type          = "ACTUAL"
+      threshold                  = notification.value
+      threshold_type             = "PERCENTAGE"
+      subscriber_email_addresses = ["rishabhporwal95@gmail.com"]
+    }
+  }
+}
+
+###############################################################################
+# Neo4j backups (AUD-OPS-012) — the identity SoR had ZERO backups. Two layers:
+# DLM daily EBS snapshots (7 retained, targeted by the CSI's
+# kubernetes.io/created-for/pvc/namespace=neo4j tag) + a backups bucket for the
+# nightly neo4j-admin dump CronJob (infra/helm/neo4j-backup, ns neo4j). The
+# module header has the full rationale (incl. why the WORM audit bucket is unfit).
+###############################################################################
+module "neo4j_backup" {
+  source      = "../../modules/neo4j-backup"
+  environment = local.environment
+  project     = local.project
+  kms_key_arn = module.kms.root_kms_key_arn
+}
+
+# IRSA for the dump CronJob — namespace/SA MUST match the neo4j-backup chart's
+# ServiceAccount exactly (NN-3 StringEquals trust): neo4j/neo4j-backup.
+module "irsa_neo4j_backup" {
+  source               = "../../modules/irsa"
+  role_name            = "neo4j-backup"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "neo4j"
+  service_account_name = "neo4j-backup"
+  environment          = local.environment
+  project              = local.project
+  policy_arns = [
+    module.neo4j_backup.backup_writer_policy_arn,
+  ]
+}
+
+###############################################################################
 # Outputs — the post-apply fill pass reads these (helm values-prod placeholders,
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.
 ###############################################################################

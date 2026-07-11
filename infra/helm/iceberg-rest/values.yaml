@@ -24,6 +24,18 @@ secret:
   jdbcUserKey: jdbc-user
   jdbcPasswordKey: jdbc-password
 
+# AUD-INFRA-023 (subsumes AUD-SEC-2): the upstream fixture logs its FULL catalog config —
+# including the plaintext `jdbc.password` — at INFO on every startup
+# (org.apache.iceberg.rest.RESTCatalogServer: "Creating catalog with properties: {...}").
+# The fat jar's logging backend is slf4j-simple (iceberg open-api shadowJar, unrelocated),
+# so ONE system property caps exactly that logger at WARN and provably removes the line;
+# every other logger stays at its default level. Delivered via JAVA_TOOL_OPTIONS (native
+# JVM env pickup) so it works with BOTH the stock fixture entrypoint (`java -jar`, dev)
+# and the custom prod image's `-cp` relaunch (db/iceberg/rest/Dockerfile) — no rebuild.
+# Set to "" ONLY when debugging catalog bootstrap (re-exposes the password in pod logs;
+# rotate the catalog DB credential afterwards).
+javaToolOptions: "-Dorg.slf4j.simpleLogger.log.org.apache.iceberg.rest.RESTCatalogServer=warn"
+
 serviceAccount:
   create: true
   name: iceberg-rest

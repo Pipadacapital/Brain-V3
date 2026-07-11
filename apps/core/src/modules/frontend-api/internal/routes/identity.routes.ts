@@ -37,7 +37,7 @@ import {
 import type { BffDeps } from './_shared.js';
 
 export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, identityReader, vaultService, identityEventPublisher } = deps;
+  const { bffProtectedPreHandler, identityReader, vaultService, identityEventPublisher, erasureEventPublisher } = deps;
 
   // ── GET /api/v1/identity/customers — customer BROWSE (discover front-door) ────
   /**
@@ -260,6 +260,13 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
    * tombstones identity_link, marks the customer 'erased', audits the action. State-changing
    * → CSRF-enforced via bffProtectedPreHandler. Brand from session (D-1) — a brain_id from
    * another brand erases nothing (the SECURITY DEFINER fn is scoped to brand_id + brain_id).
+   *
+   * AUD-OPS-036/039: the synchronous erase above is PARTIAL (immediate UX). On success we also
+   * publish the canonical privacy.erasure.requested trigger (brain_id-addressed — the raw
+   * subject is already hard-deleted here, so no email/phone exists to carry) so the
+   * stream-worker orchestrator runs the FULL ordered sequence: DEK shred, pii_erasure_log,
+   * surrogate brain_id, Gold re-projection, CAPI deletion. Fail-open: a publish failure never
+   * fails this response (the publisher logs; the idempotent erase can be re-issued).
    */
   fastify.post(
     '/api/v1/identity/customer/erase',
@@ -317,6 +324,16 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
             code: 'IDENTITY_GRAPH_UNAVAILABLE',
             message: 'The identity service is temporarily unavailable. Please try again.',
           },
+        });
+      }
+      // AUD-OPS-036: bridge to the async full-erasure orchestrator. Only for a REAL erase
+      // (erased=false means the brain_id did not exist for this brand — nothing to trigger).
+      if (result.erased && erasureEventPublisher) {
+        await erasureEventPublisher.emitErasureRequested({
+          brandId: auth.brandId,
+          brainId: brain_id,
+          source: 'identity.erase',
+          correlationId: requestId,
         });
       }
       return reply.send({ request_id: requestId, data: result });

@@ -7,6 +7,22 @@ image:
 
 envSecretName: stream-worker-env
 
+# Helm lists REPLACE (no merge) — the two defaults are repeated verbatim, then the prod-only wiring.
+env:
+  - name: SERVICE_NAME
+    value: stream-worker
+  # T2-10: the health server binds this port; the helm probes (probes.port) target it.
+  - name: HEALTH_PORT
+    value: "8090"
+  # AUD-OPS-037: activate the erasure orchestrator's Bronze raw-PII step (STEP 4) — submit the
+  # `bronze-raw-erasure` WorkflowTemplate (cronworkflows chart, ns argo). Default submit mode is
+  # 'k8s': the prod argo-workflows app is CONTROLLER-ONLY (no REST server), so the submit is a
+  # Kubernetes-API Workflow create using the pod's projected SA token; RBAC comes from the
+  # bronze-raw-erasure-submitter Role/RoleBinding in the cronworkflows chart. Unset this var to
+  # fall back to the registered-DISABLED seam (honest no-op, logged — never a silent success).
+  - name: ARGO_SERVER_URL
+    value: https://kubernetes.default.svc
+
 # AUD-LOCAL-016-FUP1: prod kube-prometheus-stack scrapes the worker's /metrics (HealthServer
 # containerPort — headless, so a PodMonitor) as job "brain-stream-worker" (up{job=~"brain-.*"}).
 metrics:

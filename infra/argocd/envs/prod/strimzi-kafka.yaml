@@ -79,8 +79,15 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "1"
-    # Selective deploy: only syncs when the Kafka CR chart changes.
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/strimzi-kafka
+    # Selective deploy: only re-renders when the Kafka CR chart changes.
+    # AUD-INFRA-002: the path MUST be repo-root-absolute (leading '/'). A relative value is
+    # resolved AGAINST spec.source.path (ArgoCD manifest-paths annotation contract), so the
+    # previous `infra/helm/strimzi-kafka` watched the never-existing
+    # `infra/helm/strimzi-kafka/infra/helm/strimzi-kafka` — every commit was judged
+    # irrelevant and the repo-server forward-copied the STALE cached manifests to each new
+    # revision ("manifest cache hit", zero helm renders). That is why the AUD-LIVE-5 PVC
+    # guard annotations never reached the live KafkaNodePool despite 3 Succeeded syncs.
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/strimzi-kafka
   labels:
     project: brain
     environment: prod

@@ -25,6 +25,7 @@ import type { ContactPiiVaultService } from '../../../identity/index.js';
 import type { FoundationSignals } from '../../../analytics/index.js';
 import type { FlagService } from '@brain/platform-flags';
 import type { IdentityEventPublisher } from '../../../../infrastructure/events/IdentityEventPublisher.js';
+import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
 
 // @fastify/cookie v11 module augmentation is not automatically applied in
 // NodeNext module resolution when the package has no `exports` field.
@@ -89,6 +90,12 @@ export interface BffDeps {
    * (the batch re-version job folds the change from silver_identity_map). Existing tests omit it.
    */
   identityEventPublisher?: IdentityEventPublisher;
+  /**
+   * AUD-OPS-036 — the RTBF erasure-trigger bridge (privacy.erasure.requested on the collector
+   * lane). Optional: absent → the erase route still performs the synchronous partial erase but
+   * emits no trigger (pre-bridge behavior; existing tests omit it).
+   */
+  erasureEventPublisher?: ErasureEventPublisher;
   /**
    * Per-brand salt resolver (the single brandSaltSource: dev-derived / prod KMS-unwrapped from
    * brand_identity_salt). Used by the Customer-360 search to hash the query term identically to how

@@ -21,3 +21,8 @@ system_node_max     = 6
 # ADR-0009 Aurora Serverless v2 starter sizing (raise max_capacity under load).
 aurora_min_capacity = 0.5
 aurora_max_capacity = 2
+
+# AUD-INFRA-004: scope external-dns ChangeResourceRecordSets to the Brain zone
+# (brain.pipadacapital.com). Unset, the policy fell back to hostedzone/* —
+# account-wide DNS mutation from a compromised external-dns pod.
+external_dns_zone_ids = ["Z00011362R9ERGL7EC2J9"]

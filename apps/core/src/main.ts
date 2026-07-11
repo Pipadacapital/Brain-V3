@@ -105,6 +105,7 @@ import { registerWorkspaceAccess } from './bootstrap/registerWorkspaceAccess.js'
 import { registerConnectors } from './bootstrap/registerConnectors.js';
 import { createM1EventPublisher } from './infrastructure/events/M1EventPublisher.js';
 import { createIdentityEventPublisher } from './infrastructure/events/IdentityEventPublisher.js';
+import { createErasureEventPublisher } from './infrastructure/events/ErasureEventPublisher.js';
 
 // ── Secrets provider (HIGH-SECRETS-01) ───────────────────────────────────────
 import { AwsSecretsProvider } from './infrastructure/secrets/AwsSecretsProvider.js';
@@ -735,6 +736,21 @@ export async function main(): Promise<void> {
     },
   });
 
+  // AUD-OPS-036: the RTBF erasure-trigger bridge — the ONE producer of the canonical
+  // privacy.erasure.requested event on {env}.collector.event.v1, reused by all three RTBF
+  // entry points (consent/withdraw reason=erasure, identity erase route, Shopify
+  // customers/redact). Without it the stream-worker erasure orchestrator is live but
+  // unreachable. Reuses the same connected webhook producer (ONE per process).
+  const erasureEventPublisher = createErasureEventPublisher({
+    producer: webhookProducer,
+    env: config.kafkaEnv,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+      error: (obj, msg) => app.log.error(obj, msg),
+    },
+  });
+
   // Create application services.
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };
   const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool, emitEvent);
@@ -865,6 +881,8 @@ export async function main(): Promise<void> {
     piiVaultService,
     identityReader,
     identityEventPublisher,
+    // AUD-OPS-036: erasure-trigger bridge for the consent-withdraw + identity-erase entry points.
+    erasureEventPublisher,
     getCoreSaltHex,
     flagService,
     // SPEC: D.3 — the semantic-serving flag switch (DEFAULT OFF, legacy pass-through). Migrated
@@ -898,6 +916,8 @@ export async function main(): Promise<void> {
     liveTopic,
     getWebhookSaltHex,
     identityReader,
+    // AUD-OPS-036: erasure-trigger bridge for the Shopify customers/redact entry point.
+    erasureEventPublisher,
     // SPEC: A.1.4 (WA-09) — per-brand connector.identity_fields gate for the webhook mappers
     // (AMD-01 interop dual-write). FlagService is DEFAULT-OFF + fail-closed by construction.
     isIdentityFieldsEnabled: (brandId: string) =>

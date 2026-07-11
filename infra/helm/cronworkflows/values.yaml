@@ -64,6 +64,19 @@ sparkBronze:
     pullPolicy: IfNotPresent
   maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
   activeDeadlineSeconds: 1800
+  # ── Raw-lane PII retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038) ──────────────────────────────
+  # bronze_raw_retention.py: row-TTL DELETE + snapshot expiry over the *_raw_connect lanes so raw
+  # un-hashed PII/PCI never outlives the 7-day landing-buffer window (Silver is the durable layer;
+  # collector_events_connect is excluded by the job — system-of-record, hashed-safe). The job's env
+  # defaults ARE the D4 posture (RAW_RETENTION_HOURS=168, RAW_ROW_TTL=1); RAW_RETENTION_HOURS is
+  # pinned explicitly so the window is auditable from values. This is the prod half of the D4 gate —
+  # the dev half runs on the daily guard-file cadence in tools/dev/v4-refresh-loop.sh.
+  rawRetention:
+    enabled: true
+    schedule: "40 3 * * *"              # daily 03:40 IST — after the 03:00 compaction/snapshot-expiry pass
+    activeDeadlineSeconds: 1800
+    env:
+      - { name: RAW_RETENTION_HOURS, value: "168" }   # 7 days (D4); tighten per region/regime
   # Spark driver heap (driver==executor under local[*]). Pinned < resources.limits.memory so the JVM +
   # PySpark + Iceberg machinery don't OOM on a big compaction pass. Keep a margin below the pod
   # memory limit for non-heap overhead.
@@ -80,6 +93,26 @@ sparkBronze:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
+  # ── On-demand subject erasure (AUD-OPS-037; templates/spark-erasure.yaml) ──────────────────────
+  # WorkflowTemplate `bronze-raw-erasure` wrapping erasure_raw_delete.py (RTBF hard-delete of one
+  # subject's rows across the raw Bronze tables + the payload-path sweep of
+  # collector_events_connect). NOT a cron: the stream-worker erasure orchestrator submits a
+  # Workflow from this template (workflowTemplateRef via the Kubernetes API — the prod
+  # argo-workflows app is controller-only, no REST server) after the subject DEK crypto-shred.
+  # Same image/secret/placement as the maintenance cron above.
+  erasure:
+    enabled: true
+    # Per-run hard cap. The payload-path DELETEs full-scan collector_events_connect once per
+    # predicate group — give it the same ceiling as the weekly medallion maintenance sweep.
+    activeDeadlineSeconds: 3600
+    # Completed/failed Workflow CRs are TTL'd (one-shot submits have no history limits): 7 days
+    # keeps the audit/investigation trail without unbounded CR accumulation.
+    ttlSecondsAfterCompletion: 604800
+    # The in-cluster identity allowed to submit from the template (Role/RoleBinding in the
+    # template file): the stream-worker deployable, which hosts the erasure orchestrator.
+    submitter:
+      serviceAccountName: stream-worker
+      serviceAccountNamespace: stream-worker
   # ── Execution mode (see docs/ops/spark-on-k8s-migration.md §7) ─────────────────────────────────
   # "local" (default) = the proven single-JVM `spark-submit --master local[*]` in the cron pod. "k8s" =
   # Spark-on-Kubernetes cluster mode (real executor pods, same image/catalog/code). Bronze is the lighter,
@@ -196,14 +229,14 @@ sparkV4:
 jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
-    command: ["node", "dist/jobs/recommendation-detectors.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/recommendation-detectors.ts"]
   - name: identity-export
     schedule: "2 * * * *"          # hourly at :02 — ATTRIBUTION CHAIN step -1: materialize the identity graph
-    command: ["node", "dist/jobs/identity-export/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/identity-export/run.ts"]
     useStreamWorkerImage: true
   - name: journey-stitch-export
     schedule: "3 * * * *"          # hourly at :03 — materialize the PG cart-stitch → silver_journey_stitch
-    command: ["node", "dist/jobs/journey-stitch-export/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/journey-stitch-export/run.ts"]
     useStreamWorkerImage: true
     # MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map (PG capture) →
     # silver_journey_stitch (lakehouse Silver), so silver_touchpoint reads the lakehouse, not a
@@ -220,7 +253,7 @@ jobs:
   # read, served by the brain_serving mv_* Trino views over Iceberg.
   - name: journey-stitch-from-identity
     schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
-    command: ["node", "dist/jobs/journey-stitch-from-identity.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/journey-stitch-from-identity.ts"]
     useStreamWorkerImage: true
     # Deterministic identity-graph stitch (GAP-1): silver_touchpoint anon → identity_link(anon_id)→
     # brain_id ∩ realized_revenue_ledger(order→brain_id), UNAMBIGUOUS-ONLY (skips multi-anon customers,
@@ -229,7 +262,7 @@ jobs:
     # has no journeys to credit.
   - name: attribution-reconcile
     schedule: "30 * * * *"         # hourly at :30 — ATTRIBUTION CHAIN step 3: credit + clawback
-    command: ["node", "dist/jobs/attribution-reconcile.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/attribution-reconcile.ts"]
     # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
     # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
     # MEDALLION REALIGNMENT (Brain V4): the attribution serving marts (gold_marketing_attribution /
@@ -237,7 +270,7 @@ jobs:
     # :25), not a dbt `attribution-gold-refresh` cron — Spark is the sole compute, dbt is gone.
   - name: meta-token-refresh
     schedule: "0 3 * * *"          # daily 03:00 — proactively re-exchange Meta long-lived tokens
-    command: ["node", "dist/jobs/meta-token-refresh/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/meta-token-refresh/run.ts"]
     useStreamWorkerImage: true
     # Re-exchanges (fb_exchange_token) any connected Meta connector whose token is older than the
     # threshold, BEFORE the ~60-day expiry — closes the silent spend-stale gap (feat-meta-token-refresh).
@@ -245,7 +278,7 @@ jobs:
     # job records an app_creds_missing error and no-ops (dev-safe).
   - name: shopify-token-refresh
     schedule: "30 3 * * *"         # daily 03:30 — proactively refresh Shopify offline tokens (mirrors meta-token-refresh)
-    command: ["node", "dist/jobs/shopify-token-refresh/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/shopify-token-refresh/run.ts"]
     useStreamWorkerImage: true
     # Shopify offline-token expiry mandate (2026-04-01 → 1y expiry; 2027-01-01 → ALL expire). Enumerates
     # connected Shopify connectors whose token is older than the threshold and exchanges it for a fresh
@@ -253,7 +286,7 @@ jobs:
     # cron, offline tokens silently expire → Shopify sync dies. Idempotent (skips fresh tokens).
   - name: phone-guard-reeval
     schedule: "50 * * * *"         # hourly at :50 — re-evaluate expired phone-guard suppression windows
-    command: ["node", "dist/jobs/phone-guard-reeval.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/phone-guard-reeval.ts"]
     useStreamWorkerImage: true
     # Windowed re-eval of the phone-guard SharedUtility state (Neo4j identity SoR + PG brand config):
     # un-suppress a phone hash once its window slides below the per-brand distinct-brain_id threshold,
@@ -261,13 +294,13 @@ jobs:
     # Needs NEO4J_* + BRAIN_APP_DATABASE_URL. Idempotent; Forbid + startingDeadline make retries safe.
   - name: audit-checkpoint
     schedule: "15 * * * *"         # hourly at :15 — WORM-anchor the audit hash-chain head to S3 (R-19)
-    command: ["node", "dist/jobs/audit-checkpoint.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/audit-checkpoint.ts"]
     # Activation needs AUDIT_CHECKPOINT_BUCKET (= terraform output s3-audit.audit_bucket_name) +
     # AWS_REGION in the pod env (via core-env secret). The brain-jobs IRSA role already grants
     # Put/Get/List on checkpoints/* (s3-audit). Unset → the job safely no-ops (dev).
   - name: partition-maintenance
     schedule: "30 2 * * *"         # daily 02:30 IST — BEFORE any month rolls over (C4 audit finding)
-    command: ["node", "dist/jobs/partition-maintenance.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/partition-maintenance.ts"]
     useStreamWorkerImage: true
     env:
       # CREATE-AHEAD horizon. >=3 so writes NEVER fall into *_pdefault even if the controller is

@@ -68,6 +68,34 @@ missing digest, B3) and a cluster. Each `spark-submit` runs an idempotent Iceber
 bounded in-pod retry (`SPARK_MAX_RETRIES`, via `_retry.sh`) on top of the Argo `backoffLimit` — a
 transient blip is safe to re-run.
 
+## Bronze raw-PII erasure (`templates/spark-erasure.yaml`, AUD-OPS-037)
+
+**Not a cron** — a `WorkflowTemplate` (`bronze-raw-erasure`) wrapping
+`db/iceberg/spark/erasure_raw_delete.py`, the RTBF subject hard-delete across the raw Bronze
+Iceberg tables (`*_raw_connect` column-equality DELETEs + the payload-path sweep of
+`collector_events_connect`). The stream-worker **erasure orchestrator** (STEP 4 of the ordered
+crypto-shred sequence, `EraseSubjectUseCase`) submits a Workflow from it per erasure signal:
+prod runs the argo-workflows app controller-only (no REST server), so the submit is a
+Kubernetes-API Workflow create (`workflowTemplateRef`) authorized by the
+`bronze-raw-erasure-submitter` Role/RoleBinding this chart renders (create+get on `workflows`
+in ns `argo`, bound to the stream-worker ServiceAccount — configure via
+`sparkBronze.erasure.submitter`).
+
+Parameters mirror the Spark job's env contract: `brand-id` (UUID, tenant-isolation key — always
+the first DELETE predicate), `identifier-hash` (64-hex per-brand-salted SHA-256),
+`anon-ids`/`device-ids` (comma-separated RAW payload ids). `brand-id`/`identifier-hash` have no
+defaults — an incomplete submit is rejected (fail-closed). Idempotent: a replayed erasure
+deletes 0 rows. Erasure is **physically complete after the `bronze-maintenance` snapshot-expiry
+pass** ages out the pre-delete snapshots (D4 posture). Completed Workflow CRs are TTL'd
+(`sparkBronze.erasure.ttlSecondsAfterCompletion`, 7d default).
+
+Manual submit (ops / verification):
+
+```bash
+argo submit -n argo --from workflowtemplate/bronze-raw-erasure \
+  -p brand-id=<uuid> -p identifier-hash=<64-hex> [-p anon-ids=a1,a2] [-p device-ids=d1]
+```
+
 ## C4 — partition maintenance (CRITICAL)
 
 The RANGE-partitioned tables (migration 0080) need a partition created ahead of

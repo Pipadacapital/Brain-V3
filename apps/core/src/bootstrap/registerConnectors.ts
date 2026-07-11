@@ -43,6 +43,7 @@ import { validateSessionPreHandler } from '../modules/workspace-access/internal/
 import type { AuthService } from '../modules/workspace-access/internal/application/auth.service.js';
 import type { Neo4jIdentityReader } from '../modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 import type { EmitEvent } from '../infrastructure/events/M1EventPublisher.js';
+import type { ErasureEventPublisher } from '../infrastructure/events/ErasureEventPublisher.js';
 
 import { type ConnectorContextConfig, type SharedOAuthCommands } from './connectors/shared.js';
 import { registerConnectorOAuthRoutes } from './connectors/oauthRoutes.js';
@@ -68,6 +69,12 @@ export interface RegisterConnectorsDeps {
   liveTopic: string;
   getWebhookSaltHex: (brandId: string) => Promise<string>;
   identityReader: Neo4jIdentityReader;
+  /**
+   * AUD-OPS-036 — the RTBF erasure-trigger bridge for Shopify customers/redact. Optional:
+   * absent → the redact side-effect still runs the synchronous partial erase but emits no
+   * trigger (pre-bridge behavior; existing tests omit it).
+   */
+  erasureEventPublisher?: ErasureEventPublisher;
   /**
    * SPEC: A.1.4 (WA-09) — per-brand `connector.identity_fields` flag resolver (platform-flags
    * FlagService read, injected from main.ts). OPTIONAL + FAIL-CLOSED: absent → flag OFF → the
@@ -165,6 +172,8 @@ export function registerConnectors(app: FastifyInstance, deps: RegisterConnector
     getSaltHex: getWebhookSaltHex,
     redis: deps.redis,
     identityReader, // Epic 3 / ADR-0004: GDPR redact resolves + erases via the Neo4j identity SoR
+    // AUD-OPS-036: customers/redact also publishes the canonical erasure trigger.
+    erasureEventPublisher: deps.erasureEventPublisher,
     // SPEC: A.1.4 (WA-09) — connector.identity_fields flag gate (fail-closed when absent).
     isIdentityFieldsEnabled: deps.isIdentityFieldsEnabled,
   });

@@ -1,0 +1,205 @@
+# Nightly application-consistent Neo4j backup (AUD-OPS-012).
+#
+# Neo4j COMMUNITY has no online backup (`neo4j-admin database backup` is
+# Enterprise-only) and `neo4j-admin database dump` refuses a running database,
+# so this job takes a short nightly maintenance window:
+#
+#   stop-neo4j (init)  scale sts/neo4j → 0, wait for neo4j-0 to terminate.
+#                      Skipped when neo4j-0 is already absent (a retry pod
+#                      after a mid-flight failure) so retries re-enter safely.
+#   dump (init)        neo4j-admin database dump → emptyDir staging. NEVER
+#                      exits non-zero (records rc instead) — the start step
+#                      below must always run.
+#   upload (init)      aws s3 cp → s3://<bucket>/dumps/... via IRSA. Same
+#                      never-fail contract.
+#   start-neo4j (main) scale sts/neo4j → 1 UNCONDITIONALLY, then exit with the
+#                      recorded backup rc so a failed dump/upload still fails
+#                      the Job (visible to kube-state-metrics alerting) while
+#                      Neo4j is already back up.
+#
+# SCHEDULING: the data PVC is RWO EBS — mountable by this pod only if it lands
+# on neo4j-0's node. podAffinity below is PREFERRED (not required): required
+# would deadlock retries (neo4j-0 no longer exists after stop-neo4j ran). If
+# the scheduler ever places a first-attempt pod on a different node it just
+# hangs in ContainerCreating (Multi-Attach) until activeDeadlineSeconds kills
+# the job — Neo4j is untouched because stop-neo4j never ran. Fail-safe.
+#
+# RECOVERY (worst case, all retries dead with neo4j scaled to 0):
+#   kubectl -n {{ .Release.Namespace }} scale statefulset {{ .Values.neo4j.statefulSet }} --replicas=1
+# The next nightly run also self-heals (absent pod ⇒ dump ⇒ scale back up).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: neo4j-backup
+  labels:
+    {{- include "neo4j-backup.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backup.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.backup.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "neo4j-backup.labels" . | nindent 12 }}
+        spec:
+          serviceAccountName: {{ .Values.serviceAccount.name }}
+          restartPolicy: Never
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          affinity:
+            podAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        app: {{ .Values.neo4j.appLabel }}
+          securityContext:
+            # neo4j store files are owned 7474:7474 (official chart contract);
+            # OnRootMismatch avoids a full recursive chown on every mount.
+            fsGroup: 7474
+            fsGroupChangePolicy: OnRootMismatch
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ .Values.neo4j.pvc }}
+            - name: staging
+              emptyDir:
+                sizeLimit: {{ .Values.backup.stagingSizeLimit }}
+          initContainers:
+            - name: stop-neo4j
+              image: {{ .Values.images.kubectl }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  if kubectl -n "$NAMESPACE" get pod "$NEO4J_POD" >/dev/null 2>&1; then
+                    echo "scaling statefulset/$NEO4J_STS to 0 for the dump window"
+                    kubectl -n "$NAMESPACE" scale statefulset "$NEO4J_STS" --replicas=0
+                    kubectl -n "$NAMESPACE" wait --for=delete "pod/$NEO4J_POD" --timeout=600s
+                  else
+                    echo "$NEO4J_POD already absent (retry after a prior failure, or manual scale-0) — proceeding to dump"
+                  fi
+              env:
+                - name: NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: NEO4J_STS
+                  value: {{ .Values.neo4j.statefulSet | quote }}
+                - name: NEO4J_POD
+                  value: {{ .Values.neo4j.pod | quote }}
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 128Mi
+            - name: dump
+              image: {{ .Values.images.neo4j }}
+              securityContext:
+                runAsUser: 7474
+                runAsGroup: 7474
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -u
+                  rc=0
+                  neo4j-admin database dump "$NEO4J_DB" --to-path=/backups || rc=$?
+                  echo "$rc" > /backups/.dump_rc
+                  echo "dump finished rc=$rc"
+                  # ALWAYS exit 0 — start-neo4j MUST run to bring the identity
+                  # SoR back; the Job's final status carries the real rc.
+                  exit 0
+              env:
+                - name: NEO4J_DB
+                  value: {{ .Values.backup.database | quote }}
+              volumeMounts:
+                # /var/lib/neo4j/data is a symlink to /data in the official
+                # image — same layout the neo4j chart runs with.
+                - name: data
+                  mountPath: /data
+                - name: staging
+                  mountPath: /backups
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 1Gi
+                limits:
+                  memory: 2Gi
+            - name: upload
+              image: {{ .Values.images.awscli }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  rc=$(cat /backups/.dump_rc 2>/dev/null || echo 1)
+                  if [ "$rc" = "0" ]; then
+                    key="${S3_PREFIX}/$(date -u +%Y-%m-%d)/$(date -u +%Y%m%dT%H%M%SZ)-${NEO4J_DB}.dump"
+                    echo "uploading to s3://${S3_BUCKET}/${key}"
+                    aws s3 cp "/backups/${NEO4J_DB}.dump" "s3://${S3_BUCKET}/${key}" --only-show-errors || rc=$?
+                  else
+                    echo "skipping upload — dump rc=$rc"
+                  fi
+                  echo "$rc" > /backups/.backup_rc
+                  # Same never-fail contract as dump.
+                  exit 0
+              env:
+                - name: S3_BUCKET
+                  value: {{ .Values.backup.bucket | quote }}
+                - name: S3_PREFIX
+                  value: {{ .Values.backup.prefix | quote }}
+                - name: NEO4J_DB
+                  value: {{ .Values.backup.database | quote }}
+                - name: AWS_REGION
+                  value: {{ .Values.awsRegion | quote }}
+              volumeMounts:
+                - name: staging
+                  mountPath: /backups
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+          containers:
+            - name: start-neo4j
+              image: {{ .Values.images.kubectl }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -u
+                  kubectl -n "$NAMESPACE" scale statefulset "$NEO4J_STS" --replicas=1
+                  kubectl -n "$NAMESPACE" rollout status "statefulset/$NEO4J_STS" --timeout=600s || echo "WARN: $NEO4J_STS not ready within timeout — check the pod"
+                  rc=$(cat /backups/.backup_rc 2>/dev/null || echo 1)
+                  echo "backup rc=$rc (neo4j scale-up already issued)"
+                  exit "$rc"
+              env:
+                - name: NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: NEO4J_STS
+                  value: {{ .Values.neo4j.statefulSet | quote }}
+              volumeMounts:
+                - name: staging
+                  mountPath: /backups
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 128Mi

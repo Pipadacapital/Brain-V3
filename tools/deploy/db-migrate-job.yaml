@@ -1,6 +1,7 @@
-# One-shot DB migration (GO-LIVE step 11) — same as core's PreSync hook:
-# pnpm migrate:up against Aurora DIRECT (brain_app, advisory lock). Reuses
-# stream-worker-env's BRAIN_APP_DATABASE_URL — no password on the command line.
+# One-shot DB migration (GO-LIVE step 11) — the ROUTINE out-of-band path,
+# applied by tools/deploy/run-migrations.sh: pnpm migrate:up against Aurora
+# DIRECT as brainadmin (advisory lock). DATABASE_URL comes from the
+# short-lived migrate-admin-dburl secret — no password on the command line.
 apiVersion: batch/v1
 kind: Job
 metadata:

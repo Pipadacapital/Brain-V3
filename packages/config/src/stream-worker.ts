@@ -228,6 +228,30 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   // ── identity-export job flag ─────────────────────────────────────────────────
   /** Full refresh ('1' → full). */
   IDENTITY_EXPORT_FULL: strictOne(false),
+
+  // ── Argo Workflows submit (Bronze raw-PII erasure — AUD-OPS-037) ─────────────
+  /**
+   * Base URL the erasure orchestrator submits the `bronze-raw-erasure` WorkflowTemplate
+   * against. UNSET (default — dev/tests) → the Bronze-raw erasure step stays the
+   * registered-DISABLED shredIcebergSnapshots seam (honest no-op, never a silent success).
+   * Prod (k8s mode): https://kubernetes.default.svc — the argo-workflows app is
+   * controller-only (no REST server), so submit = a k8s-API Workflow create.
+   */
+  ARGO_SERVER_URL: z.string().optional(),
+  /**
+   * 'k8s' (default) = create a Workflow CR with workflowTemplateRef via the Kubernetes API
+   * (projected SA token + cluster CA). 'argo-server' = POST the Argo server's
+   * /api/v1/workflows/{ns}/submit (requires the server to be enabled; Bearer = ARGO_TOKEN).
+   */
+  ARGO_SUBMIT_MODE: z.enum(['k8s', 'argo-server']).default('k8s'),
+  /** Namespace the WorkflowTemplate lives in (the cronworkflows chart's destination). */
+  ARGO_WORKFLOWS_NAMESPACE: z.string().default('argo'),
+  /** WorkflowTemplate name (infra/helm/cronworkflows/templates/spark-erasure.yaml). */
+  ARGO_ERASURE_WORKFLOW_TEMPLATE: z.string().default('bronze-raw-erasure'),
+  /** Optional static bearer token (argo-server mode / out-of-cluster dev). */
+  ARGO_TOKEN: z.string().optional(),
+  /** Whole-request submit timeout (ms). */
+  ARGO_SUBMIT_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
 });
 
 export type StreamWorkerEnv = z.infer<typeof StreamWorkerEnvSchema>;

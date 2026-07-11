@@ -1,0 +1,52 @@
+# neo4j-backup — defaults. Prod overrides in values-prod.yaml.
+environment: prod
+
+# The neo4j chart objects this job orchestrates (releaseName `neo4j` in
+# infra/argocd/envs/prod/neo4j.yaml pins all three — keep in lockstep).
+neo4j:
+  statefulSet: neo4j
+  pod: neo4j-0
+  pvc: data-neo4j-0
+  # Pod label the official neo4j chart puts on neo4j-0 (= .Values.neo4j.name in
+  # infra/helm/neo4j/values-prod.yaml) — used for same-node co-scheduling so the
+  # RWO EBS volume is mountable by the backup pod (see cronjob.yaml).
+  appLabel: brain-identity
+
+backup:
+  # 21:30 UTC = 03:00 IST — the nightly maintenance window (lowest traffic),
+  # one hour AFTER the 20:30 UTC DLM EBS snapshot so the two layers never overlap.
+  schedule: "30 21 * * *"
+  bucket: ""              # brain-neo4j-backups-<env>-<acct> (terraform output neo4j_backup_bucket_name)
+  prefix: dumps
+  database: neo4j
+  # emptyDir staging for the dump before upload. The identity graph is small
+  # today; grow this (and watch node ephemeral storage) as the graph grows, or
+  # switch staging to a dedicated PVC.
+  stagingSizeLimit: 10Gi
+  # Whole-job ceiling (all retries). Generous: scale-down + dump + upload +
+  # scale-up is minutes at today's graph size.
+  activeDeadlineSeconds: 2700
+  # Retries re-enter safely: the stop step skips scale-down when neo4j-0 is
+  # already gone, so a retry after a mid-flight failure finishes the dump and
+  # ALWAYS scales Neo4j back up.
+  backoffLimit: 2
+
+serviceAccount:
+  create: true
+  name: neo4j-backup
+  roleArn: ""             # IRSA role brain-<env>-neo4j-backup (terraform output neo4j_backup_role_arn)
+
+images:
+  # kubectl for the stop/start steps. If Docker Hub's bitnami tags disappear
+  # (Bitnami catalog changes), repoint to an equivalent kubectl+shell image.
+  kubectl: bitnami/kubectl:1.31
+  # MUST match the neo4j chart's version (store format compatibility of the dump tool).
+  neo4j: neo4j:5.26.0-community
+  awscli: amazon/aws-cli:2.22.35
+
+awsRegion: ap-south-1
+
+# Land next to neo4j-0 (its Karpenter pool) — overridden per env to mirror
+# infra/helm/neo4j/values-prod.yaml.
+nodeSelector: {}
+tolerations: []

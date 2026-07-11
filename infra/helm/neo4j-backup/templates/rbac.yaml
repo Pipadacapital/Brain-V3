@@ -1,0 +1,38 @@
+# Least-privilege, NAMESPACE-scoped RBAC for the maintenance-window dance:
+# scale the neo4j StatefulSet down/up (scale subresource only) and watch the
+# pod disappear/return. No secrets, no exec, no delete.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: neo4j-backup
+  labels:
+    {{- include "neo4j-backup.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    resourceNames: [{{ .Values.neo4j.statefulSet | quote }}]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale"]
+    resourceNames: [{{ .Values.neo4j.statefulSet | quote }}]
+    verbs: ["get", "patch", "update"]
+  # kubectl wait/rollout list+watch pods by field selector — list cannot be
+  # resourceName-scoped, so this is namespace-wide pod READ only.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: neo4j-backup
+  labels:
+    {{- include "neo4j-backup.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: neo4j-backup
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}

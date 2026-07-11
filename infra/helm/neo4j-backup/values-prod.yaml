@@ -1,0 +1,23 @@
+# Brain – Neo4j backup prod values (AUD-OPS-012) — consumed by the local chart
+# via the ArgoCD app infra/argocd/envs/prod/neo4j-backup.yaml (ns neo4j).
+# 380254378136 is the standard fill token (infra/helm/PLACEHOLDERS.md §1).
+
+backup:
+  bucket: brain-neo4j-backups-prod-380254378136
+
+serviceAccount:
+  # IRSA (terraform output neo4j_backup_role_arn) — write-only on the bucket's
+  # dumps/ prefix; NN-3 trust pinned to neo4j/neo4j-backup.
+  roleArn: arn:aws:iam::380254378136:role/brain-prod-neo4j-backup
+
+# Mirror infra/helm/neo4j/values-prod.yaml (AUD-COST-018): the backup pod must
+# land on the same tainted ON-DEMAND pool as neo4j-0 — same-node co-scheduling
+# is what makes the RWO EBS data volume mountable (see cronjob.yaml).
+nodeSelector:
+  brain.platform/pool: ondemand
+
+tolerations:
+  - key: brain.platform/pool
+    operator: Equal
+    value: ondemand
+    effect: NoSchedule

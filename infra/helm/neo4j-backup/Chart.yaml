@@ -1,0 +1,14 @@
+apiVersion: v2
+name: neo4j-backup
+description: >-
+  Brain Neo4j nightly logical backup (AUD-OPS-012) — a CronJob that takes the identity
+  SYSTEM OF RECORD (ADR-0004) offline for a short maintenance window, runs
+  `neo4j-admin database dump`, ships the dump to the brain-neo4j-backups S3 bucket via
+  IRSA, and brings Neo4j back. Community edition has NO online backup (that is Enterprise
+  `neo4j-admin database backup`), so a brief nightly stop is the only application-consistent
+  option; identity writes are retried by consumers (see infra/helm/neo4j/values-prod.yaml).
+  Block-level protection (DLM daily EBS snapshots) lives in terraform
+  modules/neo4j-backup — the two layers are independent.
+type: application
+version: 0.1.0
+appVersion: "5.26.0"

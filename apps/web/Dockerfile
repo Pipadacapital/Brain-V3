@@ -61,6 +61,16 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 # Bring in the full source — the install layer above stays cached.
 COPY . .
+# next.config.js rewrites() bakes the BFF/core proxy target into the routes
+# manifest at BUILD time — runtime env (the web-env secret) CANNOT override it.
+# Without this the deployed image freezes the 'http://localhost:3001' dev
+# fallback and every /api/bff/* and /api/v1/* call ECONNREFUSEs in-cluster.
+# Provide the in-cluster core Service URL here so `next build` bakes the real
+# target (overridable per-env via --build-arg).
+ARG BFF_BASE_URL=http://core.core.svc.cluster.local:3001
+ARG CORE_API_URL=http://core.core.svc.cluster.local:3001
+ENV BFF_BASE_URL=${BFF_BASE_URL} \
+    CORE_API_URL=${CORE_API_URL}
 # Build only the web app (and its workspace deps via turbo's ^build).
 RUN pnpm --filter @brain/web build
 

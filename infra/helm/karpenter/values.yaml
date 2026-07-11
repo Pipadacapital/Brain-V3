@@ -59,7 +59,11 @@ nodePools:
     # single t4g.large left the brokers permanently unschedulable.
     instanceTypes: ["t4g.large", "t4g.xlarge"]
     instanceType: t4g.large          # fallback (unused when instanceTypes is set)
-    capacityType: spot
+    # Spot-first with on-demand FALLBACK: when the pinned Spot types have no
+    # capacity (a reclaim left Kafka/collector/stream-worker unschedulable at
+    # go-live), Karpenter provisions on-demand instead of leaving pods Pending;
+    # it consolidates back to Spot once capacity returns.
+    capacityType: ["spot", "on-demand"]
     consolidationPolicy: WhenEmpty
     consolidateAfter: 5m
     expireAfter: 720h                # 30d node rotation for patching
@@ -70,7 +74,7 @@ nodePools:
     taints: []                       # untainted: existing untainted workloads can land here today
   batch:
     instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — Argo/Spark batch jobs, off-peak
-    capacityType: spot
+    capacityType: ["spot", "on-demand"]   # Spot-first, on-demand fallback (see streaming)
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 30s            # reclaim batch capacity quickly after jobs finish (→ 0 nodes)
     expireAfter: 720h
@@ -81,7 +85,7 @@ nodePools:
     taints: []
   trino:
     instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — Trino workers (CPU-bound scans)
-    capacityType: spot
+    capacityType: ["spot", "on-demand"]   # Spot-first, on-demand fallback (see streaming)
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 1m             # gentler than batch — avoid query thrash; KEDA scales workers
     expireAfter: 720h

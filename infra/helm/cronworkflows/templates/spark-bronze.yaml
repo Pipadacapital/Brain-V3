@@ -7,13 +7,19 @@ unified sink) was REMOVED 2026-07-05 along with the whole Spark-SS landing path 
 revert); there is no CHECKPOINT_LOCATION / STARTING_OFFSETS wiring left — Connect keeps offsets in
 the Iceberg snapshots + its own topics.
 
-This template renders ONE CronWorkflow (Spark image, spark-submit), distinct from the generic
+This template renders TWO CronWorkflows (Spark image, spark-submit), distinct from the generic
 node-image .Values.jobs loop:
   - bronze-maintenance: small-file compaction + 24-month snapshot-expiry TTL (Slice 7) over the
     Bronze tables — including the Connect-written collector_events_connect / <lane>_raw_connect.
+  - bronze-raw-retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038): the 7-day raw-PII retention
+    window on the <lane>_raw_connect tables — row-TTL DELETE + snapshot expiry
+    (bronze_raw_retention.py). Un-hashed PII (and razorpay PCI card.*) transiently lands RAW in
+    these lanes; without this cron it persists past the mandated window. collector_events_connect
+    is deliberately NOT swept (system-of-record; hashed-safe at the collector boundary — the job
+    excludes it itself).
 
-Gated by .Values.sparkBronze.enabled — which now gates ONLY maintenance (enabled: true in defaults;
-maintenance must run regardless of who lands Bronze).
+Gated by .Values.sparkBronze.enabled — which now gates ONLY maintenance + retention (enabled: true
+in defaults; both must run regardless of who lands Bronze).
 
 Image MUST be pinned by digest (B3) — same fail-closed rule as the generic template.
 */ -}}
@@ -102,4 +108,65 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+{{- if .Values.sparkBronze.rawRetention.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: bronze-raw-retention
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-raw-retention
+spec:
+  # ADR-0006 D4 (AUD-IMPL-019/AUD-OPS-038): 7-day retention on the *_raw_connect lanes —
+  # row-TTL DELETE + snapshot expiry so raw un-hashed PII/PCI never outlives the landing-buffer
+  # window (Silver, gated/normalized/hashed, is the durable layer). Daily, off the 03:00
+  # bronze-maintenance slot. Idempotent — a missed/retried run just re-applies the same window.
+  schedule: {{ .Values.sparkBronze.rawRetention.schedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
+    {{- with .Values.sparkBronze.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkBronze.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    activeDeadlineSeconds: {{ .Values.sparkBronze.rawRetention.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # row-TTL DELETE + expire_snapshots are retry-safe
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads the app from the SAME image)
+              exec /opt/spark/bin/spark-submit {{ $submitFlags }} "${PFX}/opt/brain/bronze_raw_retention.py"
+          env:
+            {{- with .Values.sparkBronze.rawRetention.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+{{- end }}
 {{- end }}

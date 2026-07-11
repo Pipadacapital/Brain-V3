@@ -35,10 +35,17 @@ serviceAccount:
     # existed — sink tasks failed sts:AssumeRoleWithWebIdentity, Bronze landing down.
     eks.amazonaws.com/role-arn: "arn:aws:iam::380254378136:role/brain-prod-kafka-connect"
 
+# AUD-IMPL-024: the worker idled at 1415Mi RSS against the old 1792Mi limit (~375Mi
+# OOMKill headroom) with the base -Xmx1G heap — an OOMKill stalls ALL Bronze landing
+# (sole writer, replicas=1, no-event-loss budget). Sized per the audit numbers:
+# -Xmx1280M heap + 2560Mi limit keeps >=1G non-heap headroom (metaspace + the 10
+# connectors' Parquet write buffers), and MaxDirectMemorySize bounds direct buffers
+# so a burst surfaces as a recoverable in-JVM error instead of a cgroup OOMKill.
+heapOpts: "-Xms512M -Xmx1280M -XX:MaxDirectMemorySize=512M"
 resources:
   requests:
     cpu: 250m
-    memory: 1280Mi
+    memory: 1792Mi
   limits:
     cpu: "1"
-    memory: 1792Mi
+    memory: 2560Mi

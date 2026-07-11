@@ -21,7 +21,7 @@ pool:
   defaultPoolSize: 25    # ...onto this many server conns per (user, db) — the real cap on Postgres
   minPoolSize: 5
   reservePoolSize: 5
-  ignoreStartupParameters: "extra_float_digits,options"
+  ignoreStartupParameters: "extra_float_digits,options,statement_timeout"
 
 auth:
   type: scram-sha-256

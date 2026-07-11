@@ -1,3 +1,5 @@
+// prod go-live 2026-07-11: first CI build of the app images — touch @brain/config
+// so turbo --affected rebuilds collector/core/stream-worker (harmless comment).
 /**
  * @brain/config — Zod-validated environment configuration.
  *

@@ -22,7 +22,7 @@ ingress:
   enabled: true
   host: api.brain.pipadacapital.com   # e.g. api.<apex-domain>
   groupName: brain-prod
-  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/5247056b-bbaf-4041-8c97-84e190c8d818
+  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/684f6184-f357-46ca-8ef9-3be62239c220
 
 serviceAccount:
   annotations:

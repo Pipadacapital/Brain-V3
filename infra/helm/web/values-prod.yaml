@@ -10,9 +10,12 @@ envSecretName: web-env
 # AUD-COST-003: the app UI on the shared brain-prod ALB (host-routed, ACM TLS).
 ingress:
   enabled: true
-  host: app.brain.pipadacapital.com   # e.g. app.<apex-domain>
+  host: brain.pipadacapital.com        # apex is the canonical app URL
+  additionalHosts:
+    - app.brain.pipadacapital.com      # kept working alongside the apex
   groupName: brain-prod
-  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/5247056b-bbaf-4041-8c97-84e190c8d818
+  # cert 684f6184 covers apex + app + api + px (the prior 5247056b lacked the apex)
+  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/684f6184-f357-46ca-8ef9-3be62239c220
 
 serviceAccount:
   annotations:

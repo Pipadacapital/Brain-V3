@@ -92,3 +92,27 @@ spec:
   config:
     retention.ms: "{{ $t.retention.standardMs | int64 }}"
 {{- end }}
+
+{{- /* Kafka Connect Iceberg sink CONTROL topic (kafka-connect chart:
+"iceberg.control.topic": "control-iceberg"). The sink's commit coordinator
+REQUIRES this topic to exist; broker auto-create is OFF and it was never
+declared here — on the first prod bring-up the coordinator thread died with
+"Topic control-iceberg not present in metadata after 60000 ms" and ALL sink
+tasks failed (Bronze landing down, AUD-W1-001 second root cause; the compose
+kafka-init had created it in dev). NOT env-prefixed: the connector config
+uses the literal name across envs (one Connect cluster per env). 1 partition
+(single coordinator stream); transient coordination messages → 1-day retention. */}}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: control-iceberg
+  labels:
+    strimzi.io/cluster: {{ $cluster }}
+    {{- include "strimziKafka.labels" $root | nindent 4 }}
+spec:
+  topicName: control-iceberg
+  partitions: 1
+  replicas: {{ $t.replicas }}
+  config:
+    retention.ms: "86400000"

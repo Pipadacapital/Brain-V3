@@ -26,3 +26,12 @@ aurora_max_capacity = 2
 # (brain.pipadacapital.com). Unset, the policy fell back to hostedzone/* —
 # account-wide DNS mutation from a compromised external-dns pod.
 external_dns_zone_ids = ["Z00011362R9ERGL7EC2J9"]
+
+# ── EKS 1.33 upgrade (AUD-OPS-028, −$360/mo extended-support fee) ────────────
+# GATED: commented = live state (1.32 / AL2 / AWS-default support) = no-op plan.
+# Uncomment ONE STEP AT A TIME, apply, verify, then the next — full runbook in
+# docs/runbooks/eks-1-33-upgrade.md. Step 1 REPLACES the system MNG
+# (create-before-destroy) onto AL2023 + gp3 roots (AUD-INFRA-019).
+# system_ami_type  = "AL2023_ARM_64_STANDARD"   # step 1 — prereq (AL2 AMIs end at 1.32)
+# cluster_version  = "1.33"                     # step 2 — control plane + MNG roll
+# eks_support_type = "STANDARD"                 # step 3 — fail-fast on future extended-support drift

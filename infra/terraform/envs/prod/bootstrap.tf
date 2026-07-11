@@ -119,6 +119,16 @@ module "vpc_endpoints" {
   region                  = "ap-south-1"
   private_subnet_ids      = module.network.private_subnet_ids
   private_route_table_ids = module.network.private_route_table_ids
+
+  # AUD-INFRA-012 / AUD-OPS-031: the full 5-service × 3-AZ endpoint set was
+  # ~$110-140/mo (15 ENI-hours) — the second-largest fixed line — for traffic
+  # that can ride the fee-free fck-nat (ADR-0009) at ~$0 marginal. Keep ONLY
+  # ecr.api/ecr.dkr (registry auth/manifests for image pulls; layer blobs come
+  # via the FREE S3 gateway endpoint) in a SINGLE subnet. logs/sts/secretsmanager
+  # calls (low-volume JSON) now traverse fck-nat like all other egress.
+  # Rollback: delete these two lines to restore the 5×3 legacy set.
+  interface_services   = ["ecr.api", "ecr.dkr"]
+  interface_subnet_ids = [module.network.private_subnet_ids[0]]
 }
 
 ###############################################################################
@@ -141,6 +151,14 @@ module "eks" {
   # operator allowlist (tfvars) opens the public endpoint pinned to those CIDRs
   # for the go-live bootstrap. Empty = private-only.
   public_access_cidrs = var.eks_public_access_cidrs
+
+  # AUD-OPS-028 / AUD-INFRA-019: EKS 1.33 upgrade gates. Defaults are the LIVE
+  # values (1.32 / AL2 / null) so this plan is a no-op; the operator flips them
+  # in terraform.tfvars per docs/runbooks/eks-1-33-upgrade.md (AL2023 first,
+  # then 1.33, then STANDARD support) to drop the $360/mo extended-support fee.
+  kubernetes_version   = var.cluster_version
+  system_ami_type      = var.system_ami_type
+  cluster_support_type = var.eks_support_type
 }
 
 ###############################################################################
@@ -222,6 +240,41 @@ resource "aws_ecr_repository" "iceberg_rest" {
     encryption_type = "KMS"
     kms_key         = module.kms.root_kms_key_arn
   }
+}
+
+# AUD-INFRA-018: the standalone repo lacked the lifecycle policy the eks-module
+# app repos get — IMMUTABLE tags + no lifecycle = every rebuild accumulates
+# forever. Mirrors the eks module's untagged-expiry and adds keep-last-N for
+# tagged images (immutable tagging means every build is a new tag). N=10 keeps
+# any digest a running pod could still pull after a node reschedule.
+resource "aws_ecr_lifecycle_policy" "iceberg_rest" {
+  repository = aws_ecr_repository.iceberg_rest.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 7 days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 7
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only the last 10 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
 }
 
 ###############################################################################

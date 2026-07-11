@@ -30,8 +30,8 @@ Registration -> Verification -> Organization -> Brand -> Region -> Team -> Shopi
 
 ## Branching & deploys (RELEASE-LAYER, 2026-07-11)
 - Feature branches → PR → **`release`** (the default branch). NEVER open or merge a PR to `master`.
-- ONLY the repo owner merges `release` → `master`. `master` = production: that merge promotes the staging digests to prod values (`promote-prod.yml`), fires the infra TF lane, and ArgoCD prod apps track `master`.
-- `deploy.yml` (build images + staging values bump) runs on pushes to `release`; integration runs on both.
+- NO CI runs on feature branches or feature→release merges (owner decision). ALL checks (pr/integration/infra/knip) run once, on the **release → master promotion PR**.
+- ONLY the repo owner merges `release` → `master`. `master` = production: that merge runs the full `deploy.yml` chain (build images → staging values bump → prod values promote), fires the infra TF lane, and ArgoCD prod apps track `master`.
 
 ## Operating standards
 - Prefer small, reversible, auditable changes.

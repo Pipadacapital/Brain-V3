@@ -3,13 +3,14 @@ name: infra
 # Trigger only on infrastructure changes — keeps app PRs fast
 on:
   pull_request:
+    branches: [master]   # RELEASE-LAYER: only the release → master promotion PR
     paths:
       - "infra/**"
       - ".github/policy/**"
       - "policy/**"
       - ".checkov.yaml"
   push:
-    branches: [master]   # default branch — the infra TF lane fires on real merges to master
+    branches: [master]   # master = prod — the infra TF lane fires on real promotions to master
     paths:
       - "infra/**"
       - ".github/policy/**"

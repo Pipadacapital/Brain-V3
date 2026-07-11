@@ -38,8 +38,10 @@ migrations:
   # pgmigrations meta-table as role `brain`, and (2) DATABASE_URL_DIRECT uses
   # sslmode=require (pg verify-full) against Aurora's Amazon-RDS-CA cert that is
   # absent from Node's trust store. Migrations are applied OUT-OF-BAND via
-  # tools/deploy/run-migrations.sh (brainadmin + `-c role=brain` + TLS-skip), the
-  # same privileged path used at go-live (schema is current through 0126).
+  # tools/deploy/run-migrations.sh (ROUTINE, non-destructive: brainadmin +
+  # `-c role=brain` + TLS-skip; schema is current through 0126). The destructive
+  # first-boot reset lives ONLY in tools/deploy/reset-and-migrate.sh (guarded —
+  # refuses to run if any user table has rows). AUD-OPS-017.
   # Re-enable only once the hook is reworked to run as a privileged owner role.
   enabled: false
   appEnv: prod

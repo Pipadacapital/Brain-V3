@@ -65,7 +65,12 @@ data "aws_caller_identity" "current" {}
 locals {
   # The Iceberg medallion namespaces — each is a top-level prefix under the
   # warehouse root (JdbcCatalog layout: <warehouse>/<namespace>/<table>/...).
-  medallion_namespaces = ["brain_bronze", "brain_silver", "brain_gold"]
+  # brain_serving: the Trino serving VIEWS store their metadata under this
+  # prefix via the REST catalog. Without it, CREATE VIEW in brain_serving
+  # failed with s3:PutObject AccessDenied on the first prod views run
+  # (2026-07-11) — only the brain_bronze lift view (whose metadata lands
+  # under brain_bronze/) applied.
+  medallion_namespaces = ["brain_bronze", "brain_silver", "brain_gold", "brain_serving"]
 
   # Spark Structured Streaming checkpoint root (CHECKPOINT_LOCATION =
   # s3a://<bucket>/_checkpoints/<job>) — kept inside the warehouse bucket so

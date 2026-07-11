@@ -72,8 +72,8 @@ module "oidc_github" {
   project     = local.project
   # AUD-COST-002: MUST match the real remote (git remote -v) or every OIDC
   # role assumption is rejected — was brain-platform/brain (repo doesn't exist).
-  github_org       = "Pipadacapital"
-  github_repo      = "Brain-V3"
+  github_org  = "Pipadacapital"
+  github_repo = "Brain-V3"
   # RELEASE-LAYER (2026-07-11): image builds moved to `release` (deploy.yml);
   # master keeps the prod-promote lane (promote-prod.yml) + workflow_dispatch.
   allowed_branches = ["master", "release"]
@@ -516,6 +516,25 @@ module "irsa_spark_jobs" {
   oidc_provider_url    = module.eks.oidc_provider_url
   namespace            = "argo"
   service_account_name = "brain-jobs"
+  environment          = local.environment
+  project              = local.project
+  policy_arns = [
+    module.s3_iceberg.spark_medallion_rw_policy_arn,
+  ]
+}
+
+# Kafka Connect Iceberg sink (ADR-0010 Bronze landing writer). AUD-W1-001:
+# the connect SA annotation pointed at a role that was NEVER created
+# (brain-prod-spark-jobs) — every sink task died on
+# sts:AssumeRoleWithWebIdentity 403 and Bronze landing was down. Same
+# medallion RW policy family as the Spark jobs (warehouse prefixes only).
+module "irsa_kafka_connect" {
+  source               = "../../modules/irsa"
+  role_name            = "kafka-connect"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "kafka"
+  service_account_name = "kafka-connect-prod-kafka-connect"
   environment          = local.environment
   project              = local.project
   policy_arns = [

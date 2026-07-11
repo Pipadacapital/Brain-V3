@@ -7,6 +7,7 @@ name: knip
 
 on:
   pull_request:
+    branches: [master]  # RELEASE-LAYER: only the release → master promotion PR
   workflow_dispatch:
 
 permissions:

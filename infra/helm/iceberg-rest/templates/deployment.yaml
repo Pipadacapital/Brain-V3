@@ -45,6 +45,12 @@ spec:
               value: org.apache.iceberg.aws.s3.S3FileIO
             - name: AWS_REGION
               value: "{{ .Values.catalog.s3Region }}"
+            {{- if .Values.javaToolOptions }}
+            # AUD-INFRA-023: suppress the fixture's startup config dump (it prints the
+            # plaintext jdbc.password to stdout). See values.yaml `javaToolOptions`.
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ .Values.javaToolOptions | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /v1/config

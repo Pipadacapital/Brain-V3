@@ -86,13 +86,11 @@ import {
 import {
   CustomerJourneyTimelineSchema,
   JourneyTraceSchema,
-  JourneyCompareSchema,
 } from '@brain/contracts';
 
 import type {
   CustomerJourneyTimeline,
   JourneyTrace,
-  JourneyCompare,
   MetricLineageResult,
   SemanticMetricsCatalog,
   ContributionMarginResponse,
@@ -2601,13 +2599,6 @@ export const journeyApi = {
       `/v1/customers/${encodeURIComponent(brainId)}/journey${suffix}`,
     );
     return parseData(CustomerJourneyTimelineSchema, env);
-  },
-
-  /** GET /api/v1/journeys/compare?left=&right= — two resolved journeys with t_minus_conversion_ms. */
-  getCompare: async (left: string, right: string): Promise<JourneyCompare> => {
-    const qs = new URLSearchParams({ left, right });
-    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/journeys/compare?${qs.toString()}`);
-    return parseData(JourneyCompareSchema, env);
   },
 };
 

@@ -59,11 +59,11 @@ export const METRIC_TTL_TIER: Readonly<Record<string, ServingTtlTier>> = {
   utm_source: 'attribution',
   // Derived insights (15m)
   insights_briefing: 'journey',
-  // SPEC: B.3 — the Wave-B journey trace/compare read surfaces (Trino ledger reads; 15m 'journey'
-  // tier keeps them warm within the p95 budget). The per-customer timeline (1) is served from the
-  // A.4 real-time touchpoint cache instead, so it is NOT mapped here.
+  // SPEC: B.3 — the Wave-B journey trace read surface (Trino ledger read; 15m 'journey'
+  // tier keeps it warm within the p95 budget). The per-customer timeline (1) is served from the
+  // A.4 real-time touchpoint cache instead, so it is NOT mapped here. (journey_compare removed
+  // in the Wave-3 cleanup — AUD-IMPL-020.)
   journey_trace: 'journey',
-  journey_compare: 'journey',
   // Product / courier leaderboards (30m)
   product_categories: 'product',
   product_detail: 'product',

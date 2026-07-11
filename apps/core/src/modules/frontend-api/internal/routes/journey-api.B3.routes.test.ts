@@ -1,6 +1,6 @@
 // SPEC: B.3
 /**
- * B3 — Wave-B Journey API routes (AMD-14): /api/v1/customers/:brainId/journey, /api/v1/journeys/{trace,compare}.
+ * B3 — Wave-B Journey API routes (AMD-14): /api/v1/customers/:brainId/journey, /api/v1/journeys/trace.
  *
  * Uses the REAL registerJourneyApiRoutes + REAL analytics use-cases + REAL metric-engine seams over
  * fake Trino/zset pools, with a stub session preHandler (the shape bffProtectedPreHandler produces).
@@ -8,8 +8,7 @@
  *   1. tenant from SESSION (auth.brandId) — no brand → honest empty (never a query-param brand),
  *   2. the A.4 cache hot path (source='cache') vs the Trino ledger fallback (source='trino'),
  *   3. X-Journey-Version header = derived journey_version (AMD-11) on the ledger path only,
- *   4. compare's t_minus_conversion_ms anchored on the latest composite touch,
- *   5. validation (bad brainId / missing order_id) → 400; no srPool → 503.
+ *   4. validation (bad brainId / missing order_id) → 400; no srPool → 503.
  */
 import { describe, it, expect } from 'vitest';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
@@ -19,7 +18,6 @@ import type { BffDeps } from './_shared.js';
 
 const BRAND = 'aaaa1111-0000-4000-8000-aaaaaaaaaaaa';
 const BRAIN = 'bbbb2222-0000-4000-8000-bbbbbbbbbbbb';
-const BRAIN2 = 'cccc3333-0000-4000-8000-cccccccccccc';
 
 /** Fake Trino serving pool: routes canned rows by SQL fragment. */
 function fakeSrPool(handler: (sql: string, params: unknown[]) => Array<Record<string, unknown>>): SilverPool {
@@ -213,43 +211,6 @@ describe('B3 (2) GET /api/v1/journeys/trace', () => {
     // Un-stitched touch → 'anonymous'; stitched touch → 'deterministic' (never null).
     expect(data.touches[0].matched_via).toBe('anonymous');
     expect(data.touches[1].matched_via).toBe('deterministic');
-    await app.close();
-  });
-});
-
-describe('B3 (3) GET /api/v1/journeys/compare', () => {
-  it('compares two journeys with t_minus_conversion_ms anchored on the latest composite touch', async () => {
-    // Both sides read the ledger; the order.placed row (is_composite) is the conversion anchor.
-    const app = await buildApp({
-      srPool: fakeSrPool((sql, params) => {
-        if (!sql.includes('mv_journey_events_current')) return [];
-        // params[0] is the brainId (bound first). Give the left brain a converting journey.
-        const brainId = params[0];
-        if (brainId === BRAIN) {
-          return [
-            ledgerRow(2, { is_composite: true, event_type: 'order.placed', occurred_at: '2026-07-01 12:00:00 UTC' }),
-            ledgerRow(1, { occurred_at: '2026-07-01 09:00:00 UTC' }),
-          ];
-        }
-        return []; // right brain: no journey
-      }),
-    });
-    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/compare?left=${BRAIN}&right=${BRAIN2}` });
-    expect(res.statusCode).toBe(200);
-    const data = res.json().data;
-    expect(data.left.brain_id).toBe(BRAIN);
-    expect(data.left.conversion_at).toBe('2026-07-01 12:00:00 UTC');
-    // Chronological (oldest first): the 09:00 touch is 3h (10.8M ms) before the 12:00 conversion.
-    expect(data.left.touches[0].t_minus_conversion_ms).toBe(3 * 60 * 60 * 1000);
-    expect(data.left.touches[1].t_minus_conversion_ms).toBe(0); // the conversion touch itself
-    expect(data.right).toEqual({ brain_id: BRAIN2, conversion_at: null, touches: [] });
-    await app.close();
-  });
-
-  it('400 when left/right are not customer UUIDs', async () => {
-    const app = await buildApp({ srPool: fakeSrPool(() => []) });
-    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/compare?left=x&right=y` });
-    expect(res.statusCode).toBe(400);
     await app.close();
   });
 });

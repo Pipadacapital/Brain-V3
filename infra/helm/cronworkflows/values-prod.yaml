@@ -1,13 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
-  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
-
+  tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
+  digest: "sha256:fd0013f63dce1e97297ab092d4fde0aad791b9622c7a7b669970e19ed61e0004"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
-  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
-
+  tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
+  digest: "sha256:8178e44b5a7b80d9d10f92ef4bf3ecb8d2ed4f6757be2a3c5ffd2a3879c12aab"
 # spark image — bronze-maintenance cron + reused by the V4 Spark silver/gold/mv-refresh crons
 # (.sparkV4.image — CI promotes both digests build-once from staging). Bronze LANDING is the
 # kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
@@ -21,7 +19,6 @@ sparkBronze:
   # idempotent maintenance (compaction/snapshot-expiry re-runs are no-ops).
   nodeSelector:
     brain.platform/pool: batch
-
 # spark V4 Silver/Gold transform + mv refresh crons — same image as sparkBronze (the Dockerfile carries the
 # V4 marts). Flip enabled:true once the prod V4 cluster + digest are ready (gated off by default).
 sparkV4:
@@ -33,9 +30,7 @@ sparkV4:
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:
     brain.platform/pool: batch
-
 envSecretName: core-env
-
 serviceAccount:
   name: brain-jobs
   annotations:

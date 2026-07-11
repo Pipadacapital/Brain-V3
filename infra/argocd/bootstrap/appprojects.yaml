@@ -49,6 +49,7 @@ spec:
     - https://aws.github.io/eks-charts
     - https://charts.jetstack.io
     - https://kubernetes-sigs.github.io/external-dns
+    - https://kubernetes-sigs.github.io/metrics-server
     - https://helm.neo4j.com/neo4j
     - https://prometheus-community.github.io/helm-charts
   destinations:

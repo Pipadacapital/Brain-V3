@@ -315,6 +315,21 @@ module "irsa_stream_worker" {
   ]
 }
 
+# core sends transactional email (account verification, invites) via SES.
+# SES itself enforces the verified sending identity (brain.pipadacapital.com
+# DKIM), so scoping the action to * is safe; SendRawEmail covers MIME bodies.
+resource "aws_iam_policy" "core_ses_send" {
+  name = "${local.project}-${local.environment}-core-ses-send"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ses:SendEmail", "ses:SendRawEmail"]
+      Resource = "*"
+    }]
+  })
+}
+
 module "irsa_core" {
   source               = "../../modules/irsa"
   role_name            = "core"
@@ -330,6 +345,8 @@ module "irsa_core" {
     # AUD-PROD-004: create/put/read/delete brain/connector/* runtime secrets +
     # connector CMK encrypt/decrypt (OAuth tokens, PII-vault DEK wrapping).
     module.secrets.core_connector_secrets_rw_policy_arn,
+    # transactional email (account verification) via SES
+    aws_iam_policy.core_ses_send.arn,
   ]
 }
 

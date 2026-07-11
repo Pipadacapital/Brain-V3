@@ -398,6 +398,14 @@ data "aws_iam_policy_document" "bronze_bucket_policy" {
       variable = "s3:x-amz-server-side-encryption"
       values   = ["aws:kms"]
     }
+    # Only deny EXPLICIT non-KMS puts; header-absent puts (Iceberg REST +
+    # Kafka Connect Iceberg sink + Spark) fall through to the bucket default
+    # SSE-KMS. Without this the Bronze Iceberg commits were denied → landing dead.
+    condition {
+      test     = "Null"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["false"]
+    }
   }
 
   statement {

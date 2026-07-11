@@ -22,6 +22,15 @@ system_node_max     = 6
 aurora_min_capacity = 0.5
 aurora_max_capacity = 2
 
+# AUD-OPS-014 (DR) — S3 CRR of the medallion warehouse bucket to ap-south-2
+# (Hyderabad; IN-COUNTRY per the ADR-0011 residency decision, AUD-OPS-042).
+# true stages the replica bucket + CMK + replication role/config for the NEXT
+# human-approved prod apply (prod-apply.yml `production` environment gate) —
+# est. single-digit $/mo at current warehouse size (transfer ~$0.02/GB once +
+# GLACIER_IR ~$0.004/GB-mo). Set false to defer.
+enable_cross_region_replication = true
+replica_region                  = "ap-south-2"
+
 # AUD-INFRA-004: scope external-dns ChangeResourceRecordSets to the Brain zone
 # (brain.pipadacapital.com). Unset, the policy fell back to hostedzone/* —
 # account-wide DNS mutation from a compromised external-dns pod.

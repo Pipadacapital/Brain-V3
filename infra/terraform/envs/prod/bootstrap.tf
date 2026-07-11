@@ -41,6 +41,17 @@ provider "aws" {
   }
 }
 
+# AUD-OPS-014: the DR replica region for S3 CRR (module s3_warehouse_crr below).
+# ap-south-2 (Hyderabad) by default — IN-COUNTRY, so the AUD-OPS-042 residency
+# posture is unchanged (decision doc docs/adr/0011-s3-crr-residency.md).
+provider "aws" {
+  alias  = "replica"
+  region = var.replica_region
+  default_tags {
+    tags = module.tags.common_tags
+  }
+}
+
 locals {
   project     = "brain"
   environment = "prod"
@@ -607,9 +618,49 @@ module "irsa_neo4j_backup" {
 }
 
 ###############################################################################
+# S3 cross-region replication (AUD-OPS-014) — DR replica of the medallion
+# warehouse bucket in ap-south-2 (Hyderabad; in-country, so the AUD-OPS-042
+# residency posture is unchanged — decision doc docs/adr/0011-s3-crr-residency.md).
+# GATED behind var.enable_cross_region_replication (default false): flipping it
+# on in terraform.tfvars is the recorded apply-decision. The tfstate bucket's
+# replica is gated the same way in infra/terraform/bootstrap (its own root).
+###############################################################################
+# Replica-region half (bucket + CMK in ap-south-2) — the module takes the
+# replica-region provider as its default `aws` (no configuration_aliases, so
+# the CI standalone-module validate matrix works).
+module "s3_warehouse_crr_replica" {
+  count  = var.enable_cross_region_replication ? 1 : 0
+  source = "../../modules/s3-crr-replica"
+  providers = {
+    aws = aws.replica
+  }
+  environment      = local.environment
+  project          = local.project
+  purpose          = "warehouse"
+  source_bucket_id = module.s3_iceberg.warehouse_bucket_name
+}
+
+# Source-region half: replication role + the replication configuration on the
+# warehouse bucket.
+module "s3_warehouse_crr" {
+  count               = var.enable_cross_region_replication ? 1 : 0
+  source              = "../../modules/s3-crr"
+  environment         = local.environment
+  project             = local.project
+  purpose             = "warehouse"
+  source_bucket_id    = module.s3_iceberg.warehouse_bucket_name
+  source_bucket_arn   = module.s3_iceberg.warehouse_bucket_arn
+  source_kms_key_arn  = module.kms.root_kms_key_arn
+  replica_bucket_arn  = module.s3_warehouse_crr_replica[0].replica_bucket_arn
+  replica_kms_key_arn = module.s3_warehouse_crr_replica[0].replica_kms_key_arn
+}
+
+###############################################################################
 # Outputs — the post-apply fill pass reads these (helm values-prod placeholders,
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.
 ###############################################################################
+# AUD-OPS-014: null until enable_cross_region_replication = true is applied.
+output "warehouse_crr_replica_bucket" { value = one(module.s3_warehouse_crr_replica[*].replica_bucket_name) }
 output "github_plan_role_arn" { value = module.oidc_github.github_plan_role_arn }
 output "github_ecr_push_role_arn" { value = module.oidc_github.github_ecr_push_role_arn }
 output "github_apply_role_arn" { value = module.oidc_github.github_apply_role_arn }

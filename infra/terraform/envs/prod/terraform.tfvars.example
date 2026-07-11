@@ -22,6 +22,11 @@ system_node_max     = 6
 aurora_min_capacity = 0.5
 aurora_max_capacity = 2
 
+# AUD-OPS-014 (DR): S3 CRR of the medallion warehouse bucket to an IN-COUNTRY
+# second region (residency decision docs/adr/0011-s3-crr-residency.md).
+enable_cross_region_replication = true
+replica_region                  = "ap-south-2"
+
 # AUD-INFRA-004: hosted zone id(s) external-dns may mutate. [] = hostedzone/*
 # bootstrap fallback — tighten to the real zone id as soon as it exists.
 external_dns_zone_ids = [] # e.g. ["Z00011362R9ERGL7EC2J9"]

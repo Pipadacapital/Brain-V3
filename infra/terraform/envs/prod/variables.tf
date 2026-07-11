@@ -49,6 +49,23 @@ variable "external_dns_zone_ids" {
   default     = []
 }
 
+# AUD-OPS-014 / AUD-OPS-042 (docs/adr/0011-s3-crr-residency.md): cross-region
+# replication of the medallion-warehouse bucket to a SECOND IN-COUNTRY region
+# (ap-south-2 Hyderabad — data never leaves India, DPDP residency unchanged).
+# Gated: false renders zero resources; flipping to true is the ratified DR
+# apply-decision (creates the replica bucket + CMK + replication role/config).
+variable "enable_cross_region_replication" {
+  description = "Enable S3 CRR of the medallion warehouse bucket to replica_region (AUD-OPS-014; residency decision ADR-0011)."
+  type        = bool
+  default     = false
+}
+
+variable "replica_region" {
+  description = "In-country DR replica region for S3 CRR (ADR-0011: must remain in India for DPDP residency)."
+  type        = string
+  default     = "ap-south-2"
+}
+
 # ADR-0009: Aurora Serverless v2, 0.5–2 ACU burst-elastic starter sizing.
 variable "aurora_min_capacity" {
   description = "Aurora Serverless v2 minimum capacity (ACU)."

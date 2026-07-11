@@ -39,10 +39,17 @@ serviceAccount:
 nodeSelector:
   brain.platform/pool: streaming
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 138m / max 156m, mem p95 ~242Mi / max 479Mi (replay burst) per pod.
+# Was 500m/1Gi. New: cpu 250m — the CPU-only HPA (70%) now fires at 175m, just
+# above the observed max, so real consumer lag scales out instead of sitting at
+# 20%/70% forever; mem 640Mi keeps ~1.3x the burst max (no memory HPA target on
+# this chart). LIMITS UNCHANGED (2 CPU / 2Gi burst+OOM budget). Revert =
+# restore old requests.
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 250m
+    memory: 640Mi
   limits:
     cpu: "2"
     memory: 2Gi

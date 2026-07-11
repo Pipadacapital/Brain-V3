@@ -13,7 +13,7 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
-    digest: ""
+    digest: "sha256:7eb800b4341c04afb113225ae5e088f71add981a895da2faecc32bf2d46f206d"
   # AUD-PROD-006: Spark cron pods → the batch Karpenter pool (t4g.xlarge Spot).
   # A Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry +
   # idempotent maintenance (compaction/snapshot-expiry re-runs are no-ops).
@@ -25,7 +25,7 @@ sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
-    digest: ""
+    digest: "sha256:7eb800b4341c04afb113225ae5e088f71add981a895da2faecc32bf2d46f206d"
   # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the batch pool.
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:

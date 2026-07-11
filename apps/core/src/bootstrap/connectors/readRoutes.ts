@@ -9,8 +9,10 @@ import { type FastifyInstance, type FastifyRequest, type preHandlerHookHandler }
 import { randomUUID } from 'node:crypto';
 
 import { isAdPlatformProvider } from '@brain/connector-core';
+import { loadCoreConfig } from '@brain/config';
 
 import { CONNECTOR_CATALOG } from '../../modules/connector/catalog/index.js';
+import type { ConnectorDefinition } from '../../modules/connector/catalog/registry.js';
 import { GetConnectorStatusQuery } from '../../modules/connector/sources/storefront/shopify/application/queries/GetConnectorStatusQuery.js';
 import type { PgConnectorInstanceRepository } from '../../modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
 import type { PgConnectorSyncStatusRepository } from '../../modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorSyncStatusRepository.js';
@@ -22,6 +24,23 @@ export interface RegisterConnectorReadRoutesDeps {
   connectorRepo: PgConnectorInstanceRepository;
   syncStatusRepo: PgConnectorSyncStatusRepository;
   sessionPreHandler: preHandlerHookHandler;
+}
+
+/**
+ * A connector receives inbound webhooks if the catalog declares a routing header
+ * or mints/accepts a `webhook_secret`. Its delivery URL + routing header are NOT
+ * secret, so we surface them on every read (not just the one-time connect
+ * response) — otherwise a merchant who didn't copy the URL at connect time could
+ * never retrieve it. The `webhook_secret` (X-Api-Key) is minted once and stays
+ * secret; only the URL/header are echoed here.
+ */
+function connectorHasWebhook(def: ConnectorDefinition): boolean {
+  const cc = def.credentialConnect;
+  return Boolean(
+    cc?.webhookRoutingHeader ||
+      cc?.generatedSecretFields?.includes('webhook_secret') ||
+      def.authFields?.some((f) => f.key === 'webhook_secret'),
+  );
 }
 
 export function registerConnectorReadRoutes(app: FastifyInstance, deps: RegisterConnectorReadRoutesDeps): void {
@@ -37,6 +56,7 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
       const brandId = getBrandId(req);
       const requestId = (req.id as string) ?? randomUUID();
       const instances = await connectorRepo.findAllByBrand(brandId);
+      const webhookBase = loadCoreConfig().BRAIN_WEBHOOK_BASE_URL.replace(/\/+$/, '');
 
       const activeByProvider = new Map<string, typeof instances>();
       for (const inst of instances) {
@@ -96,6 +116,16 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
           })),
           instance: firstInstance ? toInstanceShape(firstInstance) : null,
           instances: activeInstances.map(toInstanceShape),
+          // Always-visible webhook target for webhook connectors (the URL is not
+          // a secret; the X-Api-Key is shown only once at connect). routing_header
+          // name is the catalog value; its value per account is the instance's
+          // account_key (already on each instance above).
+          webhook: connectorHasWebhook(def)
+            ? {
+                url: `${webhookBase}/api/v1/webhooks/${def.id}`,
+                routing_header_name: def.credentialConnect?.webhookRoutingHeader ?? null,
+              }
+            : null,
         };
       });
 

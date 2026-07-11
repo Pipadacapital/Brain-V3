@@ -295,32 +295,41 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# ElastiCache SG – only accepts connections from EKS nodes
+# ElastiCache SG – only accepts connections from EKS nodes.
+# AUD-INFRA-001: rules are STANDALONE resources below, NOT inline blocks.
+# envs/prod/bootstrap.tf attaches its own standalone ingress rule
+# (redis_from_eks_cluster_sg) to this SG, and Terraform forbids mixing inline
+# and standalone rules on one SG — every apply of the inline-owning SG silently
+# revoked that rule (prod cache outage). NEVER re-add inline ingress/egress
+# blocks here; add new rules as aws_vpc_security_group_*_rule resources.
 resource "aws_security_group" "elasticache" {
   name        = "${var.project}-${var.environment}-elasticache"
   description = "ElastiCache Redis security group - EKS nodes only"
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    from_port       = 6379
-    to_port         = 6379
-    protocol        = "tcp"
-    security_groups = [aws_security_group.eks_nodes.id]
-    description     = "Redis from EKS nodes"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow all outbound"
-  }
-
   tags = {
     Name        = "${var.project}-${var.environment}-elasticache-sg"
     environment = var.environment
   }
+}
+
+# Rule content is IDENTICAL to the former inline blocks — in already-applied
+# envs the physical rules exist, so the first plan must IMPORT them (see
+# envs/prod/imports-aud-infra-001.tf) instead of creating duplicates.
+resource "aws_vpc_security_group_ingress_rule" "elasticache_redis_from_eks_nodes" {
+  security_group_id            = aws_security_group.elasticache.id
+  from_port                    = 6379
+  to_port                      = 6379
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.eks_nodes.id
+  description                  = "Redis from EKS nodes"
+}
+
+resource "aws_vpc_security_group_egress_rule" "elasticache_all_outbound" {
+  security_group_id = aws_security_group.elasticache.id
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+  description       = "Allow all outbound"
 }
 
 ###############################################################################

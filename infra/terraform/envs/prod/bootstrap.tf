@@ -543,6 +543,40 @@ module "irsa_kafka_connect" {
 }
 
 ###############################################################################
+# Cost guardrails — AUD-OPS-027: the pre-existing brain-prod-monthly-cap budget
+# (console-created, IncludeCredit=true) nets promotional credits into "actual"
+# spend, so with credits covering the bill it reads $0 and can NEVER fire until
+# the credits exhaust. This SECOND budget tracks REAL usage (credits + refunds
+# excluded) so the ~2x-target burn rate is visible while credits still mask the
+# cash bill. Alerts-only (no budget actions), matching the account guardrail
+# posture.
+###############################################################################
+resource "aws_budgets_budget" "usage_real" {
+  name         = "${local.project}-${local.environment}-usage-real"
+  budget_type  = "COST"
+  limit_amount = "1000"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_types {
+    include_credit = false
+    include_refund = false
+  }
+
+  # 50 / 80 / 100% of ACTUAL usage spend → email.
+  dynamic "notification" {
+    for_each = [50, 80, 100]
+    content {
+      comparison_operator        = "GREATER_THAN"
+      notification_type          = "ACTUAL"
+      threshold                  = notification.value
+      threshold_type             = "PERCENTAGE"
+      subscriber_email_addresses = ["rishabhporwal95@gmail.com"]
+    }
+  }
+}
+
+###############################################################################
 # Outputs — the post-apply fill pass reads these (helm values-prod placeholders,
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.
 ###############################################################################

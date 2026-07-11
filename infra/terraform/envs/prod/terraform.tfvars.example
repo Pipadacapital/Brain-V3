@@ -21,3 +21,7 @@ system_node_max     = 6
 # ADR-0009 Aurora Serverless v2 starter sizing (raise max_capacity under load).
 aurora_min_capacity = 0.5
 aurora_max_capacity = 2
+
+# AUD-INFRA-004: hosted zone id(s) external-dns may mutate. [] = hostedzone/*
+# bootstrap fallback — tighten to the real zone id as soon as it exists.
+external_dns_zone_ids = [] # e.g. ["Z00011362R9ERGL7EC2J9"]

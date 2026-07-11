@@ -99,6 +99,21 @@ spec:
             - |
               set -euo pipefail
               source /opt/brain/_retry.sh
+              # SILVER_PG_* derivation (first prod fill, 2026-07-11): the R2/R3 gate jobs
+              # (collector_event, order_state, touchpoint, ...) JDBC-read PG and default
+              # the host to the compose name `postgres` → UnknownHostException in prod.
+              # Derive from core-env (prefer DATABASE_URL_DIRECT: Spark's bulk JDBC reads
+              # are healthier on a session connection than pgbouncer txn pooling).
+              SRC_URL="${DATABASE_URL_DIRECT:-${DATABASE_URL:-}}"
+              if [ -n "$SRC_URL" ] && [ -z "${SILVER_PG_JDBC_URL:-}" ]; then
+                stripped="${SRC_URL#postgres://}"; stripped="${stripped#postgresql://}"
+                creds="${stripped%%@*}"; rest="${stripped#*@}"
+                export SILVER_PG_USER="${creds%%:*}"
+                export SILVER_PG_PASSWORD="${creds#*:}"
+                hostport="${rest%%/*}"; db="${rest#*/}"; db="${db%%\?*}"
+                export SILVER_PG_JDBC_URL="jdbc:postgresql://${hostport}/${db}"
+                echo "[v4-silver] SILVER_PG_JDBC_URL derived (host ${hostport%%:*})"
+              fi
               PFX="{{ $lp }}"   # "" (local[*]) or "local://" (k8s cluster — driver reads app + py-files from the image, no upload)
               pyf() { if [ -n "$PFX" ]; then echo "$1" | sed "s#[^,][^,]*#${PFX}&#g"; else echo "$1"; fi; }  # local://-prefix each comma element in k8s mode; no-op in local
               submit() { spark_retry "v4-silver/$1" /opt/spark/bin/spark-submit {{ $submitFlags }} --py-files "$(pyf /opt/brain/iceberg_base.py)" "${PFX}/opt/brain/silver/$1"; }

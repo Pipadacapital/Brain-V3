@@ -5,4 +5,5 @@
 - ~~RB-3 StarRocks rebuild-from-Iceberg~~ — **RETIRED (Brain V4): StarRocks is REMOVED.** Serving is Trino-over-Iceberg (`brain_serving.mv_*` Trino views); rebuild the medallion with `tools/dev/v4-refresh-loop.sh` (Spark Silver→Gold→`mv` SYNC refresh).
 - RB-4 Local lakehouse (Iceberg REST catalog + MinIO) — see RB-4-local-lakehouse.md (**note: pre-V4 StarRocks/dbt/Redpanda framing; see that file's banner**)
 - Rotate the `iceberg_catalog` DB password (owed ONCE after the AUD-INFRA-023 masking fix deploys) — see rotate-iceberg-catalog-db-password.md
+- Kafka operations (prod) — Strimzi sync-safety: NEVER prune-sync strimzi-kafka-prod / NEVER Replace-sync neo4j-prod, PVC prune-guard annotate procedure + AUD-INFRA-002 root cause — see kafka-operations.md
 Full text: docs/04 §M.3 (Brain-docs).

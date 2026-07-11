@@ -62,6 +62,13 @@ spec:
         labels:
           {{- include "strimziKafka.labels" . | nindent 10 }}
         # AUD-LIVE-5: operator-created PVCs inherit ArgoCD tracking labels → without these they show as eternal OutOfSync prune candidates and a prune would destroy broker data.
+        # AUD-INFRA-002: this template block is correct and confirmed to render (KafkaNodePool
+        # CRD schema carries spec.template.persistentVolumeClaim.metadata.annotations; Strimzi
+        # patches metadata onto EXISTING PVCs on reconcile — verify post-sync, see
+        # docs/runbooks/kafka-operations.md). The guard never reached the cluster because the
+        # Application's manifest-generate-paths annotation was relative (resolved against
+        # source.path → watched a non-existent dir) so ArgoCD served STALE cached manifests
+        # for every new revision. Fixed in infra/argocd/envs/prod/strimzi-kafka.yaml.
         annotations:
           argocd.argoproj.io/compare-options: IgnoreExtraneous
           argocd.argoproj.io/sync-options: Prune=false,Delete=false

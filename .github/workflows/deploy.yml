@@ -61,8 +61,21 @@ jobs:
 
       - name: Check if ${{ matrix.app }} is affected
         id: affected
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
+          # This runs on push to master (the default branch). `turbo --affected`
+          # defaults its base to the default branch — i.e. master vs master → an
+          # EMPTY diff → every app skipped, so no images are ever built while the
+          # pipeline goes green. Pin the base to the PUSHED range instead
+          # (github.event.before..HEAD). First push / force-push (zeros SHA) has no
+          # usable base → build unconditionally.
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable before-SHA — building ${{ matrix.app }}"
+            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          export TURBO_SCM_BASE="$BEFORE"
           # FAIL-CLOSED: a broken affected-set computation must fail the job, not
           # silently skip build/push/sign. (Previously `|| echo ""` swallowed any
           # error → empty set → skip=true → the image was never built or pushed while

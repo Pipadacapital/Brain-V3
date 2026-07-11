@@ -1,4 +1,4 @@
-// prod go-live 2026-07-11: touch web so turbo --affected includes it in the first CI image build.
+// prod go-live 2026-07-11: touch web so turbo --affected includes it in the CI image build (retry w/ TURBO_SCM_BASE fix).
 // Next.js root layout. The web app talks ONLY to the `frontend-api` module in core
 // (httpOnly cookie <-> short token; CSRF; view-model fan-out — ADR-011). Never the DB.
 import type { Metadata } from 'next';

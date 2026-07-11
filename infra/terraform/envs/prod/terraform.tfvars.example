@@ -1,6 +1,7 @@
 # Prod go-live inputs — copy to terraform.tfvars and fill before the first apply.
-# (terraform.tfvars is gitignored; nothing here is a secret, but keep it out of
-# the repo so per-account values don't drift into source.)
+# (AUD-INFRA-008c: terraform.tfvars for THIS env is TRACKED in git — the
+# applied per-account values are reviewed in PRs like any other IaC. Nothing
+# in it may be a secret. This .example stays as the template for new accounts.)
 #
 # REMINDER (not a variable — backends can't interpolate): fill <PROD_ACCOUNT_ID>
 # in backend.tf, and apply infra/terraform/bootstrap first (state bucket + lock

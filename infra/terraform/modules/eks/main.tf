@@ -199,6 +199,18 @@ resource "aws_iam_role_policy_attachment" "node_AmazonEC2ContainerRegistryReadOn
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# AUD-INFRA-008a: SSM access path to a PRIVATE-ONLY EKS API endpoint. The
+# EKS-optimized AL2 AMIs ship the SSM agent; this managed policy lets the
+# system nodes register with Systems Manager (agent egress rides the NAT — no
+# extra VPC endpoints needed), so an operator can port-forward to the private
+# API endpoint through a system node (docs/runbooks/eks-api-access.md). This
+# is the PRECONDITION for flipping eks_public_access_cidrs=[] — verify an SSM
+# session works BEFORE going private-only, or kubectl access is lost.
+resource "aws_iam_role_policy_attachment" "node_AmazonSSMManagedInstanceCore" {
+  role       = aws_iam_role.node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 ###############################################################################
 # System Node Group — small on-demand group for system add-ons
 # EC10: staging/prod = 0 nodes (set via variables)

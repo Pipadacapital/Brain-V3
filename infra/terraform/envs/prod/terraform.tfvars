@@ -1,6 +1,11 @@
-# Prod go-live inputs — copy to terraform.tfvars and fill before the first apply.
-# (terraform.tfvars is gitignored; nothing here is a secret, but keep it out of
-# the repo so per-account values don't drift into source.)
+# Prod go-live inputs — the APPLIED values for the live prod account.
+#
+# AUD-INFRA-008c: this file IS TRACKED in git (deliberately, since PR #5) —
+# the header inherited from terraform.tfvars.example used to claim it was
+# gitignored, which misled operators about where the applied values live.
+# Nothing here is a secret; the values are per-account plan inputs and are
+# reviewed in PRs like any other IaC. The operator IP below is knowingly
+# visible in source (it only NARROWS the EKS API endpoint exposure).
 #
 # REMINDER (not a variable — backends can't interpolate): fill <PROD_ACCOUNT_ID>
 # in backend.tf, and apply infra/terraform/bootstrap first (state bucket + lock
@@ -8,9 +13,12 @@
 
 vpc_cidr = "10.0.0.0/16"
 
-# GO-LIVE bootstrap access (AUD-COST-009): your operator IP(s). The EKS API
-# endpoint opens publicly ONLY to these CIDRs; [] = private-only. Flip back to
-# [] after an SSM bastion / Client VPN exists.
+# GO-LIVE bootstrap access (AUD-COST-009 / AUD-INFRA-008a): operator IP(s).
+# The EKS API endpoint opens publicly ONLY to these CIDRs; [] = private-only.
+# If your ISP rotates the IP, kubectl access dies until this list is
+# re-applied — the refresh procedure AND the SSM port-forward fallback (which
+# works with [] private-only) are in docs/runbooks/eks-api-access.md.
+# Flip to [] once the SSM path is verified end-to-end.
 eks_public_access_cidrs = ["94.201.196.57/32"]
 
 # EKS system node group (platform add-ons only; workloads run on Karpenter Spot).

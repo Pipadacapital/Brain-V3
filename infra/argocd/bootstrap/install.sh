@@ -33,12 +33,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Pinned argo-cd chart (upgrade deliberately, not implicitly).
 ARGOCD_CHART_VERSION="${ARGOCD_CHART_VERSION:-7.7.11}"
 
-echo "[bootstrap] helm install argo-cd ${ARGOCD_CHART_VERSION} → namespace argocd"
+# AUD-INFRA-008b: argocd-cm data.url — the base for UI/CLI/notification
+# deep-links. The chart default (https://argocd.example.com) shipped to prod
+# and every deep-link was broken. There is NO ArgoCD ingress by design
+# (operator access is `kubectl -n argocd port-forward svc/argocd-server 8080:443`),
+# so the honest default is the port-forward origin; override the env var when
+# a real ingress/hostname exists. Re-running this script (idempotent
+# `helm upgrade --install`) applies the change.
+ARGOCD_URL="${ARGOCD_URL:-https://localhost:8080}"
+
+echo "[bootstrap] helm install argo-cd ${ARGOCD_CHART_VERSION} → namespace argocd (url=${ARGOCD_URL})"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 helm repo update argo >/dev/null
 helm upgrade --install argocd argo/argo-cd \
   --namespace argocd --create-namespace \
   --version "${ARGOCD_CHART_VERSION}" \
+  --set-string configs.cm.url="${ARGOCD_URL}" \
   --wait --timeout 10m
 
 echo "[bootstrap] AppProjects (brain / brain-prod / brain-staging)"

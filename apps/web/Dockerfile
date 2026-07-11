@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1
 #
+# build-trigger: first build on Pipadacapital/Brain-V3 — rebuild web with the
+# baked in-cluster BFF proxy URL (#380) that never landed on the old repo (CI
+# quota + local build stall). Safe to remove on any later app change.
+#
 # @brain/web — Next.js 15 dashboard (port 3000).
 # Build context MUST be the repo root:  docker build -f apps/web/Dockerfile .
 #

@@ -17,6 +17,24 @@ spec:
         {{- include "brain.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "brain.fullname" . }}
+      # AUD-OPS-004: explicit, bounded drain window on eviction/rollout — SIGTERM
+      # lets the Kafka consumers commit offsets and leave the group gracefully
+      # (clean rebalance) instead of being hard-killed mid-batch on Spot reclaim.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.topologySpread.enabled }}
+      # AUD-OPS-002: spread replicas across zones/nodes so a single node or AZ loss
+      # can't take the whole tier down. ScheduleAnyway = best-effort — never blocks
+      # scale-up on single-pool (Karpenter streaming pool) or kind topologies.
+      topologySpreadConstraints:
+        {{- range .Values.topologySpread.constraints }}
+        - maxSkew: {{ .maxSkew }}
+          topologyKey: {{ .topologyKey }}
+          whenUnsatisfiable: {{ .whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "brain.selectorLabels" $ | nindent 14 }}
+        {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -40,6 +58,23 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            {{- if .Values.readOnlyRootFilesystem }}
+            readOnlyRootFilesystem: true
+            {{- end }}
+          {{- if .Values.preStopSleepSeconds }}
+          # AUD-OPS-004: optional endpoint-drain hold. OFF by default for the worker —
+          # it is headless (no Service/ALB in front), so the fastest graceful path is
+          # SIGTERM immediately: commit offsets + leave the consumer group.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- end }}
+          {{- if .Values.readOnlyRootFilesystem }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
           {{- if or .Values.service.enabled .Values.probes.enabled }}
           # The worker is headless (no Service), but the kubelet still needs a named
           # containerPort to target the liveness/readiness probes (T2-10). Declare it whenever
@@ -80,3 +115,8 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.readOnlyRootFilesystem }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- end }}

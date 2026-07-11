@@ -1,0 +1,100 @@
+{{- /*
+AUD-INFRA-021: per-namespace default-deny-ingress + explicit flow allows.
+Every covered namespace gets:
+  1. default-deny-ingress            (podSelector {} / policyTypes Ingress)
+  2. allow-from-monitoring           (Prometheus scrapes, all ports)
+  3. allow-intra-namespace           (only where .intraNamespace — trino, neo4j)
+  4. one allow-<flow> per inventoried real flow (values.yaml `namespaces`)
+NetworkPolicies are additive-OR: traffic matching ANY allow is admitted; the
+default-deny only bites flows nobody declared. Kubelet health probes are not
+subject to NetworkPolicy under the AWS VPC CNI network-policy agent.
+*/ -}}
+{{- range .Values.namespaces }}
+{{- $ns := . }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ $ns.name }}
+  labels:
+    app.kubernetes.io/part-of: brain
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    brain.io/policy-set: {{ $.Chart.Name }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-monitoring
+  namespace: {{ $ns.name }}
+  labels:
+    app.kubernetes.io/part-of: brain
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    brain.io/policy-set: {{ $.Chart.Name }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.monitoringNamespace }}
+{{- if $ns.intraNamespace }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: {{ $ns.name }}
+  labels:
+    app.kubernetes.io/part-of: brain
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    brain.io/policy-set: {{ $.Chart.Name }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+{{- end }}
+{{- range $ns.allows }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-{{ .name }}
+  namespace: {{ $ns.name }}
+  labels:
+    app.kubernetes.io/part-of: brain
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    brain.io/policy-set: {{ $.Chart.Name }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range .fromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- if .fromVpc }}
+        # ALB target-type=ip: public traffic reaches pod IPs from ALB ENIs
+        # inside the VPC (see values.yaml vpcCidr caveat).
+        - ipBlock:
+            cidr: {{ required "vpcCidr is required for fromVpc allows" $.Values.vpcCidr }}
+        {{- end }}
+      ports:
+        {{- range .ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+{{- end }}
+{{- end }}

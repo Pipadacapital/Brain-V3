@@ -69,7 +69,7 @@ FROM base AS runtime
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
-RUN groupadd -r brain && useradd -r -g brain -m brain
+RUN groupadd -r -g 1001 brain && useradd -r -u 1001 -g brain -m brain
 COPY --from=builder --chown=brain:brain /repo /repo
 WORKDIR /repo/apps/web
 USER brain

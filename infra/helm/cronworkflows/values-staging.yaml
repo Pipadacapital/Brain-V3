@@ -1,7 +1,7 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:955cbeda468e3fbb6175748ce2d6bcfff2e42195eec9760f57fcb245a9aa044d"
+  digest: "sha256:c73430ce1d3f85272fad03dd587413d816f3f8b870030a4125bd7125f5fa02d4"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)

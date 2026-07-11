@@ -6,26 +6,22 @@ image:
 
 coordinator:
   replicaCount: 1
-  # AUD-PROD-006/-011: the single coordinator (discovery + the BFF's HTTP/JDBC endpoint —
-  # the SOLE serving entry) must not ride Spot. NOT `role: system` despite the spec: the
-  # system MNG is t4g.medium (4 GiB) and the coordinator's RATIFIED memory bound below
-  # (6Gi request / 7Gi limit, measured OOM evidence) can never schedule there — so it pins
-  # to the tainted ON-DEMAND Karpenter pool (t4g.xlarge, AUD-COST-018 — same on-demand
-  # stability guarantee, fits the bound; Neo4j precedent). Selector + toleration both
-  # required (the pool is tainted).
+  # Go-live cost right-size (supersedes the on-demand pin): co-locate the single
+  # coordinator with the one warm worker on ONE `trino`-pool Spot node (t4g.xlarge,
+  # ~3.9 allocatable CPU). The prior `brain.platform/pool: ondemand` pin pulled a
+  # DEDICATED on-demand t4g.xlarge (~$105/mo) — neither coordinator nor worker
+  # would fit the other's node at cpu:2 each (2+2 > 3.9) — pushing the cluster over
+  # the $500/mo cap. Spot is acceptable for this low-traffic serving entry (Redis
+  # fronts the BFF; a coordinator restart just re-runs in-flight queries). cpu
+  # request trimmed 2→1 so coordinator(1)+worker(2)=3 fits the single node.
   nodeSelector:
-    brain.platform/pool: ondemand
-  tolerations:
-    - key: brain.platform/pool
-      operator: Equal
-      value: ondemand
-      effect: NoSchedule
+    karpenter.sh/nodepool: trino
   resources:
     requests:
-      cpu: "2"
+      cpu: "1"
       memory: 6Gi
     limits:
-      cpu: "4"
+      cpu: "2"
       memory: 7Gi
 
 workers:
@@ -57,7 +53,10 @@ workers:
 
 # Real AWS S3 Iceberg buckets reached via the pod IRSA role — no static keys, no MinIO endpoint.
 iceberg:
-  restUri: "http://iceberg-rest.iceberg.svc.cluster.local:8181"
+  # The Iceberg REST catalog is the chart-fullname service in ns `iceberg-rest`
+  # (NOT a plain `iceberg-rest` in ns `iceberg`). Wrong DNS = Trino can't read any
+  # Iceberg mart → the sole serving engine 500s at go-live.
+  restUri: "http://brain-prod-iceberg-rest.iceberg-rest.svc.cluster.local:8181"
   s3:
     # AUD-COST-008: MUST be ap-south-1 — every bucket/VPC/endpoint lives there; a SigV4
     # region mismatch 400s (AuthorizationHeaderMalformed) every S3 read through the sole

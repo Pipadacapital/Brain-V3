@@ -51,9 +51,17 @@ const GREP_EXCLUDES = [
   '--exclude-dir=generated',
   '--exclude-dir=coverage',
   '--exclude-dir=.git',
+  // Terraform provider binaries (gitignored, local-only after `terraform init`)
+  // contain byte sequences that match financial patterns — never a real leak.
+  '--exclude-dir=.terraform',
   // Test and fixture files legitimately contain example identifiers
   '--exclude-dir=tests',
   '--exclude-dir=fixtures',
+  // Golden-data generators/fixtures intentionally embed realistic-shaped synthetic
+  // identifiers (e.g. pay_Golden…/setl_Golden…) to exercise the Silver/Gold parity
+  // pipeline — same rationale as tests/fixtures above.
+  '--exclude=*golden*',
+  '--exclude-dir=_p4_golden',
   '--exclude=*.test.ts',
   '--exclude=*.spec.ts',
   '--exclude=*.test.mjs',

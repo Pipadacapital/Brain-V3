@@ -223,7 +223,7 @@ resource "aws_eks_node_group" "system" {
   }
 
   labels = {
-    role        = "system"
+    role = "system"
   }
 
   depends_on = [
@@ -233,7 +233,7 @@ resource "aws_eks_node_group" "system" {
   ]
 
   tags = {
-    role        = "system"
+    role = "system"
   }
 }
 
@@ -278,7 +278,7 @@ resource "aws_iam_role" "ebs_csi" {
   assume_role_policy = data.aws_iam_policy_document.ebs_csi_trust.json
 
   tags = {
-    workload    = "ebs-csi-driver"
+    workload = "ebs-csi-driver"
   }
 }
 
@@ -335,7 +335,7 @@ resource "aws_ecr_repository" "services" {
   }
 
   tags = {
-    service     = each.key
+    service = each.key
   }
 }
 

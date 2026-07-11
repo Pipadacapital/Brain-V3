@@ -1,0 +1,49 @@
+################################################################################
+# Brain – ArgoCD Application: Neo4j backup (prod) — AUD-OPS-012
+# Neo4j is the identity SYSTEM OF RECORD (ADR-0004) and had ZERO backups of any
+# kind (no dumps, no EBS/DLM snapshots, no AWS Backup) — RPO was effectively
+# infinite. This app deploys the nightly `neo4j-admin database dump` → S3
+# CronJob (infra/helm/neo4j-backup) into the SAME namespace as the neo4j app;
+# the block-level layer (DLM daily EBS snapshots, 7 retained) is terraform
+# (modules/neo4j-backup) and needs no cluster object.
+#
+# ORDER: sync AFTER neo4j-prod (it orchestrates that StatefulSet) and AFTER the
+# terraform apply that creates the bucket + IRSA role
+# (brain-prod-neo4j-backup); values-prod.yaml carries both fill-ins.
+# MANUAL promotion gate (prod convention) — no automated sync.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: neo4j-backup-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/neo4j-backup
+  labels:
+    project: brain
+    environment: prod
+    service: neo4j-backup
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
+    targetRevision: master
+    path: infra/helm/neo4j-backup
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: neo4j
+  # NO automated sync for prod — manual promotion gate required
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

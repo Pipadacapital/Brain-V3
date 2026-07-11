@@ -577,6 +577,36 @@ resource "aws_budgets_budget" "usage_real" {
 }
 
 ###############################################################################
+# Neo4j backups (AUD-OPS-012) — the identity SoR had ZERO backups. Two layers:
+# DLM daily EBS snapshots (7 retained, targeted by the CSI's
+# kubernetes.io/created-for/pvc/namespace=neo4j tag) + a backups bucket for the
+# nightly neo4j-admin dump CronJob (infra/helm/neo4j-backup, ns neo4j). The
+# module header has the full rationale (incl. why the WORM audit bucket is unfit).
+###############################################################################
+module "neo4j_backup" {
+  source      = "../../modules/neo4j-backup"
+  environment = local.environment
+  project     = local.project
+  kms_key_arn = module.kms.root_kms_key_arn
+}
+
+# IRSA for the dump CronJob — namespace/SA MUST match the neo4j-backup chart's
+# ServiceAccount exactly (NN-3 StringEquals trust): neo4j/neo4j-backup.
+module "irsa_neo4j_backup" {
+  source               = "../../modules/irsa"
+  role_name            = "neo4j-backup"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "neo4j"
+  service_account_name = "neo4j-backup"
+  environment          = local.environment
+  project              = local.project
+  policy_arns = [
+    module.neo4j_backup.backup_writer_policy_arn,
+  ]
+}
+
+###############################################################################
 # Outputs — the post-apply fill pass reads these (helm values-prod placeholders,
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.
 ###############################################################################

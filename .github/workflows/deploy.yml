@@ -1,16 +1,21 @@
 name: deploy
 on:
   push:
-    branches: [master]   # default branch — CD/gitops/prod-promote fire on real merges to master
-                         # (AUD-PROD-022: file renamed main.yml → deploy.yml for spec alignment;
-                         # trigger stays [master] — the repo default branch. Do NOT flip to [main].)
+    branches: [release]  # RELEASE-LAYER (2026-07-11): feature branches merge to `release`
+                         # (the repo default branch) → this workflow builds + bumps the
+                         # STAGING values on release. Prod promotion moved to
+                         # promote-prod.yml and fires ONLY when the repo owner merges
+                         # release → master (master = production).
+                         # (AUD-PROD-022: file renamed main.yml → deploy.yml; former
+                         # trigger was [master]. Do NOT flip to [main].)
 
 # CI/CD identity (AUD-COST-002) — repo variables ↔ terraform (envs/prod, module
 # oidc_github with create_cicd_roles = true; first apply is LOCAL — see
 # infra/terraform/README.md "Prod go-live" + docs/runbooks/GO-LIVE.md):
 #   vars.AWS_ECR_PUSH_ROLE_ARN  = `terraform output github_ecr_push_role_arn`
 #                                 (role brain-prod-github-ecr-push; OIDC trust =
-#                                 push to master on Pipadacapital/Brain-V3).
+#                                 push to master OR release on Pipadacapital/Brain-V3
+#                                 — envs/prod bootstrap.tf allowed_branches).
 #   vars.ENVIRONMENT            = prod — MUST be "prod": the push role is scoped
 #                                 to the brain-*-prod ECR repositories (modules/
 #                                 eks creates brain-{collector,stream-worker,core,
@@ -361,104 +366,3 @@ jobs:
           echo "Manual verification: argocd app get brain-staging --server \$ARGOCD_SERVER"
           echo "Staging bake window: 5 min; auto-rollback armed on health probe failures."
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # 3. Manual prod promotion gate (requires GitHub Environment approval)
-  # ─────────────────────────────────────────────────────────────────────────
-  prod-promote:
-    name: Promote to Production (manual gate)
-    runs-on: ubuntu-latest
-    needs: gitops-staging
-    # GitHub Environment 'production' requires manual approval from VP Eng
-    environment: production
-
-    steps:
-      # Check out the LATEST master, not the triggering SHA: gitops-staging (a
-      # prior job in THIS run) just committed the staging digests to master, and
-      # promote reads them from values-staging. Without ref: master this job
-      # checks out the pre-staging-bump commit → empty staging digests → promotes
-      # nothing (prod digests never pinned).
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: master
-          token: ${{ secrets.GITOPS_TOKEN }}
-
-      # Same as gitops-staging: no AWS call in this job — skip while unset.
-      # (`github_plan_role_arn` output of envs/prod = brain-prod-github-plan.)
-      - name: Configure AWS credentials (OIDC) for prod
-        if: ${{ vars.AWS_PROD_PLAN_ROLE_ARN != '' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_PROD_PLAN_ROLE_ARN }}
-          aws-region: ap-south-1
-
-      - name: Promote staging image to prod Helm chart values
-        run: |
-          set -euo pipefail
-          # Build-once / promote-the-same-artifact: copy the immutable repository@digest
-          # from each staging chart values into the prod chart values.
-          for app in collector stream-worker core web; do
-            stg="infra/helm/${app}/values-staging.yaml"
-            prd="infra/helm/${app}/values-prod.yaml"
-            [ -f "$stg" ] && [ -f "$prd" ] || continue
-            REPO=$(grep -E '^  repository:' "$stg" | head -1 | sed -E 's|^  repository:[[:space:]]*||')
-            DIGEST=$(grep -E '^  digest:' "$stg" | head -1 | sed -E 's|^  digest:[[:space:]]*"?([^"]*)"?.*|\1|')
-            [ -n "$DIGEST" ] || { echo "no staging digest for ${app} — skip"; continue; }
-            sed -i -E "s|^( {2}repository:).*|\1 ${REPO}|"   "$prd"
-            sed -i -E "s|^( {2}digest:).*|\1 \"${DIGEST}\"|" "$prd"
-            echo "promoted ${app}: ${REPO}@${DIGEST}"
-          done
-
-      - name: Promote cronworkflows chart digests (staging → prod) — path-precise via yq
-        run: |
-          set -euo pipefail
-          stg="infra/helm/cronworkflows/values-staging.yaml"
-          prd="infra/helm/cronworkflows/values-prod.yaml"
-          promote() {  # $1=yq-path-prefix
-            local path="$1" SREPO SDIGEST
-            SREPO="$(yq "${path}.repository" "$stg")"
-            SDIGEST="$(yq "${path}.digest" "$stg")"
-            [ -n "$SDIGEST" ] && [ "$SDIGEST" != "null" ] || { echo "no staging digest at ${path} — skip"; return 0; }
-            # build-once/promote-same-artifact: keep the SAME image (re-tag repo from -staging to -prod
-            # name but the immutable digest is identical — same artifact across envs).
-            local PREPO="${SREPO/-staging/-prod}"
-            PREPO="$PREPO" SDIGEST="$SDIGEST" yq -i "${path}.repository = strenv(PREPO) | ${path}.digest = strenv(SDIGEST)" "$prd"
-            echo "cronworkflows promoted ${path}: ${PREPO}@${SDIGEST}"
-          }
-          promote .image
-          promote .streamWorkerImage
-          promote .sparkBronze.image
-          promote .sparkV4.image
-
-      # AUD-COST-007 STRICT gate: a prod promotion must never be committed while
-      # rendered prod values / deployed ArgoCD prod manifests still carry
-      # REPLACE_WITH_*/ACCOUNT_ID placeholders. Fill pass: docs/runbooks/GO-LIVE.md
-      # step 3 (canonical list: infra/helm/PLACEHOLDERS.md). Runs AFTER the digest
-      # promotion above (CD-filled digests are not placeholders) and BEFORE the
-      # commit, so a failure leaves nothing for ArgoCD to sync.
-      - name: Placeholder guard — refuse to promote unfilled prod values (strict)
-        run: tools/lint/prod-placeholder-guard.sh --strict
-
-      - name: Commit prod values promotion
-        run: |
-          git config user.name "Brain CI Bot"
-          git config user.email "ci@brain-platform.io"
-          git add infra/helm/
-          if git diff --staged --quiet; then
-            echo "No prod image changes"
-          else
-            git commit -m "chore(gitops): promote to prod [${GITHUB_SHA:0:8}] — bake window ARMED [skip ci]"
-            git push
-          fi
-
-      - name: Bake window monitor armed
-        run: |
-          echo "PROD BAKE WINDOW ARMED — 30 min standard (2hr for billing/ledger/metric-registry changes)"
-          echo "Auto-rollback signals (see PLAYBOOK-deploy.md §Auto-Rollback):"
-          echo "  - Collector accept+ack rate < 99.95% for 5min → ROLLBACK"
-          echo "  - Analytics API error rate > 1% for 5min → ROLLBACK"
-          echo "  - Analytics API p95 latency > 2s for 5min → ROLLBACK"
-          echo "  - K8s health probe failing 2 consecutive probes → ROLLBACK"
-          echo "  - Cross-brand isolation breach (any occurrence) → IMMEDIATE ROLLBACK + SEV1"
-          echo ""
-          echo "Grafana Cloud bake dashboard: https://grafana.brain-platform.io/d/bake-window"

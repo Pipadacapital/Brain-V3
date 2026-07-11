@@ -3,7 +3,7 @@ replicaCount: 3
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:f99f64020763d2af4e64df5ee19f937fff9b882387b4677f38f88f0d9844631f"
+  digest: "sha256:b7272112a4cfcf6dd0f70f0941f7037ed4d4a85b8e7f7895a6a701af6b139b5e"
 
 envSecretName: core-env
 
@@ -22,7 +22,7 @@ ingress:
   enabled: true
   host: api.brain.pipadacapital.com   # e.g. api.<apex-domain>
   groupName: brain-prod
-  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/5247056b-bbaf-4041-8c97-84e190c8d818
+  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/684f6184-f357-46ca-8ef9-3be62239c220
 
 serviceAccount:
   annotations:

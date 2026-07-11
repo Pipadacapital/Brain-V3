@@ -33,6 +33,13 @@ catalog rows in Aurora are untouched by rotation).
    ```sh
    kubectl -n iceberg-rest annotate externalsecret iceberg-rest-catalog-db force-sync="$(date +%s)" --overwrite
    ```
+   AFTER the sync lands, remove the annotation again (AUD-INFRA-003 — stale
+   `force-sync` annotations accumulate as out-of-band state; the
+   external-secrets-config-prod app ignores them for diffing, but don't leave
+   litter):
+   ```sh
+   kubectl -n iceberg-rest annotate externalsecret iceberg-rest-catalog-db force-sync-
+   ```
 4. **Change the DB password** on Aurora (from inside the VPC, same access path
    as GO-LIVE step 8):
    ```sql

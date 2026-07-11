@@ -7,6 +7,15 @@ image:
 
 envSecretName: core-env
 
+# The core Service (and the api.brain ingress backend, which reuses service.port)
+# must expose 3001 — the container port AND the port every consumer targets
+# (web BFF_BASE_URL/CORE_API_URL, seed-prod-secrets.sh). The chart default of 80
+# left the Service on a port nothing dials: the web proxy to
+# core.core.svc.cluster.local:3001 hit a closed service port and hung → the
+# registration/BFF 500→timeout. Nothing references core on :80.
+service:
+  port: 3001
+
 # AUD-COST-003: BFF/API + connector webhooks on the shared brain-prod ALB
 # (host-routed, ACM TLS).
 ingress:

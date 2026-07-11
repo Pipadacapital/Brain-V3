@@ -25,6 +25,11 @@ ARG PG_JDBC_VERSION=42.7.4
 # DefaultAWSCredentialsProviderChain/WebIdentity for IRSA). Mirrors run-medallion-maintenance.sh.
 ARG HADOOP_AWS_VERSION=3.3.4
 ARG SCALA=2.12
+# Neo4j Spark connector — silver_customer_identity / silver_identity_alias project the
+# identity graph from Neo4j (SoR, ADR-0004). Absent, the first prod fill failed with
+# ClassNotFoundException: org.neo4j.spark.DataSource (2026-07-11). Version mirrors
+# run-silver-customer.sh (compose lane) — bump BOTH together.
+ARG NEO4J_CONNECTOR_VERSION=5.3.1_for_spark_3
 
 WORKDIR /opt/brain
 # Bronze maintenance/retention/erasure + the shared Iceberg base and the Silver/Gold provisioner +
@@ -72,7 +77,7 @@ COPY gold/   /opt/brain/gold/
 RUN set -eux; \
     printf 'import sys\nsys.exit(0)\n' > /tmp/noop.py; \
     /opt/spark/bin/spark-submit \
-      --packages "org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAFKA_VERSION},org.postgresql:postgresql:${PG_JDBC_VERSION},org.apache.hadoop:hadoop-aws:${HADOOP_AWS_VERSION}" \
+      --packages "org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION},org.apache.spark:spark-sql-kafka-0-10_${SCALA}:${SPARK_KAFKA_VERSION},org.postgresql:postgresql:${PG_JDBC_VERSION},org.apache.hadoop:hadoop-aws:${HADOOP_AWS_VERSION},org.neo4j:neo4j-connector-apache-spark_${SCALA}:${NEO4J_CONNECTOR_VERSION}" \
       --conf spark.jars.ivy=/tmp/ivy \
       /tmp/noop.py; \
     find /tmp/ivy -name '*.jar' -exec cp -n {} /opt/spark/jars/ \; ; \

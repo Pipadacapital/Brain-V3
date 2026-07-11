@@ -496,23 +496,22 @@ export async function main(): Promise<void> {
   );
 
   // ── Erasure orchestrator (DPDP/PDPL crypto-shred — feat-erasure-orchestrator) ──
-  // Same live topic, separate consumer group. Drives the ordered 6-step per-subject erasure
-  // sequence: DEK shred (subject_keyring is_active=FALSE) → surrogate tombstone → scoped
-  // Gold re-projection → disabled Iceberg compaction seam → CAPI deletion → erasure complete.
-  // Reuses the SAME saltProvider, requestCapiDeletionUseCase, and identityRepo as the other
-  // consumers on this topic — no new hashing logic, no duplicated CAPI deletion path.
+  // Same live topic, separate consumer group. Drives the ordered per-subject erasure sequence:
+  // DEK shred (subject_keyring is_active=FALSE) → surrogate tombstone → Neo4j graph purge →
+  // scoped Gold re-projection + serving-cache invalidation → Bronze raw sweep → CAPI deletion
+  // → erasure complete. Reuses the SAME saltProvider, requestCapiDeletionUseCase, identityRepo
+  // and cacheInvalidatePublisher as the other consumers — no new hashing logic, no duplicated
+  // CAPI deletion path, no parallel cache-invalidation lane.
   //
-  // brainIdLookup: inline adapter over identityRepo.readState() — returns the first active
-  // brain_id linked to the subject hash in the Neo4j graph. Throws on Neo4j down (→ retry).
-  // Returns null on not-found (→ 'no_brain_id' skip, WARN logged, no retry).
+  // brainIdLookup: inline adapter over identityRepo.findBrainIdForErasure() — the erasure-lane
+  // resolution that ALSO matches tombstoned edges (AUD-OPS-039 replay-safety: STEP 2b tombstones
+  // the graph, and a replayed erasure must still resolve to re-run the idempotent remainder).
+  // Throws on Neo4j down (→ retry). Returns null on not-found (→ 'no_brain_id' skip, WARN).
   const brainIdLookup: IBrainIdLookup = {
     async findBrainId(lookupBrandId, subjectHash, identifierType) {
       // SEC H-1: match on the SUBJECT'S identifier type (email OR phone) — hardcoding 'email'
       // silently dropped phone-only RTBF erasures (acknowledged, never shredded = DPDP failure).
-      const state = await identityRepo.readState(lookupBrandId, [
-        { type: identifierType, hash: subjectHash },
-      ]);
-      return state.existingLinks.find((l) => l.is_active)?.brain_id ?? null;
+      return identityRepo.findBrainIdForErasure(lookupBrandId, identifierType, subjectHash);
     },
   };
   const erasureRepo = new ErasureRepository(dbUrl);
@@ -541,6 +540,13 @@ export async function main(): Promise<void> {
     // SEC M-1: evict the hot subject DEK from this process's vault cache the instant it is shredded.
     (b, s) => vaultKeyProvider.invalidate(b, s),
     bronzeRawErasureSubmitter,
+    // AUD-TP-22: RTBF → serving-cache invalidation. The SAME CacheInvalidatePublisher the
+    // identity-recompute lane uses (one publisher → one AnalyticsCacheInvalidateConsumer →
+    // brand-scoped Redis eviction). FAIL-OPEN inside the use case.
+    cacheInvalidatePublisher,
+    // AUD-OPS-039: Neo4j graph purge (STEP 2b) + graph-hash keying for the Bronze sweep on
+    // brain_id-only triggers (STEP 4). Same identityRepo as every identity consumer.
+    identityRepo,
   );
   const erasureOrchestratorConsumer = new ErasureOrchestratorConsumer(
     kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,

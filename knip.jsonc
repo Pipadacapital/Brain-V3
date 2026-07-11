@@ -82,6 +82,9 @@
       "ignore": ["components/ui/**", "e2e/**"]
     },
     "packages/*": { "entry": ["src/index.ts"] },
-    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] }
+    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] },
+    // Operator-run DPDP drill harness (AUD-OPS-040): launched via `pnpm --filter
+    // @brain/tool-privacy drill`, never imported — the script IS the entrypoint.
+    "tools/privacy": { "entry": ["src/rtbf-drill.ts"] }
   }
 }

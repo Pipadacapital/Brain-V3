@@ -996,6 +996,27 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@25.9.3)
 
+  tools/privacy:
+    devDependencies:
+      '@types/node':
+        specifier: 25.9.3
+        version: 25.9.3
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.0
+      neo4j-driver:
+        specifier: ^5.21.0
+        version: 5.28.3
+      pg:
+        specifier: ^8.21.0
+        version: 8.21.0
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
   tools/seed: {}
 
 packages:
@@ -7488,6 +7509,22 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 1.2.0
 
+  '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@20.19.43))':
+    dependencies:
+      '@vitest/spy': 2.1.9
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      vite: 5.4.21(@types/node@20.19.43)
+
+  '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@22.19.21))':
+    dependencies:
+      '@vitest/spy': 2.1.9
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      vite: 5.4.21(@types/node@22.19.21)
+
   '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@25.9.3))':
     dependencies:
       '@vitest/spy': 2.1.9
@@ -9401,7 +9438,7 @@ snapshots:
   vitest@2.1.9(@types/node@20.19.43):
     dependencies:
       '@vitest/expect': 2.1.9
-      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@25.9.3))
+      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@20.19.43))
       '@vitest/pretty-format': 2.1.9
       '@vitest/runner': 2.1.9
       '@vitest/snapshot': 2.1.9
@@ -9436,7 +9473,7 @@ snapshots:
   vitest@2.1.9(@types/node@22.19.21):
     dependencies:
       '@vitest/expect': 2.1.9
-      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@25.9.3))
+      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@22.19.21))
       '@vitest/pretty-format': 2.1.9
       '@vitest/runner': 2.1.9
       '@vitest/snapshot': 2.1.9

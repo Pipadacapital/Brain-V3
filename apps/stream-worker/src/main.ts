@@ -75,6 +75,7 @@ import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUse
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
 import { ErasureOrchestratorConsumer } from './interfaces/consumers/ErasureOrchestratorConsumer.js';
 import { EraseSubjectUseCase, type IBrainIdLookup } from './application/EraseSubjectUseCase.js';
+import { ArgoErasureWorkflowSubmitter } from './infrastructure/argo/ArgoErasureWorkflowSubmitter.js';
 import { ErasureRepository } from './infrastructure/pg/ErasureRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 // MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
@@ -515,6 +516,22 @@ export async function main(): Promise<void> {
     },
   };
   const erasureRepo = new ErasureRepository(dbUrl);
+  // AUD-OPS-037: Bronze raw-PII erasure submitter — STEP 4 of the ordered sequence submits the
+  // `bronze-raw-erasure` Argo WorkflowTemplate (erasure_raw_delete.py) so the subject's raw rows
+  // leave the Bronze Iceberg tables (physical completion after bronze-maintenance snapshot expiry).
+  // GATED on ARGO_SERVER_URL: unset (dev/tests) → the use case falls back to the registered-
+  // DISABLED shredIcebergSnapshots seam. FAIL-SAFE when set: an unreachable Argo/k8s API throws →
+  // the consumer does not commit → retry → DLQ@MAX_RETRY (an erasure is never silently dropped).
+  const bronzeRawErasureSubmitter = cfg.ARGO_SERVER_URL
+    ? new ArgoErasureWorkflowSubmitter({
+        serverUrl: cfg.ARGO_SERVER_URL,
+        mode: cfg.ARGO_SUBMIT_MODE,
+        namespace: cfg.ARGO_WORKFLOWS_NAMESPACE,
+        templateName: cfg.ARGO_ERASURE_WORKFLOW_TEMPLATE,
+        authToken: cfg.ARGO_TOKEN,
+        timeoutMs: cfg.ARGO_SUBMIT_TIMEOUT_MS,
+      })
+    : undefined;
   const eraseSubjectUseCase = new EraseSubjectUseCase(
     saltProvider,
     erasureRepo,
@@ -523,6 +540,7 @@ export async function main(): Promise<void> {
     requestCapiDeletionUseCase,
     // SEC M-1: evict the hot subject DEK from this process's vault cache the instant it is shredded.
     (b, s) => vaultKeyProvider.invalidate(b, s),
+    bronzeRawErasureSubmitter,
   );
   const erasureOrchestratorConsumer = new ErasureOrchestratorConsumer(
     kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,

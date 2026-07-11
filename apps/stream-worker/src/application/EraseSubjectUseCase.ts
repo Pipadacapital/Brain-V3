@@ -19,10 +19,15 @@
  *      The mapper already handles 'identity.erased' — wire it directly rather than emitting
  *      to a Kafka topic that does not yet have a live contract.
  *
- *   4. Erasure-aware Iceberg compaction — REGISTERED DISABLED. Throws NotImplementedYet.
- *      A shredded subject could otherwise be resurrected from old Iceberg snapshots; this step
- *      is the placeholder for that compaction job. Do NOT claim I-S05 conformance here.
- *      The consumer catches NotImplementedYet and logs it; it does NOT retry or DLQ for this.
+ *   4. Bronze raw-PII erasure (AUD-OPS-037) — submit the `bronze-raw-erasure` Argo
+ *      WorkflowTemplate (wraps db/iceberg/spark/erasure_raw_delete.py: hard-deletes the
+ *      subject's rows across the raw Bronze tables + the payload-path sweep of
+ *      collector_events_connect; physically complete after bronze-maintenance snapshot expiry).
+ *      FAIL-SAFE: a submit failure THROWS (retryable — consumer does not commit; DLQ@MAX_RETRY);
+ *      the step never silently succeeds. When NO submitter is configured (ARGO_SERVER_URL unset
+ *      — dev/tests), the step falls back to the original registered-DISABLED seam: it throws
+ *      NotImplementedYet, which is caught + logged internally (honest about being unwired;
+ *      do NOT claim I-S05 conformance in that configuration).
  *
  *   5. CAPI deletion — REUSE the existing RequestCapiDeletionUseCase path (do not duplicate
  *      the hashing / repo logic). Pass the raw event value through unchanged.
@@ -49,6 +54,7 @@ import { randomUUID } from 'node:crypto';
 import { hashIdentifier, type IdentifierType } from '@brain/identity-core';
 import { SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import type { IErasureRepository } from '../infrastructure/pg/ErasureRepository.js';
+import type { IBronzeRawErasureSubmitter } from '../infrastructure/argo/ArgoErasureWorkflowSubmitter.js';
 
 // Re-export so consumers (tests, main.ts) can import from one place.
 export type { IErasureRepository };
@@ -78,14 +84,15 @@ export class NotImplementedYet extends Error {
 }
 
 /**
- * Registered-DISABLED Iceberg compaction step.
+ * Registered-DISABLED Iceberg erasure step — the NOT-CONFIGURED fallback (AUD-OPS-037).
  *
- * A shredded subject's ciphertext remains in Iceberg snapshot history; without snapshot
- * compaction / expiry the data could technically be recovered from old snapshots. This step
- * is the placeholder for `erasure_raw_delete.py` (the Iceberg Bronze layer compaction job).
- * Until that job exists, this function ALWAYS throws NotImplementedYet.
+ * The LIVE implementation is the ArgoErasureWorkflowSubmitter (injected via the optional
+ * `bronzeRawErasure` constructor arg): it submits the `bronze-raw-erasure` WorkflowTemplate
+ * wrapping erasure_raw_delete.py. When the submitter is NOT wired (ARGO_SERVER_URL unset —
+ * dev/tests), STEP 4 falls back to this function, which ALWAYS throws NotImplementedYet so the
+ * step stays honest about doing nothing (never a silent success).
  *
- * Exported so tests can prove the seam throws rather than no-ops.
+ * Exported so tests can prove the fallback seam throws rather than no-ops.
  */
 export function shredIcebergSnapshots(_brandId: string, _brainId: string): never {
   throw new NotImplementedYet('erasure-aware-iceberg-compaction');
@@ -136,6 +143,8 @@ export interface EraseSubjectResult {
   eventId?: string;
   brainId?: string;
   surrogateId?: string;
+  /** Name of the submitted bronze-raw-erasure Argo Workflow (set only when the submitter is wired). */
+  bronzeRawWorkflow?: string;
   reason?: string;
 }
 
@@ -154,6 +163,13 @@ export class EraseSubjectUseCase {
      * Optional — absent in tests / a process that never caches the subject DEK.
      */
     private readonly invalidateSubjectDek?: (brandId: string, brainId: string) => void,
+    /**
+     * AUD-OPS-037: Bronze raw-PII erasure submitter (Argo `bronze-raw-erasure` WorkflowTemplate
+     * wrapping erasure_raw_delete.py). Optional: unset (dev/tests — ARGO_SERVER_URL not
+     * configured) → STEP 4 falls back to the registered-DISABLED shredIcebergSnapshots seam.
+     * When set, a submit failure THROWS (retryable) — never a silent success.
+     */
+    private readonly bronzeRawErasure?: IBronzeRawErasureSubmitter,
   ) {}
 
   async execute(rawValue: Buffer | null, now: string): Promise<EraseSubjectResult> {
@@ -248,18 +264,39 @@ export class EraseSubjectUseCase {
     const recompute = mapIdentityEventToScopedRecompute(erasedInput, now);
     await this.scopedRecomputeRepo.upsert(recompute);
 
-    // STEP 4 — Erasure-aware Iceberg compaction [REGISTERED DISABLED].
-    // shredIcebergSnapshots always throws NotImplementedYet. Catch it here, log, and
-    // continue — the primary erasure is done (DEK shredded + hard delete). Do NOT
-    // claim I-S05 conformance for this step.
-    try {
-      shredIcebergSnapshots(brandId, brainId);
-    } catch (err) {
-      if (err instanceof NotImplementedYet) {
-        // Expected: compaction not built. Log at info level (not error; it is intentional).
-        // The consumer will NOT retry or DLQ for this; it continues to step 5.
-      } else {
-        throw err; // Unexpected error → propagate to consumer retry path.
+    // STEP 4 — Bronze raw-PII erasure (AUD-OPS-037).
+    // Submit the bronze-raw-erasure Argo WorkflowTemplate (erasure_raw_delete.py): hard-deletes
+    // the subject's raw Bronze rows, keyed by (brand_id, subjectHash) + the RAW anon/device ids
+    // read off THIS erasure signal's own envelope (the payload stores them un-hashed, so the
+    // hash cannot match them — see the Spark job's docstring). Idempotent: a replayed submit
+    // re-runs DELETEs that affect 0 rows.
+    // FAIL-SAFE: a submit failure PROPAGATES — the consumer does not commit the offset, the
+    // message retries (→ DLQ@MAX_RETRY), and steps 5/6 never run, so an erasure whose Bronze
+    // sweep was not submitted is never marked complete. Never a silent success.
+    let bronzeRawWorkflow: string | undefined;
+    if (this.bronzeRawErasure) {
+      const { anonIds, deviceIds } = this.extractRawSubjectIds(parsed);
+      const submitted = await this.bronzeRawErasure.submit({
+        brandId,
+        identifierHash: subjectHash,
+        anonIds,
+        deviceIds,
+      });
+      bronzeRawWorkflow = submitted.workflowName;
+    } else {
+      // NOT CONFIGURED (dev/tests — no ARGO_SERVER_URL): the original registered-DISABLED seam.
+      // shredIcebergSnapshots always throws NotImplementedYet; catch it and continue — the
+      // primary erasure is done (DEK shredded + hard delete). Do NOT claim I-S05 conformance
+      // for this configuration. The consumer will NOT retry or DLQ for this.
+      try {
+        shredIcebergSnapshots(brandId, brainId);
+      } catch (err) {
+        if (err instanceof NotImplementedYet) {
+          // Expected: submitter not wired. Intentional no-op (logged via the thrown message
+          // semantics in tests); continues to step 5.
+        } else {
+          throw err; // Unexpected error → propagate to consumer retry path.
+        }
       }
     }
 
@@ -274,7 +311,7 @@ export class EraseSubjectUseCase {
     // Set vault_shredded=TRUE, completed_at=NOW() on pii_erasure_log.
     await this.erasureRepo.completeErasure(brandId, brainId);
 
-    return { outcome: 'erased', brandId, eventId, brainId, surrogateId };
+    return { outcome: 'erased', brandId, eventId, brainId, surrogateId, bronzeRawWorkflow };
   }
 
   // ── Helpers (same logic as RequestCapiDeletionUseCase / ProjectConsentUseCase) ──
@@ -297,6 +334,35 @@ export class EraseSubjectUseCase {
       (payload['consent_flags'] as Record<string, unknown> | undefined);
     if (!raw || typeof raw !== 'object') return null;
     return raw;
+  }
+
+  /**
+   * RAW anon/device ids off the erasure signal's own envelope — the payload-path DELETE
+   * predicates for collector_events_connect (the payload stores these UN-hashed, so
+   * IDENTIFIER_HASH cannot match them; see erasure_raw_delete.py). Same property names +
+   * precedence as domain/identity/extract-identifiers.ts (brain_anon_id > anon_id,
+   * device_id > $device_id); both variants are collected when both are present — the Spark
+   * job's IN-list matches every path against every value, so extras are harmless.
+   */
+  private extractRawSubjectIds(
+    parsed: Record<string, unknown>,
+  ): { anonIds: string[]; deviceIds: string[] } {
+    const payload = (parsed['payload'] as Record<string, unknown>) ?? parsed;
+    const props = (payload['properties'] as Record<string, unknown>) ?? {};
+
+    const collect = (keys: string[]): string[] => {
+      const out: string[] = [];
+      for (const key of keys) {
+        const v = props[key];
+        if (typeof v === 'string' && v.trim() && !out.includes(v.trim())) out.push(v.trim());
+      }
+      return out;
+    };
+
+    return {
+      anonIds: collect(['brain_anon_id', 'anon_id']),
+      deviceIds: collect(['device_id', '$device_id']),
+    };
   }
 
   private extractSubject(

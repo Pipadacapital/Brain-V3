@@ -20,8 +20,11 @@
  *   offset is NOT committed, and after MAX_RETRY the message goes to DLQ — never processed
  *   with a bad/empty salt (which would hash the wrong subject and shred the wrong DEK).
  *
- * NOTIMPLEMENTEDYET (Step 4): shredIcebergSnapshots throws NotImplementedYet. The use case
- *   catches it internally and continues. The consumer NEVER sees this as a write error.
+ * STEP 4 (Bronze raw erasure — AUD-OPS-037): with the Argo submitter WIRED, a submit failure
+ *   propagates like any write error (no commit → retry → DLQ@MAX_RETRY — an unsubmitted Bronze
+ *   sweep is never silently dropped). With NO submitter (dev), shredIcebergSnapshots throws
+ *   NotImplementedYet, which the use case catches internally and continues — the consumer
+ *   NEVER sees that as a write error.
  *
  * REPLAYABLE: re-consuming the topic re-runs the ordered sequence (all steps idempotent) →
  *   same outcome. 3× replay → one erasure record, one DEK shred, one CAPI deletion.
@@ -112,7 +115,9 @@ export class ErasureOrchestratorConsumer {
               msgLog.info(
                 `[erasure-orchestrator] erased brand=${result.brandId} ` +
                 `event=${result.eventId} brain_id=${result.brainId} ` +
-                `surrogate=${result.surrogateId} partition=${partition} offset=${offset}`,
+                `surrogate=${result.surrogateId} ` +
+                `bronze_raw_workflow=${result.bronzeRawWorkflow ?? 'not_configured'} ` +
+                `partition=${partition} offset=${offset}`,
               );
             } else if (result.outcome === 'no_brain_id') {
               // Log at WARN: a valid erasure signal but subject not found in identity graph.

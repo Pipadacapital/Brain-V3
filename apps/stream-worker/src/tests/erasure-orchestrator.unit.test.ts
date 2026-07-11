@@ -635,6 +635,100 @@ describe('EraseSubjectUseCase — IBrainIdLookup throw propagates (fail-closed)'
   });
 });
 
+describe('EraseSubjectUseCase — Bronze raw erasure submit (AUD-OPS-037, STEP 4 wired)', () => {
+  /** Records submissions; optionally fails, simulating Argo/k8s unreachable. */
+  function makeBronzeRawSubmitter(opts?: { fail?: boolean }) {
+    const submissions: Array<{
+      brandId: string; identifierHash: string; anonIds: string[]; deviceIds: string[];
+    }> = [];
+    return {
+      submissions,
+      submit: vi.fn(async (s: (typeof submissions)[number]) => {
+        if (opts?.fail) throw new Error('[bronze-raw-erasure] submit failed (retryable): ECONNREFUSED (test)');
+        submissions.push(s);
+        return { workflowName: 'bronze-raw-erasure-test1' };
+      }),
+    };
+  }
+
+  function makeErasureEventWithRawIds(): Buffer {
+    return Buffer.from(
+      JSON.stringify({
+        brand_id: BRAND_A,
+        event_id: randomUUID(),
+        event_name: 'consent.erasure',
+        reason: 'erasure',
+        region_code: 'IN',
+        consent_flags: { analytics: false },
+        payload: {
+          properties: {
+            email: EMAIL_A,
+            brain_anon_id: 'anon-raw-1',
+            device_id: 'device-raw-1',
+          },
+        },
+      }),
+      'utf8',
+    );
+  }
+
+  function buildWiredUseCase(submitter: ReturnType<typeof makeBronzeRawSubmitter>) {
+    const erasureRepo = new InMemoryErasureRepository();
+    const useCase = new EraseSubjectUseCase(
+      makeSaltProvider({ [BRAND_A]: SALT_HEX_A }),
+      erasureRepo,
+      makeBrainIdLookup([{ brandId: BRAND_A, brainId: BRAIN_ID_A }]),
+      makeScopedRecomputeRepo(),
+      makeCapiDeletionUseCase() as unknown as RequestCapiDeletionUseCase,
+      undefined, // invalidateSubjectDek
+      submitter,
+    );
+    return { useCase, erasureRepo };
+  }
+
+  it('submits (brandId, subjectHash, envelope anon/device ids) and reports the workflow name', async () => {
+    const submitter = makeBronzeRawSubmitter();
+    const { useCase } = buildWiredUseCase(submitter);
+
+    const result = await useCase.execute(makeErasureEventWithRawIds(), new Date().toISOString());
+
+    expect(result.outcome).toBe('erased');
+    expect(result.bronzeRawWorkflow).toBe('bronze-raw-erasure-test1');
+    expect(submitter.submissions).toHaveLength(1);
+    const s = submitter.submissions[0]!;
+    expect(s.brandId).toBe(BRAND_A);
+    // Same per-brand-salted hash the identity graph carries — parity with the lookup input.
+    expect(s.identifierHash).toBe(hashIdentifier(EMAIL_A, 'email', SALT_HEX_A, 'IN'));
+    expect(s.anonIds).toEqual(['anon-raw-1']);
+    expect(s.deviceIds).toEqual(['device-raw-1']);
+  });
+
+  it('FAIL-SAFE: a submit failure THROWS (retryable) and the erasure is NOT marked complete', async () => {
+    const submitter = makeBronzeRawSubmitter({ fail: true });
+    const { useCase, erasureRepo } = buildWiredUseCase(submitter);
+
+    await expect(
+      useCase.execute(makeErasureEventWithRawIds(), new Date().toISOString()),
+    ).rejects.toThrow('submit failed');
+
+    // Steps 1-3 ran (DEK shred is the primary mechanism and is idempotent on the retry replay)
+    // but STEP 6 never did: an erasure whose Bronze sweep was not submitted is never complete.
+    expect(erasureRepo.shredCalls).toHaveLength(1);
+    expect(erasureRepo.completeCalls).toHaveLength(0);
+  });
+
+  it('without a submitter (dev — ARGO_SERVER_URL unset) the disabled seam still completes with no workflow name', async () => {
+    const { useCase, erasureRepo } = buildUseCaseForA();
+    const result = await useCase.execute(
+      makeErasureEvent({ brandId: BRAND_A, email: EMAIL_A }),
+      new Date().toISOString(),
+    );
+    expect(result.outcome).toBe('erased');
+    expect(result.bronzeRawWorkflow).toBeUndefined();
+    expect(erasureRepo.completeCalls).toHaveLength(1);
+  });
+});
+
 describe('Subject hash derivation — same salt + subject = same hash across consumers', () => {
   it('hashIdentifier produces a deterministic 64-hex string (parity with identity bridge)', () => {
     const hash1 = hashIdentifier(EMAIL_A, 'email', SALT_HEX_A, 'IN');

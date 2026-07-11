@@ -7,6 +7,18 @@ image:
 
 envSecretName: stream-worker-env
 
+# Helm lists REPLACE (no merge) — the two defaults are repeated verbatim, then the staging wiring.
+env:
+  - name: SERVICE_NAME
+    value: stream-worker
+  # T2-10: the health server binds this port; the helm probes (probes.port) target it.
+  - name: HEALTH_PORT
+    value: "8090"
+  # AUD-OPS-037: staging bakes the same Bronze raw-PII erasure submit as prod (k8s mode —
+  # the staging argo-workflows app is also controller-only). See values-prod.yaml.
+  - name: ARGO_SERVER_URL
+    value: https://kubernetes.default.svc
+
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-staging-stream-worker

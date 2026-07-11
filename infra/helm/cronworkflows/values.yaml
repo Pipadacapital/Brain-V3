@@ -80,6 +80,26 @@ sparkBronze:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
+  # ── On-demand subject erasure (AUD-OPS-037; templates/spark-erasure.yaml) ──────────────────────
+  # WorkflowTemplate `bronze-raw-erasure` wrapping erasure_raw_delete.py (RTBF hard-delete of one
+  # subject's rows across the raw Bronze tables + the payload-path sweep of
+  # collector_events_connect). NOT a cron: the stream-worker erasure orchestrator submits a
+  # Workflow from this template (workflowTemplateRef via the Kubernetes API — the prod
+  # argo-workflows app is controller-only, no REST server) after the subject DEK crypto-shred.
+  # Same image/secret/placement as the maintenance cron above.
+  erasure:
+    enabled: true
+    # Per-run hard cap. The payload-path DELETEs full-scan collector_events_connect once per
+    # predicate group — give it the same ceiling as the weekly medallion maintenance sweep.
+    activeDeadlineSeconds: 3600
+    # Completed/failed Workflow CRs are TTL'd (one-shot submits have no history limits): 7 days
+    # keeps the audit/investigation trail without unbounded CR accumulation.
+    ttlSecondsAfterCompletion: 604800
+    # The in-cluster identity allowed to submit from the template (Role/RoleBinding in the
+    # template file): the stream-worker deployable, which hosts the erasure orchestrator.
+    submitter:
+      serviceAccountName: stream-worker
+      serviceAccountNamespace: stream-worker
   # ── Execution mode (see docs/ops/spark-on-k8s-migration.md §7) ─────────────────────────────────
   # "local" (default) = the proven single-JVM `spark-submit --master local[*]` in the cron pod. "k8s" =
   # Spark-on-Kubernetes cluster mode (real executor pods, same image/catalog/code). Bronze is the lighter,

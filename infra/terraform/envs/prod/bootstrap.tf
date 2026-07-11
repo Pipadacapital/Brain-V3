@@ -74,7 +74,9 @@ module "oidc_github" {
   # role assumption is rejected — was brain-platform/brain (repo doesn't exist).
   github_org       = "Pipadacapital"
   github_repo      = "Brain-V3"
-  allowed_branches = ["master"] # repo default branch (workflow_dispatch runs here) — was "main" (mismatch)
+  # RELEASE-LAYER (2026-07-11): image builds moved to `release` (deploy.yml);
+  # master keeps the prod-promote lane (promote-prod.yml) + workflow_dispatch.
+  allowed_branches = ["master", "release"]
 
   # ECR-push + terraform-apply CI roles (deploy.yml / prod-apply.yml). After apply,
   # set repo variables AWS_ECR_PUSH_ROLE_ARN / AWS_PROD_APPLY_ROLE_ARN from the

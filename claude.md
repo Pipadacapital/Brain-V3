@@ -28,6 +28,11 @@ Registration -> Verification -> Organization -> Brand -> Region -> Team -> Shopi
 - Refresh the medallion with `tools/dev/v4-refresh-loop.sh` (Spark Silver→Gold→mv SYNC refresh). The Spark jobs are `db/iceberg/spark/{silver,gold}/*.py` + their run scripts.
 - These naming/architecture invariants are CI-enforced by `tools/lint/v4-naming-guard.sh` (blocking gate in `.github/workflows/pr.yml`): it forbids retired-DB refs, any dbt invocation, feature precompute, and NEW StarRocks coupling in serving app code (mysql2 / `:9030` / `STARROCKS_*`), while ALLOWING Trino serving over the iceberg catalog (`iceberg.brain_{gold,silver,serving}.*`).
 
+## Branching & deploys (RELEASE-LAYER, 2026-07-11)
+- Feature branches → PR → **`release`** (the default branch). NEVER open or merge a PR to `master`.
+- ONLY the repo owner merges `release` → `master`. `master` = production: that merge promotes the staging digests to prod values (`promote-prod.yml`), fires the infra TF lane, and ArgoCD prod apps track `master`.
+- `deploy.yml` (build images + staging values bump) runs on pushes to `release`; integration runs on both.
+
 ## Operating standards
 - Prefer small, reversible, auditable changes.
 - Treat integrations as unreliable.

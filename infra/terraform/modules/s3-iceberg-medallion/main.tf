@@ -360,6 +360,17 @@ data "aws_iam_policy_document" "bucket_policy" {
       variable = "s3:x-amz-server-side-encryption"
       values   = ["aws:kms"]
     }
+    # Only deny puts that EXPLICITLY request a non-KMS algorithm. Writers that
+    # omit the header (Iceberg REST + the Kafka Connect Iceberg sink + Spark)
+    # fall through to the bucket's default SSE-KMS, so objects are always
+    # KMS-encrypted at rest. Without this, header-absent puts were denied
+    # ("explicit deny in a resource-based policy") and Bronze/Silver/Gold
+    # commits failed.
+    condition {
+      test     = "Null"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["false"]
+    }
   }
 
   statement {

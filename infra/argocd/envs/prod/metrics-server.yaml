@@ -1,0 +1,62 @@
+################################################################################
+# Brain – ArgoCD Application: metrics-server (prod) — AUD-LIVE-1
+# Installs the UPSTREAM metrics-server (kubernetes-sigs) into kube-system.
+# The cluster ships WITHOUT it on EKS, so every HPA reports <unknown> and
+# autoscaling is dead by construction — KEDA/HPA targets (Trino workers,
+# stream-worker) cannot scale until the resource-metrics API exists.
+#
+# AUTOMATED sync (prune + selfHeal) — deliberate exception to the MANUAL
+# prod promotion gate: like external-secrets, this is foundational cluster
+# plumbing whose absence breaks workloads silently (HPAs go <unknown>, no
+# pod-level failure to page on). It must self-heal back to spec rather than
+# wait for a human promotion.
+# EKS-safe defaults: kubelets serve TLS signed by the cluster CA, so NO
+# --kubelet-insecure-tls flag is needed (or wanted) here.
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metrics-server-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    project: brain
+    environment: prod
+    service: metrics-server
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://kubernetes-sigs.github.io/metrics-server
+    chart: metrics-server
+    targetRevision: 3.13.1
+    helm:
+      valuesObject:
+        replicas: 2
+        # Metrics feed the HPAs — the control loop must never sit on the Spot
+        # capacity it also scales.
+        nodeSelector:
+          role: system
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

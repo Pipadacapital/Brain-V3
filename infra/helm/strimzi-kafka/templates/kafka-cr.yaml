@@ -61,6 +61,10 @@ spec:
       metadata:
         labels:
           {{- include "strimziKafka.labels" . | nindent 10 }}
+        # AUD-LIVE-5: operator-created PVCs inherit ArgoCD tracking labels → without these they show as eternal OutOfSync prune candidates and a prune would destroy broker data.
+        annotations:
+          argocd.argoproj.io/compare-options: IgnoreExtraneous
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
 ---
 apiVersion: kafka.strimzi.io/v1beta2
 kind: Kafka

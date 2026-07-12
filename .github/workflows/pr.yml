@@ -156,6 +156,32 @@ jobs:
         run: tools/lint/deprecation-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Spark-tier guard/parity suite (AUD-IMPL-008, subsumes AUD-ID-10) — BLOCKING.
+  # Runs every db/iceberg/spark/**/*_test.py via tools/lint/spark-guard-suite.sh.
+  # These guards encode the medallion's core invariants: probabilistic-identity
+  # quarantine (§1.4), collector-gate admission / anti-starvation (CRIT-4),
+  # unmerge versioned-copy (A.2.4), attribution projection parity, erasure
+  # payload-path. PySpark-FREE (jobs are AST/source-parsed, never imported) —
+  # needs only python3 + pytest, seconds to run. The x-lang normalization
+  # interop test is excluded (needs a generated TS corpus + phonenumbers; it
+  # runs in the spark image build context — see the runner header).
+  # ─────────────────────────────────────────────────────────────────────────
+  spark-guard-suite:
+    name: Spark Guard Suite (medallion invariants)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install pytest (sole dependency — the suite is PySpark-free)
+        run: python3 -m pip install pytest
+      - name: Self-test the runner (proves a red guard fails the suite)
+        run: tools/lint/spark-guard-suite.sh --selftest
+      - name: Run the Spark-tier guard/parity suite
+        run: tools/lint/spark-guard-suite.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Prod placeholder guard (AUD-COST-007) — renders every prod chart
   # (helm template + values-prod) and scans the deployed ArgoCD prod manifests.
   # PR mode: fails on render breakage or any UNDOCUMENTED placeholder token

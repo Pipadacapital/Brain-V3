@@ -509,16 +509,13 @@ export type {
   AttributedRevenueTimeseries,
 } from './api/analytics.api.v1.js';
 
-// ── SPEC: B.3 — Wave-B Journey APIs (customer timeline / trace / compare; AMD-14) ──
+// ── SPEC: B.3 — Wave-B Journey APIs (customer timeline / trace; AMD-14) ──
 export {
   CustomerJourneyItemSchema,
   CustomerJourneyTimelineSchema,
   TraceTouchSchema,
   IdentityEvidenceItemSchema,
   JourneyTraceSchema,
-  CompareTouchSchema,
-  CompareJourneySchema,
-  JourneyCompareSchema,
 } from './api/journey-api.v1.js';
 export type {
   CustomerJourneyItem,
@@ -526,9 +523,6 @@ export type {
   TraceTouch,
   IdentityEvidenceItem,
   JourneyTrace,
-  CompareTouch,
-  CompareJourney,
-  JourneyCompare,
 } from './api/journey-api.v1.js';
 
 // ── Saved segments (P2) — CRUD + preview over ops.saved_segment (operational state) ──

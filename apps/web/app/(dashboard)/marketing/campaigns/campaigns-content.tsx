@@ -189,8 +189,11 @@ export function CampaignsContent() {
   });
 
   const campaignData = campaignQ.data;
-  const rows: CampaignAttributionRow[] =
-    campaignData?.state === 'has_data' ? campaignData.rows : [];
+  // Memoized so the array identity is stable across renders (downstream useMemo deps).
+  const rows: CampaignAttributionRow[] = useMemo(
+    () => (campaignData?.state === 'has_data' ? campaignData.rows : []),
+    [campaignData],
+  );
 
   // Search filters the visible campaign rows across the human-meaningful columns (name · platform).
   const visibleRows = useMemo(

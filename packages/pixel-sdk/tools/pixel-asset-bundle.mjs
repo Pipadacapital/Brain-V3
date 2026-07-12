@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-export const BUILT_MODULE_PATH = join(PKG_ROOT, 'src/asset/generated/pixel-asset.built.ts');
+const BUILT_MODULE_PATH = join(PKG_ROOT, 'src/asset/generated/pixel-asset.built.ts');
 
 /** Bundle src/asset/entry.ts into the single self-contained IIFE. Returns the JS text. */
 export async function buildPixelAssetBundle() {

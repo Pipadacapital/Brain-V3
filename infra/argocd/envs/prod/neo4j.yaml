@@ -23,6 +23,12 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
+    # AUD-INFRA-003: the app syncs with ServerSideApply=true but diffs
+    # client-side, so API-server-defaulted StatefulSet fields (port protocol,
+    # probe defaults, …) showed as permanent false OutOfSync right after a
+    # Succeeded sync. ServerSideDiff predicts the post-apply object via an SSA
+    # dry-run, so defaulted fields stop registering as drift.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   labels:
     project: brain
     environment: prod
@@ -43,6 +49,20 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: neo4j
+  # AUD-INFRA-003 (Wave-1 root cause): StatefulSet.spec.volumeClaimTemplates is
+  # IMMUTABLE after creation, and the API server injects defaults into the live
+  # entries (apiVersion/kind: PersistentVolumeClaim, volumeMode: Filesystem,
+  # status.phase: Pending) that the rendered chart never carries — an
+  # un-actionable, permanent diff. Ignore it for COMPARISON ONLY (deliberately
+  # NO RespectIgnoreDifferences: syncs still apply the full manifest, and the
+  # API server itself rejects any real vct mutation, which is the correct guard).
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: neo4j
+      namespace: neo4j
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     syncOptions:
       - CreateNamespace=true

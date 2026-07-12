@@ -78,6 +78,21 @@ const CANONICAL_OF_C = `
           AND NOT EXISTS { MATCH (canon)-[ra:ALIAS_OF]->() WHERE ra.valid_to IS NULL }`;
 const CANONICAL_BRAIN_ID = 'coalesce(canon.brain_id, c.brain_id)';
 
+/**
+ * Every node label the identity graph writes (AUD-IMPL-028). purgeBrand deletes per-label so each
+ * MATCH is label-scoped (index/label-scan backed) instead of an AllNodesScan. Keep this list in
+ * sync with every `CREATE (:X …)` / `MERGE (:X …)` in the graph writers (this repo + core's
+ * neo4j-identity-reader unmerge path); the purge's final label-less sweep still catches drift.
+ */
+export const IDENTITY_GRAPH_LABELS = [
+  'Identifier',
+  'Customer',
+  'MergeEvent',
+  'MergeReview',
+  'SharedUtility',
+  'UnmergeEvent',
+] as const;
+
 export class Neo4jIdentityRepository {
   private readonly driver: Driver;
   private readonly pgPool: Pool;
@@ -669,10 +684,33 @@ export class Neo4jIdentityRepository {
     }
   }
 
-  /** Delete an entire brand subgraph (test cleanup / brand offboarding / crypto-shred). */
+  /**
+   * Delete an entire brand subgraph (test cleanup / brand offboarding / crypto-shred).
+   *
+   * AUD-IMPL-028: per-label + batched, NOT one label-less all-nodes scan in a single unbounded
+   * DETACH DELETE transaction. The label-less form is an AllNodesScan (none of bootstrap()'s
+   * label-scoped indexes apply) and the single transaction accumulates the whole brand subgraph
+   * in the fixed 2g heap — on the RTBF/brand-erasure path, running exactly when the tenant's
+   * graph is largest, against the single non-replicated neo4j that also serves live per-event
+   * resolution. `CALL { … } IN TRANSACTIONS OF 10000 ROWS` (Neo4j 4.4+; we run 5.x) bounds each
+   * commit; per-label MATCH keeps every scan label-scoped.
+   *
+   * NOTE: CALL … IN TRANSACTIONS is only legal in an implicit (auto-commit) transaction —
+   * session.run() qualifies; NEVER wrap this in an explicit tx function. The final label-less
+   * sweep stays as a drift-catcher: after the label passes it matches (near-)zero nodes, so it
+   * is heap-bounded, and it guarantees the crypto-shred is COMPLETE even if a new label is
+   * added without updating IDENTITY_GRAPH_LABELS.
+   */
   async purgeBrand(brandId: string): Promise<void> {
     const session = this.driver.session();
     try {
+      for (const label of IDENTITY_GRAPH_LABELS) {
+        await session.run(
+          `MATCH (n:${label} {brand_id: $b}) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS`,
+          { b: brandId },
+        );
+      }
+      // Drift-catcher (see doc above): completeness beats scan cost on the erasure path.
       await session.run('MATCH (n) WHERE n.brand_id = $b DETACH DELETE n', { b: brandId });
     } finally {
       await session.close();

@@ -48,7 +48,7 @@ import { IdentityStoreBrainIdResolver } from './touchpoint-cache/BrainIdResolver
 import { TouchpointCacheService } from './touchpoint-cache/TouchpointCacheService.js';
 import { TouchpointCacheConsumer } from './touchpoint-cache/TouchpointCacheConsumer.js';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
-import { initObservability, initSentry, createLogger } from '@brain/observability';
+import { initObservability, initSentry, createLogger, registerProcessFailureHandlers } from '@brain/observability';
 import { loadStreamWorkerConfig } from '@brain/config';
 
 /** Structured logger for stream-worker lifecycle/error logs. */
@@ -154,6 +154,9 @@ export async function main(): Promise<void> {
   const cfg = loadStreamWorkerConfig();
   const shutdownObservability = await initObservability({ serviceName: 'stream-worker', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
   const closeSentry = await initSentry({ serviceName: 'stream-worker' }); // gated by SENTRY_DSN (no-op in dev)
+  // Last-resort handlers (AUD-IMPL-003): route unhandledRejection/uncaughtException through the
+  // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
+  registerProcessFailureHandlers({ log, serviceName: 'stream-worker', flush: closeSentry });
 
   const brokers = cfg.KAFKA_BROKERS.split(',');
   const redisUrl = cfg.REDIS_URL;

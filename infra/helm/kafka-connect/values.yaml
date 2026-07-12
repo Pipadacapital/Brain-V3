@@ -106,6 +106,13 @@ connectors:
     transforms.coords.offset.field: kafka_offset
     transforms.coords.timestamp.field: kafka_timestamp
     iceberg.tables: brain_bronze.collector_events_connect
+    # AUD-IMPL-025: partition NEW auto-creates of the collector table by day(kafka_timestamp) — the
+    # sink's PHYSICAL InsertField column — so Spark's incremental watermark AND the Trino health
+    # reads get partition pruning from day one in a fresh env. AUTO-CREATE ONLY: the already-created
+    # prod table is migrated by the one-time db/iceberg/spark/bronze_collector_partition_migrate.py
+    # (metadata-only ALTER + parity check; runbook-gated). Collector-lane only — the raw lanes carry
+    # NO kafka_timestamp (no InsertField transform), a default-partition-by would break their creates.
+    iceberg.table.brain_bronze.collector_events_connect.partition-by: "day(kafka_timestamp)"
   iceberg-bronze-shopify-orders:
     connector.class: org.apache.iceberg.connect.IcebergSinkConnector
     tasks.max: "1"

@@ -25,7 +25,18 @@ import type { AdPlatform, TimeGrain } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
 
 export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, rawPool, srPool, flagService, semanticRouter } = deps;
+  const { bffProtectedPreHandler, rawPool, srPool, flagService, semanticRouter, servingCache } = deps;
+
+  // AUD-IMPL-026: data-health full-scans the unprunable Bronze lift view (json_extract_scalar
+  // columns → no Trino pushdown) per request. Front it with the serving Redis cache (executive
+  // 5-min tier — id mapped in serving-ttl.ts); no-op passthrough when the cache is absent, and
+  // the reader is fail-soft (a cache error falls back to the direct read).
+  const cachedRead = <T>(
+    brandId: string,
+    metricId: string,
+    params: Record<string, unknown>,
+    compute: () => Promise<T>,
+  ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
   // SPEC:C.4 — resolve the per-brand marts-migration flag (default OFF, fail-closed). ON → ad-spend /
   // blended-ROAS spend reads switch to the Wave-C measurement spend view (parity-safe alias; AMD-16).
@@ -248,7 +259,9 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Database not available' } });
       }
 
-      const result = await getDataHealth(auth.brandId, { pool: rawPool, srPool });
+      const result = await cachedRead(auth.brandId, 'data_health', {}, () =>
+        getDataHealth(auth.brandId!, { pool: rawPool, srPool }),
+      );
 
       return reply.send({ request_id: requestId, data: result });
     },

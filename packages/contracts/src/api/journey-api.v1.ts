@@ -2,14 +2,15 @@
 /**
  * journey-api.v1 — Zod response contracts for the Wave-B Journey APIs (SPEC: B.3, AMD-14).
  *
- * The three journey surfaces the spec names, served on the sanctioned core BFF seam (AMD-14
- * R1 — no standalone gateway): the per-customer timeline, the per-order trace (the
- * explainability surface), and the two-journey compare. Tenant is ALWAYS the session brand_id
+ * The journey surfaces the spec names, served on the sanctioned core BFF seam (AMD-14
+ * R1 — no standalone gateway): the per-customer timeline and the per-order trace (the
+ * explainability surface). (The two-journey compare was removed in the Wave-3 cleanup —
+ * AUD-IMPL-020: zero consumers.) Tenant is ALWAYS the session brand_id
  * (D-1 — never a query param); these schemas carry NO brand_id.
  *
  * INVARIANTS (mirror analytics.api.v1 §3):
- *  - Money = MinorUnitsSchema (bigint-as-string) — NEVER a float. (Only compare/trace carry any
- *    revenue, on composite rows; the timeline items are behavioral — no money.)
+ *  - Money = bigint-as-string minor units — NEVER a float. (These journey schemas are
+ *    behavioral — no money fields.)
  *  - Honest-empty = z.discriminatedUnion('state', [...]); `no_data` carries NO has_data fields —
  *    a NEW endpoint ships and answers honest-empty when no journey exists.
  *  - Schemas are NOT `.strict()` (§7): core may ADD a benign field without breaking a web read.
@@ -20,7 +21,7 @@
  *    (AMD-11 — max data_version), null on the pre-ledger cache path.
  */
 import { z } from 'zod';
-import { MinorUnitsSchema, DataSourceSchema } from './_money.js';
+import { DataSourceSchema } from './_money.js';
 
 // ── (1) GET /v1/customers/{brain_id}/journey — paginated newest-first timeline ──────────────
 // items {ts,type,channel,campaign?,url_path?,session_id,matched_via,journey_version}. Served from
@@ -104,31 +105,5 @@ export const JourneyTraceSchema = z.discriminatedUnion('state', [
 ]);
 export type JourneyTrace = z.infer<typeof JourneyTraceSchema>;
 
-// ── (3) GET /v1/journeys/compare?left=&right= — two journeys with t_minus_conversion_ms ─────
-
-export const CompareTouchSchema = z.object({
-  sequence_number: MinorUnitsSchema, // bigint → string (ledger position — NOT money)
-  occurred_at: z.string(),
-  event_type: z.string(),
-  channel: z.string().nullable(),
-  campaign: z.string().nullable(),
-  is_composite: z.boolean(),
-  /** ms from this touch to the journey's conversion; 0 at conversion, positive BEFORE it, null if no conversion. */
-  t_minus_conversion_ms: z.number().nullable(),
-});
-export type CompareTouch = z.infer<typeof CompareTouchSchema>;
-
-export const CompareJourneySchema = z.object({
-  brain_id: z.string(),
-  /** The conversion anchor timestamp (latest composite/order touch), or null when the journey never converted. */
-  conversion_at: z.string().nullable(),
-  touches: z.array(CompareTouchSchema),
-});
-export type CompareJourney = z.infer<typeof CompareJourneySchema>;
-
-export const JourneyCompareSchema = z.object({
-  left: CompareJourneySchema,
-  right: CompareJourneySchema,
-  data_source: DataSourceSchema,
-});
-export type JourneyCompare = z.infer<typeof JourneyCompareSchema>;
+// (A third surface, GET /v1/journeys/compare, was removed in the Wave-3 cleanup —
+// AUD-IMPL-020: zero consumers end-to-end. git history preserves the schemas.)

@@ -54,6 +54,26 @@ describe('D2 — the compiler', () => {
     }
   });
 
+  it('AUD-SL-10 — every pre-agg carries an ATOMIC, unscoped Trino CTAS the refresh cron can execute', () => {
+    for (const m of reg.all) {
+      for (const g of compileMetric(m).grains) {
+        if (!g.preagg) continue;
+        const ctas = g.preagg.trinoCtasSql;
+        // Atomic replace (Iceberg replace transaction) into the SAME table the fast view reads.
+        expect(ctas).toContain(`CREATE OR REPLACE TABLE ${g.preagg.tableName}`);
+        expect(ctas).toContain("partitioning = ARRAY['bucket(brand_id, 16)']");
+        expect(ctas).toContain('format_version = 2');
+        // Cross-brand batch: NO brand predicate (brand_id is a grouping key; serving reads go
+        // through the ${BRAND_PREDICATE}-guarded compiled views, never this table).
+        expect(occurrences(ctas, TOKEN)).toBe(0);
+        // Single statement for the Trino HTTP API — no trailing semicolon, no second statement.
+        expect(ctas.trim().endsWith(';')).toBe(false);
+        // Same source + grouping as the Spark refresh (only the DDL dialect differs).
+        expect(ctas).toContain('GROUP BY ');
+      }
+    }
+  });
+
   it('D2.compile.slow_no_preagg — non-interactive metrics never emit a pre-agg', () => {
     for (const m of reg.all) {
       if (m.interactive) continue;

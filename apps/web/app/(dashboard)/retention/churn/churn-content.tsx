@@ -559,7 +559,9 @@ function WinBackDialog({
       setName(`Win-back — ${bandLabel}`);
       preview.reset();
     }
-    // Intentionally deps-narrowed: only re-run when the dialog opens or the band changes.
+    // Intentionally deps-narrowed: only re-run when the dialog opens or the band changes —
+    // `preview` is a new object identity every render; including it would loop the effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, bandLabel]);
 
   const previewData = preview.data;

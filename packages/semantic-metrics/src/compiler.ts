@@ -65,6 +65,15 @@ export interface CompiledPreagg {
   readonly tableName: string;
   readonly createDdl: string;
   readonly refreshSql: string;
+  /**
+   * AUD-SL-10 — the ATOMIC Trino materialization: `CREATE OR REPLACE TABLE … AS SELECT` (an Iceberg
+   * replace transaction — readers see the old rows until the new snapshot commits, never an empty
+   * table mid-refresh). This is what the scheduled semantic-preagg-refresh job executes: the source
+   * entity views (iceberg.brain_serving.semantic_*) are TRINO views, which Spark cannot execute —
+   * so Trino, not Spark, is the pre-agg materializer. createDdl/refreshSql (the Spark dialect)
+   * remain for a future Spark-readable-source cutover; ONE materializer owns a table at a time.
+   */
+  readonly trinoCtasSql: string;
 }
 
 export interface CompiledGrain {
@@ -252,7 +261,24 @@ function compilePreagg(m: MetricDefinition, grain: TimeGrain): CompiledPreagg {
     `  WHERE ${wheres.join('\n    AND ')}\n` +
     `GROUP BY ${plan.groupBy};\n`;
 
-  return { tableName, createDdl, refreshSql };
+  // AUD-SL-10 — the Trino-dialect ATOMIC rebuild (CREATE OR REPLACE TABLE AS = one Iceberg replace
+  // transaction; supported by the deployed Trino 455's Iceberg connector). Same plan/measures/
+  // predicates as refreshSql — only the DDL dialect differs (Trino `WITH (partitioning …)` vs Spark
+  // `USING iceberg PARTITIONED BY`; Trino's bucket transform is column-first). Cross-brand batch
+  // (brand_id is a grouping key, NO brand predicate) — consumers read through the compiled
+  // ${'{BRAND_PREDICATE}'}-guarded views, never this table directly.
+  const trinoCtasSql =
+    `-- SPEC:D.2 / §1.11.1 / AUD-SL-10 — ATOMIC Trino materialization for ${tableName}.\n` +
+    `-- Run by the semantic-preagg-refresh cron. GENERATED — DO NOT EDIT (change the YAML + recompile).\n` +
+    `CREATE OR REPLACE TABLE ${tableName}\n` +
+    `WITH (partitioning = ARRAY['bucket(brand_id, 16)'], format_version = 2)\n` +
+    `AS\n` +
+    `SELECT\n${keySelect},\n${measureSelect}\n` +
+    `FROM ${binding.table}\n` +
+    `  WHERE ${wheres.join('\n    AND ')}\n` +
+    `GROUP BY ${plan.groupBy}\n`;
+
+  return { tableName, createDdl, refreshSql, trinoCtasSql };
 }
 
 function preaggViewSql(m: MetricDefinition, grain: TimeGrain, viewName: string, preagg: CompiledPreagg): string {

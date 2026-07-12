@@ -172,7 +172,7 @@ export interface CorpusRow {
   internal: string | null;
 }
 
-export function generateCorpus(count = 12000): CorpusRow[] {
+function generateCorpus(count = 12000): CorpusRow[] {
   const rows: CorpusRow[] = [];
   for (let i = 0; i < count; i += 1) {
     const r = rnd();

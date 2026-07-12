@@ -45,6 +45,12 @@ env:
   - name: HEALTH_PORT
     value: "8090"
 
+# AUD-OBS-2: OTel OTLP export flag — empty (default) keeps initObservability() a no-op
+# (no SDK loaded; spans/metrics stay in-process). Set per env to the collector/vendor
+# OTLP endpoint to turn tracing+metrics export ON; auth headers (if the endpoint needs
+# them) belong in the envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS.
+otelExporterOtlpEndpoint: ""
+
 serviceAccount:
   annotations: {}
 
@@ -64,20 +70,45 @@ resources:
 # Horizontal Pod Autoscaler (P2.5). IMPORTANT CEILING: the worker's live consumers are Kafka
 # consumer-group members bound to the collector topic's partitions — scaling BEYOND the partition
 # count yields IDLE consumers (no partition to own), so maxReplicas must stay <= the live-topic
-# partition count. That count is now ENV-SPECIFIC (H5): prod live topic = 96 partitions, dev/staging
-# = 12 (infra/helm/strimzi-kafka → live_topic_partition_count). maxReplicas is therefore set
-# PER ENV in values-{staging,prod}.yaml to match — this default (12) is the dev/non-prod ceiling.
+# partition count. AUD-OPS-030 correction: EVERY env's topics are 12 partitions today — the
+# strimzi chart clamps `partitions` to the 6..12 band (infra/helm/strimzi-kafka/values.yaml)
+# and prod sets 12 (values-prod.yaml); the earlier "prod live topic = 96 partitions (H5)"
+# claim here was never true against that chart. maxReplicas therefore stays 12 EVERYWHERE
+# until partitions + pool limits are raised together as one deliberate change.
 # The P1.2 due-time work-queue (claim_due_repull_connectors, SKIP LOCKED) lets the ingest scheduler
 # parallelise across these replicas without ordinals. CPU target is conservative (consumers are
-# I/O-bound on PG/StarRocks).
+# I/O-bound on PG/Trino).
 autoscaling:
   enabled: false
   minReplicas: 2
-  maxReplicas: 12        # dev/non-prod ceiling == dev live-topic partition count; prod overrides to <=96
+  maxReplicas: 12        # == live-topic partition count (strimzi chart clamps to <=12) in EVERY env
   targetCPUUtilizationPercentage: 70
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 600   # 10m — consumer-group rebalances are disruptive; scale down slowly
+  # ── AUD-OPS-030: KEDA kafka-lag scaling (replaces the plain CPU HPA when enabled) ──
+  # CPU is the WRONG signal for an I/O-bound consumer: lag can grow while CPU sits under
+  # the 70% target (matters most for burst recovery after downtime/replay). When
+  # keda.enabled=true the chart renders a ScaledObject (templates/scaledobject.yaml)
+  # carrying BOTH a kafka-lag trigger and the CPU trigger, and SUPPRESSES the plain HPA
+  # (templates/hpa.yaml) — KEDA materialises its own HPA and two controllers must never
+  # fight over one Deployment. Requires the KEDA operator (installed in prod via
+  # infra/argocd/envs/prod/keda.yaml; the trino chart's ScaledObject already proved it).
+  # OFF by default: dev/staging keep the plain HPA (or static replicas).
+  keda:
+    enabled: false
+    cooldownPeriod: 600            # mirrors the HPA scaleDown stabilization (rebalances are disruptive)
+    kafka:
+      # Plaintext in-cluster listener (same value the app's KAFKA_BROKERS uses in that env).
+      bootstrapServers: ""
+      # The LIVE collector lane consumer group (packages/config stream-worker CONSUMER_GROUP_ID).
+      consumerGroup: stream-worker-live
+      # The live collector topic (env-prefixed; strimzi chart `prefix`).
+      topic: ""
+      # Scale out when average per-replica lag on the topic exceeds this many messages.
+      lagThreshold: "1000"
+      # Never scale past partition count on idle consumers' account (KEDA also caps at maxReplicas).
+      allowIdleConsumers: "false"
 
 # ── Wave-2 workload hardening (AUD-OPS-001/002/004, AUD-INFRA-022) ────────────
 # AUD-OPS-001: survive node drains / Spot reclaims / Karpenter consolidation —

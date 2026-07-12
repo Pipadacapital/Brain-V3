@@ -5,7 +5,7 @@
  * Extracted VERBATIM from bootstrap/registerConnectors.ts. Guards, status codes, and
  * response shapes are byte-for-byte identical to the prior inline registration.
  */
-import { type FastifyInstance, type FastifyRequest, type preHandlerHookHandler } from 'fastify';
+import { type FastifyInstance, type FastifyRequest, type preHandlerAsyncHookHandler } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import type { DbPool } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
@@ -27,7 +27,7 @@ export interface RegisterConnectorBackfillSyncRoutesDeps {
   connectorRepo: PgConnectorInstanceRepository;
   connectorSecretsManager: ISecretsManager;
   auditWriter: AuditWriter;
-  sessionPreHandler: preHandlerHookHandler;
+  sessionPreHandler: preHandlerAsyncHookHandler;
 }
 
 export function registerConnectorBackfillSyncRoutes(app: FastifyInstance, deps: RegisterConnectorBackfillSyncRoutesDeps): void {

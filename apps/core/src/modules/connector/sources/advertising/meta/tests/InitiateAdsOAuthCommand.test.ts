@@ -12,6 +12,11 @@ import { InitiateMetaOAuthCommand, META_GRAPH_API_VERSION } from '../application
 import { InitiateGoogleAdsOAuthCommand } from '../../google/application/commands/InitiateGoogleAdsOAuthCommand.js';
 import { InProcessOAuthStateStore } from '../../../storefront/shopify/infrastructure/state/InProcessOAuthStateStore.js';
 
+// Hermetic unit tier (AUD-IMPL-007/-016): the commands read loadCoreConfig(), whose schema
+// requires DATABASE_URL (the ONLY required var). Nothing here touches the DB — provide a dummy
+// URL so this suite runs without a provisioned env instead of failing on config parse.
+process.env['DATABASE_URL'] ??= 'postgres://unit:unit@localhost:5432/unit_test_never_connected';
+
 const BRAND_ID = '550e8400-e29b-41d4-a716-446655440000';
 const META_CALLBACK = 'https://app.example.com/api/v1/connectors/meta/callback';
 const GOOGLE_CALLBACK = 'https://app.example.com/api/v1/connectors/google_ads/callback';

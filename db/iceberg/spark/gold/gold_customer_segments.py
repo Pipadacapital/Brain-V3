@@ -33,8 +33,8 @@ THE THREE BASE SIGNALS (per silver_customer row, all integer):
 
 MONEY (I-S07): segment_value_minor is a bigint MINOR-unit Σ of lifetime_value_minor — a pure additive
 sum, no rounding. The segment grain carries NO currency_code (it sums across all of a brand's
-currencies into one per-(brand, segment_type, segment) bucket — the documented, unchanged deviation; see
-parity/mart_registry.py). registry money_columns=[] for the same reason (no sibling currency_code at
+currencies into one per-(brand, segment_type, segment) bucket — the documented, unchanged deviation,
+formerly recorded in the retired parity oracle's mart_registry.py). registry money_columns=[] for the same reason (no sibling currency_code at
 this grain). PII-safe: no brain_id / hashes on this rollup grain — counts + Σ only.
 
 PK (brand_id, segment_type, segment). brand_id is the first column / tenant key.

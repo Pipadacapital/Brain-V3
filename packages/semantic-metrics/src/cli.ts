@@ -7,6 +7,7 @@
  *   generated/views/<name>_<grain>.sql        — the compiled Trino view (template w/ ${BRAND_PREDICATE})
  *   generated/views/<name>_<grain>_slow.sql    — base-entity fallback (interactive time-grains)
  *   generated/preaggs/<name>_<grain>.sql       — Spark pre-agg DDL + refresh (interactive time-grains)
+ *   generated/preaggs/<name>_<grain>.trino.sql — Trino atomic CTAS rebuild (AUD-SL-10 — the cron's statement)
  *   generated/catalog.json                     — the GET /v1/semantic/metrics discovery payload
  *   generated/metric-ids.ts                     — the compile-time metric-id + grain TS types
  *
@@ -64,6 +65,9 @@ export async function compileAll(): Promise<void> {
       if (g.preagg) {
         const body = `${g.preagg.createDdl}\n${g.preagg.refreshSql}`;
         await writeFile(join(GEN_DIR, 'preaggs', `${m.name}_${g.grain}.sql`), body, 'utf8');
+        // AUD-SL-10: the Trino-dialect atomic rebuild the semantic-preagg-refresh cron executes
+        // (committed for auditability; the job compiles from the registry at run time).
+        await writeFile(join(GEN_DIR, 'preaggs', `${m.name}_${g.grain}.trino.sql`), g.preagg.trinoCtasSql, 'utf8');
       }
     }
   }

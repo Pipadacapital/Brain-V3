@@ -7,6 +7,11 @@ image:
 
 envSecretName: collector-env
 
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in collector-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""
+
 # AUD-LOCAL-016-FUP1: prod kube-prometheus-stack scrapes the collector's /metrics (main port)
 # as job "brain-collector" — the brain-slo rules' job name (up{job=~"brain-.*"}).
 metrics:
@@ -31,10 +36,17 @@ serviceAccount:
 nodeSelector:
   brain.platform/pool: streaming
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 33m / max 39m, mem p95 ~174Mi / max 309Mi per pod. Was 250m/512Mi —
+# ~7x over p95, which starved the HPA (0%/65% observed → never scales) and
+# reserved ~1 node of dead headroom. New: cpu 100m (HPA fires at 65m ≈ 1.7x max
+# seen), mem 384Mi (80% target = 307Mi ≈ observed max). LIMITS UNCHANGED —
+# burst ceiling and OOM budget are not touched; this is a scheduling/HPA-math
+# change only. Revert = restore the old requests.
 resources:
   requests:
-    cpu: 250m
-    memory: 512Mi
+    cpu: 100m
+    memory: 384Mi
   limits:
     cpu: "2"
     memory: 1Gi

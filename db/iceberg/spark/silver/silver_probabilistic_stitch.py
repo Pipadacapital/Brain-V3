@@ -271,12 +271,33 @@ def build(spark: SparkSession) -> str:
     to_write = scored.where(F.col("brand_id").isin(enabled))
 
     to_write.createOrReplaceTempView("splink_stitch_new")
+    # AUD-IMPL-015: the logical key of this table is ONE best match per (brand_id, session_id,
+    # model_version) — _score() already keeps the single best-confidence row per session WITHIN a
+    # run. The old MERGE key additionally included probabilistic_brain_id, so a LATER run whose
+    # best match was a DIFFERENT customer INSERTed a second row instead of replacing the first
+    # (one session shown linked to two customers in a flag-ON brand's estimated view).
+    # Fix in two steps (both idempotent, brand_id-first):
+    #   1) DELETE stale alternates: target rows for a re-scored session whose brain_id differs
+    #      from this run's best match (also self-heals any duplicates accumulated pre-fix).
+    #   2) MERGE on the logical key (brand_id, session_id, model_version) — matched rows are
+    #      UPDATEd in place (confidence/features/scored_at refresh), new sessions INSERT.
+    spark.sql(
+        f"""
+        DELETE FROM {fqtn} t
+        WHERE EXISTS (
+            SELECT 1 FROM splink_stitch_new s
+            WHERE s.brand_id = t.brand_id AND s.session_id = t.session_id
+              AND s.model_version = t.model_version
+              AND s.probabilistic_brain_id <> t.probabilistic_brain_id
+        )
+        """
+    )
     spark.sql(
         f"""
         MERGE INTO {fqtn} t
         USING splink_stitch_new s
         ON t.brand_id = s.brand_id AND t.session_id = s.session_id
-           AND t.probabilistic_brain_id = s.probabilistic_brain_id AND t.model_version = s.model_version
+           AND t.model_version = s.model_version
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """

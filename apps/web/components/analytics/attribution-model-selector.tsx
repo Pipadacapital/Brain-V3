@@ -57,7 +57,8 @@ export function AttributionModelSelector({
   onChange,
   className,
 }: AttributionModelSelectorProps) {
-  const active = MODELS.find((m) => m.value === model) ?? MODELS[0];
+  // MODELS is a non-empty compile-time constant, so index 0 always exists.
+  const active = MODELS.find((m) => m.value === model) ?? MODELS[0]!;
 
   return (
     <div className={className} data-testid="attribution-model-selector">

@@ -86,9 +86,12 @@ export function Sparkline({
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`)
     .join(' ');
   // Close the path down to the baseline and back for the filled area.
+  // coords is non-empty: the points.length < 2 case already returned above.
+  const firstCoord = coords[0]!;
+  const lastCoord = coords[coords.length - 1]!;
   const areaPath =
-    `${linePath} L${coords[coords.length - 1].x.toFixed(2)},${(height - pad).toFixed(2)}` +
-    ` L${coords[0].x.toFixed(2)},${(height - pad).toFixed(2)} Z`;
+    `${linePath} L${lastCoord.x.toFixed(2)},${(height - pad).toFixed(2)}` +
+    ` L${firstCoord.x.toFixed(2)},${(height - pad).toFixed(2)} Z`;
 
   return (
     <svg

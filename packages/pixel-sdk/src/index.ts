@@ -56,3 +56,6 @@ export {
   PHONE_COUNTRY_CC,
 } from './asset/identify-normalize.js';
 export { autodetectKind, isPasswordAdjacent } from './asset/identify-autodetect.js';
+// AUD-IMPL-004: the typed seam + helper element shape (types-only — no runtime surface change).
+export type { AutodetectElementLike } from './asset/identify-autodetect.js';
+export type { BrainAssetRuntime } from './asset/runtime.js';

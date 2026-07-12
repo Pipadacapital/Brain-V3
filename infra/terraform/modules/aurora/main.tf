@@ -81,6 +81,22 @@ variable "instance_count" {
   default     = 1
 }
 
+variable "enable_tripwire_alarms" {
+  description = <<-EOT
+    AUD-OPS-032: ACU-saturation tripwire. The prod cluster is deliberately
+    capped at max_capacity=2 ACU (cost-first); the pre-agreed 10x knob is a
+    tfvars bump (aurora_max_capacity 2 -> 8, pay-per-use so ~zero idle cost).
+    This alarm is the TRIGGER for pulling that knob: sustained ACUUtilization
+    >= 80% means the writer is pinned at its ceiling and OLTP + hourly exports
+    are degrading. No alarm_actions (matches modules/observability posture —
+    alerts-only account); a visible tripwire, not a pager. NOTE: no CloudWatch
+    exporter runs in-cluster, so this cannot be a Prometheus rule (it would be
+    loaded-but-dead). Decision record: docs/ops/scale-knobs.md.
+  EOT
+  type        = bool
+  default     = true
+}
+
 ###############################################################################
 # Common tags
 # Peer modules tag lowercase project/environment/purpose (+ provider default_tags);
@@ -230,6 +246,36 @@ resource "aws_rds_cluster_instance" "postgres" {
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-${var.environment}-postgres-${count.index + 1}"
+  })
+}
+
+###############################################################################
+# AUD-OPS-032 — ACU-saturation tripwire (see var.enable_tripwire_alarms).
+# ACUUtilization = ServerlessDatabaseCapacity / max_capacity (%): sustained
+# >=80% for 15m means the writer is effectively pinned at its deliberate 2-ACU
+# cost cap — the pre-agreed response is the tfvars bump (aurora_max_capacity
+# 2 -> 8), NOT a firefight. Additive + reversible (flip the var to drop it).
+###############################################################################
+resource "aws_cloudwatch_metric_alarm" "acu_utilization_tripwire" {
+  count = var.create && var.enable_tripwire_alarms ? 1 : 0
+
+  alarm_name          = "${var.project}-${var.environment}-aurora-acu-saturation"
+  alarm_description   = "Aurora Serverless v2 ACUUtilization >= 80% for 15m — the ${var.max_capacity}-ACU ceiling is saturating; pull the pre-agreed max_capacity knob (docs/ops/scale-knobs.md, AUD-OPS-032)"
+  namespace           = "AWS/RDS"
+  metric_name         = "ACUUtilization"
+  statistic           = "Average"
+  period              = 300
+  evaluation_periods  = 3
+  threshold           = 80
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DBClusterIdentifier = aws_rds_cluster.postgres[0].cluster_identifier
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${var.project}-${var.environment}-aurora-acu-saturation"
   })
 }
 

@@ -25,6 +25,15 @@ import Fastify from 'fastify';
 import { PIXEL_JS, PIXEL_VERSION, registerPixelAssetRoute } from '../src/interfaces/rest/pixel-asset.route.js';
 import { LEGACY_PIXEL_JS, LEGACY_PIXEL_VERSION } from './fixtures/legacy-pixel-iife.js';
 
+// Hermetic unit tier (AUD-IMPL-016): the edge-guard (AUD-INFRA-025) lazily calls
+// loadCollectorConfig() inside the request path; its schema requires DATABASE_URL +
+// KAFKA_BROKERS. Nothing in this suite connects — the token->brand binding oracle
+// FAIL-OPENs on lookup failure — so dummies keep the suite runnable without a
+// provisioned env (config parse otherwise turns every request into a 500).
+process.env['DATABASE_URL'] ??= 'postgres://unit:unit@localhost:5432/unit_test_never_connected';
+process.env['KAFKA_BROKERS'] ??= 'localhost:9092';
+
+
 const TOKEN = 'a11a0011-0a11-4a11-8a11-000000000011';
 const BRAND = 'a11a0001-0a00-4a00-8a00-000000000001';
 

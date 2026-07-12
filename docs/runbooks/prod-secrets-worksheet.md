@@ -85,3 +85,49 @@ Settings → Secrets and variables → Actions:
 - var `ENVIRONMENT` = `prod`
 - secret `GITOPS_TOKEN` = PAT with `contents:write`
 - Settings → Environments → `production` → add required reviewers
+
+---
+
+## Appendix — Rotation (per-credential consumer map + ordered procedure) — AUD-OPS-024
+
+Mechanism recap (`infra/helm/external-secrets-config/README.md`): SM is the single source of
+truth; ESO copies a rotated value into the k8s Secret within **1h** (`refreshInterval`); pods
+consume env **at start**, so every rotation ends with a Deployment roll
+(`docs/runbooks/restart-services.md`). Force an immediate ESO refresh instead of waiting:
+`kubectl annotate externalsecret <name> -n <ns> force-sync=$(date +%s) --overwrite`.
+
+The risk this appendix closes: several credentials live in **multiple** SM entries — a partial
+rotation (update one entry, miss another) is a self-inflicted auth outage.
+
+### Credential → SM entries → deployments to roll
+
+| Credential | SM entries carrying it (keys) | Roll (in this order) |
+|---|---|---|
+| **`brain_app` PG password** (ONE value, 4 entries) | `core-env` (`DATABASE_URL`, `BRAIN_APP_DATABASE_URL`, `DATABASE_URL_DIRECT`) · `collector-env` (`DATABASE_URL`) · `stream-worker-env` (`DATABASE_URL`) · `pgbouncer-env` (`DB_PASSWORD`) | pgbouncer → core → collector → stream-worker. **core-env is ALSO consumed by the argo cron pods** (`envSecretName: core-env`) — running workflows finish on the old value; the next scheduled run picks up the new one. |
+| **Neo4j password** (ONE value, 3 entries) | `core-env` (`NEO4J_PASSWORD`) · `stream-worker-env` (`NEO4J_*`) · `neo4j-auth` (`NEO4J_AUTH=neo4j/<pw>`) | neo4j (StatefulSet) → core → stream-worker (+ next argo cron run) |
+| **`iceberg_catalog` PG password** | `iceberg-rest-catalog-db` (`jdbc-user`/`jdbc-password`) — single entry | Dedicated runbook: `rotate-iceberg-catalog-db-password.md` |
+| **Aurora master (`brainadmin`)** | RDS-managed secret (`rds!cluster-…`) — NOT in any `brain/prod/k8s/*` entry | Nothing to roll: only `tools/deploy/run-migrations.sh` consumes it, reading the RDS-managed secret at run time. Rotate via RDS; just don't rotate mid-migration. |
+| **Pixel HMAC / signing key** | `collector-env` only | collector. **No dual-key acceptance window exists** — payloads signed with the old key are rejected the moment the new value is live; also update whatever holds the key on the storefront side (pixel install) in the same window. |
+| **Redis** (currently no AUTH token derived) / **Kafka** (in-cluster, no SASL) | endpoint strings only — rotation N/A | — |
+| **Connector OAuth tokens** | per-connector SM entries minted by the UI | Never hand-rotated: Reconnect in the UI re-mints; token-refresh crons (`meta-token-refresh`, `shopify-token-refresh`) handle expiry. |
+
+### Ordered procedure — coupled DB rotation (the dangerous one: `brain_app`)
+
+1. **Generate** the new password; do NOT alter the role yet.
+2. **Write ALL FOUR SM entries** (`put-secret-value` with the full flat JSON — a put replaces
+   the whole value, so re-serialize every key, not just the password).
+3. **`ALTER ROLE brain_app PASSWORD '<new>'`** on Aurora (from inside the VPC, as brainadmin).
+   Existing pooled connections survive an ALTER; only NEW connections need the new password —
+   this is the gap window, keep steps 3–5 tight.
+4. **Force-sync the four ExternalSecrets** (annotate, above) and confirm
+   `kubectl get externalsecrets -A` → all `SecretSynced`.
+5. **Roll in order:** pgbouncer first (it authenticates upstream to Aurora), then core,
+   collector, stream-worker.
+6. **Verify:** every `rollout status` clean; core `/health` 200; collector accepts a test
+   event 2xx; stream-worker logs show the leader lock re-acquired; no PG `28P01`
+   (password auth failed) in any log; next argo cron run (`v4-silver`) completes.
+
+Same shape for Neo4j (change the password in Neo4j first — it is the server — then SM ×3,
+force-sync, roll). **Rollback for any rotation:** write the OLD value back to every affected
+SM entry, force-sync, re-roll — which is why step 1 of any rotation is "keep the old value
+until verification passes".

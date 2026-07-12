@@ -16,10 +16,6 @@
 # SSE-default; adding a CMK would also need a logs-service key-policy grant).
 ################################################################################
 
-import {
-  to = aws_cloudwatch_log_group.eks_cluster
-  id = "/aws/eks/brain-prod/cluster"
-}
 
 resource "aws_cloudwatch_log_group" "eks_cluster" {
   name              = "/aws/eks/${module.eks.cluster_name}/cluster"
@@ -30,10 +26,6 @@ resource "aws_cloudwatch_log_group" "eks_cluster" {
   }
 }
 
-import {
-  to = aws_cloudwatch_log_group.aurora_postgresql
-  id = "/aws/rds/cluster/brain-prod-postgres/postgresql"
-}
 
 resource "aws_cloudwatch_log_group" "aurora_postgresql" {
   # Name mirrors modules/aurora cluster_identifier = brain-prod-postgres.

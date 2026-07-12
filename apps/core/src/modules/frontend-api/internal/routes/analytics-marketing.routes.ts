@@ -388,7 +388,12 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
    * GET /api/v1/metrics/:metric/lineage?date=YYYY-MM-DD
    * Returns the Measurement fact tables a metric derives from, each with a brand+as-of-scoped row
    * count and the producing job version(s). Every executive metric traces to Measurement facts.
-   * Brand from session (D-1). Unknown metric → 404 with the supported-metric catalog.
+   * Brand from session (D-1). An unknown / not-yet-wired metric is a NORMAL 200 result whose data is
+   * the `unknown_metric` variant (state + the supported-metric catalog) — NOT an error: the metric is
+   * a defined, governed metric we simply can't trace to source yet, and the lineage panel renders that
+   * honestly. Returning it as a 404 error envelope broke the client (BffApiError → retryable ErrorCard
+   * instead of the gentle "not traceable yet" note), so it is surfaced as data to match the
+   * MetricLineageResult contract union.
    */
   fastify.get(
     '/api/v1/metrics/:metric/lineage',
@@ -430,13 +435,9 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
       const { metric } = request.params as { metric: string };
       const { date } = request.query as { date?: string };
 
+      // Both 'ok' and 'unknown_metric' are honest 200 data states (the MetricLineageResult union) —
+      // the panel discriminates on data.state and renders "not traceable yet" for unknown_metric.
       const result = await getMetricLineage(auth.brandId, metric, date ?? null, { srPool });
-      if (result.state === 'unknown_metric') {
-        return reply.code(404).send({
-          request_id: requestId,
-          error: { code: 'UNKNOWN_METRIC', message: `No measurement lineage for metric "${metric}".`, supported: result.supported },
-        });
-      }
       return reply.send({ request_id: requestId, data: result });
     },
   );

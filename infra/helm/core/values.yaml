@@ -82,3 +82,31 @@ autoscaling:
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300   # 5m cooldown — avoid thrashing on bursty BFF traffic
+
+# ── Wave-2 workload hardening (AUD-OPS-001/002/004, AUD-INFRA-022) ────────────
+# AUD-OPS-001: survive node drains / Spot reclaims / Karpenter consolidation.
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# AUD-OPS-002: best-effort zone + node spread (ScheduleAnyway never blocks
+# scheduling on kind/single-pool topologies).
+topologySpread:
+  enabled: true
+  constraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+# AUD-OPS-004: SIGTERM → graceful Fastify close; preStop sleep first so the ALB
+# (target-type=ip) stops routing to the Terminating pod before shutdown begins.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 10
+
+# AUD-INFRA-022: read-only root FS. OFF until verified against the runtime image
+# (tsx/pnpm may write under /tmp — an emptyDir is mounted there when enabled).
+# Flip to true after a staging soak; PSA `restricted` does NOT require it.
+readOnlyRootFilesystem: false

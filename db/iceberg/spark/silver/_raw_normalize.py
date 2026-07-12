@@ -172,6 +172,29 @@ def uuid_shaped(inp):
     return f"{hx[0:8]}-{hx[8:12]}-{hx[12:16]}-{hx[16:20]}-{hx[20:32]}"
 
 
+# ── COMMON (ad-spend breakdown/entity depth spec §2.B): canonical breakdown-key for the extended
+# spend event_id seed. BYTE-IDENTICAL to the TS canonicalBreakdownKey (@brain/ad-spend-mapper):
+#   1. name=value pairs for PRESENT dims (None/empty dropped),
+#   2. escape `\`, `|`, `=` in name AND value with a backslash,
+#   3. sort ascending by name (byte order),
+#   4. join with `|`; empty set → "" (base pass → base event_id byte-unchanged).
+def _escape_breakdown_token(s):
+    return str(s).replace("\\", "\\\\").replace("|", "\\|").replace("=", "\\=")
+
+
+def canonical_breakdown_key(dims):
+    pairs = []
+    for name in sorted(dims.keys()):
+        raw = dims[name]
+        if raw is None:
+            continue
+        value = str(raw)
+        if value == "":
+            continue
+        pairs.append(f"{_escape_breakdown_token(name)}={_escape_breakdown_token(value)}")
+    return "|".join(pairs)
+
+
 def event_id_order_live(brand_id, order_id, updated_at_ms):
     """uuidV5FromOrderLive(brandId, orderId, updatedAtUtcMs) — Silver now derives the event_id the
     connector used to stamp, from the server-trusted brand_id + the raw order id + updated_at ms."""

@@ -15,6 +15,8 @@ import {
   majorDecimalToMinorString,
   mapMetaInsightToEvent,
   mapGoogleRowToEvent,
+  canonicalBreakdownKey,
+  googleBreakdownKey,
   SPEND_LIVE_V1_EVENT_NAME,
 } from './index.js';
 
@@ -252,5 +254,135 @@ describe('mapGoogleRowToEvent', () => {
     expect(ev.properties.cpm_minor).toBe('1370');
     expect(ev.properties.advertising_channel_type).toBe('SEARCH');
     expect(ev.properties.currency_code).toBe('USD');
+  });
+});
+
+// ── GOOGLE FIREHOSE — new metrics encoding (spec §1.A + §1.C) ────────────────────────────────────
+describe('google firehose metrics encoding', () => {
+  it('encodes micros-money firehose metrics to minor units (no float)', () => {
+    const ev = mapGoogleRowToEvent(
+      {
+        level: 'campaign', campaign_id: 'gc1', cost_micros: '1000000',
+        segments_date: '2026-06-10', currency_code: 'usd',
+        cost_per_conversion: '615000',        // micros → 61 minor
+        value_per_conversion: '2280000',      // micros → 228 minor
+        cost_per_all_conversions: '410000',   // micros → 41 minor
+        average_cost: '246000',               // micros → 24 minor
+        all_conversions_value: '60.00',       // MAJOR double → 6000 minor
+      },
+      'USD',
+    );
+    const p = ev.properties;
+    expect(p.cost_per_conversion_minor).toBe('61');
+    expect(p.value_per_conversion_minor).toBe('228');
+    expect(p.cost_per_all_conversions_minor).toBe('41');
+    expect(p.average_cost_minor).toBe('24');
+    expect(p.all_conversions_value_minor).toBe('6000');
+  });
+
+  it('keeps ratio/percentage metrics as string passthrough (NOT scaled), counts as bigint-string', () => {
+    const ev = mapGoogleRowToEvent(
+      {
+        level: 'campaign', campaign_id: 'gc1', cost_micros: '0',
+        segments_date: '2026-06-10', currency_code: 'usd',
+        search_impression_share: '0.85',
+        search_budget_lost_impression_share: '0.10',
+        absolute_top_impression_percentage: '0.42',
+        interaction_rate: '0.05',
+        conversions_from_interactions_rate: '0.12',
+        interactions: '17',
+        engagements: '9',
+        video_views: '123.0',   // count → integer part only
+        video_view_rate: '0.33',
+      },
+      'USD',
+    );
+    const p = ev.properties;
+    expect(p.search_impression_share).toBe('0.85');
+    expect(p.search_budget_lost_impression_share).toBe('0.10');
+    expect(p.absolute_top_impression_percentage).toBe('0.42');
+    expect(p.interaction_rate).toBe('0.05');
+    expect(p.conversions_from_interactions_rate).toBe('0.12');
+    expect(p.interactions).toBe('17');
+    expect(p.engagements).toBe('9');
+    expect(p.video_views).toBe('123');
+    expect(p.video_view_rate).toBe('0.33');
+  });
+
+  it('serializes ad-entity RSA/final_urls arrays to JSON strings; micros bids/budgets → minor', () => {
+    const ev = mapGoogleRowToEvent(
+      {
+        level: 'ad', campaign_id: 'gc1', ad_group_id: 'ag1', ad_id: 'ad1',
+        cost_micros: '0', segments_date: '2026-06-10', currency_code: 'usd',
+        campaign_budget_amount_micros: '50000000', // → 5000 minor
+        ad_group_cpc_bid_micros: '1500000',        // → 150 minor
+        ad_final_urls: ['https://x.test/a', 'https://x.test/b'],
+        ad_headlines: ['Buy now', 'Sale'],
+        ad_descriptions: ['Great deals'],
+      },
+      'USD',
+    );
+    const p = ev.properties;
+    expect(p.campaign_budget_amount_minor).toBe('5000');
+    expect(p.ad_group_cpc_bid_minor).toBe('150');
+    expect(p.ad_final_urls).toBe('["https://x.test/a","https://x.test/b"]');
+    expect(p.ad_headlines).toBe('["Buy now","Sale"]');
+    expect(p.ad_descriptions).toBe('["Great deals"]');
+  });
+
+  it('leaves firehose fields null when absent (additive — older rows unaffected)', () => {
+    const ev = mapGoogleRowToEvent(
+      { level: 'campaign', campaign_id: 'gc1', cost_micros: '0', segments_date: '2026-06-10' },
+      'USD',
+    );
+    const p = ev.properties;
+    expect(p.cost_per_conversion_minor).toBeNull();
+    expect(p.search_impression_share).toBeNull();
+    expect(p.segment_device).toBeNull();
+    expect(p.keyword_id).toBeNull();
+    expect(p.ad_final_urls).toBeNull();
+  });
+});
+
+// ── DEDUP-KEY UNIQUENESS across breakdown dims (spec §2) — the loss-safety proof ──────────────────
+describe('canonicalBreakdownKey + breakdownKey-folded event_id', () => {
+  it('sorts by name, escapes delimiters, drops null/empty dims', () => {
+    expect(canonicalBreakdownKey({})).toBe('');
+    expect(canonicalBreakdownKey({ b: '2', a: '1' })).toBe('a=1|b=2');
+    expect(canonicalBreakdownKey({ a: null, b: undefined, c: '' })).toBe('');
+    // escaping of `\`, `|`, `=`
+    expect(canonicalBreakdownKey({ 'k|x': 'v=y\\z' })).toBe('k\\|x=v\\=y\\\\z');
+  });
+
+  it('base pass (breakdownKey="") keeps the base event_id BYTE-IDENTICAL to the 5-arg seed', () => {
+    const legacy = uuidV5FromSpendRow(BRAND, 'google_ads', '2026-06-01', 'campaign', 'c1');
+    const withEmpty = uuidV5FromSpendRow(BRAND, 'google_ads', '2026-06-01', 'campaign', 'c1', '');
+    expect(withEmpty).toBe(legacy);
+  });
+
+  it('distinct breakdownKeys never collide with the base grain or each other', () => {
+    const base = uuidV5FromSpendRow(BRAND, 'google_ads', '2026-06-01', 'campaign', 'c1', '');
+    const device = uuidV5FromSpendRow(
+      BRAND, 'google_ads', '2026-06-01', 'campaign', 'c1',
+      googleBreakdownKey({ segment_device: 'MOBILE', segment_ad_network_type: 'SEARCH' }),
+    );
+    const keyword = uuidV5FromSpendRow(
+      BRAND, 'google_ads', '2026-06-01', 'campaign', 'c1',
+      googleBreakdownKey({ keyword_id: 'kw_9' }),
+    );
+    const geo = uuidV5FromSpendRow(
+      BRAND, 'google_ads', '2026-06-01', 'campaign', 'c1',
+      googleBreakdownKey({ segment_geo_target: '2840' }),
+    );
+    const ids = [base, device, keyword, geo];
+    expect(new Set(ids).size).toBe(4); // all distinct — no silent spend overwrite
+  });
+
+  it('googleBreakdownKey uses only the SEGMENT dims (keyword_text with a `|` never leaks in)', () => {
+    const a = googleBreakdownKey({ keyword_id: 'kw_1' });
+    // keyword_text is NOT a breakdown dim, so a pipe in it cannot corrupt the key
+    const b = googleBreakdownKey({ keyword_id: 'kw_1', segment_device: undefined });
+    expect(a).toBe('keyword_id=kw_1');
+    expect(b).toBe('keyword_id=kw_1');
   });
 });

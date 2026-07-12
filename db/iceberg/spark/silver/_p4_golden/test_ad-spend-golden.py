@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _raw_normalize import uuid_shaped  # noqa: E402  (the ONLY shared port reused)
 from _raw_normalize import major_decimal_to_minor, micros_to_minor, to_count_string  # consolidated primitives (ADR-0006)
+from _raw_normalize import canonical_breakdown_key  # noqa: E402  (breakdown spec §2.B — shared port)
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ad-spend-golden.json")
 
@@ -79,13 +80,49 @@ def stat_date_to_iso(stat_date):
     return f"{d}T00:00:00.000Z"
 
 
-def event_id_spend_live(brand_id, platform, stat_date, level, level_id):
-    return uuid_shaped(f"{brand_id}:{platform}:{stat_date}:{level}:{level_id}:spend.live.v1")
+def event_id_spend_live(brand_id, platform, stat_date, level, level_id, breakdown_key=""):
+    bk = "" if breakdown_key == "" else f":{breakdown_key}"
+    return uuid_shaped(f"{brand_id}:{platform}:{stat_date}:{level}:{level_id}{bk}:spend.live.v1")
+
+
+def google_breakdown_key(o):
+    """Byte-port of googleBreakdownKey(props) over the RAW Google row's segment dims (spec §2.C)."""
+    return canonical_breakdown_key(
+        {
+            "device": o.get("segment_device"),
+            "ad_network_type": o.get("segment_ad_network_type"),
+            "day_of_week": o.get("segment_day_of_week"),
+            "hour": o.get("segment_hour"),
+            "click_type": o.get("segment_click_type"),
+            "conversion_action": o.get("segment_conversion_action"),
+            "geo_target": o.get("segment_geo_target"),
+            "age_range": o.get("segment_age_range"),
+            "gender": o.get("segment_gender"),
+            "keyword_id": o.get("keyword_id"),
+            "search_term": o.get("search_term"),
+            "product_item_id": o.get("product_item_id"),
+        }
+    )
 
 
 def _s(v):
     """String(x) for non-null ids; None passthrough (matches the TS `!= null ? String(x) : null`)."""
     return None if v is None else str(v)
+
+
+def _micros_opt(v):
+    return micros_to_minor(v) if v is not None else None
+
+
+def _major_opt(v):
+    return major_decimal_to_minor(v) if v is not None else None
+
+
+def _ratio(v):
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
 
 
 def _normalize_meta(v):
@@ -99,7 +136,8 @@ def _normalize_meta(v):
     parent_id = resolve_parent_id(level, campaign_id, adset_id, ad_id)
     stat_date = (o.get("date_start") or "").strip()
     return {
-        "event_id": event_id_spend_live(brand, "meta", stat_date, level, level_id),
+        "event_id": event_id_spend_live(brand, "meta", stat_date, level, level_id, ""),
+        "breakdown_key": "",  # Meta rows carry no Google segment dims here → base pass
         "occurred_at": stat_date_to_iso(stat_date),
         "platform": "meta",
         "level": level,
@@ -112,6 +150,16 @@ def _normalize_meta(v):
         "currency_code": v["account_currency"].strip().upper(),
         "impressions": to_count_string(o.get("impressions")),
         "clicks": to_count_string(o.get("clicks")),
+        # Meta does not populate the Google-only firehose fields → null.
+        "cost_per_conversion_minor": None,
+        "value_per_conversion_minor": None,
+        "all_conversions_value_minor": None,
+        "cost_per_all_conversions_minor": None,
+        "average_cost_minor": None,
+        "interactions": None,
+        "video_views": None,
+        "search_impression_share": None,
+        "interaction_rate": None,
     }
 
 
@@ -126,8 +174,10 @@ def _normalize_google(v):
     parent_id = resolve_parent_id(level, campaign_id, adset_id, ad_id)
     stat_date = (o.get("segments_date") or "").strip()
     currency = (o.get("currency_code") if o.get("currency_code") is not None else v["account_currency"])
+    bk = google_breakdown_key(o)
     return {
-        "event_id": event_id_spend_live(brand, "google_ads", stat_date, level, level_id),
+        "event_id": event_id_spend_live(brand, "google_ads", stat_date, level, level_id, bk),
+        "breakdown_key": bk,
         "occurred_at": stat_date_to_iso(stat_date),
         "platform": "google_ads",
         "level": level,
@@ -140,6 +190,16 @@ def _normalize_google(v):
         "currency_code": currency.strip().upper(),
         "impressions": to_count_string(o.get("impressions")),
         "clicks": to_count_string(o.get("clicks")),
+        # ── FIREHOSE money (micros→minor / major→minor) + ratio (passthrough) fields ──
+        "cost_per_conversion_minor": _micros_opt(o.get("cost_per_conversion")),
+        "value_per_conversion_minor": _micros_opt(o.get("value_per_conversion")),
+        "all_conversions_value_minor": _major_opt(o.get("all_conversions_value")),
+        "cost_per_all_conversions_minor": _micros_opt(o.get("cost_per_all_conversions")),
+        "average_cost_minor": _micros_opt(o.get("average_cost")),
+        "interactions": to_count_string(o.get("interactions")),
+        "video_views": to_count_string(o.get("video_views")),
+        "search_impression_share": _ratio(o.get("search_impression_share")),
+        "interaction_rate": _ratio(o.get("interaction_rate")),
     }
 
 

@@ -42,7 +42,9 @@ export interface InsightDto {
   direction: 'up' | 'down' | 'flat' | null;
   delta_pct: string | null;
   confidence: 'high' | 'medium' | 'low';
-  evidence: Record<string, string | number | null>;
+  // Values are string|number|boolean only (NO null) — persisted verbatim and read back against the
+  // BFF evidence contract (record(string, string|number|boolean)), which rejects null.
+  evidence: Record<string, string | number | boolean>;
   /**
    * Set by the BFF after the insight is materialized as a recommendation (the audited decision loop).
    * null when the recommendation bridge is unavailable. status ∈ open|dismissed|expired.

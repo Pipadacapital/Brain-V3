@@ -44,6 +44,12 @@ export interface ShopifyOrderShape {
   gateway?: string | null;
   payment_gateway_names?: string[] | null;
   tags?: string | null;
+  // ADDITIVE (mapper widening): order attribution/context fields. All optional — absent on
+  // legacy/synthetic payloads. source_name = the order channel ('web', 'pos', 'shopify_draft_order',
+  // an app id…); landing_site/referring_site = the session's entry/referrer paths (journey truth).
+  source_name?: string | null;
+  landing_site?: string | null;
+  referring_site?: string | null;
   customer?: {
     id?: number;
     email?: string | null;
@@ -116,6 +122,19 @@ export interface OrderProperties {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── ADDITIVE (mapper widening): order name + attribution/context metadata ──────
+  // order_name is Shopify's HUMAN order identifier ('#1001') — THE Shiprocket join key
+  // (Shiprocket's channel_order_id is the Shopify order NAME, not the numeric id), previously
+  // never emitted so the shipment→order join had no spine field to land on.
+  order_name?: string;
+  /** Shopify's comma-separated order tags, passed through verbatim (segments/ops filters). */
+  tags?: string;
+  /** Order channel: 'web' | 'pos' | 'shopify_draft_order' | an app id … */
+  source_name?: string;
+  /** Entry path of the converting session (journey truth). */
+  landing_site?: string;
+  /** Referrer of the converting session (journey truth). */
+  referring_site?: string;
   // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — INTEROP-space plain-sha256 identifiers,
   // emitted ONLY when the caller passes emitInteropIdentifiers (flag connector.identity_fields).
   // Salted fields above are unchanged; platform_customer_id = storefront_customer_id (AMD-02).
@@ -462,6 +481,18 @@ export function mapOrderToEvent(
     cancelled_at: order.cancelled_at
       ? new Date(order.cancelled_at).toISOString()
       : null,
+    // ADDITIVE (mapper widening): honest-absent when the source payload doesn't carry them.
+    ...(typeof order.name === 'string' && order.name.length > 0 ? { order_name: order.name } : {}),
+    ...(typeof order.tags === 'string' && order.tags.length > 0 ? { tags: order.tags } : {}),
+    ...(typeof order.source_name === 'string' && order.source_name.length > 0
+      ? { source_name: order.source_name }
+      : {}),
+    ...(typeof order.landing_site === 'string' && order.landing_site.length > 0
+      ? { landing_site: order.landing_site }
+      : {}),
+    ...(typeof order.referring_site === 'string' && order.referring_site.length > 0
+      ? { referring_site: order.referring_site }
+      : {}),
     ...(hashedCustomerEmail !== undefined ? { hashed_customer_email: hashedCustomerEmail } : {}),
     ...(hashedCustomerPhone !== undefined ? { hashed_customer_phone: hashedCustomerPhone } : {}),
     ...(storefrontCustomerId !== undefined ? { storefront_customer_id: storefrontCustomerId } : {}),
@@ -560,6 +591,7 @@ export {
   SHOPIFY_CUSTOMERS_RESOURCE,
   SHOPIFY_REFUNDS_RESOURCE,
   SHOPIFY_FULFILLMENTS_RESOURCE,
+  SHOPIFY_INVENTORY_LEVELS_RESOURCE,
 } from './manifest.js';
 
 export {
@@ -567,10 +599,12 @@ export {
   CUSTOMER_UPSERT_V1_EVENT_NAME,
   REFUND_RECORDED_V1_EVENT_NAME,
   FULFILLMENT_RECORDED_V1_EVENT_NAME,
+  INVENTORY_LEVEL_V1_EVENT_NAME,
   mapProductToDraft,
   mapCustomerToDraft,
   mapRefundToDraft,
   mapFulfillmentToDraft,
+  mapInventoryLevelToDraft,
 } from './resources.js';
 
 export type {
@@ -579,10 +613,14 @@ export type {
   ShopifyProductVariant,
   ProductUpsertProperties,
   ShopifyCustomerShape,
+  ShopifyCustomerAddress,
+  ShopifyMarketingConsent,
   CustomerUpsertProperties,
   ShopifyRefundShape,
   ShopifyRefundTxn,
   RefundRecordedProperties,
   ShopifyFulfillmentShape,
   FulfillmentRecordedProperties,
+  ShopifyInventoryLevelShape,
+  InventoryLevelProperties,
 } from './resources.js';

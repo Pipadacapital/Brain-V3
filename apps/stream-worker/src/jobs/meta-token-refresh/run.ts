@@ -39,12 +39,20 @@ interface MetaSecretBundle {
   ad_account_id?: string;
   access_token_issued_at?: string;  // ISO-8601; absent on legacy tokens → treated as due
   access_token_expires_at?: string; // ISO-8601; stamped from the exchange's expires_in (A2 expiry hardening)
+  /**
+   * 'system_user' = a never-expiring system-user token (ConnectMetaWithSystemUserTokenCommand).
+   * The refresh pass SKIPS these: there is nothing to re-exchange (fb_exchange_token is for user
+   * tokens and would fail), and the issued-at clock would otherwise mark them due forever.
+   */
+  token_type?: string;
 }
 
 export interface MetaTokenRefreshReport {
   scanned: number;
   refreshed: number;
   skippedNotDue: number;
+  /** System-user (never-expiring) tokens skipped — healthy, not an error (bundle token_type flag). */
+  skippedSystemUser: number;
   reconnectRequired: number;
   errors: number;
 }
@@ -144,6 +152,7 @@ export async function runMetaTokenRefresh(
     scanned: 0,
     refreshed: 0,
     skippedNotDue: 0,
+    skippedSystemUser: 0,
     reconnectRequired: 0,
     errors: 0,
   };
@@ -160,6 +169,16 @@ export async function runMetaTokenRefresh(
       if (!bundle?.access_token) {
         // No token to exchange → already needs a reconnect; nothing to refresh.
         report.reconnectRequired += 1;
+        continue;
+      }
+      // System-user tokens NEVER expire (Meta Business Settings system users) — skip: there is
+      // nothing to re-exchange (fb_exchange_token is a user-token grant and fails on them), and the
+      // issued-at clock would otherwise flag them due forever → a daily doomed-exchange loop that
+      // flips a HEALTHY connector to RECONNECT_REQUIRED. Detected via the bundle flag stamped by
+      // ConnectMetaWithSystemUserTokenCommand.
+      if (bundle.token_type === 'system_user') {
+        report.skippedSystemUser += 1;
+        incrementCounter('meta_token_refresh_skipped_total', { reason: 'system_user_token' });
         continue;
       }
       // DUE when the issued-at age crosses the threshold OR a KNOWN expiry is within the refresh margin
@@ -216,7 +235,8 @@ export async function runMetaTokenRefresh(
 
   log.info(
     `[meta-token-refresh] pass done scanned=${report.scanned} refreshed=${report.refreshed} ` +
-      `skipped=${report.skippedNotDue} reconnect=${report.reconnectRequired} errors=${report.errors}`,
+      `skipped=${report.skippedNotDue} systemUser=${report.skippedSystemUser} ` +
+      `reconnect=${report.reconnectRequired} errors=${report.errors}`,
   );
   return report;
 }

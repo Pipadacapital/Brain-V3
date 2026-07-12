@@ -28,6 +28,7 @@
  *   mapDisputeWebhookToEvent       — payment.dispute.* lifecycle → MappedDisputeEvent
  *   mapOrderPaidWebhookToEvent     — order.paid → MappedOrderEvent
  *   mapPaymentAuthorizedToEvent    — payment.authorized → MappedOrderEvent
+ *   mapPaymentLifecycleToEvent     — payment.captured / payment.failed → MappedPaymentEvent
  *   RazorpaySettlementItem         — raw Razorpay settlement API response item type
  *   RazorpayRefundEntity           — raw Razorpay refund webhook payload
  *   RazorpayDisputeEntity          — raw Razorpay dispute webhook payload
@@ -77,6 +78,17 @@ export const RAZORPAY_FIELD_ALLOWLIST = new Set([
   'settled_at',
   'currency',
   'entity_type',
+  // ── Audit extension 2026-07-12 (docs-verified recon/combined fields — map, don't drop) ──
+  // recon/combined names the transaction discriminator `type` (payment|refund|transfer|adjustment)
+  // and the UTR `settlement_utr` — the legacy `entity_type`/`utr` names never appear on real recon
+  // responses, so entity_type silently defaulted to 'payment' and utr_hash was always null.
+  'type',
+  'settlement_utr',
+  // Payout/fee coverage: the recon debit/credit legs + hold/settled flags.
+  'debit',
+  'credit',
+  'on_hold',
+  'settled',
 ] as const);
 
 /** Card fields that MUST be dropped at the boundary (C4 / PCI SAQ-A) */
@@ -122,11 +134,19 @@ export interface RazorpaySettlementItem {
   fee?: number | string | null;      // paisa integer
   tax?: number | string | null;      // paisa integer (GST on MDR)
   utr?: string | null;
+  /** recon/combined UTR field name (docs) — folded into utr_hash when `utr` is absent. */
+  settlement_utr?: string | null;
   status?: string | null;
   created_at?: number | string | null;   // Unix timestamp or ISO
   settled_at?: number | string | null;   // Unix timestamp or ISO
   currency?: string | null;
   entity_type?: string | null;
+  /** recon/combined discriminator field name (docs): payment|refund|transfer|adjustment. */
+  type?: string | null;
+  debit?: number | string | null;        // paisa integer — payout debit leg
+  credit?: number | string | null;       // paisa integer — payout credit leg
+  on_hold?: boolean | number | string | null;
+  settled?: boolean | number | string | null;
   // card.* and other fields may be present in the raw API response — all DROPPED
   [key: string]: unknown;
 }
@@ -166,6 +186,13 @@ export interface SettlementEventProperties {
   settlement_at: string | null;     // ISO-8601
   occurred_at: string;              // ISO-8601 — economic_effective_at
   reconciliation_type: ReconciliationType;
+  // ── Audit extension 2026-07-12 (additive, all nullable — payout/fee coverage) ──
+  /** The RAW recon `type`/`entity_type` string (e.g. 'transfer' before enum folding) — provenance. */
+  recon_type: string | null;
+  debit_minor: string | null;       // BIGINT-as-string, INR paisa — payout debit leg
+  credit_minor: string | null;      // BIGINT-as-string, INR paisa — payout credit leg
+  on_hold: boolean | null;          // settlement withheld flag
+  settled: boolean | null;          // recon settled flag
 }
 
 export interface MappedSettlementEvent {
@@ -317,6 +344,27 @@ export function paisaToMinorString(value: number | string | null | undefined): s
 }
 
 /**
+ * Tolerant variant of paisaToMinorString for OPTIONAL recon fields (debit/credit legs).
+ * Accepts signed integers (adjustment legs can be negative) and returns null — instead of
+ * throwing — for absent or non-integer values, so an unexpected recon extra can never abort
+ * the settlement lane. Integer arithmetic only — no parseFloat (I-S07).
+ */
+export function optionalPaisaToMinorString(value: number | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const str = String(value).trim();
+  if (!/^-?\d+$/.test(str)) return null;
+  return str;
+}
+
+/** Coerce a recon boolean-ish flag (true/false, 1/0, '1'/'0') to boolean | null. */
+function toNullableBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value;
+  if (value === 1 || value === '1' || value === 'true') return true;
+  if (value === 0 || value === '0' || value === 'false') return false;
+  return null;
+}
+
+/**
  * Convert a Unix timestamp (seconds since epoch) or ISO string to ISO-8601.
  * Razorpay API returns created_at/settled_at as Unix timestamps (integers).
  */
@@ -364,6 +412,12 @@ function resolveEntityType(raw: string | null | undefined): SettlementEntityType
       return 'refund';
     case 'adjustment':
       return 'adjustment';
+    // recon/combined 'transfer' (Route transfers to linked accounts) — brand-level money movement,
+    // folded into the adjustment enum (the frozen SettlementEntityType stays 4-valued so the
+    // backfill resource partition + silver port never drift). The raw string is preserved in
+    // properties.recon_type for provenance.
+    case 'transfer':
+      return 'adjustment';
     case 'reserve_deduction':
       return 'reserve_deduction';
     default:
@@ -408,9 +462,14 @@ export function mapSettlementItemToEvent(
 
   const settlementId = String(allowed['settlement_id'] ?? '');
   const rawPaymentId = allowed['payment_id'] != null ? String(allowed['payment_id']) : null;
-  const rawUtr = allowed['utr'] != null ? String(allowed['utr']) : null;
+  // recon/combined names the UTR `settlement_utr` (docs); `utr` kept for legacy/summary shapes.
+  const rawUtr = allowed['utr'] != null
+    ? String(allowed['utr'])
+    : (allowed['settlement_utr'] != null ? String(allowed['settlement_utr']) : null);
   const orderId = allowed['order_id'] != null ? String(allowed['order_id']) : null;
-  const entityType = resolveEntityType(allowed['entity_type'] as string | null);
+  // recon/combined names the discriminator `type` (docs); `entity_type` kept for legacy shapes.
+  const rawEntityType = (allowed['entity_type'] ?? allowed['type']) as string | null | undefined;
+  const entityType = resolveEntityType(rawEntityType);
   const currency = String(allowed['currency'] ?? 'INR').trim().toUpperCase();
 
   // ── C1: Hash DPDP identifiers at boundary — raw values DROPPED after this scope ──
@@ -447,6 +506,12 @@ export function mapSettlementItemToEvent(
     settlement_at: settledAt,
     occurred_at: occurredAt,
     reconciliation_type: reconciliationType,
+    // Audit extension 2026-07-12 — payout/fee recon coverage (all nullable, additive):
+    recon_type: rawEntityType != null ? String(rawEntityType) : null,
+    debit_minor: optionalPaisaToMinorString(allowed['debit'] as number | string | null),
+    credit_minor: optionalPaisaToMinorString(allowed['credit'] as number | string | null),
+    on_hold: toNullableBoolean(allowed['on_hold']),
+    settled: toNullableBoolean(allowed['settled']),
   };
 
   return {
@@ -484,7 +549,10 @@ export type DisputeLifecycleType =
   | 'dispute.created'
   | 'dispute.under_review'
   | 'dispute.won'
-  | 'dispute.lost';
+  | 'dispute.lost'
+  // Audit extension 2026-07-12 — full payment.dispute.* coverage:
+  | 'dispute.closed'            // dispute resolved/closed — withheld amount released (credit)
+  | 'dispute.action_required';  // merchant response required — amount still withheld (debit)
 
 /**
  * direction for dispute events: 'credit' (won/reversal returned) | 'debit' (created/lost — money withheld/taken).
@@ -631,9 +699,11 @@ export interface MappedOrderEvent {
 function resolveDisputeDirection(lifecycle: DisputeLifecycleType): DisputeDirection {
   switch (lifecycle) {
     case 'dispute.won':
+    case 'dispute.closed':          // dispute closed — withheld amount released back to merchant
       return 'credit';
     case 'dispute.created':
     case 'dispute.under_review':
+    case 'dispute.action_required': // response deadline pending — amount still withheld
     case 'dispute.lost':
     default:
       return 'debit';
@@ -888,5 +958,117 @@ export function mapPaymentWebhookToMapRow(
     razorpay_order_id: payload.order_id?.trim() ?? null,
     shopify_order_id: shopifyOrderId,
     razorpay_payment_id: payload.id.trim(), // raw — stored in RLS-protected map table only
+  };
+}
+
+// ── Payment lifecycle lane (audit extension 2026-07-12) ───────────────────────
+
+/**
+ * Raw Razorpay payment entity from payment.captured / payment.failed webhook payloads.
+ * card.* fields are present at the source for card payments — they MUST NOT cross the
+ * boundary (C4 / PCI SAQ-A): this mapper picks fields explicitly, it never spreads.
+ */
+export interface RazorpayPaymentEntity {
+  id?: string | null;                    // pay_XXXX — raw payment_id
+  order_id?: string | null;              // order_XXXX
+  amount?: number | string | null;       // paisa integer
+  currency?: string | null;
+  status?: string | null;                // 'captured' | 'failed' | ...
+  method?: string | null;                // 'card' | 'upi' | 'netbanking' | ...
+  fee?: number | string | null;          // paisa integer — Razorpay fee (captured payments)
+  tax?: number | string | null;          // paisa integer — GST on fee (captured payments)
+  error_code?: string | null;            // payment.failed
+  error_reason?: string | null;          // payment.failed
+  created_at?: number | null;            // Unix timestamp
+  [key: string]: unknown;
+}
+
+export type PaymentLifecycleEntityType = 'payment_captured' | 'payment_failed';
+
+/**
+ * Properties for payment.captured / payment.failed events on the settlement.live.v1 lane.
+ * payment.captured carries the Razorpay fee + GST (fee_minor/tax_minor) — pre-settlement fee
+ * visibility; payment.failed carries error_code/error_reason (funnel-loss coverage).
+ * PII: raw payment_id hashed (C1). order_id is Razorpay-native, not person-linkable.
+ * Money: BIGINT-as-string integer paisa (I-S07).
+ */
+export interface PaymentEventProperties {
+  source: 'razorpay';
+  entity_type: PaymentLifecycleEntityType;
+  payment_id_hash: string | null;     // sha256(salt ‖ pay_XXXX) — raw DROPPED (C1)
+  order_id: string | null;            // Razorpay-native order_XXXX — not PII
+  amount_minor: string;               // BIGINT-as-string, INR paisa (I-S07)
+  fee_minor: string | null;           // BIGINT-as-string — present on captured payments
+  tax_minor: string | null;           // BIGINT-as-string — GST on the fee
+  currency_code: string;
+  method: string | null;              // payment method family — NEVER card.* metadata (C4)
+  status: string | null;
+  error_code: string | null;          // payment.failed only
+  error_reason: string | null;        // payment.failed only
+  occurred_at: string;                // ISO-8601
+}
+
+export interface MappedPaymentEvent {
+  event_name: typeof SETTLEMENT_LIVE_V1_EVENT_NAME;
+  occurred_at: string;
+  properties: PaymentEventProperties;
+}
+
+/**
+ * Map a Razorpay payment entity (payment.captured / payment.failed webhook) to a
+ * MappedPaymentEvent on the settlement.live.v1 lane.
+ *
+ * Key invariants:
+ *   1. payment_id (pay_XXXX) is hashed via sha256(salt ‖ normalized) (C1).
+ *   2. card.* NEVER crosses the boundary — explicit field picks only (C4 / PCI SAQ-A).
+ *   3. amount/fee/tax are BIGINT-as-string integer paisa (I-S07).
+ *   4. entity_type discriminates from settlement/refund/dispute/order rows.
+ *
+ * @param entity     Raw Razorpay payment entity from the webhook payload
+ * @param lifecycle  'payment_captured' | 'payment_failed' (from the webhook event name)
+ * @param brandId    Brand UUID (from connector row, never from the body)
+ * @param saltHex    Per-brand 64-char hex salt for PII hashing
+ */
+export function mapPaymentLifecycleToEvent(
+  entity: RazorpayPaymentEntity,
+  lifecycle: PaymentLifecycleEntityType,
+  brandId: string,
+  saltHex: string,
+): MappedPaymentEvent {
+  void brandId; // reserved for future brand-scoped fields
+
+  const rawPaymentId = entity.id ? String(entity.id).trim() : null;
+  const currency = String(entity.currency ?? 'INR').trim().toUpperCase();
+
+  // ── C1: Hash payment_id — raw value DROPPED after this scope ────────────────
+  const paymentIdHash = rawPaymentId ? hashRazorpayId(rawPaymentId, saltHex) : null;
+
+  // ── I-S07: Integer paisa → BIGINT-as-string ─────────────────────────────────
+  const amountMinor = paisaToMinorString(entity.amount);
+  const feeMinor = optionalPaisaToMinorString(entity.fee);
+  const taxMinor = optionalPaisaToMinorString(entity.tax);
+
+  const occurredAt = toIso(entity.created_at) ?? new Date().toISOString();
+
+  const properties: PaymentEventProperties = {
+    source: 'razorpay',
+    entity_type: lifecycle,
+    payment_id_hash: paymentIdHash,
+    order_id: entity.order_id ? String(entity.order_id).trim() : null,
+    amount_minor: amountMinor,
+    fee_minor: feeMinor,
+    tax_minor: taxMinor,
+    currency_code: currency,
+    method: entity.method ? String(entity.method) : null, // family only — card.* stays behind C4
+    status: entity.status ? String(entity.status) : null,
+    error_code: entity.error_code ? String(entity.error_code) : null,
+    error_reason: entity.error_reason ? String(entity.error_reason) : null,
+    occurred_at: occurredAt,
+  };
+
+  return {
+    event_name: SETTLEMENT_LIVE_V1_EVENT_NAME,
+    occurred_at: occurredAt,
+    properties,
   };
 }

@@ -26,6 +26,12 @@ export type OAuthProvider = 'shopify' | 'meta' | 'google_ads';
 export interface OAuthAppCreds {
   clientId: string;
   clientSecret: string;
+  /**
+   * Provider-level API token that must travel WITH the OAuth app creds (google_ads only today:
+   * the Google Ads developer_token). Optional — providers without one never set it, and a brand
+   * on the shared env app inherits the env developer token. Secret-tier: bundle-only, never PG.
+   */
+  developerToken?: string;
 }
 
 /** The pseudo connector-type under which a brand's OAuth APP creds are stored (vs the token). */
@@ -83,7 +89,13 @@ export async function storeBrandOAuthAppCreds(
   await secretsManager.storeSecret(
     brandId,
     { connectorType: appConnectorType(provider) },
-    { client_id: creds.clientId, client_secret: creds.clientSecret },
+    {
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+      // developer_token rides the SAME app bundle when supplied (google_ads BYO-app: the brand's
+      // own Google Ads developer token). Absent for providers without one — key omitted entirely.
+      ...(creds.developerToken ? { developer_token: creds.developerToken } : {}),
+    },
   );
 }
 
@@ -102,7 +114,12 @@ export async function resolveBrandOAuthAppCreds(
     const bundle = await secretsManager.getSecret(appSecretName(provider, brandId));
     const clientId = bundle?.['client_id'];
     const clientSecret = bundle?.['client_secret'];
-    if (clientId && clientSecret) return { clientId, clientSecret };
+    if (clientId && clientSecret) {
+      // Brand bundle wins. developer_token: the brand's own when stored, else the env fallback's —
+      // a brand may BYO the OAuth app pair while still riding the shared env developer token.
+      const developerToken = bundle?.['developer_token'] ?? envFallback?.developerToken;
+      return { clientId, clientSecret, ...(developerToken ? { developerToken } : {}) };
+    }
   } catch {
     // fall through to env fallback
   }

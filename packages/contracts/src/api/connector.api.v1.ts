@@ -228,21 +228,64 @@ export type MarketplaceListResponse = z.infer<typeof MarketplaceListResponseSche
 export const ConnectRequestSchema = z.object({
   /** Validated against catalog server-side. Unknown type ⇒ 400. Coming-soon ⇒ 422. */
   type: z.string(),
-  /** Required for oauth(shopify). */
+  /**
+   * Shopify store domain. On the OAuth fallback it may ride top-level; on the generic
+   * per-brand credential connect it rides in `credentials.shop_domain` (catalog authFields).
+   */
   shop_domain: z.string().optional(),
-  /** For credential connectors (Razorpay key+secret, etc.). */
+  /**
+   * For credential connectors. Shopify (generic per-brand connect, 2026-07-12) requires
+   * { shop_domain, client_id, client_secret } — the custom app created in the brand's own
+   * Shopify admin; the server does the client-credentials exchange (no browser redirect).
+   */
   credentials: z.record(z.string()).optional(),
 });
 export type ConnectRequest = z.infer<typeof ConnectRequestSchema>;
+
+/**
+ * Per-tenant inbound-webhook setup surfaced on a credential connect.
+ *  - `api_key` is present ONLY when Brain minted a webhook token this connect (SR-2 —
+ *    Shiprocket/GoKwik/Shopflo/WooCommerce); it is shown once (write-only thereafter).
+ *  - Shopify registers its webhooks automatically via the Admin API, so it returns the
+ *    delivery URL with api_key: null (informational — nothing to paste).
+ */
+export const ConnectWebhookSetupSchema = z.object({
+  url: z.string().url(),
+  api_key: z.string().nullable(),
+  routing_header: z.object({ name: z.string(), value: z.string() }).nullable(),
+});
+export type ConnectWebhookSetup = z.infer<typeof ConnectWebhookSetupSchema>;
 
 export const ConnectResponseSchema = z.object({
   request_id: z.string(),
   data: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('oauth'), oauth_url: z.string().url() }),
-    z.object({ kind: z.literal('credential'), connected: z.literal(true) }),
+    z.object({
+      kind: z.literal('credential'),
+      connected: z.literal(true),
+      connector_instance_id: z.string().uuid().optional(),
+      /** Present for webhook connectors (see ConnectWebhookSetupSchema). */
+      webhook: ConnectWebhookSetupSchema.optional(),
+    }),
   ]),
 });
 export type ConnectResponse = z.infer<typeof ConnectResponseSchema>;
 
 // coming_soon ⇒ 422 { request_id, error: { code: 'CONNECTOR_NOT_AVAILABLE' } }
 // Not modelled in a success schema (it's an error response, not in the data union).
+//
+// Shopify generic per-brand connect error codes (POST /api/v1/connectors, type='shopify'):
+//   400 INVALID_SHOP_DOMAIN            — shop_domain does not normalize to *.myshopify.com
+//   400 MISSING_SHOPIFY_CREDENTIALS    — no client_id/client_secret and no env app fallback
+//   422 SHOPIFY_CREDENTIALS_INVALID    — Shopify rejected the client-credentials exchange /
+//                                        the issued token failed the shop.json verification
+//   409 STOREFRONT_ALREADY_CONNECTED   — the brand already has a different storefront connected
+//
+// GA4 generic per-brand connect error codes (POST /api/v1/connectors, type='ga4' — the brand
+// pastes a GCP service-account JSON key in credentials.service_account_json + the numeric
+// property id in credentials.property_id, optional credentials.currency_code):
+//   400 MISSING_GA4_CREDENTIALS          — property_id / service_account_json absent
+//   400 GA4_INVALID_PROPERTY_ID          — property id is not numeric (a "G-…" measurement id, etc.)
+//   400 GA4_SERVICE_ACCOUNT_KEY_INVALID  — the pasted JSON key is malformed / not a service account
+//   422 GA4_CREDENTIALS_INVALID          — Google rejected the key, or the SA email lacks Viewer
+//                                          access on the property (validated via a cheap runReport)

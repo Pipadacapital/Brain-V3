@@ -290,13 +290,16 @@ jobs:
     # Needs META_APP_ID / META_APP_SECRET in the pod env (via the stream-worker secret); absent → the
     # job records an app_creds_missing error and no-ops (dev-safe).
   - name: shopify-token-refresh
-    schedule: "30 3 * * *"         # daily 03:30 — proactively refresh Shopify offline tokens (mirrors meta-token-refresh)
+    schedule: "30 */6 * * *"       # every 6h — client-credentials tokens expire in 24h (see below)
     command: ["pnpm", "exec", "tsx", "src/jobs/shopify-token-refresh/run.ts"]
     useStreamWorkerImage: true
-    # Shopify offline-token expiry mandate (2026-04-01 → 1y expiry; 2027-01-01 → ALL expire). Enumerates
-    # connected Shopify connectors whose token is older than the threshold and exchanges it for a fresh
-    # one (write-back via ISecretsManager.putSecretValue — secret_ref/ARN unchanged, NN-2). Without this
-    # cron, offline tokens silently expire → Shopify sync dies. Idempotent (skips fresh tokens).
+    # Two token classes, one pass:
+    #  - GENERIC PER-BRAND CONNECT (custom-app client-credentials grant, 2026-07): tokens expire in
+    #    24 HOURS with no refresh token — the job RE-EXCHANGES them on every run using the brand's
+    #    stored app creds. A daily schedule raced the 24h expiry; every-6h keeps tokens ≤6h old.
+    #  - Legacy offline tokens (expiry mandate 2026-04-01 → 1y; 2027-01-01 → ALL): age-threshold
+    #    exchange as before (skips fresh tokens — idempotent).
+    # Write-back via ISecretsManager.putSecretValue — secret_ref/ARN unchanged (NN-2).
   - name: phone-guard-reeval
     schedule: "50 * * * *"         # hourly at :50 — re-evaluate expired phone-guard suppression windows
     command: ["pnpm", "exec", "tsx", "src/jobs/phone-guard-reeval.ts"]

@@ -13,11 +13,7 @@
  * 'products' resource gets its own cursor namespace.
  */
 
-import {
-  TWO_YEARS_MS,
-  type IngestionManifest,
-  type ResourceDescriptor,
-} from '@brain/connector-core';
+import type { IngestionManifest, ResourceDescriptor } from '@brain/connector-core';
 
 // Event names from the LEAF module (cycle-safe) — used at module-evaluation top-level
 // in ResourceDescriptor `emits` arrays, so must NOT come from index.ts/resources.ts.
@@ -32,6 +28,48 @@ import {
 /** Provider id — matches CONNECTOR_CATALOG + IConnector.provider + the ConnectorFactory key. */
 export const WOOCOMMERCE_PROVIDER = 'woocommerce' as const;
 
+// ── Historical depth (provider max, not Brain's 2-year default) ────────────────
+// WooCommerce's REST API has NO hard history limit — every order/product/customer/coupon the store
+// ever recorded is queryable (it is the merchant's own WordPress DB). So unlike GA4 (~14 months) or
+// ad platforms, the manifest window is a POLICY cap, not a platform cap. Default: 5 years — a sane
+// "full storefront history" target that bounds first-pull cost; override per deployment via
+// WOOCOMMERCE_MAX_HISTORY_YEARS (clamped 1..10).
+
+const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** Default policy cap on WooCommerce historical depth, in years. */
+export const WOOCOMMERCE_DEFAULT_MAX_HISTORY_YEARS = 5;
+
+/**
+ * Resolve the WooCommerce max-history policy cap (years). Reads WOOCOMMERCE_MAX_HISTORY_YEARS live
+ * from process.env (intentional raw — a non-secret ops knob; a live read keeps unit overrides robust
+ * to module load order), clamped to [1, 10]; invalid/absent → the 5-year default.
+ */
+export function resolveWooMaxHistoryYears(): number {
+  // intentional raw: optional deployment override; not part of any typed config schema (this is a
+  // pure mapper package — it must not depend on @brain/config).
+  const raw = typeof process !== 'undefined' ? process.env?.['WOOCOMMERCE_MAX_HISTORY_YEARS'] : undefined;
+  if (raw) {
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(Math.max(parsed, 1), 10);
+    }
+  }
+  return WOOCOMMERCE_DEFAULT_MAX_HISTORY_YEARS;
+}
+
+/** The effective WooCommerce max backfill window in ms (env-overridable years × 365d). */
+export function wooMaxBackfillWindowMs(): number {
+  return resolveWooMaxHistoryYears() * YEAR_MS;
+}
+
+/**
+ * Manifest window snapshot, resolved once at module evaluation (ResourceDescriptor requires a
+ * number, not a getter). Long-lived workers pick up an env change on restart — the same posture as
+ * every other env-derived constant in the workers.
+ */
+export const WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS = wooMaxBackfillWindowMs();
+
 /**
  * Orders — WooCommerce wc/v3 /orders, paged by page_number (Woo's classic offset paging, ordered by
  * modified asc). One order → one order.live.v1 per state (date_modified folded into the dedup
@@ -43,7 +81,7 @@ export const WOOCOMMERCE_ORDERS_RESOURCE: ResourceDescriptor = {
   kind: 'rest',
   emits: [ORDER_LIVE_V1_EVENT_NAME],
   backfillSupported: true,
-  maxBackfillWindowMs: TWO_YEARS_MS,
+  maxBackfillWindowMs: WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS,
   cursorStrategy: 'page_number',
   dedupKeyStrategy: 'provider_id+kind',
   pageSize: 100, // WooCommerce REST per_page max
@@ -59,7 +97,7 @@ export const WOOCOMMERCE_PRODUCTS_RESOURCE: ResourceDescriptor = {
   kind: 'rest',
   emits: [PRODUCT_UPSERT_V1_EVENT_NAME],
   backfillSupported: true,
-  maxBackfillWindowMs: TWO_YEARS_MS,
+  maxBackfillWindowMs: WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS,
   cursorStrategy: 'page_number',
   dedupKeyStrategy: 'provider_id+kind',
   pageSize: 100,
@@ -77,7 +115,7 @@ export const WOOCOMMERCE_CUSTOMERS_RESOURCE: ResourceDescriptor = {
   kind: 'rest',
   emits: [CUSTOMER_UPSERT_V1_EVENT_NAME],
   backfillSupported: true,
-  maxBackfillWindowMs: TWO_YEARS_MS,
+  maxBackfillWindowMs: WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS,
   cursorStrategy: 'page_number',
   dedupKeyStrategy: 'provider_id+kind',
   pageSize: 100,
@@ -94,7 +132,7 @@ export const WOOCOMMERCE_COUPONS_RESOURCE: ResourceDescriptor = {
   kind: 'rest',
   emits: [COUPON_UPSERT_V1_EVENT_NAME],
   backfillSupported: true,
-  maxBackfillWindowMs: TWO_YEARS_MS,
+  maxBackfillWindowMs: WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS,
   cursorStrategy: 'page_number',
   dedupKeyStrategy: 'provider_id+kind',
   pageSize: 100,
@@ -111,7 +149,7 @@ export const WOOCOMMERCE_REFUNDS_RESOURCE: ResourceDescriptor = {
   kind: 'rest',
   emits: [REFUND_RECORDED_V1_EVENT_NAME],
   backfillSupported: true,
-  maxBackfillWindowMs: TWO_YEARS_MS,
+  maxBackfillWindowMs: WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS,
   cursorStrategy: 'page_number',
   dedupKeyStrategy: 'provider_id',
   pageSize: 100,

@@ -151,11 +151,19 @@ describe('HandleGoogleAdsOAuthCallbackCommand', () => {
       idempotencyKey: 'idem-g-2',
     });
 
-    // The bundle written to Secrets Manager carries refresh_token + ad_account_id.
+    // The bundle written to Secrets Manager carries refresh_token + ad_account_id PLUS the
+    // creds that resolved the exchange (BYO refresh bug: a refresh_token is only valid against
+    // the client that minted it, so the repull must read the SAME client from the bundle).
     expect(storeSpy).toHaveBeenCalledWith(
       REAL_BRAND_ID,
       expect.objectContaining({ connectorType: 'google_ads' }),
-      expect.objectContaining({ refresh_token: REFRESH_TOKEN, ad_account_id: '1234567890' }),
+      expect.objectContaining({
+        refresh_token: REFRESH_TOKEN,
+        ad_account_id: '1234567890',
+        client_id: 'test-google-client-id',
+        client_secret: 'test-google-client-secret',
+        developer_token: 'test-dev-token',
+      }),
     );
     // The token must NOT appear in the result or the emitted event.
     expect(JSON.stringify(result)).not.toContain(REFRESH_TOKEN);
@@ -293,6 +301,75 @@ describe('HandleGoogleAdsOAuthCallbackCommand', () => {
       expect(inst.providerConfig['google_ads_login_customer_id']).toBe(MANAGER_CID);
       expect(inst.providerConfig['ad_account_name']).toBe(nameByLeaf[inst.accountKey]);
     }
+  });
+
+  it('BYO app creds: the brand-stored google_ads_app bundle WINS over env and is persisted per-account', async () => {
+    const stateStore = new InProcessOAuthStateStore();
+    const secretsMgr = new LocalSecretsManager();
+    // The brand stored its OWN app at connect-initiate time (writeRoutes → storeBrandOAuthAppCreds).
+    await secretsMgr.storeSecret(
+      REAL_BRAND_ID,
+      { connectorType: 'google_ads_app' },
+      { client_id: 'byo-client-id', client_secret: 'byo-client-secret', developer_token: 'byo-dev-token' },
+    );
+    const storeSpy = vi.spyOn(secretsMgr, 'storeSecret');
+    const connectorRepo = makeConnectorRepo(REAL_BRAND_ID);
+    const syncStatusRepo = makeSyncStatusRepo();
+    const emitEvent = vi.fn().mockResolvedValue(undefined);
+
+    // Capture the token-exchange body + the developer-token header the discovery calls send.
+    const seen: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      seen.push({ url: u, init });
+      if (u.includes('oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN }), { status: 200 });
+      }
+      if (u.includes('listAccessibleCustomers')) {
+        return new Response(JSON.stringify({ resourceNames: ['customers/1234567890'] }), { status: 200 });
+      }
+      if (u.includes('googleAds:searchStream')) {
+        return new Response(
+          JSON.stringify([{ results: [{ customerClient: { id: '1234567890', manager: false, level: '0', status: 'ENABLED' } }] }]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`[google test] unexpected fetch: ${u}`);
+    });
+
+    const cmd = new HandleGoogleAdsOAuthCallbackCommand(
+      secretsMgr,
+      stateStore,
+      connectorRepo,
+      syncStatusRepo,
+      emitEvent,
+    );
+
+    const stateNonce = 'google-state-byo';
+    await stateStore.set(REAL_BRAND_ID, stateNonce, 900);
+    await cmd.execute({ query: { code: 'auth_code_g', state: stateNonce }, idempotencyKey: 'idem-byo' });
+
+    // Exchange used the BRAND's client, not env.
+    const tokenCall = seen.find((c) => c.url.includes('oauth2.googleapis.com/token'))!;
+    expect(String(tokenCall.init?.body)).toContain('byo-client-id');
+    expect(String(tokenCall.init?.body)).toContain('byo-client-secret');
+    expect(String(tokenCall.init?.body)).not.toContain('test-google-client-id');
+
+    // Discovery used the BRAND's developer token.
+    const listCall = seen.find((c) => c.url.includes('listAccessibleCustomers'))!;
+    expect((listCall.init?.headers as Record<string, string>)['developer-token']).toBe('byo-dev-token');
+
+    // Per-account bundle carries the RESOLVING (BYO) creds — the repull inherits them.
+    expect(storeSpy).toHaveBeenCalledWith(
+      REAL_BRAND_ID,
+      expect.objectContaining({ connectorType: 'google_ads', subKey: '1234567890' }),
+      expect.objectContaining({
+        refresh_token: REFRESH_TOKEN,
+        client_id: 'byo-client-id',
+        client_secret: 'byo-client-secret',
+        developer_token: 'byo-dev-token',
+      }),
+    );
   });
 
   it('state nonce is single-use (NN-4)', async () => {

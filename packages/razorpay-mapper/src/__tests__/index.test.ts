@@ -34,6 +34,7 @@ import {
   mapDisputeWebhookToEvent,
   mapOrderPaidWebhookToEvent,
   mapPaymentAuthorizedToEvent,
+  mapPaymentLifecycleToEvent,
   RAZORPAY_FIELD_ALLOWLIST,
   CARD_FIELDS_BLOCKED,
   SETTLEMENT_LIVE_V1_EVENT_NAME,
@@ -44,6 +45,7 @@ import {
   type RazorpayDisputeEntity,
   type RazorpayOrderEntity,
   type RazorpayPaymentAuthorizedEntity,
+  type RazorpayPaymentEntity,
   type DisputeLifecycleType,
 } from '../index.js';
 
@@ -865,10 +867,12 @@ describe('UT-18: mapPaymentAuthorizedToEvent — entity_type=payment_authorized,
 // ── UT-13: RAZORPAY_FIELD_ALLOWLIST and CARD_FIELDS_BLOCKED exports ───────────
 
 describe('UT-13: exported constants correctness', () => {
-  it('RAZORPAY_FIELD_ALLOWLIST has exactly the 12 allowed fields', () => {
+  it('RAZORPAY_FIELD_ALLOWLIST has exactly the 18 allowed fields (12 original + 6 docs-verified recon names)', () => {
     const expected = new Set([
       'settlement_id', 'payment_id', 'order_id', 'amount', 'fee', 'tax',
       'utr', 'status', 'created_at', 'settled_at', 'currency', 'entity_type',
+      // audit extension 2026-07-12 — recon/combined docs field names (map, don't drop):
+      'type', 'settlement_utr', 'debit', 'credit', 'on_hold', 'settled',
     ]);
     expect(RAZORPAY_FIELD_ALLOWLIST.size).toBe(expected.size);
     for (const field of expected) {
@@ -882,5 +886,230 @@ describe('UT-13: exported constants correctness', () => {
     for (const field of required) {
       expect(CARD_FIELDS_BLOCKED.has(field as never)).toBe(true);
     }
+  });
+});
+
+// ── UT-19: docs-shape recon/combined item (audit extension 2026-07-12) ────────
+// Real recon/combined items carry `type` (not entity_type) and `settlement_utr` (not utr) —
+// razorpay.com/docs/api/settlements/fetch-recon. These tests pin the docs-shape mapping.
+
+describe('UT-19: mapSettlementItemToEvent — docs-shape recon fields (type, settlement_utr, debit/credit)', () => {
+  const RECON_UTR = 'UTR20260712000000000042';
+  const DOCS_SHAPE_ITEM: RazorpaySettlementItem = {
+    entity_id: 'txn_TestEntity0001',
+    type: 'refund',                       // docs discriminator name
+    debit: 50000,
+    credit: 0,
+    amount: 50000,
+    currency: 'INR',
+    fee: 0,
+    tax: 0,
+    on_hold: false,
+    settled: true,
+    created_at: 1704067200,
+    settled_at: 1704153600,
+    settlement_id: SETTLEMENT_ID,
+    payment_id: PAYMENT_ID,
+    settlement_utr: RECON_UTR,            // docs UTR name
+    order_id: 'order_TestOrder1234',
+  };
+
+  it('`type` resolves entity_type (recon items never carry entity_type)', () => {
+    const event = mapSettlementItemToEvent(DOCS_SHAPE_ITEM, BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('refund');
+    expect(event.properties.recon_type).toBe('refund');
+  });
+
+  it('legacy entity_type wins over type when both present', () => {
+    const item: RazorpaySettlementItem = { ...DOCS_SHAPE_ITEM, entity_type: 'adjustment' };
+    const event = mapSettlementItemToEvent(item, BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('adjustment');
+  });
+
+  it("recon 'transfer' folds into the adjustment enum, raw string preserved in recon_type", () => {
+    const item: RazorpaySettlementItem = { ...DOCS_SHAPE_ITEM, type: 'transfer' };
+    const event = mapSettlementItemToEvent(item, BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('adjustment');
+    expect(event.properties.recon_type).toBe('transfer');
+  });
+
+  it('settlement_utr feeds utr_hash when utr is absent — raw NEVER in output (C1)', () => {
+    const event = mapSettlementItemToEvent(DOCS_SHAPE_ITEM, BRAND_A, SALT_A);
+    const json = JSON.stringify(event);
+    expect(json).not.toContain(RECON_UTR);
+    expect(event.properties.utr_hash).toBeTruthy();
+    // Byte-identical to hashing the same value via the legacy `utr` key
+    const legacy = mapSettlementItemToEvent(
+      { ...DOCS_SHAPE_ITEM, settlement_utr: null, utr: RECON_UTR },
+      BRAND_A,
+      SALT_A,
+    );
+    expect(event.properties.utr_hash).toBe(legacy.properties.utr_hash);
+  });
+
+  it('legacy utr wins over settlement_utr when both present', () => {
+    const item: RazorpaySettlementItem = { ...DOCS_SHAPE_ITEM, utr: 'UTRLEGACY0001' };
+    const event = mapSettlementItemToEvent(item, BRAND_A, SALT_A);
+    const viaLegacy = mapSettlementItemToEvent(
+      { ...DOCS_SHAPE_ITEM, settlement_utr: null, utr: 'UTRLEGACY0001' },
+      BRAND_A,
+      SALT_A,
+    );
+    expect(event.properties.utr_hash).toBe(viaLegacy.properties.utr_hash);
+  });
+
+  it('payout legs map: debit_minor / credit_minor as BIGINT-as-string (I-S07)', () => {
+    const event = mapSettlementItemToEvent(DOCS_SHAPE_ITEM, BRAND_A, SALT_A);
+    expect(event.properties.debit_minor).toBe('50000');
+    expect(event.properties.credit_minor).toBe('0');
+  });
+
+  it('negative adjustment leg survives (signed integer string, no float)', () => {
+    const item: RazorpaySettlementItem = { ...DOCS_SHAPE_ITEM, type: 'adjustment', debit: -100 };
+    const event = mapSettlementItemToEvent(item, BRAND_A, SALT_A);
+    expect(event.properties.debit_minor).toBe('-100');
+  });
+
+  it('on_hold / settled flags map to booleans; absent → null', () => {
+    const event = mapSettlementItemToEvent(DOCS_SHAPE_ITEM, BRAND_A, SALT_A);
+    expect(event.properties.on_hold).toBe(false);
+    expect(event.properties.settled).toBe(true);
+
+    const bare = mapSettlementItemToEvent(
+      { settlement_id: SETTLEMENT_ID, amount: 100, type: 'payment' },
+      BRAND_A,
+      SALT_A,
+    );
+    expect(bare.properties.on_hold).toBeNull();
+    expect(bare.properties.settled).toBeNull();
+    expect(bare.properties.debit_minor).toBeNull();
+    expect(bare.properties.credit_minor).toBeNull();
+  });
+
+  it('non-allowlisted docs fields (entity_id, method, card_*, dispute_id) are still DROPPED (C4)', () => {
+    /* eslint-disable brain-pci/no-pci-card-fields -- attack fixture proving the drop */
+    const item: RazorpaySettlementItem = {
+      ...DOCS_SHAPE_ITEM,
+      method: 'card',
+      card_network: 'Visa',
+      card_issuer: 'HDFC',
+      card_type: 'credit',
+      dispute_id: 'disp_Recon0001',
+      description: 'some description',
+      order_receipt: 'receipt#1',
+      posted_at: null,
+    };
+    /* eslint-enable brain-pci/no-pci-card-fields */
+    const json = JSON.stringify(mapSettlementItemToEvent(item, BRAND_A, SALT_A));
+    expect(json).not.toContain('"entity_id"');
+    expect(json).not.toContain('"method"');
+    expect(json).not.toContain('card_network');
+    expect(json).not.toContain('"dispute_id"');
+    expect(json).not.toContain('"description"');
+    expect(json).not.toContain('"order_receipt"');
+  });
+});
+
+// ── UT-20: mapPaymentLifecycleToEvent (payment.captured / payment.failed lanes) ──
+
+describe('UT-20: mapPaymentLifecycleToEvent — payment_captured / payment_failed, C1 hash, C4, I-S07', () => {
+  const LIFECYCLE_PAYMENT_ID = 'pay_TestLifecycle123456';
+
+  const capturedEntity: RazorpayPaymentEntity = {
+    id: LIFECYCLE_PAYMENT_ID,
+    order_id: 'order_TestLifecycle1234',
+    amount: 250000,
+    currency: 'INR',
+    status: 'captured',
+    method: 'upi',
+    fee: 5000,
+    tax: 900,
+    created_at: 1704067200,
+  };
+
+  const failedEntity: RazorpayPaymentEntity = {
+    id: LIFECYCLE_PAYMENT_ID,
+    order_id: 'order_TestLifecycle1234',
+    amount: 250000,
+    currency: 'INR',
+    status: 'failed',
+    method: 'card',
+    error_code: 'BAD_REQUEST_ERROR',
+    error_reason: 'payment_failed',
+    created_at: 1704067200,
+    /* eslint-disable brain-pci/no-pci-card-fields -- attack fixture proving the drop */
+    card_network: 'Visa',
+    card: { last4: '4242', network: 'Visa' },
+    /* eslint-enable brain-pci/no-pci-card-fields */
+  };
+
+  it('payment.captured → entity_type=payment_captured with fee/tax coverage', () => {
+    const event = mapPaymentLifecycleToEvent(capturedEntity, 'payment_captured', BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('payment_captured');
+    expect(event.properties.amount_minor).toBe('250000');
+    expect(event.properties.fee_minor).toBe('5000');
+    expect(event.properties.tax_minor).toBe('900');
+    expect(event.properties.method).toBe('upi');
+    expect(event.event_name).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
+  });
+
+  it('payment.failed → entity_type=payment_failed with error coverage; fee/tax null', () => {
+    const event = mapPaymentLifecycleToEvent(failedEntity, 'payment_failed', BRAND_A, SALT_A);
+    expect(event.properties.entity_type).toBe('payment_failed');
+    expect(event.properties.error_code).toBe('BAD_REQUEST_ERROR');
+    expect(event.properties.error_reason).toBe('payment_failed');
+    expect(event.properties.fee_minor).toBeNull();
+    expect(event.properties.tax_minor).toBeNull();
+  });
+
+  it('raw payment_id NOT in output (C1) — only payment_id_hash', () => {
+    const event = mapPaymentLifecycleToEvent(capturedEntity, 'payment_captured', BRAND_A, SALT_A);
+    const json = JSON.stringify(event);
+    expect(json).not.toContain(LIFECYCLE_PAYMENT_ID);
+    expect(event.properties.payment_id_hash).toBeTruthy();
+    expect(event.properties.payment_id_hash).toHaveLength(64);
+  });
+
+  it('card.* NEVER crosses the boundary (C4 / PCI SAQ-A)', () => {
+    const json = JSON.stringify(mapPaymentLifecycleToEvent(failedEntity, 'payment_failed', BRAND_A, SALT_A));
+    expect(json).not.toContain('card_network');
+    expect(json).not.toContain('"card":'); // the card OBJECT key (method value 'card' is the allowed family)
+    expect(json).not.toContain('4242');
+  });
+
+  it('payment_id_hash differs across brands (per-brand salt isolation)', () => {
+    const evA = mapPaymentLifecycleToEvent(capturedEntity, 'payment_captured', BRAND_A, SALT_A);
+    const evB = mapPaymentLifecycleToEvent(capturedEntity, 'payment_captured', BRAND_B, SALT_B);
+    expect(evA.properties.payment_id_hash).not.toBe(evB.properties.payment_id_hash);
+  });
+
+  it('occurred_at is ISO-8601 derived from created_at', () => {
+    const event = mapPaymentLifecycleToEvent(capturedEntity, 'payment_captured', BRAND_A, SALT_A);
+    expect(event.occurred_at).toBe('2024-01-01T00:00:00.000Z');
+  });
+});
+
+// ── UT-21: extended dispute lifecycle (closed / action_required) ──────────────
+
+describe('UT-21: mapDisputeWebhookToEvent — dispute.closed / dispute.action_required directions', () => {
+  const entity: RazorpayDisputeEntity = {
+    id: 'disp_TestExtended123456',
+    payment_id: 'pay_TestExtended123456',
+    amount: 75000,
+    currency: 'INR',
+    status: 'closed',
+    created_at: 1704067200,
+  };
+
+  it('dispute.closed → dispute_direction=credit (withheld amount released)', () => {
+    const event = mapDisputeWebhookToEvent(entity, 'dispute.closed', BRAND_A, SALT_A);
+    expect(event.properties.dispute_lifecycle).toBe('dispute.closed');
+    expect(event.properties.dispute_direction).toBe('credit');
+  });
+
+  it('dispute.action_required → dispute_direction=debit (amount still withheld)', () => {
+    const event = mapDisputeWebhookToEvent(entity, 'dispute.action_required', BRAND_A, SALT_A);
+    expect(event.properties.dispute_lifecycle).toBe('dispute.action_required');
+    expect(event.properties.dispute_direction).toBe('debit');
   });
 });

@@ -20,7 +20,24 @@ import { planCredentialConnect, provisionGeneratedSecrets } from '../../modules/
 import { getOAuthDispatch } from '../../modules/connector/catalog/dispatch.js';
 import { storeBrandOAuthAppCreds, resolveBrandOAuthClientId, type OAuthProvider } from '../../modules/connector/oauth-app-creds.js';
 import { ConnectorInstance as ConnectorInstanceEntity } from '@brain/connector-core';
+import {
+  ConnectShopifyWithCredentialsCommand,
+  InvalidShopDomainError,
+  ShopifyCredentialsInvalidError,
+} from '../../modules/connector/sources/storefront/shopify/application/commands/ConnectShopifyWithCredentialsCommand.js';
+import { StorefrontExclusivityError } from '../../modules/connector/sources/storefront/storefront-exclusivity.js';
+import {
+  ConnectMetaWithSystemUserTokenCommand,
+  MetaSystemUserTokenInvalidError,
+  MetaAdAccountAccessError,
+} from '../../modules/connector/sources/advertising/meta/application/commands/ConnectMetaWithSystemUserTokenCommand.js';
 import { DisconnectCommand, ConnectorNotFoundError } from '../../modules/connector/sources/storefront/shopify/application/commands/DisconnectCommand.js';
+import {
+  HandleGa4ConnectCommand,
+  Ga4InvalidPropertyIdError,
+  Ga4ServiceAccountKeyInvalidError,
+  Ga4CredentialsInvalidError,
+} from '../../modules/connector/sources/analytics/ga4/application/commands/HandleGa4ConnectCommand.js';
 import { registerMetaInstallRoute } from '../../modules/connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.js';
 import { registerGoogleAdsInstallRoute } from '../../modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
 import type { PgConnectorInstanceRepository } from '../../modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
@@ -57,6 +74,78 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
     emitEvent,
   );
 
+  // Public origin webhooks are delivered to (same host that receives the OAuth callbacks).
+  let webhookOrigin = config.appBaseUrl;
+  try {
+    webhookOrigin = new URL(config.shopifyCallbackUrl).origin;
+  } catch {
+    /* fall back to appBaseUrl */
+  }
+
+  // Generic per-brand Shopify connect (custom-app credentials → client-credentials grant).
+  const connectShopifyWithCredentials = new ConnectShopifyWithCredentialsCommand(
+    connectorSecretsManager,
+    connectorRepo,
+    syncStatusRepo,
+    emitEvent,
+    process.env['APP_ENV'] ?? config.nodeEnv,
+    webhookOrigin,
+  );
+
+  // Meta: generic per-brand system-user-token connect (credential path on the OAuth tile).
+  // The brand pastes a NEVER-EXPIRING system-user token (Meta Business Settings) + optionally
+  // the ad account id — no browser OAuth redirect, no ~60-day token death. Mirrors the wiring
+  // in registerConnectors.ts (setAdAccountId is the same brand-scoped column UPDATE).
+  const connectMetaWithSystemUserToken = new ConnectMetaWithSystemUserTokenCommand(
+    connectorSecretsManager,
+    connectorRepo,
+    syncStatusRepo,
+    emitEvent,
+    async (accBrandId, connectorInstanceId, adAccountId) => {
+      const client = await rawPgPool.connect();
+      try {
+        await beginRlsTxn(client, { correlationId: 'connector:set-ad-account', brandId: accBrandId });
+        await client.query(
+          `UPDATE connector_instance SET ad_account_id = $1 WHERE id = $2 AND brand_id = $3`,
+          [adAccountId, connectorInstanceId, accBrandId],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  // Generic per-brand GA4 connect (service-account JSON key → JWT-bearer grant).
+  // The property id is mirrored into connector_instance.ad_account_id — the generic repull
+  // contract (ingestion-backfill/ga4-repull enumerate on that column). Same RLS write pattern
+  // as the generic credential path's instanceColumnUpdate below.
+  const connectGa4WithServiceAccount = new HandleGa4ConnectCommand(
+    connectorSecretsManager,
+    connectorRepo,
+    syncStatusRepo,
+    emitEvent,
+    async (gaBrandId, connectorInstanceId, adAccountId) => {
+      const colClient = await rawPgPool.connect();
+      try {
+        await beginRlsTxn(colClient, { correlationId: 'connector:ga4-set-property', brandId: gaBrandId });
+        await colClient.query(
+          `UPDATE connector_instance SET ad_account_id = $1 WHERE id = $2 AND brand_id = $3`,
+          [adAccountId, connectorInstanceId, gaBrandId],
+        );
+        await colClient.query('COMMIT');
+      } catch (colErr) {
+        await colClient.query('ROLLBACK').catch(() => undefined);
+        throw colErr;
+      } finally {
+        colClient.release();
+      }
+    },
+  );
+
   void app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('manager'));
@@ -82,6 +171,56 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
         return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `${def.displayName} is not yet available for connection.` } });
       }
 
+      // ── Meta: system-user token connect (credential dispatch on the OAuth tile) ──
+      // RECOMMENDED path: when the connect body carries an access_token, connect with it
+      // directly (validated via /me + optional ad-account fetch) — the token never expires,
+      // so the connection never dies on the ~60-day OAuth token expiry. No access_token →
+      // fall through to the browser OAuth redirect below (back-compat, BYO-app supported).
+      if (connectorType === 'meta') {
+        const metaCreds = body.credentials ?? {};
+        const systemUserToken = (metaCreds['access_token'] ?? '').trim();
+        if (systemUserToken) {
+          try {
+            const result = await connectMetaWithSystemUserToken.execute({
+              brandId,
+              accessToken: systemUserToken,
+              ...(metaCreds['ad_account_id']?.trim()
+                ? { adAccountId: metaCreds['ad_account_id'].trim() }
+                : {}),
+              idempotencyKey: (req.headers['idempotency-key'] as string | undefined) ?? requestId,
+            });
+            await auditWriter.append({
+              brand_id: brandId,
+              actor_id: auth?.userId ?? null,
+              actor_role: auth?.role ?? 'unknown',
+              action: 'connector.connected',
+              entity_type: 'connector_instance',
+              entity_id: result.connectorInstanceId,
+              // NEVER the token — only the connect metadata (I-S09).
+              payload: {
+                connector_type: 'meta',
+                auth_method: 'system_user_token',
+                ad_account_ids: result.adAccountIds,
+              },
+            });
+            return reply.code(200).send({
+              request_id: requestId,
+              data: {
+                kind: 'credential',
+                connected: true,
+                connector_instance_id: result.connectorInstanceId,
+              },
+            });
+          } catch (err) {
+            if (err instanceof MetaSystemUserTokenInvalidError || err instanceof MetaAdAccountAccessError) {
+              return reply.code(422).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+            }
+            throw err;
+          }
+        }
+        // no access_token → the browser OAuth redirect below handles the connect.
+      }
+
       if (def.connectMethod === 'oauth') {
         const dispatch = getOAuthDispatch(connectorType);
         if (!dispatch) {
@@ -98,6 +237,9 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
             await storeBrandOAuthAppCreds(connectorSecretsManager, provider, brandId, {
               clientId: appCreds['client_id'],
               clientSecret: appCreds['client_secret'],
+              // google_ads BYO-app: the brand's own developer token rides the same app bundle
+              // (resolved at callback + persisted into each per-account bundle for the repull).
+              ...(appCreds['developer_token'] ? { developerToken: appCreds['developer_token'] } : {}),
             });
           }
           const clientId = await resolveBrandOAuthClientId(connectorSecretsManager, provider, brandId);
@@ -123,6 +265,159 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
           }
           if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
             return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: "This connector isn't configured yet. Add your app credentials and try again." } });
+          }
+          throw err;
+        }
+      }
+
+      // ── Shopify: generic per-brand connect (custom-app credentials) ─────────────
+      // The brand enters its OWN custom app's Client ID + Client Secret + store URL; the server
+      // does the client-credentials exchange (24h token; refresh cron re-exchanges) — no browser
+      // OAuth redirect. ENV-GATED FALLBACK: when Brain's shared app is configured
+      // (SHOPIFY_CLIENT_ID) AND the brand supplied no credentials, fall back to the
+      // authorization-code OAuth redirect (the pre-existing shared-app flow).
+      if (connectorType === 'shopify' && def.connectMethod === 'credential') {
+        const creds = body.credentials ?? {};
+        const clientId = (creds['client_id'] ?? '').trim();
+        const clientSecret = (creds['client_secret'] ?? '').trim();
+        const shopDomainRaw = ((creds['shop_domain'] ?? body.shop_domain) ?? '').trim();
+
+        if (!clientId || !clientSecret) {
+          // Fallback is gated on the ENV (shared Brain) app ONLY — a brand's previously stored
+          // custom-app client_id must not be pushed through the authorization-code redirect
+          // (admin custom apps have no OAuth redirect configured; they use client-credentials).
+          const envClientId = process.env['SHOPIFY_CLIENT_ID'] ?? '';
+          const dispatch = getOAuthDispatch('shopify');
+          if (envClientId && dispatch) {
+            // Shared-app OAuth fallback — identical to the historic oauth branch.
+            try {
+              const { oauth_url } = await dispatch.initiate({
+                brandId,
+                shopDomain: shopDomainRaw || undefined,
+                callbackUrl: config.shopifyCallbackUrl,
+                clientId: envClientId,
+              });
+              await auditWriter.append({
+                brand_id: brandId,
+                actor_id: auth?.userId ?? null,
+                actor_role: auth?.role ?? 'unknown',
+                action: 'connector.connected',
+                entity_type: 'connector_instance',
+                entity_id: `shopify:${brandId}`,
+                payload: { connector_type: 'shopify', phase: 'oauth_initiated' },
+              });
+              return reply.code(200).send({ request_id: requestId, data: { kind: 'oauth', oauth_url } });
+            } catch (err) {
+              if ((err as { code?: string }).code === 'MISSING_SHOP_DOMAIN') {
+                return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_SHOP_DOMAIN', message: (err as Error).message } });
+              }
+              throw err;
+            }
+          }
+          return reply.code(400).send({
+            request_id: requestId,
+            error: {
+              code: 'MISSING_SHOPIFY_CREDENTIALS',
+              message: 'shopify connector requires: shop_domain, client_id, client_secret',
+            },
+          });
+        }
+
+        try {
+          const result = await connectShopifyWithCredentials.execute({
+            brandId,
+            shopDomain: shopDomainRaw,
+            clientId,
+            clientSecret,
+            idempotencyKey: (req.headers['idempotency-key'] as string | undefined) ?? requestId,
+          });
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: result.connectorInstanceId,
+            // NEVER the credentials — only the connect metadata (I-S09).
+            payload: { connector_type: 'shopify', auth_method: 'client_credentials', shop_domain: result.shopDomain },
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: {
+              kind: 'credential',
+              connected: true,
+              connector_instance_id: result.connectorInstanceId,
+              // Registered automatically via the Admin API — surfaced for reference/display.
+              webhook: { url: result.webhookUrl, api_key: null, routing_header: null },
+            },
+          });
+        } catch (err) {
+          if (err instanceof InvalidShopDomainError) {
+            return reply.code(400).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          if (err instanceof ShopifyCredentialsInvalidError) {
+            return reply.code(422).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          if (err instanceof StorefrontExclusivityError) {
+            return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          throw err;
+        }
+      }
+
+      // ── GA4: bespoke credential connect (service-account JWT-bearer) ────────────
+      // The brand pastes its GCP service-account JSON key + numeric property id (+ optional
+      // reporting currency). The command validates via a cheap runReport BEFORE persisting
+      // anything, stores the SA bundle per-brand (Secrets Manager), and mirrors the property
+      // id into ad_account_id (generic repull contract). No OAuth redirect, no shared env app.
+      if (connectorType === 'ga4' && def.connectMethod === 'credential') {
+        const creds = body.credentials ?? {};
+        const propertyId = (creds['property_id'] ?? '').trim();
+        const serviceAccountJson = (creds['service_account_json'] ?? '').trim();
+        const currencyCode = (creds['currency_code'] ?? '').trim();
+
+        if (!propertyId || !serviceAccountJson) {
+          return reply.code(400).send({
+            request_id: requestId,
+            error: {
+              code: 'MISSING_GA4_CREDENTIALS',
+              message: 'ga4 connector requires: property_id, service_account_json',
+            },
+          });
+        }
+
+        try {
+          const result = await connectGa4WithServiceAccount.execute({
+            brandId,
+            propertyId,
+            serviceAccountJson,
+            ...(currencyCode ? { currencyCode } : {}),
+            idempotencyKey: (req.headers['idempotency-key'] as string | undefined) ?? requestId,
+          });
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: result.connectorInstanceId,
+            // NEVER the key — only the connect metadata (I-S09).
+            payload: { connector_type: 'ga4', auth_method: 'service_account', property_id: result.propertyId },
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: {
+              kind: 'credential',
+              connected: true,
+              connector_instance_id: result.connectorInstanceId,
+            },
+          });
+        } catch (err) {
+          if (err instanceof Ga4InvalidPropertyIdError || err instanceof Ga4ServiceAccountKeyInvalidError) {
+            return reply.code(400).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          if (err instanceof Ga4CredentialsInvalidError) {
+            return reply.code(422).send({ request_id: requestId, error: { code: err.code, message: err.message } });
           }
           throw err;
         }
@@ -165,6 +460,16 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
           spec,
           () => randomBytes(24).toString('hex'),
         );
+
+        // ── Shopflo extension: per-instance signature posture marker ──────────────────────────────
+        // Shopflo's dashboard may not let the merchant configure Brain's MINTED webhook_secret, which
+        // would leave the HMAC-gated webhook lane permanently-401. Record the secret's provenance in
+        // the bundle (non-secret marker): 'minted' ⇒ ShopfloWebhookStrategy runs verify-if-present
+        // (unsigned deliveries accepted with a posture warning; signed ones still strictly verified);
+        // 'merchant' (they pasted their own Shopflo-configured secret) ⇒ strict fail-closed verify.
+        if (connectorType === 'shopflo') {
+          secretBundle['webhook_secret_origin'] = generated['webhook_secret'] ? 'minted' : 'merchant';
+        }
 
         let arn: string;
         try {

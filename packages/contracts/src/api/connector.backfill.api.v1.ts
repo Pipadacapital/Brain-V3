@@ -20,6 +20,22 @@
  *   apps/core/src/main.ts:714 gates this endpoint — managers return 403.
  */
 
+// ── Trigger request (POST /api/v1/connectors/:id/backfill) ────────────────────
+
+/**
+ * OPTIONAL request body for the backfill trigger (ADDITIVE — an absent/empty body keeps the
+ * pre-existing "provider max" behaviour byte-for-byte).
+ */
+export interface BackfillTriggerRequest {
+  /**
+   * Caller-requested historical depth in MILLISECONDS (the UI depth picker sends 30-day months,
+   * e.g. 3 months = 3 * 30 * 24 * 60 * 60 * 1000). Omit for the provider max. The server persists
+   * the REQUEST on the backfill_job row; the claimers always clamp to the provider manifest's
+   * maxBackfillWindowMs at execution time — this can never widen a window past the platform cap.
+   */
+  requested_window_ms?: number;
+}
+
 // ── Trigger response (POST /api/v1/connectors/:id/backfill → 202) ─────────────
 
 export interface BackfillTriggerResponse {

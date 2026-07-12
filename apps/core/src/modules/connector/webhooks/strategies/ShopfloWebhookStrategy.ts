@@ -6,6 +6,19 @@
  *   Validates hex(HMAC-SHA256(rawBody, webhookSecret)) against configurable header.
  *   Byte-compatible with legacy ShopfloHmac.validateWebhook() + signatureHeaderName().
  *
+ *   SIGNATURE POSTURE (per instance): Shopflo's dashboard may not let the merchant configure Brain's
+ *   MINTED webhook_secret — a permanently-unsigned delivery stream that a strict gate would 401
+ *   forever (dead lane). The connect handler stamps the secret's provenance into the bundle
+ *   (webhook_secret_origin: 'minted' | 'merchant'); this strategy branches on it:
+ *     - signature header PRESENT           → strict HMAC verify (401 on mismatch) — ALWAYS.
+ *     - header ABSENT + origin 'merchant'  → 401 (they configured a secret ⇒ signatures expected).
+ *     - header ABSENT + origin ABSENT      → 401 (legacy bundles stay fail-closed).
+ *     - header ABSENT + origin 'minted'    → ACCEPT with a posture warning
+ *       (webhook_unsigned_accepted_total counter) — verify-if-present. Override with
+ *       SHOPFLO_REQUIRE_SIGNATURE=1 to force strict fail-closed everywhere.
+ *   Tenant risk is bounded: brand resolution still comes from the DB connector row via merchant_id
+ *   (MT-1), the payload is archived raw, and dedup/age gates still apply.
+ *
  * payloadMap (SLICE B — full dispatch table over the whole Shopflo event set):
  *   order.*                         → mapShopfloOrder        → order.live.v1 (THE order-source fix → Gold revenue).
  *   refund.* (non-order)            → mapShopfloRefund       → refund.recorded.v1.
@@ -54,7 +67,11 @@ export class ShopfloWebhookStrategy implements IWebhookStrategy {
   async signatureVerify(
     rawBody: Buffer,
     headers: FastifyRequest['headers'],
-    getSecret: (lookupKey: string) => Promise<{ webhookSecret: string; connectorLookupKey: string }>,
+    getSecret: (lookupKey: string) => Promise<{
+      webhookSecret: string;
+      connectorLookupKey: string;
+      webhookSecretOrigin?: string;
+    }>,
   ): Promise<SignatureVerifyResult> {
     let envelope: ShopfloWebhookEnvelope;
     try {
@@ -73,9 +90,36 @@ export class ShopfloWebhookStrategy implements IWebhookStrategy {
     }
 
     const signatureHeader = (headers[this.hmacConfig.header] as string | undefined) ?? '';
-    const { webhookSecret } = await getSecret(merchantId);
+    const { webhookSecret, webhookSecretOrigin } = await getSecret(merchantId);
 
-    if (!webhookSecret || !this.hmacConfig.validateWebhook(rawBody, signatureHeader, webhookSecret)) {
+    // No resolvable secret at all (connector missing / bundle empty) → 401 regardless of posture:
+    // there is nothing to verify against AND no proven per-instance posture to relax on.
+    if (!webhookSecret) {
+      incrementCounter('connector_auth_rejected_total', { provider: 'shopflo' });
+      const err = new Error('HMAC validation failed');
+      (err as NodeJS.ErrnoException & { code: string }).code = 'HMAC_INVALID';
+      throw err;
+    }
+
+    if (!signatureHeader) {
+      // VERIFY-IF-PRESENT (per-instance): an unsigned delivery is acceptable ONLY when Brain minted
+      // the secret (the merchant never configured one in Shopflo — they may be unable to) AND the
+      // operator has not forced strict mode. Merchant-supplied secrets and legacy bundles (no origin
+      // marker) stay fail-closed. Accepted-unsigned is a monitored posture, never a silent one.
+      // intentional raw: operator escape hatch, not part of the typed config schema.
+      const forceStrict = process.env['SHOPFLO_REQUIRE_SIGNATURE'] === '1';
+      if (webhookSecretOrigin === 'minted' && !forceStrict) {
+        incrementCounter('webhook_unsigned_accepted_total', { provider: 'shopflo' });
+        return { lookupKey: merchantId, parsedPayload: envelope };
+      }
+      incrementCounter('connector_auth_rejected_total', { provider: 'shopflo' });
+      const err = new Error('HMAC validation failed');
+      (err as NodeJS.ErrnoException & { code: string }).code = 'HMAC_INVALID';
+      throw err;
+    }
+
+    // Signature PRESENT → strict verify, always (a wrong signature is tampering, not a posture gap).
+    if (!this.hmacConfig.validateWebhook(rawBody, signatureHeader, webhookSecret)) {
       incrementCounter('connector_auth_rejected_total', { provider: 'shopflo' });
       const err = new Error('HMAC validation failed');
       (err as NodeJS.ErrnoException & { code: string }).code = 'HMAC_INVALID';

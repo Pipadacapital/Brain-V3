@@ -439,3 +439,198 @@ describe('PM: payloadMap — unknown events', () => {
     expect(result.eventId).toBe(EVENT_ID);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PM: payment lifecycle + refund.created + extended dispute coverage
+// (audit extension 2026-07-12)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makeCapturedPaymentPayload(): unknown {
+  return {
+    payment: {
+      entity: {
+        id: 'pay_StratTest001',
+        order_id: 'order_StratTest001',
+        amount: 150000,
+        currency: 'INR',
+        status: 'captured',
+        method: 'upi',
+        fee: 3000,
+        tax: 540,
+        created_at: Math.floor(Date.now() / 1000),
+        notes: { shopify_order_id: 'shopify_order_777' },
+      },
+    },
+  };
+}
+
+function makeFailedPaymentPayload(): unknown {
+  return {
+    payment: {
+      entity: {
+        id: 'pay_StratTestFail01',
+        order_id: 'order_StratTest001',
+        amount: 150000,
+        currency: 'INR',
+        status: 'failed',
+        method: 'card',
+        error_code: 'BAD_REQUEST_ERROR',
+        error_reason: 'payment_failed',
+        created_at: Math.floor(Date.now() / 1000),
+        // card metadata MUST NOT survive the boundary (C4)
+        card: { last4: '4242', network: 'Visa' },
+      },
+    },
+  };
+}
+
+describe('PM: payloadMap — payment.captured (live-lane emit + map-table side effect)', () => {
+
+  it('PM-16: payment.captured → settlement.live.v1, entity_type=payment_captured, uuid-shaped eventId', async () => {
+    const ctx = makePayloadCtx('payment.captured', makeCapturedPaymentPayload());
+    const result = await strategy.payloadMap(ctx);
+
+    expect(result.skip).toBe(false);
+    expect(result.eventName).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
+    // The raw evt_XXX id previously rode here and failed the pipeline's z.string().uuid() —
+    // the emitted id MUST be uuid-shaped now.
+    expect(result.eventId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    const props = result.properties as Record<string, unknown>;
+    expect(props['entity_type']).toBe('payment_captured');
+    expect(props['fee_minor']).toBe('3000');
+    expect(props['tax_minor']).toBe('540');
+    expect(props['method']).toBe('upi');
+    // dedup stays on the provider event id
+    expect(result.dedupKey).toBe(EVENT_ID);
+  });
+
+  it('PM-17: payment.captured RETAINS the map-table side effect (MB-1 hard prerequisite)', async () => {
+    const ctx = makePayloadCtx('payment.captured', makeCapturedPaymentPayload());
+    const result = await strategy.payloadMap(ctx);
+    expect(typeof result.sideEffect).toBe('function');
+    expect(result.throwOnSideEffectError).toBe(true);
+  });
+
+  it('PM-18: payment.captured raw payment_id / card.* NEVER in emitted properties (C1/C4)', async () => {
+    const ctx = makePayloadCtx('payment.captured', makeCapturedPaymentPayload());
+    const result = await strategy.payloadMap(ctx);
+    const json = JSON.stringify(result.properties);
+    expect(json).not.toContain('pay_StratTest001');
+    expect(json).not.toContain('card');
+    expect((result.properties as Record<string, unknown>)['payment_id_hash']).toBeTruthy();
+  });
+
+  it('PM-19: payment.captured without payment entity → skip=true, no side effect', async () => {
+    const ctx = makePayloadCtx('payment.captured'); // no payload
+    const result = await strategy.payloadMap(ctx);
+    expect(result.skip).toBe(true);
+    expect(result.sideEffect).toBeUndefined();
+  });
+});
+
+describe('PM: payloadMap — payment.failed (was silently skipped via the settlement branch)', () => {
+
+  it('PM-20: payment.failed → settlement.live.v1, entity_type=payment_failed with error coverage', async () => {
+    const ctx = makePayloadCtx('payment.failed', makeFailedPaymentPayload());
+    const result = await strategy.payloadMap(ctx);
+
+    expect(result.skip).toBe(false);
+    expect(result.eventName).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
+    const props = result.properties as Record<string, unknown>;
+    expect(props['entity_type']).toBe('payment_failed');
+    expect(props['error_code']).toBe('BAD_REQUEST_ERROR');
+    expect(props['error_reason']).toBe('payment_failed');
+    expect(result.eventId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it('PM-21: payment.failed without payment entity → skip=true (fast-ack, no loss)', async () => {
+    const ctx = makePayloadCtx('payment.failed');
+    const result = await strategy.payloadMap(ctx);
+    expect(result.skip).toBe(true);
+  });
+
+  it('PM-22: payment.captured and payment.failed for the same eventId → DISTINCT Bronze eventIds', async () => {
+    const sharedEventId = 'evt_shared_pay001';
+    const ctxCaptured = makePayloadCtx('payment.captured', makeCapturedPaymentPayload());
+    const ctxFailed = makePayloadCtx('payment.failed', makeFailedPaymentPayload());
+    (ctxCaptured.parsedBody as Record<string, unknown>)['id'] = sharedEventId;
+    (ctxFailed.parsedBody as Record<string, unknown>)['id'] = sharedEventId;
+
+    const r1 = await strategy.payloadMap(ctxCaptured);
+    const r2 = await strategy.payloadMap(ctxFailed);
+    expect(r1.eventId).not.toBe(r2.eventId);
+  });
+});
+
+describe('PM: payloadMap — refund.created (was silently skipped via the settlement branch)', () => {
+
+  it('PM-23: refund.created → settlement.live.v1, entity_type=refund, skip=false', async () => {
+    const ctx = makePayloadCtx('refund.created', makeRefundPayload({ status: 'created' }));
+    const result = await strategy.payloadMap(ctx);
+
+    expect(result.skip).toBe(false);
+    expect(result.eventName).toBe(SETTLEMENT_LIVE_V1_EVENT_NAME);
+    const props = result.properties as Record<string, unknown>;
+    expect(props['entity_type']).toBe('refund');
+    expect(props['status']).toBe('created');
+  });
+
+  it('PM-24: refund.created and refund.processed for the same eventId → DISTINCT Bronze eventIds', async () => {
+    const sharedEventId = 'evt_shared_refund002';
+    const ctxCreated = makePayloadCtx('refund.created', makeRefundPayload({ status: 'created' }));
+    const ctxProcessed = makePayloadCtx('refund.processed', makeRefundPayload());
+    (ctxCreated.parsedBody as Record<string, unknown>)['id'] = sharedEventId;
+    (ctxProcessed.parsedBody as Record<string, unknown>)['id'] = sharedEventId;
+
+    const r1 = await strategy.payloadMap(ctxCreated);
+    const r2 = await strategy.payloadMap(ctxProcessed);
+    expect(r1.eventId).not.toBe(r2.eventId);
+  });
+});
+
+describe('PM: payloadMap — payment.dispute.closed / payment.dispute.action_required', () => {
+
+  it('PM-25: payment.dispute.closed → dispute_direction=credit (withheld amount released)', async () => {
+    const ctx = makePayloadCtx('payment.dispute.closed', makeDisputePayload({ status: 'closed' }));
+    const result = await strategy.payloadMap(ctx);
+
+    expect(result.skip).toBe(false);
+    const props = result.properties as Record<string, unknown>;
+    expect(props['entity_type']).toBe('dispute');
+    expect(props['dispute_lifecycle']).toBe('dispute.closed');
+    expect(props['dispute_direction']).toBe('credit');
+  });
+
+  it('PM-26: payment.dispute.action_required → dispute_direction=debit (still withheld)', async () => {
+    const ctx = makePayloadCtx('payment.dispute.action_required', makeDisputePayload());
+    const result = await strategy.payloadMap(ctx);
+
+    expect(result.skip).toBe(false);
+    const props = result.properties as Record<string, unknown>;
+    expect(props['dispute_lifecycle']).toBe('dispute.action_required');
+    expect(props['dispute_direction']).toBe('debit');
+  });
+
+  it('PM-27: all 6 dispute lifecycle stages for same eventId → 6 DISTINCT Bronze eventIds', async () => {
+    const sharedEventId = 'evt_shared_dispute002';
+    const lifecycles = [
+      'payment.dispute.created',
+      'payment.dispute.under_review',
+      'payment.dispute.action_required',
+      'payment.dispute.won',
+      'payment.dispute.lost',
+      'payment.dispute.closed',
+    ];
+
+    const ids = await Promise.all(
+      lifecycles.map(async (eventName) => {
+        const ctx = makePayloadCtx(eventName, makeDisputePayload());
+        (ctx.parsedBody as Record<string, unknown>)['id'] = sharedEventId;
+        const r = await strategy.payloadMap(ctx);
+        return r.eventId;
+      }),
+    );
+
+    expect(new Set(ids).size).toBe(6);
+  });
+});

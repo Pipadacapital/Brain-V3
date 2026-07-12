@@ -35,6 +35,7 @@ import {
   mapWooOrderToEvent,
   uuidV5FromOrderLive,
   ORDER_LIVE_V1_EVENT_NAME,
+  wooMaxBackfillWindowMs,
   type WooOrderShape,
 } from '@brain/woocommerce-mapper';
 import {
@@ -61,18 +62,23 @@ const REGION_CODE = cfg.BRAIN_REGION_CODE;
 
 const ORDERS_CURSOR_RESOURCE = 'orders.repull' as const;
 
-/** Default initial-backfill depth: a true 2-YEAR window (730 days) — the storefront-history target. */
-const DEFAULT_BACKFILL_DAYS = 730;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Backfill depth: configurable via WOOCOMMERCE_BACKFILL_DAYS env var (integer days).
- * Defaults to 730 days (2 years) — the INITIAL backfill must reach the full storefront history, not a
- * 90-day trailing slice (the order audit flagged the 90-day default as unable to reach older orders).
- * Accepts 1–730 (clamped). After the first run the per-connector high-water cursor makes subsequent
- * runs incremental (fromMs = max(highWater, windowStart)), so the 2-year window only bites on the
- * very first pull. Example: WOOCOMMERCE_BACKFILL_DAYS=180.
+ * DEFAULT + CEILING = the WooCommerce manifest window (@brain/woocommerce-mapper
+ * wooMaxBackfillWindowMs() — WOOCOMMERCE_MAX_HISTORY_YEARS env-overridable, default 5 years). The
+ * former hard 730-day clamp silently capped the initial pull at 2 years even though Woo's REST API
+ * has NO history limit — the clamp is lifted so this job respects the manifest's declared depth.
+ * Accepts 1..manifest-days (clamped). After the first run the per-connector high-water cursor makes
+ * subsequent runs incremental (fromMs = max(highWater, windowStart)), so the full window only bites
+ * on the very first pull. Example: WOOCOMMERCE_BACKFILL_DAYS=180.
  */
 function resolveBackfillDepthMs(): number {
+  // Manifest window resolved LIVE (same posture as the env override below) so tests and per-run
+  // overrides of WOOCOMMERCE_MAX_HISTORY_YEARS are honoured without a module reload.
+  const manifestWindowMs = wooMaxBackfillWindowMs();
+  const manifestDays = Math.floor(manifestWindowMs / DAY_MS);
   // intentional raw: read the override LIVE from process.env (not the memoized config). The config
   // snapshots process.env at module-import time, so a value set after import (and, more importantly,
   // a deterministic per-run override) would be missed; a live read also makes the unit override robust
@@ -81,11 +87,11 @@ function resolveBackfillDepthMs(): number {
   if (envDays) {
     const parsed = parseInt(envDays, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
-      const clamped = Math.min(Math.max(parsed, 1), 730);
-      return clamped * 24 * 60 * 60 * 1000;
+      const clamped = Math.min(Math.max(parsed, 1), manifestDays);
+      return clamped * DAY_MS;
     }
   }
-  return DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000; // default: 2-year initial window
+  return manifestWindowMs; // default: the full manifest window (5-year policy cap by default)
 }
 
 const ORDERS_WINDOW_MS = resolveBackfillDepthMs();
@@ -219,8 +225,8 @@ async function repullConnector(params: RepullParams): Promise<void> {
 
   // ── Non-order resource backfills (products / customers / coupons / refunds) ───────────────────
   // The scheduling seam (the order audit's "products fetcher exists but NEVER runs"): every connected
-  // tick + every sync-now ALSO advances a bounded chunk of each non-order resource's resumable 2-year
-  // backfill onto the framework (BACKFILL lane). Fully fail-isolated — it can never fail the order
+  // tick + every sync-now ALSO advances a bounded chunk of each non-order resource's resumable
+  // manifest-window backfill onto the framework (BACKFILL lane). Fully fail-isolated — it can never fail the order
   // re-pull above (which has already been committed as succeeded). Orders are excluded (they flow on
   // the live lane via this very job; driving them through the framework too would double-count).
   try {

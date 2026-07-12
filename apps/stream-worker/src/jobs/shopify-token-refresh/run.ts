@@ -33,6 +33,7 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import {
   exchangeShopifyToken,
+  exchangeShopifyClientCredentials,
   isShopifyTokenRefreshDue,
   DEFAULT_REFRESH_AGE_DAYS,
   SHOPIFY_APP_CREDS_MISSING,
@@ -57,11 +58,55 @@ interface ShopifyConnectorRow {
 /**
  * Dev secret bundle for a Shopify connector.
  * Mirrors the shape stored/read by HandleOAuthCallbackCommand + WorkerLocalSecretsManager.
+ *
+ * GENERIC PER-BRAND CONNECT (2026-07): connectors made via ConnectShopifyWithCredentialsCommand
+ * store `auth_method: 'client_credentials'` + `access_token_expires_at` — the token expires in
+ * 24 HOURS and is renewed by RE-EXCHANGING the brand's own app creds (client_credentials grant),
+ * NOT the app-level token-exchange path.
  */
 interface ShopifySecretBundle {
   access_token: string;           // NEVER logged (I-S09)
   shop_domain?: string;
   access_token_issued_at?: string; // ISO-8601; absent on legacy tokens → treated as due
+  /** 'client_credentials' ⇒ 24h token from the brand's own custom app; absent ⇒ legacy OAuth. */
+  auth_method?: string;
+  access_token_expires_at?: string; // ISO-8601 (client_credentials only)
+}
+
+/** The per-brand custom-app creds bundle (`brain/connector/shopify_app/<brandId>`). */
+interface ShopifyAppCredsBundle {
+  client_id?: string;
+  client_secret?: string; // NEVER logged (I-S09)
+}
+
+/** Deterministic per-brand app-creds secret name — must match oauth-app-creds.ts. */
+function appCredsSecretName(brandId: string): string {
+  return `brain/connector/shopify_app/${brandId}`;
+}
+
+/**
+ * Resolve the brand's own app creds (client_id + client_secret).
+ * PROD: Secrets Manager by friendly name. DEV: the dev_secret table (LocalSecretsManager
+ * persists the same name there). Returns null when the brand has no stored app creds.
+ */
+async function readBrandAppCreds(
+  pool: Pool,
+  brandId: string,
+  secretsManager?: ISecretsManager,
+): Promise<{ clientId: string; clientSecret: string } | null> {
+  const name = appCredsSecretName(brandId);
+  let bundle: ShopifyAppCredsBundle | null = null;
+  if (secretsManager) {
+    try {
+      bundle = (await secretsManager.getSecret(name)) as ShopifyAppCredsBundle | null;
+    } catch {
+      bundle = null;
+    }
+  } else {
+    bundle = (await readBundle(pool, name)) as ShopifyAppCredsBundle | null;
+  }
+  if (!bundle?.client_id || !bundle.client_secret) return null;
+  return { clientId: bundle.client_id, clientSecret: bundle.client_secret };
 }
 
 // ── Enumerate (SECURITY DEFINER, NO GUC) ──────────────────────────────────────
@@ -205,6 +250,58 @@ export async function runShopifyTokenRefresh(
         continue;
       }
 
+      // ── CLIENT-CREDENTIALS connectors: re-exchange EVERY run ─────────────────
+      // The generic per-brand connect issues 24h tokens with NO refresh token; the cron cadence
+      // (every 6h) is well inside the expiry, so an unconditional re-exchange keeps the token
+      // permanently fresh (and self-heals a token that already lapsed — the grant only needs the
+      // brand's stored client_id/client_secret, not the old token).
+      if (bundle.auth_method === 'client_credentials') {
+        const appCreds = await readBrandAppCreds(pool, brandId, secretsManager);
+        if (!appCreds) {
+          // The brand's app-creds bundle is gone → cannot renew → reconnect.
+          report.reconnectRequired += 1;
+          recordConnectorAuthRejected('shopify');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired').catch(() => undefined);
+          await setSyncStateError(pool, brandId, ciId, 'shopify app credentials missing — RECONNECT_REQUIRED').catch(() => undefined);
+          incrementCounter('shopify_token_refresh_error_total', { reason: 'brand_app_creds_missing' });
+          log.warn(`[shopify-token-refresh] no stored app creds for connector=${ciId} — RECONNECT_REQUIRED`);
+          continue;
+        }
+        try {
+          const { accessToken, expiresInSeconds } = await exchangeShopifyClientCredentials(
+            shopDomain,
+            appCreds.clientId,
+            appCreds.clientSecret,
+            fetchImpl,
+          );
+          const ttlMs = (expiresInSeconds ?? 24 * 60 * 60) * 1000;
+          await writeBundle(
+            pool,
+            secretRef,
+            {
+              ...bundle,
+              access_token: accessToken,
+              access_token_issued_at: new Date(nowMs).toISOString(),
+              access_token_expires_at: new Date(nowMs + ttlMs).toISOString(),
+            },
+            secretsManager,
+          );
+          report.refreshed += 1;
+          await recoverConnectorInstanceHealth(pool, brandId, ciId).catch(() => undefined);
+          incrementCounter('shopify_token_refresh_total', { provider: 'shopify' });
+          log.info(`[shopify-token-refresh] re-exchanged (client_credentials) connector=${ciId} brand=${brandId}`);
+        } catch {
+          // Exchange failed (revoked app / rotated secret) → RECONNECT_REQUIRED.
+          report.reconnectRequired += 1;
+          recordConnectorAuthRejected('shopify');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired').catch(() => undefined);
+          await setSyncStateError(pool, brandId, ciId, 'shopify client-credentials re-exchange failed — RECONNECT_REQUIRED').catch(() => undefined);
+          incrementCounter('shopify_token_refresh_error_total', { reason: 'client_credentials_exchange_failed' });
+          log.warn(`[shopify-token-refresh] client-credentials re-exchange failed connector=${ciId} — RECONNECT_REQUIRED`);
+        }
+        continue;
+      }
+
       // ── Due check ─────────────────────────────────────────────────────────────
       if (!isShopifyTokenRefreshDue(bundle.access_token_issued_at, nowMs, thresholdDays)) {
         report.skippedNotDue += 1;
@@ -274,11 +371,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const region = process.env['AWS_REGION'] ?? 'us-east-1';
     const clientSecretArn = process.env['SHOPIFY_CLIENT_SECRET'] ?? '';
     const kmsKeyId = process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? '';
-    if (!clientSecretArn || !kmsKeyId) {
+    if (!kmsKeyId) {
       log.error(
-        '[shopify-token-refresh] FATAL: SHOPIFY_CLIENT_SECRET + CONNECTOR_SECRETS_KMS_KEY_ID required in prod',
+        '[shopify-token-refresh] FATAL: CONNECTOR_SECRETS_KMS_KEY_ID required in prod',
       );
       process.exit(1);
+    }
+    if (!clientSecretArn) {
+      // Per-brand custom-app deployments have no Brain-level Shopify app: client-credentials
+      // connectors renew from the per-brand app-creds bundle, so this is only a warning (the
+      // legacy app-level token-exchange path would abort per-connector if ever hit).
+      log.warn('[shopify-token-refresh] SHOPIFY_CLIENT_SECRET not set — per-brand app creds only');
     }
     secretsMgr = new AwsSecretsManager(region, clientSecretArn, kmsKeyId);
   }

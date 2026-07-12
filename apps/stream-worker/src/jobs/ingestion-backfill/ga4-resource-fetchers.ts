@@ -13,7 +13,7 @@
  * PAGING (date_window): GA4 has no record cursor. We walk one bounded DATE WINDOW at a time, newest →
  * oldest, and the framework cursor is the next (older) window's inclusive END date (YYYY-MM-DD). On the
  * first call (cursor=null) the first window ends "today". When a window's start reaches the historical
- * floor (driver-supplied `floorAt`, clamped to GA4's ~14-month retention) the fetcher returns
+ * floor (driver-supplied `floorAt`, clamped to the manifest's 24-month window) the fetcher returns
  * nextCursor=null → the driver marks the resource completed. Because the cursor is a calendar date,
  * resume after a pause/crash is exact and deterministic.
  *
@@ -42,7 +42,7 @@ import type {
   CanonicalEventDraft,
 } from '@brain/connector-core';
 import { mapGa4RowToEvent, uuidV5FromGa4Row } from '@brain/ga4-mapper';
-import { Ga4DataClient, type Ga4OAuthCredentials } from '../ga4-repull/ga4-data-client.js';
+import { Ga4DataClient, type Ga4Credentials } from '../ga4-repull/ga4-data-client.js';
 
 /** The single backfillable GA4 resource (matches GA4_INGESTION_MANIFEST). */
 const GA4_SESSIONS_RESOURCE = 'ga4.sessions';
@@ -51,9 +51,9 @@ const GA4_SESSIONS_RESOURCE = 'ga4.sessions';
 const DEFAULT_WINDOW_DAYS = 28;
 
 /**
- * GA4 property reporting currency. The live ga4-repull hardcodes USD with the same TODO — GA4 reports
- * revenue in the property's configured currency, which is not exposed on runReport rows; storing it on
- * the connector config is a follow-up. Until then the mapper stamps this code alongside revenue_minor.
+ * Last-resort GA4 reporting currency for LEGACY bundles connected before the credential connect
+ * captured `currency_code`. New connects carry the property currency on the resolved credentials
+ * (creds.currencyCode) — that always wins; USD is only the fallback for old bundles.
  */
 const DEFAULT_CURRENCY = 'USD';
 
@@ -72,7 +72,7 @@ export function buildGa4ResourceFetcher(args: {
   resource: string;
   brandId: string;
   saltHex: string;
-  secrets: Ga4OAuthCredentials;
+  secrets: Ga4Credentials;
 }): IResourcePageFetcher {
   if (args.resource !== GA4_SESSIONS_RESOURCE) {
     throw new Error(
@@ -92,7 +92,7 @@ class Ga4SessionsFetcher implements IResourcePageFetcher {
   private authenticated = false;
 
   constructor(
-    private readonly creds: Ga4OAuthCredentials,
+    private readonly creds: Ga4Credentials,
     /** Tenant key — from the connector row, NEVER from the GA4 API response (MT-1). */
     private readonly brandId: string,
   ) {
@@ -141,7 +141,14 @@ class Ga4SessionsFetcher implements IResourcePageFetcher {
     let oldest: Date | undefined;
     for (const raw of result.rows) {
       // REUSE the pure GA4 mapper: revenue → minor units + currency (I-S07); field allowlist (I-S02).
-      const mapped = mapGa4RowToEvent(raw, this.creds.propertyId, DEFAULT_CURRENCY, result.sampling);
+      // Currency = the property reporting currency captured at connect (creds), USD only for
+      // legacy bundles — SAME precedence as the live ga4-repull lane (cross-lane parity).
+      const mapped = mapGa4RowToEvent(
+        raw,
+        this.creds.propertyId,
+        this.creds.currencyCode ?? DEFAULT_CURRENCY,
+        result.sampling,
+      );
       const props = mapped.properties;
       if (!props.date) continue; // dedup grain is undefined without a date — skip (mirrors live repull)
 

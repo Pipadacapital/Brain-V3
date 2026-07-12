@@ -329,6 +329,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@brain/connector-core':
+        specifier: workspace:*
+        version: link:../../packages/connector-core
       '@brain/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

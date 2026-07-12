@@ -624,7 +624,7 @@ function ConnectorTile({
                 framework). GoKwik (webhook-first) and WooCommerce (history via the SYNC lane) have no
                 backfill-queue claimer, so showing the control there would orphan a 'queued' job. */}
             {activeOrFirst?.id && !noneActive && supportsHistoricalBackfill(tile) && (
-              <BackfillControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />
+              <BackfillControl connectorId={activeOrFirst.id} provider={tile.id} className="border-t border-border pt-3" />
             )}
           </div>
         ) : storefrontLock ? (

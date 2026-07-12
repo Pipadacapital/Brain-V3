@@ -11,34 +11,26 @@
  */
 
 import type { MarketplaceTile } from '@/lib/api/types';
+// DE-DUPED (was a hand-copied provider list that had to be kept in lock-step by comment): the
+// SINGLE source of truth for "which providers have a backfill runner" is
+// @brain/connector-core/domain/backfill-providers — the SAME module the stream-worker claimer and
+// the server reject (RequestConnectorBackfillCommand) read. Imported via the LEAF module path (it
+// imports nothing) so the client bundle never pulls the connector-core barrel (node:crypto etc.).
+import { supportsHistoricalBackfill as providerSupportsHistoricalBackfill } from '@brain/connector-core/src/domain/backfill-providers';
 
 /** Storefront providers that are mutually exclusive per brand (mirrors apps/core STOREFRONT_PROVIDERS). */
 export const STOREFRONT_PROVIDERS = ['shopify', 'woocommerce'] as const;
 
 /**
- * Providers whose "Import history" / backfill control should render — i.e. those with an actual
- * backfill runner. UI mirror of @brain/connector-core supportsHistoricalBackfill, i.e. the union of
- * BACKFILL_QUEUE_PROVIDERS (bespoke shopify runner) + INGESTION_BACKFILL_PROVIDERS (the generic
- * ingestion framework: meta/google_ads/razorpay/shiprocket/ga4). Shared with the stream-worker
- * claimer + the server reject in RequestConnectorBackfillCommand — keep in lock-step.
- *
- * WooCommerce is intentionally absent: it re-pulls history through the SYNC lane (the Sync-now
- * control), NOT the backfill queue, so it has no claimer for a backfill_job row. GoKwik is excluded
- * (webhook-first, no REST backfill surface). Showing the button for an unsupported provider would
- * enqueue an orphan job that sits `queued` forever and looks broken.
+ * A tile whose provider has a historical-backfill runner (the "Import history" control) — shopify
+ * via the bespoke queue runner (BACKFILL_QUEUE_PROVIDERS), meta/google_ads/razorpay/shiprocket/ga4
+ * via the generic ingestion framework (INGESTION_BACKFILL_PROVIDERS). WooCommerce re-pulls history
+ * through the SYNC lane (the Sync-now control) and GoKwik is webhook-first, so both return false —
+ * showing the button for an unsupported provider would enqueue an orphan job that sits `queued`
+ * forever and looks broken.
  */
-const BACKFILL_PROVIDERS = [
-  'shopify',
-  'meta',
-  'google_ads',
-  'razorpay',
-  'shiprocket',
-  'ga4',
-] as const;
-
-/** A tile whose provider has a historical-backfill queue runner (the "Import history" control). */
 export function supportsHistoricalBackfill(tile: Pick<MarketplaceTile, 'id'>): boolean {
-  return (BACKFILL_PROVIDERS as readonly string[]).includes(tile.id);
+  return providerSupportsHistoricalBackfill(tile.id);
 }
 
 type StorefrontTile = Pick<MarketplaceTile, 'id' | 'category' | 'display_name' | 'instance' | 'instances'>;

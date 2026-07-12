@@ -92,6 +92,14 @@ jobs:
           fi
           if echo "$CHANGED" | grep -qE "^apps/${{ matrix.app }}/|^packages/|^pnpm-lock.yaml|^package.json|^tsconfig|^turbo.json"; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
+          # DB migrations ship INSIDE the core image and run via the migrate Job /
+          # PreSync hook (pnpm migrate:up, scripts/migrate.mjs). A migration change
+          # that doesn't touch apps/core must STILL rebuild core, or the corrected
+          # migration never reaches the running image (the 0127 stale-core-digest
+          # incident). Only `core` is affected by these paths.
+          elif [ "${{ matrix.app }}" = "core" ] && echo "$CHANGED" | grep -qE "^db/migrations/|^scripts/migrate\.mjs"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "migration/migrate-runner change — rebuilding core"
           else
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "no changes affecting ${{ matrix.app }} — skip"

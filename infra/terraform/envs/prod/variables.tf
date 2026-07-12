@@ -39,6 +39,31 @@ variable "system_node_max" {
   default = 6
 }
 
+# ── EKS 1.33 upgrade gates (AUD-OPS-028 + prereq AUD-INFRA-019) ──────────────
+# 1.32 bills EXTENDED support ($12/day ≈ $360/mo — 86% of the $500 target).
+# ALL THREE defaults equal the live state, so an un-flipped plan is a NO-OP.
+# Flip sequence (one apply each, docs/runbooks/eks-1-33-upgrade.md):
+#   1. system_ami_type = "AL2023_ARM_64_STANDARD"   (AL2 AMIs end at 1.32)
+#   2. cluster_version = "1.33"
+#   3. eks_support_type = "STANDARD"                 (fail-fast guard, post-upgrade)
+variable "cluster_version" {
+  description = "EKS control-plane Kubernetes version. Bump only after the system MNG is on AL2023 (AUD-INFRA-019)."
+  type        = string
+  default     = "1.32"
+}
+
+variable "system_ami_type" {
+  description = "System MNG AMI type. Flip to AL2023_ARM_64_STANDARD before cluster_version 1.33 (AL2 AMIs end at 1.32)."
+  type        = string
+  default     = "AL2_ARM_64"
+}
+
+variable "eks_support_type" {
+  description = "EKS upgradePolicy supportType. Set to STANDARD only AFTER the 1.33 upgrade (the API rejects it while the running version is extended-support)."
+  type        = string
+  default     = null
+}
+
 # AUD-COST-017: hosted zone id(s) external-dns may manage (e.g. ["Z0123456789ABC"]).
 # Empty = the role's ChangeResourceRecordSets falls back to hostedzone/* so the
 # first apply works before the zone exists — set the real id(s) once step 9 of

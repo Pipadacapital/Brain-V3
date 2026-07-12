@@ -6,16 +6,23 @@ image:
 
 coordinator:
   replicaCount: 1
-  # Go-live cost right-size (supersedes the on-demand pin): co-locate the single
-  # coordinator with the one warm worker on ONE `trino`-pool Spot node (t4g.xlarge,
-  # ~3.9 allocatable CPU). The prior `brain.platform/pool: ondemand` pin pulled a
-  # DEDICATED on-demand t4g.xlarge (~$105/mo) — neither coordinator nor worker
-  # would fit the other's node at cpu:2 each (2+2 > 3.9) — pushing the cluster over
-  # the $500/mo cap. Spot is acceptable for this low-traffic serving entry (Redis
-  # fronts the BFF; a coordinator restart just re-runs in-flight queries). cpu
-  # request trimmed 2→1 so coordinator(1)+worker(2)=3 fits the single node.
+  # AUD-OPS-006 revisit (Wave-3): coordinator+worker co-located on ONE Spot node
+  # meant a single reclaim took the SOLE serving engine down entirely (~30-120s,
+  # measured). Now that the Wave-3 cost levers land (EKS 1.33 −$360/mo, endpoint
+  # trim −$95/mo), pin the coordinator to the `ondemand` pool instead — it
+  # BIN-PACKS onto the EXISTING on-demand t4g.xlarge that Neo4j holds
+  # (Neo4j 2cpu/4Gi + coordinator 1cpu/6Gi fit the ~3.9cpu/~14.5Gi allocatable),
+  # so the expected marginal cost is ~$0; worst case Karpenter adds a second
+  # on-demand node (~$35-60/mo, pool limit cpu:8). Workers stay on Spot — losing
+  # a worker only re-runs in-flight queries; losing the coordinator loses the
+  # discovery service + HTTP endpoint. cpu request stays 1 (go-live trim).
   nodeSelector:
-    karpenter.sh/nodepool: trino
+    karpenter.sh/nodepool: ondemand
+  tolerations:
+    - key: brain.platform/pool
+      operator: Equal
+      value: ondemand
+      effect: NoSchedule
   resources:
     requests:
       cpu: "1"

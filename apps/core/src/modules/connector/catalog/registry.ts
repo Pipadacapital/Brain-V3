@@ -241,15 +241,40 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     authFields: [
       { key: 'key_id', label: 'Key ID', type: 'text', secret: false },
       { key: 'key_secret', label: 'Key Secret', type: 'password', secret: true },
-      // Required: the inbound webhook HMAC secret — the Razorpay webhook receiver fails closed without it.
-      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true },
-      { key: 'razorpay_account_id', label: 'Account ID', type: 'text', secret: false },
+      // The inbound webhook HMAC secret — the Razorpay webhook receiver fails closed without it.
+      // OPTIONAL on the form: when left blank Brain MINTS one at connect (generatedSecretFields,
+      // same SR-2 mechanism as GoKwik) and surfaces it ONCE so the merchant pastes it into
+      // Dashboard → Settings → Webhooks as the webhook's Secret.
+      {
+        key: 'webhook_secret',
+        label: 'Webhook Secret',
+        type: 'password',
+        secret: true,
+        optional: true,
+        hint: 'Leave blank — Brain generates one and shows it once; paste it as the Secret when creating the webhook in your Razorpay dashboard.',
+      },
+      {
+        key: 'razorpay_account_id',
+        label: 'Account ID',
+        type: 'text',
+        secret: false,
+        // EXACT-MATCH webhook routing: the webhook receiver resolves the tenant by comparing the
+        // envelope's account_id to this value verbatim — a typo or un-prefixed id silently drops
+        // every webhook (HMAC secret lookup misses), so the format is spelled out here.
+        hint: 'Your Razorpay Account ID exactly as shown in Dashboard → My Account (format acc_XXXXXXXXXXXXXX). Webhook events are routed by an exact match on this ID.',
+      },
     ],
     credentialConnect: {
       accountKeyField: 'razorpay_account_id',
       instanceColumn: 'razorpay_account_id',
       // key_id is non-secret but the settlement-repull API client reads it from the bundle.
       bundleNonSecretFields: ['key_id'],
+      // Brain MINTS webhook_secret when the merchant leaves the optional field blank (the
+      // Razorpay webhook lane is HMAC-gated, fail-closed — RazorpayWebhookStrategy reads
+      // webhook_secret from this bundle). provisionGeneratedSecrets never overwrites a
+      // user-supplied value; a minted value is returned ONCE in the connect response so the
+      // merchant can paste it into the Razorpay dashboard webhook config.
+      generatedSecretFields: ['webhook_secret'],
     },
   },
   {

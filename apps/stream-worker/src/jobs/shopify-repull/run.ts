@@ -51,6 +51,12 @@ import {
   getCursorValue,
   upsertCursorValue,
 } from '../../infrastructure/pg/CursorRepository.js';
+// Non-order resource seam (audit P0): the SAME generic resumable driver the woo repull hosts —
+// drives products/customers/refunds/fulfillments a bounded chunk per tick (BACKFILL lane).
+import {
+  driveResourceBackfillsForConnector,
+  SHOPIFY_SCHEDULED_BACKFILL_RESOURCES,
+} from '../ingestion-backfill/run.js';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -328,6 +334,31 @@ async function repullConnector(params: RepullParams): Promise<void> {
     await recoverConnectorInstanceHealth(pool, brandId, ciId);
 
     log.info(`connector=${ciId} COMPLETED records=${recordsProcessed} maxUpdatedAt=${maxUpdatedAtMs}`);
+
+    // ── Non-order resource backfills (products / customers / refunds / fulfillments) ────────────
+    // The scheduling seam (audit P0: "the four Shopify resource fetchers exist but NEVER run") —
+    // mirrors woocommerce-orders-repull: every connected tick + every sync-now ALSO advances a
+    // bounded chunk of each non-order resource's resumable 2-year backfill onto the generic
+    // framework (BACKFILL lane; deterministic dedup ids shared with the queue lane). Fully
+    // fail-isolated — it can never fail the order re-pull above (already marked connected).
+    // Orders are excluded (live lane above + the bespoke backfill queue own that grain).
+    try {
+      const outcomes = await driveResourceBackfillsForConnector({
+        pool,
+        producer,
+        provider: 'shopify',
+        connectorInstanceId: ciId,
+        brandId,
+        saltHex,
+        resources: SHOPIFY_SCHEDULED_BACKFILL_RESOURCES,
+      });
+      const progressed = outcomes.filter((o) => o.recordsThisRun > 0 || o.stopReason !== 'completed');
+      if (progressed.length > 0) {
+        log.info(`connector=${ciId} resource-backfills: ${outcomes.map((o) => `${o.resource}=${o.stopReason}(+${o.recordsThisRun})`).join(' ')}`);
+      }
+    } catch (err) {
+      log.error(`connector=${ciId} resource-backfill driver error (isolated)`, { err });
+    }
   } catch (err) {
     log.error(`connector=${ciId} unexpected error`, { err: err });
     await setSyncState(pool, brandId, ciId, 'error', `unexpected: ${String(err).slice(0, 200)}`);

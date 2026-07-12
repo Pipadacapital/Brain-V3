@@ -43,7 +43,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-push:
     name: Build, Sign, Push ECR (affected)
-    runs-on: ubuntu-latest
+    # NATIVE arm64 runner (GitHub-hosted ubuntu-24.04-arm): the images target the
+    # Graviton nodes, and QEMU-emulated builds on amd64 runners NEVER completed
+    # for the spark image (75+ min → cancelled, twice). Native = minutes.
+    runs-on: ubuntu-24.04-arm
     strategy:
       matrix:
         app: [collector, stream-worker, core, web]
@@ -108,14 +111,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # The EKS nodes are arm64 (Graviton t4g, cost-optimized). A plain `docker
-      # build` on the amd64 runner produces an amd64 image → "exec format error"
-      # on the nodes. Build linux/arm64 via buildx (QEMU emulation) and push.
-      - name: Set up QEMU (arm64 emulation)
-        if: steps.affected.outputs.skip == 'false'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      # arm64 images build NATIVELY on the ubuntu-24.04-arm runner (no QEMU).
 
       - name: Set up Docker Buildx
         if: steps.affected.outputs.skip == 'false'
@@ -179,7 +175,8 @@ jobs:
   # Spark-on-Iceberg + brain_serving mv_* (the spark-bronze image + the Spark Silver/Gold jobs).
   build-data-images:
     name: Build, Sign, Push data images (spark-bronze)
-    runs-on: ubuntu-latest
+    # NATIVE arm64 runner — see build-and-push note (QEMU spark builds never finished).
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
@@ -226,12 +223,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # arm64 (Graviton nodes) — same rationale as the app images above.
-      - name: Set up QEMU (arm64 emulation)
-        if: steps.affected.outputs.skip == 'false'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      # arm64 images build NATIVELY on the ubuntu-24.04-arm runner (no QEMU).
 
       - name: Set up Docker Buildx
         if: steps.affected.outputs.skip == 'false'

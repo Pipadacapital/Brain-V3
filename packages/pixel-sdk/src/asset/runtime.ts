@@ -37,18 +37,26 @@ import {
 } from './constants.js';
 import { normalizeEmailBrowser, normalizePhoneBrowser } from './identify-normalize.js';
 
-/** The internal seam the auto-instrumentation layer (auto-instrument.ts) is wired onto. */
+/**
+ * The internal seam the auto-instrumentation layer (auto-instrument.ts) is wired onto.
+ *
+ * AUD-IMPL-004: this exported interface is TYPED (`Record<string, unknown>`, never `any`) — it is
+ * the contract every future instrumentation module programs against, so `any` here would disable
+ * checking for all of them. TYPES-ONLY change: the implementations inside createBrainRuntime stay
+ * in the deliberately loose ES5 style (see the module doc — golden parity requires the emitted JS
+ * to be unchanged), and a `(x: any) => void` impl is assignable to these signatures without casts.
+ */
 export interface BrainAssetRuntime {
-  emit: (name: string, extra?: any) => void;
-  emitRaw: (name: string, extra?: any, sessOverride?: string) => void;
+  emit: (name: string, extra?: Record<string, unknown>) => void;
+  emitRaw: (name: string, extra?: Record<string, unknown>, sessOverride?: string) => void;
   flush: () => void;
-  identify: (traits: any) => void;
+  identify: (traits: Record<string, unknown>) => void;
   parseQuery: () => Record<string, string>;
   uaClass: () => string;
   get: (k: string) => string | null;
   // ── SPEC: A.1.1 + A.1.2 (WA-07/WA-08) — the v2 identity seam ──
   /** Emit a pixel.identify.v1 for {email?, phone?} with the given source (config/consent-gated inside). */
-  identifyV2: (traits: any, source: string) => void;
+  identifyV2: (traits: { email?: unknown; phone?: unknown }, source: string) => void;
   /** True ⇔ the WA-07 identity system governs (bootstrap identity.enabled) — legacy raw-email submit-bridge retired. */
   identityV2Active: boolean;
   /** True ⇔ form auto-detect may wire (identityV2Active && capture='autodetect' && autodetect flag ON). */

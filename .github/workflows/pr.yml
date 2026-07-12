@@ -159,6 +159,13 @@ jobs:
         run: tools/lint/deprecation-guard.sh --selftest
       - name: Run the deprecation guard over the tree (D.4.5)
         run: tools/lint/deprecation-guard.sh
+      # Structured-log guard (AUD-OBS-2) — the R-05 console.*→pino sweep must STAY swept:
+      # a raw console.* in deployable service source bypasses levels, correlation bindings,
+      # PII redaction, and Sentry capture. Allowlist: tools/lint/structured-log-guard-allowlist.txt.
+      - name: Self-test the structured-log guard (proves catch + comment-skip + allowlist)
+        run: tools/lint/structured-log-guard.sh --selftest
+      - name: Run the structured-log guard over the service trees (AUD-OBS-2)
+        run: tools/lint/structured-log-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # Spark-tier guard/parity suite (AUD-IMPL-008, subsumes AUD-ID-10) — BLOCKING.

@@ -1,0 +1,7 @@
+# structured-log-guard allowlist (AUD-OBS-2) — repo-relative paths where a raw stdout
+# write is deliberate. Keep this list SHORT and justified; everything else uses the
+# structured logger (apps/<svc>/src/log.ts).
+#
+# replay-identity CLI: prints the machine-readable JSON replay report to stdout for the
+# operator/pipeline to capture (paired with a structured log.info of the same report).
+apps/stream-worker/src/jobs/identity/replay-identity.ts

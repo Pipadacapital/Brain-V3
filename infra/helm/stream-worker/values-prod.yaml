@@ -7,6 +7,11 @@ image:
 
 envSecretName: stream-worker-env
 
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in stream-worker-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""
+
 # Helm lists REPLACE (no merge) — the two defaults are repeated verbatim, then the prod-only wiring.
 env:
   - name: SERVICE_NAME

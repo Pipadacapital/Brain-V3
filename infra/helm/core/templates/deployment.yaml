@@ -77,9 +77,18 @@ spec:
             - secretRef:
                 name: {{ .Values.envSecretName }}
           {{- end }}
-          {{- with .Values.env }}
+          {{- if or .Values.env .Values.otelExporterOtlpEndpoint }}
           env:
+            {{- if .Values.otelExporterOtlpEndpoint }}
+            # AUD-OBS-2: OTel export ON-switch — the app's initObservability() is a no-op
+            # unless OTEL_EXPORTER_OTLP_ENDPOINT is set (auth headers, if any, come from the
+            # envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS). Empty value ⇒ flag OFF.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otelExporterOtlpEndpoint | quote }}
+            {{- end }}
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- if .Values.probes.enabled }}
           startupProbe:

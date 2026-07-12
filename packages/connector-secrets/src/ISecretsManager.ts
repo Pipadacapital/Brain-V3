@@ -46,6 +46,31 @@ export function sanitizeSecretSubKey(subKey: string): string {
     .replace(/^[-.]+|[-.]+$/g, '');
 }
 
+/**
+ * Unwrap a stored Shopify token secret value to the bare access token.
+ *
+ * Two storage shapes coexist (both read via getShopifyToken(secret_ref)):
+ *   - LEGACY (authorization-code OAuth connect): the SecretString IS the raw token.
+ *   - BUNDLE (generic per-brand client-credentials connect, 2026-07): a JSON object
+ *     `{ access_token, shop_domain, auth_method, access_token_issued_at, access_token_expires_at }`
+ *     — the metadata lets the shopify-token-refresh cron re-exchange the 24h token.
+ *
+ * Callers MUST NOT log the returned value (I-S09).
+ */
+export function unwrapShopifyTokenValue(raw: string): string {
+  const s = raw.trim();
+  if (!s.startsWith('{')) return raw;
+  try {
+    const parsed = JSON.parse(s) as { access_token?: unknown };
+    if (parsed && typeof parsed === 'object' && typeof parsed.access_token === 'string' && parsed.access_token.length > 0) {
+      return parsed.access_token;
+    }
+  } catch {
+    /* not JSON — fall through to raw */
+  }
+  return raw;
+}
+
 export interface ISecretsManager {
   // ── Generic methods (ADR-CM-4 / D-3) ────────────────────────────────────────
   // Used by the generic connect seam. Shopify-specific methods below are kept

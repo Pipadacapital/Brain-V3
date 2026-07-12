@@ -50,15 +50,15 @@ kafka:
                 - key: brain.platform/pool
                   operator: In
                   values: ["streaming"]
-                # 2026-07-12 ROLLBACK: the on-demand pin (#47) hit the account's
-                # 16-vCPU on-demand quota (VcpuLimitExceeded) — brokers could not
-                # schedule and quorum was LOST mid-roll. Re-enable ONLY after the
-                # Service Quotas increase (L-1216C47A, Running On-Demand Standard
-                # instances → ≥32) is APPROVED. Until then brokers ride spot
-                # (accepted churn risk, documented in kafka-operations runbook).
-                # - key: karpenter.sh/capacity-type
-                #   operator: In
-                #   values: ["on-demand"]
+                # RE-ENABLED 2026-07-12 (same day): the vCPU quota increase
+                # (L-1216C47A → 32) was APPROVED, unblocking the #47 pin that
+                # VcpuLimitExceeded rolled back (#50). Brokers require on-demand
+                # (~+$100/mo) — spot reclaims broke quorum 3× on 2026-07-12;
+                # 'no event loss' is a core rule. Syncing this rolls the brokers
+                # ONE controlled time (operator healthy, PDB minAvailable=2).
+                - key: karpenter.sh/capacity-type
+                  operator: In
+                  values: ["on-demand"]
 
   listeners:
     plain:

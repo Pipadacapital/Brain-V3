@@ -264,14 +264,17 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
   log.info(`connector=${ciId} cursor=${resource} from=${fromTs} to=${toTs} (${label})`);
 
   // ── Page loop ─────────────────────────────────────────────────────────────
-  let skip = 0;
+  // fetchReconWindowPages walks the DOCUMENTED recon query shape (year/month calendar buckets
+  // across the window — see razorpay-settlements-client.ts) and yields only in-window items.
+  let pageIndex = 0;
   let recordsProcessed = 0;
   let maxSettledAt: number | null = null;
 
+  const pages = apiClient.fetchReconWindowPages(fromTs, toTs);
   while (true) {
-    let page;
+    let next;
     try {
-      page = await apiClient.fetchReconPage(fromTs, toTs, skip);
+      next = await pages.next();
     } catch (err) {
       const msg = String(err);
       if (msg.startsWith('RAZORPAY_AUTH_ERROR')) {
@@ -285,7 +288,10 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
       throw err;
     }
 
-    if (page.items.length === 0) break;
+    if (next.done) break;
+    const page = next.value;
+    pageIndex += 1;
+    if (page.items.length === 0) continue;
 
     // ── Per-item: map → settlement.live.v1 → emit ────────────────────────────
     const messages = [];
@@ -342,15 +348,12 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
     const traceHeaders: Record<string, Buffer | string> = {};
     injectKafkaTraceContext(traceHeaders);
     await producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
-    log.info(`connector=${ciId} cursor=${resource} skip=${skip} emitted=${messages.length} total=${recordsProcessed}`);
+    log.info(`connector=${ciId} cursor=${resource} page=${pageIndex} emitted=${messages.length} total=${recordsProcessed}`);
 
     // ── Advance cursor after each page (checkpoint) ──────────────────────────
     if (maxSettledAt !== null) {
       await upsertCursorValue(pool, brandId, ciId, resource, String(maxSettledAt));
     }
-
-    if (!page.hasMore) break;
-    skip += 100;   // PAGE_SIZE from razorpay-settlements-client
   }
 
   log.info(`connector=${ciId} cursor=${resource} DONE records=${recordsProcessed}`);

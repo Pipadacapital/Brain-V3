@@ -212,11 +212,45 @@ function CopyRow({ tileId, fieldKey, label, value, secret }: { tileId: string; f
   );
 }
 
+/**
+ * Per-provider webhook-setup copy: WHERE the merchant pastes the URL + key, and WHAT the key is
+ * called in that provider's UI (Shiprocket verifies a static X-Api-Key header; WooCommerce/Shopflo/
+ * GoKwik sign with an HMAC "Webhook Secret"). One copy table so every paste-URL provider
+ * (woo/shopflo/shiprocket/gokwik) gets the same consistent panel — the fields themselves come from
+ * the server (ConnectWebhookSetup), only the labels/instructions are per-provider.
+ */
+const WEBHOOK_SETUP_COPY: Record<string, { keyLabel: string; instructions: string }> = {
+  shiprocket: {
+    keyLabel: 'X-Api-Key',
+    instructions:
+      'In Shiprocket go to Settings → API → Webhooks, add this URL and paste the X-Api-Key (and header) below. Copy the key now — it is shown only once.',
+  },
+  woocommerce: {
+    keyLabel: 'Webhook Secret',
+    instructions:
+      'In WooCommerce go to Settings → Advanced → Webhooks and create webhooks (orders, products, customers) with this Delivery URL and Secret. Copy the secret now — it is shown only once.',
+  },
+  shopflo: {
+    keyLabel: 'Webhook Secret',
+    instructions:
+      'In your Shopflo dashboard, add this webhook URL and set the signing secret below if Shopflo lets you. If you cannot set a secret, deliveries still work — Brain verifies the signature whenever one is sent. Copy the secret now — it is shown only once.',
+  },
+  gokwik: {
+    keyLabel: 'Webhook Secret',
+    instructions:
+      'Share this webhook URL, header and signing secret with your GoKwik POC to configure delivery. Copy the secret now — it is shown only once.',
+  },
+};
+
 function WebhookSetupPanel({ tileId, displayName, setup, onDismiss }: { tileId: string; displayName: string; setup: ConnectWebhookSetup; onDismiss: () => void }) {
   // Manual setup = the merchant must paste something into the provider dashboard (a minted API key
-  // and/or routing header — Shiprocket/GoKwik). Shopify registers its webhooks automatically via the
-  // Admin API and returns only the delivery URL (api_key null) — informational, nothing to paste.
+  // and/or routing header — Shiprocket/GoKwik/WooCommerce/Shopflo). Shopify registers its webhooks
+  // automatically via the Admin API and returns only the delivery URL (api_key null) — informational.
   const manualSetup = Boolean(setup.api_key || setup.routing_header);
+  const copy = WEBHOOK_SETUP_COPY[tileId] ?? {
+    keyLabel: 'Webhook Secret',
+    instructions: 'Add this webhook so updates reach Brain in real time. Copy the key now — it is shown only once.',
+  };
   return (
     <div
       className="mb-4 space-y-3 rounded-md border border-primary/30 bg-primary/5 p-4"
@@ -232,7 +266,7 @@ function WebhookSetupPanel({ tileId, displayName, setup, onDismiss }: { tileId: 
           </p>
           <p className="text-xs text-muted-foreground">
             {manualSetup
-              ? 'Add this webhook so updates reach Brain in real time. Copy the API key now — it is shown only once.'
+              ? copy.instructions
               : `Brain registered its webhooks on your ${displayName} store for you — no action needed. This is the delivery URL, for reference.`}
           </p>
         </div>
@@ -247,7 +281,7 @@ function WebhookSetupPanel({ tileId, displayName, setup, onDismiss }: { tileId: 
         />
       )}
       {setup.api_key && (
-        <CopyRow tileId={tileId} fieldKey="apikey" label="X-Api-Key" value={setup.api_key} secret />
+        <CopyRow tileId={tileId} fieldKey="apikey" label={copy.keyLabel} value={setup.api_key} secret />
       )}
       <Button
         type="button"
@@ -357,11 +391,13 @@ function ConnectorTile({
               const description =
                 tile.id === 'shopify'
                   ? 'Store connected — webhooks were registered automatically. Orders, products and customers will sync shortly.'
-                  : tile.id === 'gokwik' || tile.id === 'shopflo'
-                    ? 'Data will appear here as it syncs. CoD/RTO shows sample data until live courier tracking is available.'
-                    : tile.id === 'shiprocket'
-                      ? 'Shipment data syncs automatically. Finish the webhook setup below to get real-time delivery & RTO updates.'
-                      : 'Settlement data will appear once Razorpay sends settlements.';
+                  : tile.id === 'woocommerce'
+                    ? 'Store connected — historical data pulls in automatically. Finish the webhook setup below for real-time updates.'
+                    : tile.id === 'gokwik' || tile.id === 'shopflo'
+                      ? 'Data will appear here as it syncs. CoD/RTO shows sample data until live courier tracking is available.'
+                      : tile.id === 'shiprocket'
+                        ? 'Shipment data syncs automatically. Finish the webhook setup below to get real-time delivery & RTO updates.'
+                        : 'Settlement data will appear once Razorpay sends settlements.';
               toast({ title: `${tile.display_name} connected`, description });
             }
           },
@@ -620,8 +656,9 @@ function ConnectorTile({
             )}
             {/* G6: historical backfill trigger + live progress. Only render for providers with an
                 actual backfill runner (supportsHistoricalBackfill — shopify via the bespoke queue
-                runner, plus meta/google_ads/razorpay/shiprocket/ga4 via the generic ingestion
-                framework). GoKwik (webhook-first) and WooCommerce (history via the SYNC lane) have no
+                runner, plus meta/google_ads/razorpay/shiprocket/ga4/woocommerce via the generic
+                ingestion framework; woo's queue drives its non-order resources — historical orders
+                pull through the sync lane at full manifest depth). GoKwik (webhook-first) has no
                 backfill-queue claimer, so showing the control there would orphan a 'queued' job. */}
             {activeOrFirst?.id && !noneActive && supportsHistoricalBackfill(tile) && (
               <BackfillControl connectorId={activeOrFirst.id} className="border-t border-border pt-3" />

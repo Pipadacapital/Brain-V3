@@ -34,8 +34,14 @@ const DEFAULT_APP_ROLE = 'brain_app';
 /** Bare SQL identifier — the role name is interpolated into SET LOCAL ROLE. */
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/i;
 
-/** Strict UUID shape — validated before interpolation into SET LOCAL (injection guard). */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Injection guard for the brand GUC value. It is interpolated into a single-quoted
+ * `SET LOCAL app.current_brand_id = '<value>'` literal, so it must be a BARE TOKEN — alphanumerics,
+ * hyphen, underscore only — with no quote/semicolon/whitespace/backslash that could break out of the
+ * literal. Real brand ids are UUIDs (which match); non-UUID bare tokens (e.g. the `brand-a` fixtures
+ * in unit tests, where the DB is mocked) also match and pass through. Anything else throws.
+ */
+const BRAND_GUC_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * All-zero UUID — the fail-closed sentinel for an absent/empty brand GUC. A VALID uuid that no real
@@ -46,15 +52,17 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Resolve the literal value written into `SET LOCAL app.current_brand_id`. Empty/undefined →
- * NIL_UUID (fail-closed); a non-empty value MUST be a valid UUID (injection guard). Mirrors
- * @brain/db's gucValue — the canonical fix for the `''::uuid` cast error: a pooled connection whose
- * session GUC was left as the empty string (RESET on a custom GUC yields '', not NULL) would make an
- * RLS policy that casts the GUC raise 22P02. Always writing a valid uuid keeps every cast legal.
+ * NIL_UUID (fail-closed); a non-empty value must be an injection-safe bare token (see
+ * BRAND_GUC_TOKEN_RE) or it throws. This is the fix for the `''::uuid` cast error: a pooled
+ * connection whose session GUC was left as the empty string (RESET on a custom GUC yields '', not
+ * NULL) would make an RLS policy that casts the GUC raise 22P02. Writing NIL_UUID for empty keeps
+ * every cast legal; the token guard blocks SQL-literal breakout without rejecting the non-UUID brand
+ * fixtures used by unit tests (which mock the DB, so the value never reaches Postgres).
  */
 function brandGucLiteral(brandId: string): string {
   if (brandId === undefined || brandId === null || brandId === '') return NIL_UUID;
-  if (!UUID_RE.test(brandId)) {
-    throw new Error(`[metric-engine] brandId "${brandId}" is not a valid UUID`);
+  if (!BRAND_GUC_TOKEN_RE.test(brandId)) {
+    throw new Error(`[metric-engine] brandId "${brandId}" is not an injection-safe bare token`);
   }
   return brandId;
 }

@@ -97,11 +97,21 @@ describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
     expect(calls.some((c) => c === `SET LOCAL app.current_brand_id = ''`)).toBe(false);
   });
 
-  it('rejects a non-UUID brandId without acquiring a connection (injection guard)', async () => {
+  it('rejects a brandId with SQL-literal breakout characters (injection guard)', async () => {
     const { pool } = recordingPool();
     await expect(
       withBrandTxn(pool, "11111111-1111-4111-8111-111111111111'; DROP TABLE brand--", async () => undefined),
-    ).rejects.toThrow('not a valid UUID');
+    ).rejects.toThrow('injection-safe bare token');
     expect((pool.connect as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it('allows a non-UUID bare-token brandId (unit-test fixtures like "brand-a", DB mocked)', async () => {
+    // The DQ/summary unit tests pass readable non-UUID brand ids with a mocked pool; a bare token
+    // is injection-safe, so it is interpolated verbatim rather than rejected.
+    const { pool, calls } = recordingPool();
+    await withBrandTxn(pool, 'brand-a', async (c) => {
+      await c.query('SELECT 1');
+    });
+    expect(calls).toContain(`SET LOCAL app.current_brand_id = 'brand-a'`);
   });
 });

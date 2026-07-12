@@ -40,7 +40,19 @@ from pathlib import Path
 _THIS = Path(__file__).resolve()
 SILVER_DIR = _THIS.parent
 JOB_FILE = SILVER_DIR / "silver_session_identity.py"
-MIGRATION_FILE = SILVER_DIR.parents[2] / "migrations" / "0123_stitch_conflict_review.sql"
+# The ops.stitch_conflict_review DDL was consolidated (0123 → the schema baseline). Assert the
+# table invariant against the single baseline file (0000_baseline_*.sql), globbed so a regenerated
+# baseline with a new date keeps working. See db/baseline/README.md.
+_MIGRATIONS_DIR = SILVER_DIR.parents[2] / "migrations"
+
+
+def _baseline_file() -> Path:
+    matches = sorted(_MIGRATIONS_DIR.glob("0000_baseline_*.sql"))
+    assert matches, "consolidated schema baseline (db/migrations/0000_baseline_*.sql) not found"
+    return matches[0]
+
+
+MIGRATION_FILE = _baseline_file()
 
 _SRC = JOB_FILE.read_text()
 
@@ -194,14 +206,21 @@ def test_review_bridge_strong_only_and_idempotent() -> None:
 
 
 def test_migration_table_is_brand_first_hashed_evidence() -> None:
+    # Baseline is a pg_dump snapshot: `CREATE TABLE ops.stitch_conflict_review (` (no IF NOT EXISTS),
+    # with FORCE RLS emitted as a separate ALTER TABLE. The original inline "HASHED identifiers only"
+    # comment isn't preserved by pg_dump, so the hash-only property is asserted STRUCTURALLY (no
+    # raw-PII-shaped columns) instead of via the comment string.
     mig = MIGRATION_FILE.read_text()
-    assert "CREATE TABLE IF NOT EXISTS ops.stitch_conflict_review" in mig
-    assert "FORCE  ROW LEVEL SECURITY" in mig or "FORCE ROW LEVEL SECURITY" in mig, "review table must FORCE RLS"
-    assert "HASHED identifiers only" in mig, "review evidence must be hash-only (no raw PII)"
+    assert "CREATE TABLE ops.stitch_conflict_review" in mig, "baseline must define ops.stitch_conflict_review"
+    assert "ops.stitch_conflict_review FORCE ROW LEVEL SECURITY" in mig, "review table must FORCE RLS"
     # brand_id first data column of the table.
-    body = mig.split("CREATE TABLE IF NOT EXISTS ops.stitch_conflict_review", 1)[1]
-    first_col = body.split("(", 1)[1].strip().splitlines()[0].strip()
+    body = mig.split("CREATE TABLE ops.stitch_conflict_review", 1)[1]
+    table_block = body.split("(", 1)[1].split(");", 1)[0]
+    first_col = table_block.strip().splitlines()[0].strip()
     assert first_col.startswith("brand_id"), f"review table first column must be brand_id, got: {first_col}"
+    # Hash-only evidence: no raw-PII-shaped columns in the review table (structural check).
+    lc = table_block.lower()
+    assert "email" not in lc and "phone" not in lc, "review table must be hash-only (no raw email/phone columns)"
 
 
 # ── 10. Hash-only / no money ─────────────────────────────────────────────────────────────────────

@@ -185,7 +185,10 @@ additionalPrometheusRulesMap:
       - name: brain-liveness
         rules:
           - alert: BrainTargetDown
-            expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter"} == 0
+            # AUD-INFRA-028/-030: regex extended with kafka-connect-jmx (Bronze landing writer's
+            # exporter) + trino (sole serving engine). `up` only exists for CONFIGURED targets —
+            # absence coverage lives in TrinoServingDown / BrainFreshnessExporterDown (absent()).
+            expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter|kafka-connect-jmx|trino"} == 0
             for: 2m
             labels:
               severity: critical
@@ -288,29 +291,40 @@ additionalPrometheusRulesMap:
           - alert: BronzeConnectLagHigh
             # ADR-0010: the Bronze landing writer itself is falling behind (or the worker is down and
             # lag is frozen while producers advance). 10k over 10m ≈ well past the 30s commit cadence.
+            # AUD-INFRA-028 REWRITE: kafka_consumergroup_lag was MEASURED EMPTY for the sink's groups
+            # (Iceberg sink commits offsets via its control-topic coordinator into snapshot metadata,
+            # not __consumer_offsets) — lag now comes from the worker's embedded consumer JMX
+            # (kafka-connect-jmx job; canonical mapping infra/observe/kafka-connect-jmx-exporter.yml).
             expr: |
-              sum by (consumergroup) (
-                kafka_consumergroup_lag{consumergroup=~"connect-iceberg-bronze-.*"}
+              sum by (client_id) (
+                kafka_connect_consumer_records_lag
               ) > 10000
             for: 10m
             labels:
               severity: critical
             annotations:
-              summary: "Bronze Connect landing lag > 10k ({{ $labels.consumergroup }})"
-              description: "The Iceberg sink consumer group is >10,000 messages behind for 10m — Bronze landing is falling behind ingest (worker down, catalog contention, or throughput ceiling). See docs/runbooks/adr-0010-kafka-connect-bronze.md."
+              summary: "Bronze Connect landing lag > 10k ({{ $labels.client_id }})"
+              description: "The Iceberg sink consumer {{ $labels.client_id }} is >10,000 messages behind for 10m — Bronze landing is falling behind ingest (worker down, catalog contention, or throughput ceiling). See docs/runbooks/adr-0010-kafka-connect-bronze.md."
 
           - alert: BrainIngestStale
-            # Freshness: collector topic advancing but ZERO Bronze writes for 10m → the spine stalled.
+            # AUD-INFRA-029 REWRITE for the Connect era: the old brain_bronze_write_total died with
+            # the Spark-SS sink at the ADR-0010 cutover (empty vector ⇒ the AND never sampled ⇒ a
+            # total Bronze stall was silent). Now keyed on the collector connector's sink-read
+            # counter; the absent() arm keeps it honest if the series ever disappears again.
             expr: |
               (sum(rate(kafka_log_log_logendoffset{topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
               and
-              (sum(increase(brain_bronze_write_total[10m])) == 0)
+              (
+                (sum(rate(kafka_connect_sink_task_sink_record_read_total{connector="iceberg-bronze-collector"}[10m])) == 0)
+                or
+                (absent(kafka_connect_sink_task_sink_record_read_total{connector="iceberg-bronze-collector"}) == 1)
+              )
             for: 10m
             labels:
               severity: critical
             annotations:
-              summary: "Ingest stalled — events produced but no Bronze writes in 10m"
-              description: "The collector topic is advancing but the stream-worker wrote zero Bronze rows for 10m. The data spine is stalled."
+              summary: "Ingest stalled — events produced but no Bronze landing reads in 10m"
+              description: "The collector topic is advancing but the Kafka Connect Iceberg sink (the SOLE Bronze landing writer, ADR-0010) read zero records for 10m — or its metrics vanished. The data spine is stalled. Check the connect worker pod, task status (curl localhost:8083/connectors/iceberg-bronze-collector/status) and the kafka-connect-jmx scrape target. See docs/runbooks/adr-0010-kafka-connect-bronze.md."
 
           # P1 — the scale-limiting tier. BrainIngestStale only fires at TOTAL zero; these catch the
           # DEGRADATION before it reaches zero (the signals the audit flagged as having no metric).
@@ -404,23 +418,22 @@ additionalPrometheusRulesMap:
               summary: "Meta token refresh failing ({{ $labels.reason }})"
               description: "The proactive Meta token re-exchange job is erroring ({{ $labels.reason }}). If app_creds_missing — set META_APP_ID/META_APP_SECRET; if exchange_failed — those connectors need a reconnect before their tokens expire and spend ingestion stalls."
 
-          # Silver freshness. Silver is built by dbt (CI/nightly; an intraday prod rebuild cron is now
-          # possible via the dbt-runner image — db/dbt/Dockerfile — wired but disabled-by-default in
-          # infra/helm/cronworkflows; enable per env to cut Silver lag), so it can lag Bronze between
-          # builds until that cron is enabled. The DQ
-          # reconciliation executor runs CONTINUOUSLY in the deployed worker and compares Bronze↔Silver
-          # order counts; a sustained breach = Silver is stale or unreachable. The continuous
-          # Silver-freshness signal.
+          # Silver freshness. Silver is built by the Spark Silver jobs (db/iceberg/spark/silver/*.py,
+          # scheduled via the cronworkflows chart / tools/dev/v4-refresh-loop.sh locally), so it can
+          # lag Bronze between batches. The DQ reconciliation executor runs CONTINUOUSLY in the
+          # deployed worker; a sustained breach = Silver is stale or unreachable.
+          # (AUD-INFRA-029: description previously said "rebuild via dbt / check StarRocks" — both
+          # retired in Brain V4.)
           - alert: BrainSilverLag
             # brain_dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
-            # lagging Bronze (or StarRocks is down) — analytics reads are stale.
+            # lagging Bronze (or Trino, the reconciliation's read engine, is down) — analytics reads are stale.
             expr: sum by (reason) (increase(brain_dq_silver_lag_breach_total[1h])) > 0
             for: 30m
             labels:
               severity: warning
             annotations:
               summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
-              description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — rebuild Silver via dbt or check StarRocks. Analytics reads over Silver are behind."
+              description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the Spark Silver CronWorkflows (db/iceberg/spark/silver) and Trino health. Analytics reads over Silver are behind."
 
       # ── Revenue truth integrity ─────────────────────────────────────────────────
       - name: brain-revenue-integrity
@@ -469,15 +482,13 @@ additionalPrometheusRulesMap:
   # KEEP THE TWO IN LOCKSTEP when a rule changes (same doctrine as brain-slo
   # above; python-verified identical at commit time).
   #
-  # HONESTY NOTE: the brain_data_freshness_* series come from the freshness
-  # exporter (tools/observability/freshness-exporter — Prometheus job
-  # 'brain-freshness-exporter'), which is NOT yet deployed on the prod cluster.
-  # Until it ships, three of these rules are loaded-but-quiet BY DESIGN (their
-  # series simply don't exist yet) — the deliberate exception is
-  # BrainFreshnessExporterDown, whose absent(brain_data_freshness_up) clause
-  # DOES fire without the exporter: the freshness SLO reads as honestly
-  # "unverified" rather than silently green (the C2 anti-false-safety doctrine).
-  # This is now consistent with local, where the compose Prometheus loads the
+  # The brain_data_freshness_* series come from the freshness exporter
+  # (tools/observability/freshness-exporter — Prometheus job
+  # 'brain-freshness-exporter'), deployed to prod by the observability chart
+  # (infra/helm/observability, ArgoCD app observability-prod — AUD-INFRA-030;
+  # closes AUD-OBS-1). BrainFreshnessExporterDown's absent() clause keeps the
+  # SLO honest if the exporter target ever disappears (the C2 anti-false-safety
+  # doctrine). Consistent with local, where the compose Prometheus loads the
   # same canonical file.
   ##############################################################################
   freshness:
@@ -530,3 +541,92 @@ additionalPrometheusRulesMap:
             annotations:
               summary: "Data-freshness exporter cannot reach Trino"
               description: "brain_data_freshness_up is 0 or absent for 10m — the freshness exporter is down or cannot query Trino (the sole serving engine). All freshness SLAs are unverified until it recovers; check the trino service and the brain-freshness-exporter target."
+
+  ##############################################################################
+  # Brain runtime-health rules — PROD-ONLY BY DESIGN (AUD-INFRA-030/-031): these
+  # read cAdvisor/kube-state-metrics series and the prod-only trino scrape job,
+  # none of which exist in the local compose Prometheus. A canonical
+  # infra/observe/alerts copy would either fire falsely forever locally
+  # (absent(up{job="trino"})) or be vacuously loaded — so there is deliberately
+  # no local twin (tools/lint/slo-rules-parity.sh reports prod-only keys as a
+  # WARN, which is this map's documented, intended state).
+  ##############################################################################
+  brain-runtime:
+    groups:
+      # ── Serving engine liveness (AUD-INFRA-030) ─────────────────────────────
+      - name: brain-trino-serving
+        rules:
+          - alert: TrinoServingDown
+            # Trino is the SOLE serving engine — every BFF/app analytics read 500s without it
+            # (the exact recurring local outage class: OOM-killed coordinator). The absent() arm
+            # covers the never-scraped case BrainTargetDown structurally cannot see (no target ⇒
+            # no `up` series) — e.g. the PodMonitor deleted or the trino chart's metrics disabled.
+            expr: |
+              (up{job="trino"} == 0)
+              or
+              (absent(up{job="trino"}) == 1)
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Trino (sole serving engine) is down or unscraped"
+              description: "The trino coordinator's JMX-exporter target is down or absent for 2m — all serving reads (brain_serving.mv_*) are failing or serving health is unverifiable. Check the coordinator pod in ns trino (kubectl -n trino get pods), its jvm.config heap bounds (infra/helm/trino), and the trino PodMonitor."
+
+          - alert: TrinoQueryFailureRateHigh
+            # Serving degradation BEFORE total outage: sustained internal query failures on the
+            # coordinator (trino.execution QueryManager JMX, mapped by the trino chart's
+            # jmx-exporter config). User-error failures are excluded by using the internal counter.
+            expr: |
+              sum(trino_execution_querymanager_internalfailures_oneminute_count)
+                / clamp_min(sum(trino_execution_querymanager_completedqueries_oneminute_count), 1) > 0.1
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Trino internal query failures > 10% for 10m"
+              description: "More than 10% of Trino queries are failing with internal errors — serving reads over brain_serving.mv_* are degrading (memory pressure, Iceberg REST/S3 trouble, or a bad view). Check coordinator logs in ns trino and iceberg-rest health."
+
+      # ── OOM kills (AUD-INFRA-031) ───────────────────────────────────────────
+      # OOM is the platform's dominant historical failure mode (Trino coordinator, connect
+      # worker, stream-worker under batch), and a single OOM that restarts cleanly never trips
+      # KubePodCrashLooping. Sources are both live in prod: container_oom_events_total
+      # (cAdvisor) and kube_pod_container_status_last_terminated_reason (kube-state-metrics).
+      - name: brain-oom
+        rules:
+          - alert: BrainContainerOomKilled
+            # Either signal suffices: a cAdvisor-counted OOM event, or a container whose LAST
+            # termination was OOMKilled and which restarted inside the window (the join guards
+            # against alerting forever on a stale last_terminated_reason from days ago).
+            expr: |
+              (sum by (namespace, pod, container) (increase(container_oom_events_total{container!=""}[15m])) > 0)
+              or
+              (
+                (max by (namespace, pod, container) (kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}) == 1)
+                and
+                (sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total[15m])) > 0)
+              )
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "OOM kill: {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}"
+              description: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} was OOM-killed in the last 15m. Even a clean restart loses in-flight work — check its memory limit vs working set and the tier's heap bounds (Trino jvm.config / connect KAFKA_HEAP_OPTS / node heap)."
+
+          - alert: BrainDataSpineOomKilled
+            # CRITICAL escalation for the tiers where one OOM means event risk or serving outage:
+            # kafka (broker + the SOLE Bronze landing writer), trino (sole serving engine),
+            # collector (ingest edge, 99.95% SLA), stream-worker (projections/DQ).
+            expr: |
+              (sum by (namespace, pod, container) (increase(container_oom_events_total{container!="", namespace=~"kafka|trino|collector|stream-worker"}[15m])) > 0)
+              or
+              (
+                (max by (namespace, pod, container) (kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace=~"kafka|trino|collector|stream-worker"}) == 1)
+                and
+                (sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace=~"kafka|trino|collector|stream-worker"}[15m])) > 0)
+              )
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Data-spine OOM kill: {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}"
+              description: "A data-spine container ({{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}) was OOM-killed in the last 15m — Bronze landing, ingest, or serving took an availability hit (no-event-loss budget). Check memory sizing (kafka-connect values-prod heapOpts per AUD-IMPL-024; trino jvm.config MaxRAMPercentage) before it recurs."

@@ -60,6 +60,31 @@ serviceAccount:
   name: ""
   annotations: {}            # IRSA role for S3/Glue access goes here
 
+# ── Prometheus JMX exporter (AUD-INFRA-028) ─────────────────────────────────────────────────────
+# The Bronze landing writer previously emitted ZERO metrics in-cluster — BronzeConnectTaskFailed /
+# BronzeConnectLagHigh / BrainIngestStale could never fire while a FAILED sink task silently
+# stopped its lane. Mirrors the local compose wiring (jmx-exporter-init + KAFKA_OPTS javaagent):
+# the startup script fetches the agent jar next to the connect plugin zip and attaches it; the
+# mapping ConfigMap is a VERBATIM copy of infra/observe/kafka-connect-jmx-exporter.yml (that file
+# stays canonical — KEEP IN LOCKSTEP). GRACEFUL DEGRADATION: if the jar download fails the worker
+# STARTS WITHOUT the agent (loud log line) — detection must never take down the SOLE Bronze
+# landing writer; the then-unscraped target trips BrainTargetDown{job="kafka-connect-jmx"}.
+# Off by default (kind/staging have no Prometheus Operator CRDs); values-prod enables it.
+metrics:
+  enabled: false
+  # Same agent + version as the local compose jmx-exporter-init and the Strimzi broker path.
+  jmxExporterJarUrl: "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/1.0.1/jmx_prometheus_javaagent-1.0.1.jar"
+  # :9404 (broker convention). Local compose uses :9405 only because Connect shares the broker's
+  # netns there; an in-cluster pod has its own network namespace.
+  port: 9404
+  podMonitor:
+    # The job relabel pins the EXACT job name the brain-slo rules + the local compose Prometheus
+    # use ('kafka-connect-jmx') — without it the job label defaults to "<ns>/<name>" and
+    # BronzeConnectTaskFailed / BronzeConnectLagHigh / BrainIngestStale / BrainTargetDown all
+    # go silent.
+    jobLabel: kafka-connect-jmx
+    interval: 15s
+
 # The 10 Bronze lanes — keep in LOCKSTEP with infra/kafka-connect/*.json (the local-dev copies).
 # `config` carries only the per-connector fields; icebergCatalog + sinkDefaults are merged in by the
 # template. Collector: raw payload preserved verbatim (StringConverter + HoistField) + kafka coords.

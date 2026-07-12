@@ -15,6 +15,11 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: kafka-connect
+      {{- if .Values.metrics.enabled }}
+      annotations:
+        # Roll the worker when the JMX mapping changes (the agent reads it once at JVM start).
+        checksum/jmx-config: {{ include (print $.Template.BasePath "/jmx-configmap.yaml") . | sha256sum }}
+      {{- end }}
     spec:
       serviceAccountName: {{ if .Values.serviceAccount.create }}{{ .Values.serviceAccount.name | default (printf "%s-kafka-connect" .Release.Name) }}{{ else }}{{ .Values.serviceAccount.name | default "default" }}{{ end }}
       containers:
@@ -35,6 +40,21 @@ spec:
                 curl -fsSL -o /tmp/iceberg-connect.zip "{{ .Values.pluginZipUrl }}"
                 ( cd /opt/connect-plugins && jar xf /tmp/iceberg-connect.zip ) && rm -f /tmp/iceberg-connect.zip
               fi
+              {{- if .Values.metrics.enabled }}
+              # AUD-INFRA-028: Prometheus JMX exporter agent (same jar+version as the local
+              # compose jmx-exporter-init). GRACEFUL: a failed download must NOT crash-loop the
+              # SOLE Bronze landing writer — the worker starts unmonitored instead, and the
+              # unscraped target trips BrainTargetDown{job="kafka-connect-jmx"}.
+              JMX_JAR=/opt/jmx-exporter/jmx_prometheus_javaagent.jar
+              if [ ! -f "$JMX_JAR" ]; then
+                echo "Downloading jmx_prometheus_javaagent..."
+                curl -fsSL --retry 3 -o "$JMX_JAR" "{{ .Values.metrics.jmxExporterJarUrl }}" \
+                  || { echo "WARN: jmx_exporter download FAILED — starting WITHOUT metrics (AUD-INFRA-028 graceful path)"; rm -f "$JMX_JAR"; }
+              fi
+              if [ -f "$JMX_JAR" ]; then
+                export KAFKA_OPTS="${KAFKA_OPTS:+$KAFKA_OPTS }-javaagent:$JMX_JAR={{ .Values.metrics.port }}:/etc/jmx-exporter/kafka-connect-jmx-exporter.yml"
+              fi
+              {{- end }}
               exec /etc/confluent/docker/run
           env:
             - name: KAFKA_HEAP_OPTS
@@ -72,9 +92,20 @@ spec:
           ports:
             - name: rest
               containerPort: 8083
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           volumeMounts:
             - name: plugins
               mountPath: /opt/connect-plugins
+            {{- if .Values.metrics.enabled }}
+            - name: jmx-agent
+              mountPath: /opt/jmx-exporter
+            - name: jmx-config
+              mountPath: /etc/jmx-exporter
+              readOnly: true
+            {{- end }}
           resources: {{- toYaml .Values.resources | nindent 12 }}
           readinessProbe:
             httpGet: { path: /connectors, port: 8083 }
@@ -88,4 +119,11 @@ spec:
       volumes:
         - name: plugins
           emptyDir: {}
+        {{- if .Values.metrics.enabled }}
+        - name: jmx-agent
+          emptyDir: {}
+        - name: jmx-config
+          configMap:
+            name: {{ .Release.Name }}-kafka-connect-jmx
+        {{- end }}
 {{- end }}

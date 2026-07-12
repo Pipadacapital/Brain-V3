@@ -7,6 +7,12 @@ image:
 
 envSecretName: web-env
 
+# AUD-INFRA-033: scrape the user-facing tier (job brain-web → BrainTargetDown coverage via
+# the /api/metrics process-gauge exposition).
+metrics:
+  serviceMonitor:
+    enabled: true
+
 # AUD-COST-003: the app UI on the shared brain-prod ALB (host-routed, ACM TLS).
 ingress:
   enabled: true

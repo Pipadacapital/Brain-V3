@@ -10,11 +10,16 @@
 #   • brain_collector_accept_total          — @brain/observability counter; +1 per ACK'd /collect (200/202).
 #   • brain_collector_spool_full_total      — counter; +1 per 503 SPOOL_FULL shed (back-pressure, C4).
 #   • collector_dedup_conflict_total  — counter; +1 per pk_conflict/dedup_hit (R4).
-#   • brain_bronze_write_total              — counter; +1 per durable Bronze write (stream-worker).
 #   • kafka_log_log_logendoffset      — Kafka (KRaft) broker JMX via jmx_exporter (job 'kafka-jmx-exporter');
 #                                       log end offset / high-watermark per topic-partition.
 #   • kafka_consumergroup_lag         — danielqsj/kafka_exporter (job 'kafka-exporter'); per-group lag
 #                                       (NOT a broker JMX metric, hence the companion exporter).
+#   • kafka_connect_*                 — Connect worker JMX via jmx_exporter (job 'kafka-connect-jmx',
+#                                       config infra/observe/kafka-connect-jmx-exporter.yml); the ADR-0010
+#                                       Bronze landing writer's task status / sink reads / consumer lag.
+#                                       (AUD-INFRA-029: brain_bronze_write_total was DELETED with the
+#                                       Spark-SS Bronze sink at the ADR-0010 cutover — the Connect
+#                                       series replaced it as the Bronze-landing freshness source.)
 #
 # Collector ingest SLO = 99.95% accept+ack (matches the bake-window rule in deploy.yml).
 #
@@ -25,7 +30,12 @@ groups:
   - name: brain-liveness
     rules:
       - alert: BrainTargetDown
-        expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter"} == 0
+        # AUD-INFRA-028/-030: regex extended with kafka-connect-jmx (the Bronze landing writer's
+        # exporter) and trino (the sole serving engine — prod PodMonitor; not scraped locally, so
+        # the trino matcher is vacuous in compose). NOTE: `up` only exists for CONFIGURED targets —
+        # a monitor that was never created cannot fire this; absence coverage for trino/freshness
+        # lives in TrinoServingDown / BrainFreshnessExporterDown (absent()-based).
+        expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter|kafka-connect-jmx|trino"} == 0
         for: 2m
         labels:
           severity: critical
@@ -129,29 +139,46 @@ groups:
       - alert: BronzeConnectLagHigh
         # ADR-0010: the Bronze landing writer itself is falling behind (or the worker is down and
         # lag is frozen while producers advance). 10k over 10m ≈ well past the 30s commit cadence.
+        # AUD-INFRA-028 REWRITE: was kafka_consumergroup_lag{consumergroup=~"connect-iceberg-bronze-.*"}
+        # — MEASURED EMPTY even with the groups live: the Iceberg sink coordinates commits over the
+        # control topic (offsets live in the Iceberg snapshot metadata), so kafka_exporter's
+        # __consumer_offsets-derived lag never materializes. Source now: the worker's OWN embedded
+        # consumer JMX (kafka-connect-jmx job, infra/observe/kafka-connect-jmx-exporter.yml);
+        # client_id shape connector-consumer-<connector>-<task>.
         expr: |
-          sum by (consumergroup) (
-            kafka_consumergroup_lag{consumergroup=~"connect-iceberg-bronze-.*"}
+          sum by (client_id) (
+            kafka_connect_consumer_records_lag
           ) > 10000
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: "Bronze Connect landing lag > 10k ({{ $labels.consumergroup }})"
-          description: "The Iceberg sink consumer group is >10,000 messages behind for 10m — Bronze landing is falling behind ingest (worker down, catalog contention, or throughput ceiling). See docs/runbooks/adr-0010-kafka-connect-bronze.md."
+          summary: "Bronze Connect landing lag > 10k ({{ $labels.client_id }})"
+          description: "The Iceberg sink consumer {{ $labels.client_id }} is >10,000 messages behind for 10m — Bronze landing is falling behind ingest (worker down, catalog contention, or throughput ceiling). See docs/runbooks/adr-0010-kafka-connect-bronze.md."
 
       - alert: BrainIngestStale
-        # Freshness: collector topic advancing but ZERO Bronze writes for 10m → the spine stalled.
+        # Freshness: collector topic advancing but ZERO Bronze landing reads for 10m → the spine
+        # stalled. AUD-INFRA-029 REWRITE for the Connect era: the old brain_bronze_write_total
+        # (stream-worker Spark-SS sink) was deleted at the ADR-0010 cutover, leaving this alert
+        # keyed on a nonexistent series — increase() over a missing metric returns an EMPTY vector
+        # (not 0), so the AND never yielded a sample and a total Bronze stall was silent. Now keyed
+        # on the collector connector's sink-read counter; the absent() arm keeps the alert HONEST
+        # if the Connect exporter's series ever disappears again (fires rather than going quiet —
+        # scrape-down alone is also covered by BrainTargetDown{job="kafka-connect-jmx"}).
         expr: |
           (sum(rate(kafka_log_log_logendoffset{topic=~".*\\.collector\\.event\\.v1"}[10m])) > 0)
           and
-          (sum(increase(brain_bronze_write_total[10m])) == 0)
+          (
+            (sum(rate(kafka_connect_sink_task_sink_record_read_total{connector="iceberg-bronze-collector"}[10m])) == 0)
+            or
+            (absent(kafka_connect_sink_task_sink_record_read_total{connector="iceberg-bronze-collector"}) == 1)
+          )
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: "Ingest stalled — events produced but no Bronze writes in 10m"
-          description: "The collector topic is advancing but the stream-worker wrote zero Bronze rows for 10m. The data spine is stalled."
+          summary: "Ingest stalled — events produced but no Bronze landing reads in 10m"
+          description: "The collector topic is advancing but the Kafka Connect Iceberg sink (the SOLE Bronze landing writer, ADR-0010) read zero records for 10m — or its metrics vanished. The data spine is stalled. Check the connect worker pod, task status (curl localhost:8083/connectors/iceberg-bronze-collector/status) and the kafka-connect-jmx scrape target. See docs/runbooks/adr-0010-kafka-connect-bronze.md."
 
       # P1 — the scale-limiting tier. BrainIngestStale only fires at TOTAL zero; these catch the
       # DEGRADATION before it reaches zero (the signals the audit flagged as having no metric).
@@ -245,23 +272,23 @@ groups:
           summary: "Meta token refresh failing ({{ $labels.reason }})"
           description: "The proactive Meta token re-exchange job is erroring ({{ $labels.reason }}). If app_creds_missing — set META_APP_ID/META_APP_SECRET; if exchange_failed — those connectors need a reconnect before their tokens expire and spend ingestion stalls."
 
-      # Silver freshness. Silver is built by dbt (CI/nightly; an intraday prod rebuild cron is now
-      # possible via the dbt-runner image — db/dbt/Dockerfile — wired but disabled-by-default in
-      # infra/helm/cronworkflows; enable per env to cut Silver lag), so it can lag Bronze between
-      # builds until that cron is enabled. The DQ
-      # reconciliation executor runs CONTINUOUSLY in the deployed worker and compares Bronze↔Silver
-      # order counts; a sustained breach = Silver is stale or unreachable. The continuous
-      # Silver-freshness signal.
+      # Silver freshness. Silver is built by the Spark Silver jobs (db/iceberg/spark/silver/*.py,
+      # scheduled via the cronworkflows chart / tools/dev/v4-refresh-loop.sh locally), so it can
+      # lag Bronze between batches. The DQ reconciliation executor runs CONTINUOUSLY in the
+      # deployed worker and compares Bronze↔Silver order counts; a sustained breach = Silver is
+      # stale or unreachable. The continuous Silver-freshness signal.
+      # (AUD-INFRA-029: description previously instructed "rebuild via dbt / check StarRocks" —
+      # BOTH retired in Brain V4; dbt is removed and serving is Trino-over-Iceberg.)
       - alert: BrainSilverLag
         # brain_dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
-        # lagging Bronze (or StarRocks is down) — analytics reads are stale.
+        # lagging Bronze (or Trino, the reconciliation's read engine, is down) — analytics reads are stale.
         expr: sum by (reason) (increase(brain_dq_silver_lag_breach_total[1h])) > 0
         for: 30m
         labels:
           severity: warning
         annotations:
           summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
-          description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — rebuild Silver via dbt or check StarRocks. Analytics reads over Silver are behind."
+          description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the Spark Silver CronWorkflows (db/iceberg/spark/silver) and Trino health. Analytics reads over Silver are behind."
 
   # ── Revenue truth integrity ─────────────────────────────────────────────────
   - name: brain-revenue-integrity

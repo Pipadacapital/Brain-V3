@@ -28,6 +28,18 @@ probes:
   path: /health           # core exposes a single /health endpoint
   readinessPath: /health
 
+# Prometheus scrape (AUD-INFRA-033). Core serves /metrics on its MAIN Fastify port
+# (apps/core/src/main.ts, next to /health) — the @brain/observability counters it already records
+# (connector_auth_rejected_total in the WebhookPipeline, job counters, …) previously never reached
+# Prometheus. The ServiceMonitor rides the existing `http` Service port; the job relabel pins
+# "brain-core" so BrainTargetDown{job=~"brain-.*"} covers the API/BFF tier.
+# Off by default (kind/staging have no Prometheus Operator CRDs); values-prod enables it.
+metrics:
+  serviceMonitor:
+    enabled: false
+    jobLabel: brain-core
+    interval: 15s
+
 # Secret (External Secrets ← AWS Secrets Manager) with DATABASE_URL, REDIS_URL,
 # STARROCKS_*, KAFKA brokers, AI gateway + connector secrets, etc.
 # P1 pre-scale: DATABASE_URL / BRAIN_APP_DATABASE_URL host:port should point at the PgBouncer

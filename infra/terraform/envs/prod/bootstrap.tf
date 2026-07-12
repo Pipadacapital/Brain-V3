@@ -47,6 +47,14 @@ provider "aws" {
 provider "aws" {
   alias  = "replica"
   region = var.replica_region
+  # ap-south-2 is an OPT-IN region this account has NOT enabled — upfront STS
+  # validation fails (InvalidClientTokenId) and breaks EVERY plan, even with
+  # CRR count=0 (2026-07-12). Skip the upfront checks; real API calls still
+  # authenticate normally. BEFORE enabling CRR: opt in to ap-south-2
+  # (Account settings → Regions) or the module's own calls will fail the same way.
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
   default_tags {
     tags = module.tags.common_tags
   }

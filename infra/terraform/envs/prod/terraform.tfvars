@@ -36,7 +36,10 @@ aurora_max_capacity = 2
 # human-approved prod apply (prod-apply.yml `production` environment gate) —
 # est. single-digit $/mo at current warehouse size (transfer ~$0.02/GB once +
 # GLACIER_IR ~$0.004/GB-mo). Set false to defer.
-enable_cross_region_replication = true
+# HELD 2026-07-12 (owner cost-lever session): CRR ADDS cost (replica storage in
+# ap-south-2) and is a residency decision (ADR-0011) — enable deliberately, not
+# as a rider on a cost-reduction apply.
+enable_cross_region_replication = false
 replica_region                  = "ap-south-2"
 
 # AUD-INFRA-004: scope external-dns ChangeResourceRecordSets to the Brain zone
@@ -49,6 +52,6 @@ external_dns_zone_ids = ["Z00011362R9ERGL7EC2J9"]
 # Uncomment ONE STEP AT A TIME, apply, verify, then the next — full runbook in
 # docs/runbooks/eks-1-33-upgrade.md. Step 1 REPLACES the system MNG
 # (create-before-destroy) onto AL2023 + gp3 roots (AUD-INFRA-019).
-# system_ami_type  = "AL2023_ARM_64_STANDARD"   # step 1 — prereq (AL2 AMIs end at 1.32)
-# cluster_version  = "1.33"                     # step 2 — control plane + MNG roll
-# eks_support_type = "STANDARD"                 # step 3 — fail-fast on future extended-support drift
+system_ami_type = "AL2023_ARM_64_STANDARD" # step 1 EXECUTED 2026-07-12 — prereq (AL2 AMIs end at 1.32)
+cluster_version = "1.33" # step 2 EXECUTED 2026-07-12 — control plane + MNG roll
+eks_support_type = "STANDARD" # step 3 EXECUTED 2026-07-12 — fail-fast on future extended-support drift

@@ -21,8 +21,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: core
-  # NO automated sync for prod — manual promotion gate required
+  # Automated GitOps sync (2026-07-13): merge→build→prod-promote lands the digest in gitops and
+  # ArgoCD auto-applies it (selfHeal reverts drift, prune removes deleted resources) — prod deploys
+  # end-to-end on merge, no manual sync. Safety net = promotion-PR CI + deploy health-probe rollback.
   syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

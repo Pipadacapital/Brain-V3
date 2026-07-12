@@ -28,9 +28,12 @@ timezone: "Asia/Kolkata"
 serviceAccount:
   name: brain-jobs   # IRSA role for AWS Secrets Manager access (annotated per env)
 
-env:
-  - name: SERVICE_NAME
-    value: cronworkflows
+# NO global SERVICE_NAME: the app config schemas require their OWN literal
+# (z.literal('stream-worker') / ('core')) and are self-satisfying via defaults
+# when unset. Setting 'cronworkflows' here failed EVERY job's config parse the
+# moment the tsx entrypoints made jobs actually load config (2026-07-12:
+# "SERVICE_NAME: Invalid literal value, expected \"stream-worker\"").
+env: []
 
 defaults:
   concurrencyPolicy: Forbid        # never overlap a brand-enumeration run with itself

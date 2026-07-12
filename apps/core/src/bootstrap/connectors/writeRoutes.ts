@@ -20,6 +20,12 @@ import { planCredentialConnect, provisionGeneratedSecrets } from '../../modules/
 import { getOAuthDispatch } from '../../modules/connector/catalog/dispatch.js';
 import { storeBrandOAuthAppCreds, resolveBrandOAuthClientId, type OAuthProvider } from '../../modules/connector/oauth-app-creds.js';
 import { ConnectorInstance as ConnectorInstanceEntity } from '@brain/connector-core';
+import {
+  ConnectShopifyWithCredentialsCommand,
+  InvalidShopDomainError,
+  ShopifyCredentialsInvalidError,
+} from '../../modules/connector/sources/storefront/shopify/application/commands/ConnectShopifyWithCredentialsCommand.js';
+import { StorefrontExclusivityError } from '../../modules/connector/sources/storefront/storefront-exclusivity.js';
 import { DisconnectCommand, ConnectorNotFoundError } from '../../modules/connector/sources/storefront/shopify/application/commands/DisconnectCommand.js';
 import { registerMetaInstallRoute } from '../../modules/connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.js';
 import { registerGoogleAdsInstallRoute } from '../../modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
@@ -55,6 +61,24 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
     syncStatusRepo,
     connectorSecretsManager,
     emitEvent,
+  );
+
+  // Public origin webhooks are delivered to (same host that receives the OAuth callbacks).
+  let webhookOrigin = config.appBaseUrl;
+  try {
+    webhookOrigin = new URL(config.shopifyCallbackUrl).origin;
+  } catch {
+    /* fall back to appBaseUrl */
+  }
+
+  // Generic per-brand Shopify connect (custom-app credentials → client-credentials grant).
+  const connectShopifyWithCredentials = new ConnectShopifyWithCredentialsCommand(
+    connectorSecretsManager,
+    connectorRepo,
+    syncStatusRepo,
+    emitEvent,
+    process.env['APP_ENV'] ?? config.nodeEnv,
+    webhookOrigin,
   );
 
   void app.register(async (scope) => {
@@ -123,6 +147,101 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
           }
           if ((err as { code?: string }).code === 'OAUTH_NOT_CONFIGURED') {
             return reply.code(503).send({ request_id: requestId, error: { code: 'OAUTH_NOT_CONFIGURED', message: "This connector isn't configured yet. Add your app credentials and try again." } });
+          }
+          throw err;
+        }
+      }
+
+      // ── Shopify: generic per-brand connect (custom-app credentials) ─────────────
+      // The brand enters its OWN custom app's Client ID + Client Secret + store URL; the server
+      // does the client-credentials exchange (24h token; refresh cron re-exchanges) — no browser
+      // OAuth redirect. ENV-GATED FALLBACK: when Brain's shared app is configured
+      // (SHOPIFY_CLIENT_ID) AND the brand supplied no credentials, fall back to the
+      // authorization-code OAuth redirect (the pre-existing shared-app flow).
+      if (connectorType === 'shopify' && def.connectMethod === 'credential') {
+        const creds = body.credentials ?? {};
+        const clientId = (creds['client_id'] ?? '').trim();
+        const clientSecret = (creds['client_secret'] ?? '').trim();
+        const shopDomainRaw = ((creds['shop_domain'] ?? body.shop_domain) ?? '').trim();
+
+        if (!clientId || !clientSecret) {
+          // Fallback is gated on the ENV (shared Brain) app ONLY — a brand's previously stored
+          // custom-app client_id must not be pushed through the authorization-code redirect
+          // (admin custom apps have no OAuth redirect configured; they use client-credentials).
+          const envClientId = process.env['SHOPIFY_CLIENT_ID'] ?? '';
+          const dispatch = getOAuthDispatch('shopify');
+          if (envClientId && dispatch) {
+            // Shared-app OAuth fallback — identical to the historic oauth branch.
+            try {
+              const { oauth_url } = await dispatch.initiate({
+                brandId,
+                shopDomain: shopDomainRaw || undefined,
+                callbackUrl: config.shopifyCallbackUrl,
+                clientId: envClientId,
+              });
+              await auditWriter.append({
+                brand_id: brandId,
+                actor_id: auth?.userId ?? null,
+                actor_role: auth?.role ?? 'unknown',
+                action: 'connector.connected',
+                entity_type: 'connector_instance',
+                entity_id: `shopify:${brandId}`,
+                payload: { connector_type: 'shopify', phase: 'oauth_initiated' },
+              });
+              return reply.code(200).send({ request_id: requestId, data: { kind: 'oauth', oauth_url } });
+            } catch (err) {
+              if ((err as { code?: string }).code === 'MISSING_SHOP_DOMAIN') {
+                return reply.code(400).send({ request_id: requestId, error: { code: 'MISSING_SHOP_DOMAIN', message: (err as Error).message } });
+              }
+              throw err;
+            }
+          }
+          return reply.code(400).send({
+            request_id: requestId,
+            error: {
+              code: 'MISSING_SHOPIFY_CREDENTIALS',
+              message: 'shopify connector requires: shop_domain, client_id, client_secret',
+            },
+          });
+        }
+
+        try {
+          const result = await connectShopifyWithCredentials.execute({
+            brandId,
+            shopDomain: shopDomainRaw,
+            clientId,
+            clientSecret,
+            idempotencyKey: (req.headers['idempotency-key'] as string | undefined) ?? requestId,
+          });
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: result.connectorInstanceId,
+            // NEVER the credentials — only the connect metadata (I-S09).
+            payload: { connector_type: 'shopify', auth_method: 'client_credentials', shop_domain: result.shopDomain },
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: {
+              kind: 'credential',
+              connected: true,
+              connector_instance_id: result.connectorInstanceId,
+              // Registered automatically via the Admin API — surfaced for reference/display.
+              webhook: { url: result.webhookUrl, api_key: null, routing_header: null },
+            },
+          });
+        } catch (err) {
+          if (err instanceof InvalidShopDomainError) {
+            return reply.code(400).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          if (err instanceof ShopifyCredentialsInvalidError) {
+            return reply.code(422).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          if (err instanceof StorefrontExclusivityError) {
+            return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
           }
           throw err;
         }

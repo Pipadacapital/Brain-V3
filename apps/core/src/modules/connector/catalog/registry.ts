@@ -127,6 +127,16 @@ export interface ConnectorDefinition {
 /** Shared hint for OAuth "bring your own app" client credentials (all optional). */
 const OAUTH_APP_HINT = "Optional — leave blank to use Brain's app";
 
+/**
+ * How-to for the Shopify per-brand custom app (generic connect path). The scope list MUST stay in
+ * lock-step with SHOPIFY_SCOPES (sources/storefront/shopify/.../InitiateOAuthCommand.ts) — those are
+ * the Admin API access scopes Brain's sync + pixel install need.
+ */
+const SHOPIFY_CUSTOM_APP_HINT =
+  'Create a custom app in your Shopify admin → Settings → Apps and sales channels → Develop apps. ' +
+  'Grant the Admin API scopes read_orders, read_products, read_customers, write_script_tags, ' +
+  'write_pixels, read_customer_events, then paste the app credentials here.';
+
 /** The optional BYO-app OAuth credential pair, shared by every OAuth tile. */
 const OAUTH_APP_FIELDS: ConnectorAuthField[] = [
   { key: 'client_id', label: 'Client ID', type: 'text', secret: false, optional: true, hint: OAUTH_APP_HINT },
@@ -139,10 +149,36 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     id: 'shopify',
     category: 'storefront',
     displayName: 'Shopify',
-    connectMethod: 'oauth',
+    // GENERIC PER-BRAND CONNECT (owner requirement 2026-07-12): every brand connects THEIR OWN
+    // store with the Client ID + Client Secret of a custom app created in their own Shopify admin.
+    // The server exchanges them via the CLIENT-CREDENTIALS grant (token expires in 24h; the
+    // shopify-token-refresh cron re-exchanges) — NO browser OAuth redirect on this path. The
+    // authorization-code OAuth flow remains an env-gated fallback: when SHOPIFY_CLIENT_ID is set
+    // (shared Brain app) AND the brand submits no credentials, the connect handler falls back to
+    // the OAuth redirect (see bootstrap/connectors/writeRoutes.ts).
+    connectMethod: 'credential',
     availability: 'available',
     description: 'Sync orders, products, customers.',
-    authFields: OAUTH_APP_FIELDS,
+    authFields: [
+      {
+        key: 'shop_domain',
+        label: 'Store URL',
+        type: 'text',
+        secret: false,
+        hint: 'Your .myshopify.com domain — a full URL like https://my-store.myshopify.com/admin also works.',
+      },
+      {
+        key: 'client_id',
+        label: 'Client ID',
+        type: 'text',
+        secret: false,
+        hint: SHOPIFY_CUSTOM_APP_HINT,
+      },
+      { key: 'client_secret', label: 'Client Secret', type: 'password', secret: true },
+    ],
+    // NO credentialConnect spec: Shopify credential connect is the bespoke
+    // ConnectShopifyWithCredentialsCommand (client-credentials exchange + token verify + webhook
+    // registration), not the generic store-and-save path.
   },
   {
     id: 'woocommerce',

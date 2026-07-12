@@ -6,12 +6,13 @@
  *   dimensions), pulled one bounded DATE WINDOW at a time. The pure @brain/ga4-mapper projects each
  *   report row → a canonical `ga4.session.v1` event (money in minor units + currency; no contact PII).
  *
- * BACKFILL DEPTH (platform cap, never over-claimed):
- *   GA4 standard properties retain event-level data for at most 14 MONTHS (the maximum selectable
- *   "Data retention" setting; older data is permanently aggregated/expired). So `maxBackfillWindowMs`
- *   declares ~14 months — NOT Brain's 24-month (TWO_YEARS_MS) default — so the framework never asks
- *   GA4 for depth it cannot serve. We use a conservative 420-day floor (< the true ~426-day 14-month
- *   span) so a window edge never lands beyond retention.
+ * BACKFILL DEPTH (audit correction, 2026-07-12):
+ *   The GA4 property "Data retention" setting (max 14 months) governs USER/EVENT-LEVEL data —
+ *   Explorations and user-scoped queries — NOT the pre-aggregated standard reporting tables the
+ *   Data API runReport serves. Standard aggregate reports remain queryable for the property's full
+ *   lifetime, so the previous 420-day cap under-claimed real depth. `maxBackfillWindowMs` is now
+ *   Brain's 24-month default (TWO_YEARS_MS); GA4 simply returns empty rows for dates that predate
+ *   the property, which the date_window walk handles (empty windows still advance to the floor).
  *
  * PAGING (date_window): there is no record cursor — the resource is fetched one date-range chunk at a
  * time, newest→oldest, and the framework cursor is the next (older) window edge. The fetcher (see
@@ -29,13 +30,7 @@
  */
 
 import type { IngestionManifest } from '../contracts/IngestionManifest.js';
-
-/**
- * GA4 standard-property data retention cap, in milliseconds. The maximum selectable GA4 "Data
- * retention" is 14 months; 420 days (= 14 × 30) is a deliberately conservative under-approximation of
- * that ~426-day span so a backfill window never reaches past what the API can return.
- */
-const GA4_RETENTION_WINDOW_MS = 420 * 24 * 60 * 60 * 1000;
+import { TWO_YEARS_MS } from '../contracts/IngestionManifest.js';
 
 export const GA4_INGESTION_MANIFEST: IngestionManifest = {
   provider: 'ga4',
@@ -45,8 +40,9 @@ export const GA4_INGESTION_MANIFEST: IngestionManifest = {
       kind: 'rest',
       emits: ['ga4.session.v1'],
       backfillSupported: true,
-      // ~14 months — GA4's real platform retention cap (NOT the 24-month default).
-      maxBackfillWindowMs: GA4_RETENTION_WINDOW_MS,
+      // 24 months (Brain default). The 14-month "Data retention" property setting binds
+      // user/event-level Explorations only — runReport standard aggregates are NOT bound by it.
+      maxBackfillWindowMs: TWO_YEARS_MS,
       // Pulled one bounded date-range chunk at a time; the cursor is the next older window edge.
       cursorStrategy: 'date_window',
       // CROSS-LANE ID PARITY: the fetcher precomputes the event_id with GA4's OWN live id fn
@@ -60,7 +56,7 @@ export const GA4_INGESTION_MANIFEST: IngestionManifest = {
       pageSize: 28,
       description:
         'GA4 Data API runReport session-grain report (date × traffic/device/geo), date-windowed; ' +
-        'up to GA4\'s ~14-month retention cap.',
+        'up to Brain\'s 24-month backfill default (standard aggregates are not retention-capped).',
     },
   ],
 };

@@ -164,6 +164,59 @@ describe('SW: ShiprocketWebhookStrategy — signatureVerify (token scheme)', () 
       strategy.signatureVerify(badBody, headers, makeGetSecret(VALID_TOKEN)),
     ).rejects.toMatchObject({ code: 'INVALID_JSON' });
   });
+
+  // ── SW-7..SW-10: header-less TOKEN FALLBACK (merchant can't set custom headers) ──
+
+  it('SW-7: no routing headers + token fallback resolves → accepted, lookupKey = resolved key', async () => {
+    const fallbackStrategy = new ShiprocketWebhookStrategy(async (token) =>
+      token === VALID_TOKEN ? CHANNEL_ID : null,
+    );
+    const body = makeShipmentBody();
+    const headers = { 'x-api-key': VALID_TOKEN }; // NO channel/account header
+
+    const result = await fallbackStrategy.signatureVerify(body, headers, makeGetSecret(VALID_TOKEN));
+    expect(result.lookupKey).toBe(CHANNEL_ID);
+    expect(result.parsedPayload).not.toBeNull();
+  });
+
+  it('SW-8: no routing headers + token matches no connector → LOOKUP_KEY_MISSING (fail-closed)', async () => {
+    const fallbackStrategy = new ShiprocketWebhookStrategy(async () => null);
+    const body = makeShipmentBody();
+    const headers = { 'x-api-key': 'unknown-token' };
+
+    await expect(
+      fallbackStrategy.signatureVerify(body, headers, makeGetSecret(VALID_TOKEN)),
+    ).rejects.toMatchObject({ code: 'LOOKUP_KEY_MISSING' });
+  });
+
+  it('SW-9: fallback only ROUTES — verification still runs; stored-secret mismatch → HMAC_INVALID', async () => {
+    // The resolver (wrongly) maps the token to a channel whose STORED secret differs — the
+    // fallback must not bypass the timing-safe compare (fail-closed).
+    const fallbackStrategy = new ShiprocketWebhookStrategy(async () => CHANNEL_ID);
+    const body = makeShipmentBody();
+    const headers = { 'x-api-key': 'some-token' };
+
+    await expect(
+      fallbackStrategy.signatureVerify(body, headers, makeGetSecret(VALID_TOKEN)),
+    ).rejects.toMatchObject({ code: 'HMAC_INVALID' });
+  });
+
+  it('SW-10: routing header present → fallback resolver is NEVER invoked', async () => {
+    let called = false;
+    const fallbackStrategy = new ShiprocketWebhookStrategy(async () => {
+      called = true;
+      return 'other-channel';
+    });
+    const body = makeShipmentBody();
+    const headers = {
+      'x-shiprocket-channel-id': CHANNEL_ID,
+      'x-api-key': VALID_TOKEN,
+    };
+
+    const result = await fallbackStrategy.signatureVerify(body, headers, makeGetSecret(VALID_TOKEN));
+    expect(result.lookupKey).toBe(CHANNEL_ID);
+    expect(called).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

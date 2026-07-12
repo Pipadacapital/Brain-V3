@@ -15,7 +15,9 @@
  * tracking webhook. We use the `x-shiprocket-channel-id` header (if present), falling
  * back to `x-shiprocket-account-id`. The connector row is resolved by
  * resolve_shiprocket_connector_by_channel (SECURITY DEFINER DB fn — analogous to the
- * Razorpay account-resolver). Callers that don't set either header get LOOKUP_KEY_MISSING.
+ * Razorpay account-resolver). When NEITHER header is present (some merchant webhook configs
+ * can't set custom headers), the injected TOKEN FALLBACK resolves the tenant from the
+ * Brain-minted X-Api-Key itself; only when that also matches nothing → LOOKUP_KEY_MISSING.
  *
  * PAYLOAD MAP: reuses packages/shiprocket-mapper for the canonical shape. The strategy
  * maps ONLY tracking/shipment-status update topics (shipment.update, shipment.delivered,
@@ -136,8 +138,10 @@ const RETURN_TOPICS = new Set([
 /**
  * Constant-time token comparison (equivalent to HMAC validate for the token scheme).
  * Returns false immediately if either token is empty (fail-closed).
+ * Exported: the registerWebhookRoutes token-fallback resolver reuses it so BOTH compares
+ * (tenant resolution AND verification) are timing-safe.
  */
-function timingSafeTokenEqual(received: string, stored: string): boolean {
+export function timingSafeTokenEqual(received: string, stored: string): boolean {
   if (!received || !stored) return false;
   const a = Buffer.from(received, 'utf8');
   const b = Buffer.from(stored, 'utf8');
@@ -145,10 +149,27 @@ function timingSafeTokenEqual(received: string, stored: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+/**
+ * TENANT-ROUTING FALLBACK (SR polish, 2026-07-12): resolve the connector lookup key from the
+ * presented X-Api-Key token alone. Shiprocket's webhook UI lets some merchants configure ONLY a
+ * URL + token — they cannot attach the custom x-shiprocket-channel-id header — which previously
+ * hard-failed every delivery with LOOKUP_KEY_MISSING. Because the token is Brain-MINTED
+ * (high-entropy, unique per connector — SR-2 provisionGeneratedSecrets), it uniquely identifies
+ * the tenant: the resolver timing-safe-compares it against each connected Shiprocket connector's
+ * stored webhook_secret and returns that connector's routing key (channel_id, else account_key),
+ * or null when nothing matches (→ fail-closed LOOKUP_KEY_MISSING as before).
+ */
+export type ShiprocketTokenLookupFallback = (receivedToken: string) => Promise<string | null>;
+
 // ── Strategy ──────────────────────────────────────────────────────────────────
 
 export class ShiprocketWebhookStrategy implements IWebhookStrategy {
   readonly provider = 'shiprocket';
+
+  constructor(
+    /** Optional header-less tenant resolution by minted token (see ShiprocketTokenLookupFallback). */
+    private readonly resolveLookupKeyByToken?: ShiprocketTokenLookupFallback,
+  ) {}
 
   /**
    * STEP 1 (NN-4): Extract the channel-id lookup key from headers and verify
@@ -157,8 +178,12 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
    * Lookup key extraction order:
    *   1. x-shiprocket-channel-id header (preferred — set per-channel in Shiprocket dashboard)
    *   2. x-shiprocket-account-id header (fallback for account-level webhook configs)
+   *   3. TOKEN FALLBACK: when neither header is present (the merchant's webhook config can't
+   *      set custom headers), resolve the tenant from the Brain-minted X-Api-Key itself via the
+   *      injected resolver. The resolved key still flows through the SAME getSecret + timing-safe
+   *      compare below — the fallback only ROUTES, it never skips verification.
    *
-   * Throws LOOKUP_KEY_MISSING if neither header is present.
+   * Throws LOOKUP_KEY_MISSING if no header is present and the token resolves no connector.
    * Throws HMAC_INVALID if the token check fails or the stored webhook_secret is unset.
    */
   async signatureVerify(
@@ -166,22 +191,27 @@ export class ShiprocketWebhookStrategy implements IWebhookStrategy {
     headers: FastifyRequest['headers'],
     getSecret: (lookupKey: string) => Promise<{ webhookSecret: string; connectorLookupKey: string }>,
   ): Promise<SignatureVerifyResult> {
+    // Received token from X-Api-Key header (lowercased by Fastify).
+    const receivedToken = (headers['x-api-key'] as string | undefined) ?? '';
+
     // Extract lookup key from headers — used to resolve the connector row.
-    const channelId =
+    let channelId =
       (headers['x-shiprocket-channel-id'] as string | undefined)?.trim() ||
       (headers['x-shiprocket-account-id'] as string | undefined)?.trim() ||
       '';
 
+    // Header-less delivery → resolve the tenant from the minted token (fail-closed on no match).
+    if (!channelId && receivedToken && this.resolveLookupKeyByToken) {
+      channelId = (await this.resolveLookupKeyByToken(receivedToken))?.trim() ?? '';
+    }
+
     if (!channelId) {
       const err = new Error(
-        'x-shiprocket-channel-id / x-shiprocket-account-id header missing',
+        'x-shiprocket-channel-id / x-shiprocket-account-id header missing and the X-Api-Key token matched no connector',
       );
       (err as NodeJS.ErrnoException & { code: string }).code = 'LOOKUP_KEY_MISSING';
       throw err;
     }
-
-    // Received token from X-Api-Key header (lowercased by Fastify).
-    const receivedToken = (headers['x-api-key'] as string | undefined) ?? '';
 
     // Fetch the stored webhook_secret for this channel.
     const { webhookSecret } = await getSecret(channelId);

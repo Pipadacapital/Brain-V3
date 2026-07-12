@@ -71,4 +71,38 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
       expect(shopify.credentialConnect).toBeUndefined();
     });
   });
+
+  // ── GA4 generic per-brand connect (GA4 rebuild, 2026-07-12) ───────────────────
+  // Service-account JSON key + numeric property id; SA JWT-bearer grant server-side —
+  // no OAuth redirect, no shared GOOGLE_CLIENT_ID env app.
+  describe('ga4 generic per-brand credential connect', () => {
+    const ga4 = getDefinition('ga4')!;
+
+    it('connectMethod is credential (the oauth tile was never wired end-to-end)', () => {
+      expect(ga4.connectMethod).toBe('credential');
+      expect(ga4.availability).toBe('available');
+    });
+
+    it('requires property_id + service_account_json; currency_code is optional', () => {
+      const required = (ga4.authFields ?? []).filter((f) => !f.optional).map((f) => f.key);
+      expect(required).toEqual(['property_id', 'service_account_json']);
+      const currency = (ga4.authFields ?? []).find((f) => f.key === 'currency_code');
+      expect(currency?.optional).toBe(true);
+    });
+
+    it('service_account_json is the ONLY secret field (NN-2: goes to the Secrets Manager bundle)', () => {
+      const secrets = (ga4.authFields ?? []).filter((f) => f.secret).map((f) => f.key);
+      expect(secrets).toEqual(['service_account_json']);
+    });
+
+    it('carries the service-account how-to hint (create SA, grant Viewer on the property)', () => {
+      const saField = (ga4.authFields ?? []).find((f) => f.key === 'service_account_json');
+      expect(saField?.hint).toContain('service account');
+      expect(saField?.hint).toContain('Viewer');
+    });
+
+    it('has NO generic credentialConnect spec (bespoke HandleGa4ConnectCommand handles the connect)', () => {
+      expect(ga4.credentialConnect).toBeUndefined();
+    });
+  });
 });

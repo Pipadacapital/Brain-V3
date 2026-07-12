@@ -32,6 +32,12 @@ import {
   MetaAdAccountAccessError,
 } from '../../modules/connector/sources/advertising/meta/application/commands/ConnectMetaWithSystemUserTokenCommand.js';
 import { DisconnectCommand, ConnectorNotFoundError } from '../../modules/connector/sources/storefront/shopify/application/commands/DisconnectCommand.js';
+import {
+  HandleGa4ConnectCommand,
+  Ga4InvalidPropertyIdError,
+  Ga4ServiceAccountKeyInvalidError,
+  Ga4CredentialsInvalidError,
+} from '../../modules/connector/sources/analytics/ga4/application/commands/HandleGa4ConnectCommand.js';
 import { registerMetaInstallRoute } from '../../modules/connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.js';
 import { registerGoogleAdsInstallRoute } from '../../modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
 import type { PgConnectorInstanceRepository } from '../../modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
@@ -109,6 +115,33 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
         throw err;
       } finally {
         client.release();
+      }
+    },
+  );
+
+  // Generic per-brand GA4 connect (service-account JSON key → JWT-bearer grant).
+  // The property id is mirrored into connector_instance.ad_account_id — the generic repull
+  // contract (ingestion-backfill/ga4-repull enumerate on that column). Same RLS write pattern
+  // as the generic credential path's instanceColumnUpdate below.
+  const connectGa4WithServiceAccount = new HandleGa4ConnectCommand(
+    connectorSecretsManager,
+    connectorRepo,
+    syncStatusRepo,
+    emitEvent,
+    async (gaBrandId, connectorInstanceId, adAccountId) => {
+      const colClient = await rawPgPool.connect();
+      try {
+        await beginRlsTxn(colClient, { correlationId: 'connector:ga4-set-property', brandId: gaBrandId });
+        await colClient.query(
+          `UPDATE connector_instance SET ad_account_id = $1 WHERE id = $2 AND brand_id = $3`,
+          [adAccountId, connectorInstanceId, gaBrandId],
+        );
+        await colClient.query('COMMIT');
+      } catch (colErr) {
+        await colClient.query('ROLLBACK').catch(() => undefined);
+        throw colErr;
+      } finally {
+        colClient.release();
       }
     },
   );
@@ -327,6 +360,64 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
           }
           if (err instanceof StorefrontExclusivityError) {
             return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          throw err;
+        }
+      }
+
+      // ── GA4: bespoke credential connect (service-account JWT-bearer) ────────────
+      // The brand pastes its GCP service-account JSON key + numeric property id (+ optional
+      // reporting currency). The command validates via a cheap runReport BEFORE persisting
+      // anything, stores the SA bundle per-brand (Secrets Manager), and mirrors the property
+      // id into ad_account_id (generic repull contract). No OAuth redirect, no shared env app.
+      if (connectorType === 'ga4' && def.connectMethod === 'credential') {
+        const creds = body.credentials ?? {};
+        const propertyId = (creds['property_id'] ?? '').trim();
+        const serviceAccountJson = (creds['service_account_json'] ?? '').trim();
+        const currencyCode = (creds['currency_code'] ?? '').trim();
+
+        if (!propertyId || !serviceAccountJson) {
+          return reply.code(400).send({
+            request_id: requestId,
+            error: {
+              code: 'MISSING_GA4_CREDENTIALS',
+              message: 'ga4 connector requires: property_id, service_account_json',
+            },
+          });
+        }
+
+        try {
+          const result = await connectGa4WithServiceAccount.execute({
+            brandId,
+            propertyId,
+            serviceAccountJson,
+            ...(currencyCode ? { currencyCode } : {}),
+            idempotencyKey: (req.headers['idempotency-key'] as string | undefined) ?? requestId,
+          });
+          await auditWriter.append({
+            brand_id: brandId,
+            actor_id: auth?.userId ?? null,
+            actor_role: auth?.role ?? 'unknown',
+            action: 'connector.connected',
+            entity_type: 'connector_instance',
+            entity_id: result.connectorInstanceId,
+            // NEVER the key — only the connect metadata (I-S09).
+            payload: { connector_type: 'ga4', auth_method: 'service_account', property_id: result.propertyId },
+          });
+          return reply.code(200).send({
+            request_id: requestId,
+            data: {
+              kind: 'credential',
+              connected: true,
+              connector_instance_id: result.connectorInstanceId,
+            },
+          });
+        } catch (err) {
+          if (err instanceof Ga4InvalidPropertyIdError || err instanceof Ga4ServiceAccountKeyInvalidError) {
+            return reply.code(400).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+          }
+          if (err instanceof Ga4CredentialsInvalidError) {
+            return reply.code(422).send({ request_id: requestId, error: { code: err.code, message: err.message } });
           }
           throw err;
         }

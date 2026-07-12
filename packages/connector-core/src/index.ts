@@ -161,3 +161,16 @@ export {
 
 // ── Shared utils ───────────────────────────────────────────────────────────────
 export { hashToUuidShaped } from './util/hash-to-uuid-shaped.js';
+
+// ── Google service-account JWT-bearer auth (shared by GA4 connect + repull) ─────
+export {
+  GOOGLE_SA_AUTH_ERROR,
+  GOOGLE_OAUTH_TOKEN_URL,
+  parseServiceAccountKeyJson,
+  signServiceAccountAssertion,
+  mintServiceAccountAccessToken,
+} from './auth/google-service-account.js';
+export type {
+  GoogleServiceAccountKey,
+  MintServiceAccountTokenResult,
+} from './auth/google-service-account.js';

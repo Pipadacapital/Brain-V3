@@ -36,7 +36,8 @@ import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
 import { registerMetricsRoute } from './interfaces/rest/metrics.route.js';
 import { registerPixelAssetRoute } from './interfaces/rest/pixel-asset.route.js';
-import { EdgeRateLimiter, registerEdgeGuard } from './interfaces/rest/edge-guard.js';
+import { EdgeRateLimiter, registerEdgeGuard, edgePostureWarnings } from './interfaces/rest/edge-guard.js';
+import { TokenBrandBinding } from './interfaces/rest/token-brand-binding.js';
 import { SpoolBackpressure, registerSpoolBackpressure } from './interfaces/rest/spool-backpressure.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -252,7 +253,24 @@ export async function main(): Promise<void> {
     windowMs: cfg.EDGE_RATE_WINDOW_MS,
     originAllowlist: cfg.EDGE_ORIGIN_ALLOWLIST,
   });
-  registerEdgeGuard(app, edgeLimiter);
+
+  // ── install_token→brand_id binding (AUD-INFRA-025): tenant-isolation admission gate ──
+  // The 0121 SECURITY DEFINER reader (constructed here; ALSO the WA-07 pixel-identity source
+  // below) is the binding oracle: a fully-presented (token, brand_id) pair the oracle disproves
+  // is rejected 403 TOKEN_BRAND_MISMATCH before the spool — a LEAKED install_token can no longer
+  // write another brand's lane. Fail-open on PG outage / unprovable pairs (no event loss).
+  const consentConfigReader = new PgBrandConsentConfigReader(cfg.DATABASE_URL);
+  const tokenBrandBinding = new TokenBrandBinding({
+    reader: consentConfigReader,
+    mode: cfg.EDGE_TOKEN_BINDING_MODE,
+    ttlMs: cfg.EDGE_TOKEN_BINDING_TTL_MS,
+  });
+  registerEdgeGuard(app, edgeLimiter, tokenBrandBinding);
+
+  // Insecure-posture warnings (AUD-INFRA-025): misconfig must be LOUD, never a silent allow-all.
+  for (const warning of edgePostureWarnings(cfg.NODE_ENV, cfg.EDGE_ORIGIN_ALLOWLIST, cfg.EDGE_TOKEN_BINDING_MODE)) {
+    log.warn(warning);
+  }
 
   // ── Spool back-pressure (C4 / R-09): bound the pending backlog ───────────────
   // Sheds load with 503 SPOOL_FULL + Retry-After when the drainer falls behind, so the
@@ -287,7 +305,7 @@ export async function main(): Promise<void> {
   const flagService = createFlagService({
     store: new RedisFlagStoreAdapter(flagRedis as unknown as RedisFlagClient),
   });
-  const consentConfigReader = new PgBrandConsentConfigReader(cfg.DATABASE_URL);
+  // (consentConfigReader constructed above with the edge guard — one shared 0121 reader/pool.)
   const pixelIdentityConfig = createPixelIdentityConfigService({
     reader: consentConfigReader,
     flags: flagService,

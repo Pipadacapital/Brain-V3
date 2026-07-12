@@ -410,6 +410,15 @@ function ConnectorTile({
         {
           onSuccess: (data) => {
             if (data.kind === 'oauth') window.location.href = data.oauth_url;
+            // Meta system-user token connect: the server connects in-request (no redirect) and
+            // answers kind='credential' — confirm here instead of silently doing nothing.
+            else if (data.kind === 'credential') {
+              setCreds({});
+              toast({
+                title: `${tile.display_name} connected`,
+                description: 'Connected with your token — campaign spend will sync shortly.',
+              });
+            }
           },
           onError: handleConnectError,
         },

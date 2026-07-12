@@ -3,7 +3,7 @@
  *
  * Triggered by a consent-erasure signal on the SAME live collector topic as the
  * ConsentSuppressorConsumer / CapiDeletionConsumer (separate consumer group — NO new topic,
- * NO new deployable). On a subject-erasure it runs the 6-step ordered sequence:
+ * NO new deployable). On a subject-erasure it runs the ordered sequence:
  *
  *   1. Shred subject DEK — deactivate tenancy.subject_keyring.is_active=FALSE via the
  *      SECURITY DEFINER shred_subject_keyring() (0115). PRIMARY mechanism: the contact_pii
@@ -14,10 +14,26 @@
  *      pii_erasure_log.surrogate_brain_id so money/ledger rows can reconcile on the surrogate
  *      while the envelope is destroyed.
  *
+ *   2b. Neo4j graph purge (AUD-OPS-039) — tombstone the subject's IDENTIFIES edges +
+ *      lifecycle_state='erased' via IErasureIdentityGraph (same Cypher shape as core's
+ *      synchronous eraseCustomer, so ALL entry points converge on one graph end-state —
+ *      previously only the UI erase / Shopify redact synchronous paths touched the graph;
+ *      the consent-withdraw path left the subject 'active'). FAIL-CLOSED: a graph write
+ *      failure throws → consumer retry → DLQ@MAX_RETRY. Replay-safe: the erasure-lane
+ *      brain_id lookup matches tombstoned edges too (findBrainIdForErasure).
+ *
  *   3. Scoped Gold re-projection — REUSE the existing IScopedRecomputeRepository.upsert()
  *      path (same repo the IdentityChangeRecomputeConsumer uses); do NOT build a parallel path.
  *      The mapper already handles 'identity.erased' — wire it directly rather than emitting
  *      to a Kafka topic that does not yet have a live contract.
+ *
+ *   3b. Serving-cache invalidation (AUD-TP-22) — publish cache.invalidate.v1 for the same
+ *      ScopedRecompute (REUSE CacheInvalidatePublisher — the gold.rewritten.v1 pattern) so
+ *      the AnalyticsCacheInvalidateConsumer drops the brand's Redis serving keys (which
+ *      include every cached metric/journey read that could still surface the erased subject)
+ *      instead of waiting out the 5m–1h TTLs. FAIL-OPEN like the identity-recompute lane:
+ *      the durable ops write already succeeded; TTL expiry + the next refresh pass's
+ *      gold.rewritten.v1 are the backstop. Result carries cacheInvalidated for the log line.
  *
  *   4. Bronze raw-PII erasure (AUD-OPS-037) — submit the `bronze-raw-erasure` Argo
  *      WorkflowTemplate (wraps db/iceberg/spark/erasure_raw_delete.py: hard-deletes the
@@ -127,6 +143,39 @@ export interface IErasureScopedRecomputeRepository {
   upsert(recompute: ReturnType<typeof mapIdentityEventToScopedRecompute>): Promise<void>;
 }
 
+/**
+ * Identity-graph erasure port (AUD-OPS-039) — implemented by Neo4jIdentityRepository.
+ * Both operations are (brand_id, brain_id)-scoped and idempotent.
+ */
+export interface IErasureIdentityGraph {
+  /**
+   * Identifier hashes linked to the brain (aliases included), ANY edge state — keys the
+   * Bronze raw sweep for brain_id-only triggers. Hashes only, never raw PII.
+   * THROWS on store failure (fail-closed → consumer retry).
+   */
+  listIdentifierHashesForErasure(brandId: string, brainId: string): Promise<string[]>;
+  /**
+   * Tombstone active IDENTIFIES edges + set lifecycle_state='erased' (mirrors core's
+   * synchronous eraseCustomer Cypher). THROWS on store failure (fail-closed).
+   */
+  eraseSubjectGraph(
+    brandId: string,
+    brainId: string,
+  ): Promise<{ existed: boolean; linksTombstoned: number }>;
+}
+
+/**
+ * Serving-cache invalidation port (AUD-TP-22) — same shape as ICacheInvalidatePublisher in
+ * IdentityChangeRecomputeConsumer (structural parity; the concrete instance in main.ts is
+ * the SAME CacheInvalidatePublisher — one publisher, one contract, one eviction consumer).
+ */
+export interface IErasureCacheInvalidatePublisher {
+  publishForRecompute(
+    recompute: ReturnType<typeof mapIdentityEventToScopedRecompute>,
+    causationEventId: string,
+  ): Promise<void>;
+}
+
 // ── Result type ───────────────────────────────────────────────────────────────
 
 export type EraseSubjectOutcome =
@@ -143,8 +192,15 @@ export interface EraseSubjectResult {
   eventId?: string;
   brainId?: string;
   surrogateId?: string;
-  /** Name of the submitted bronze-raw-erasure Argo Workflow (set only when the submitter is wired). */
+  /**
+   * Comma-joined names of the submitted bronze-raw-erasure Argo Workflows (one per subject
+   * identifier hash; a single hash for raw-subject triggers). Set only when the submitter is wired.
+   */
   bronzeRawWorkflow?: string;
+  /** IDENTIFIES edges tombstoned by the Neo4j graph purge (set only when the graph port is wired). */
+  graphLinksTombstoned?: number;
+  /** TRUE when the cache.invalidate.v1 publish succeeded (AUD-TP-22; FAIL-OPEN — false is non-fatal). */
+  cacheInvalidated?: boolean;
   reason?: string;
 }
 
@@ -172,6 +228,19 @@ export class EraseSubjectUseCase {
      * When set, a submit failure THROWS (retryable) — never a silent success.
      */
     private readonly bronzeRawErasure?: IBronzeRawErasureSubmitter,
+    /**
+     * AUD-TP-22: serving-cache invalidation publisher — the SAME CacheInvalidatePublisher
+     * instance the IdentityChangeRecomputeConsumer uses (one publisher, one eviction consumer).
+     * Optional: unset (tests) → STEP 3b is skipped. FAIL-OPEN when set (publish errors are
+     * swallowed — TTL + the next gold.rewritten.v1 are the backstop).
+     */
+    private readonly cacheInvalidate?: IErasureCacheInvalidatePublisher,
+    /**
+     * AUD-OPS-039: Neo4j identity-graph erasure port (Neo4jIdentityRepository). Optional:
+     * unset (tests) → STEP 2b is skipped and STEP 4 has no graph-hash fallback. FAIL-CLOSED
+     * when set: a graph failure THROWS (retryable — consumer does not commit; DLQ@MAX_RETRY).
+     */
+    private readonly identityGraph?: IErasureIdentityGraph,
   ) {}
 
   async execute(rawValue: Buffer | null, now: string): Promise<EraseSubjectResult> {
@@ -271,6 +340,19 @@ export class EraseSubjectUseCase {
     const surrogateId = randomUUID();
     await this.erasureRepo.recordSurrogate(brandId, brainId, surrogateId);
 
+    // STEP 2b — Neo4j identity-graph purge (AUD-OPS-039).
+    // Tombstone the subject's IDENTIFIES edges + lifecycle_state='erased' — the SAME graph
+    // end-state the synchronous eraseCustomer path produces, so every entry point (incl. the
+    // consent-withdraw trigger, which has NO synchronous graph erase) converges. Idempotent
+    // (re-run matches 0 active edges). FAIL-CLOSED: a graph failure propagates → consumer
+    // retry → DLQ@MAX_RETRY (replay resolution survives the tombstone via the any-state
+    // erasure-lane lookup). Skipped when the port is not wired (tests).
+    let graphLinksTombstoned: number | undefined;
+    if (this.identityGraph) {
+      const purge = await this.identityGraph.eraseSubjectGraph(brandId, brainId);
+      graphLinksTombstoned = purge.linksTombstoned;
+    }
+
     // STEP 3 — Scoped Gold re-projection.
     // REUSE the existing IScopedRecomputeRepository.upsert() path (the same repo
     // IdentityChangeRecomputeConsumer uses). The ScopedRecompute mapper already handles
@@ -285,6 +367,24 @@ export class EraseSubjectUseCase {
     const recompute = mapIdentityEventToScopedRecompute(erasedInput, now);
     await this.scopedRecomputeRepo.upsert(recompute);
 
+    // STEP 3b — Serving-cache invalidation (AUD-TP-22).
+    // REUSE the CacheInvalidatePublisher (the gold.rewritten.v1 / identity-recompute pattern):
+    // one cache.invalidate.v1 per affected Gold mart, scope.all=true for THIS brand only —
+    // the AnalyticsCacheInvalidateConsumer SCANs `${brandId}:*` and drops every serving-cache
+    // key that could still surface the erased subject (journeys, metrics, tp cache), instead
+    // of waiting out the 5m–1h TTLs. FAIL-OPEN (matches the identity-recompute lane): the
+    // durable ops write above already succeeded; deterministic event_ids make replays dedup.
+    let cacheInvalidated = false;
+    if (this.cacheInvalidate) {
+      try {
+        await this.cacheInvalidate.publishForRecompute(recompute, eventId);
+        cacheInvalidated = true;
+      } catch {
+        // Non-fatal: the publisher already logged. TTL expiry + the next refresh pass's
+        // gold.rewritten.v1 bust the same keys; the erasure itself proceeds.
+      }
+    }
+
     // STEP 4 — Bronze raw-PII erasure (AUD-OPS-037).
     // Submit the bronze-raw-erasure Argo WorkflowTemplate (erasure_raw_delete.py): hard-deletes
     // the subject's raw Bronze rows, keyed by (brand_id, subjectHash) + the RAW anon/device ids
@@ -294,23 +394,38 @@ export class EraseSubjectUseCase {
     // FAIL-SAFE: a submit failure PROPAGATES — the consumer does not commit the offset, the
     // message retries (→ DLQ@MAX_RETRY), and steps 5/6 never run, so an erasure whose Bronze
     // sweep was not submitted is never marked complete. Never a silent success.
+    // Subject-hash keying: the trigger's own salt-hashed identifier when a raw subject rode
+    // the event; otherwise (brain_id-only trigger — AUD-OPS-036 direct addressing, e.g. the
+    // UI erase route whose raw identifier was already hard-deleted) the GRAPH's identifier
+    // hashes for this brain (AUD-OPS-039 — closes the residual: previously brain_id-only
+    // triggers NEVER got a Bronze sweep). Hashes only — never fabricated, never raw PII.
+    // Graph lookup is FAIL-CLOSED (throws → retry) and any-state (replay-safe post-purge).
+    let identifierHashes: string[] = subjectHash ? [subjectHash] : [];
+    if (this.bronzeRawErasure && identifierHashes.length === 0 && this.identityGraph) {
+      identifierHashes = await this.identityGraph.listIdentifierHashesForErasure(brandId, brainId);
+    }
+
     let bronzeRawWorkflow: string | undefined;
-    if (this.bronzeRawErasure && subjectHash) {
+    if (this.bronzeRawErasure && identifierHashes.length > 0) {
       const { anonIds, deviceIds } = this.extractRawSubjectIds(parsed);
-      const submitted = await this.bronzeRawErasure.submit({
-        brandId,
-        identifierHash: subjectHash,
-        anonIds,
-        deviceIds,
-      });
-      bronzeRawWorkflow = submitted.workflowName;
+      // One workflow per hash (erasures are rare; the Spark job takes a single hash). A
+      // mid-loop failure THROWS → the consumer retries the whole (idempotent) sequence.
+      const workflowNames: string[] = [];
+      for (const identifierHash of identifierHashes) {
+        const submitted = await this.bronzeRawErasure.submit({
+          brandId,
+          identifierHash,
+          anonIds,
+          deviceIds,
+        });
+        workflowNames.push(submitted.workflowName);
+      }
+      bronzeRawWorkflow = workflowNames.join(',');
     } else {
-      // NOT CONFIGURED (dev/tests — no ARGO_SERVER_URL) — OR a brain_id-only trigger
-      // (AUD-OPS-036 direct addressing: the raw identifier was hard-deleted at the entry
-      // point, so there is no identifier hash to key the Bronze sweep on; NEVER fabricate
-      // one). Falls to the original registered-DISABLED seam so the step stays honest about
-      // doing nothing. Follow-up (tracked in the AUD-OPS-036 PR): carry the graph's
-      // identifier hashes on the brain_id-addressed trigger to close this residual.
+      // NOT CONFIGURED (dev/tests — no ARGO_SERVER_URL) — OR a brain_id-only trigger whose
+      // graph carries no identifier hashes (nothing to key the sweep on; NEVER fabricate a
+      // hash). Falls to the original registered-DISABLED seam so the step stays honest about
+      // doing nothing.
       // shredIcebergSnapshots always throws NotImplementedYet; catch it and continue — the
       // primary erasure is done (DEK shredded + hard delete). Do NOT claim I-S05 conformance
       // for this configuration. The consumer will NOT retry or DLQ for this.
@@ -337,7 +452,16 @@ export class EraseSubjectUseCase {
     // Set vault_shredded=TRUE, completed_at=NOW() on pii_erasure_log.
     await this.erasureRepo.completeErasure(brandId, brainId);
 
-    return { outcome: 'erased', brandId, eventId, brainId, surrogateId, bronzeRawWorkflow };
+    return {
+      outcome: 'erased',
+      brandId,
+      eventId,
+      brainId,
+      surrogateId,
+      bronzeRawWorkflow,
+      graphLinksTombstoned,
+      cacheInvalidated,
+    };
   }
 
   // ── Helpers (same logic as RequestCapiDeletionUseCase / ProjectConsentUseCase) ──

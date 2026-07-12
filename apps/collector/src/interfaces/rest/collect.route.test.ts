@@ -10,6 +10,15 @@ import Fastify from 'fastify';
 import { registerCollectRoute } from './collect.route.js';
 import type { AcceptEventUseCase } from '../../application/accept-event.usecase.js';
 
+// Hermetic unit tier (AUD-IMPL-016): the edge-guard (AUD-INFRA-025) lazily calls
+// loadCollectorConfig() inside the request path; its schema requires DATABASE_URL +
+// KAFKA_BROKERS. Nothing in this suite connects — the token->brand binding oracle
+// FAIL-OPENs on lookup failure — so dummies keep the suite runnable without a
+// provisioned env (config parse otherwise turns every request into a 500).
+process.env['DATABASE_URL'] ??= 'postgres://unit:unit@localhost:5432/unit_test_never_connected';
+process.env['KAFKA_BROKERS'] ??= 'localhost:9092';
+
+
 vi.mock('@brain/observability', () => ({
   extractCorrelationId: () => 'test-corr',
   incrementCounter: () => undefined,

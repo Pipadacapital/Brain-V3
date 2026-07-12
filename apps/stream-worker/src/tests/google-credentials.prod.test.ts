@@ -68,4 +68,47 @@ describe('resolveGoogleCredentials — OAuth↔repull bundle fix (P0)', () => {
     getSecretMock.mockResolvedValue({ ad_account_id: '1234567890' });
     expect(await resolveGoogleCredentials(ARN, null)).toBeNull();
   });
+
+  // ── BYO refresh fix: the bundle's client creds WIN over env ────────────────────────────────
+  it('prefers the bundle client_id/client_secret/developer_token over env (BYO app — refresh must use the minting client)', async () => {
+    getSecretMock.mockResolvedValue({
+      refresh_token: '1//0gReFrEsH',
+      ad_account_id: '1234567890',
+      client_id: 'byo-client.apps.googleusercontent.com',
+      client_secret: 'GOCSPX-byo-secret',
+      developer_token: 'byoDevTok',
+    });
+    const creds = await resolveGoogleCredentials(ARN, null);
+    expect(creds!.clientId).toBe('byo-client.apps.googleusercontent.com');
+    expect(creds!.clientSecret).toBe('GOCSPX-byo-secret');
+    expect(creds!.developerToken).toBe('byoDevTok');
+  });
+
+  it('a BYO bundle resolves even with NO env app creds at all (ingestion-backfill inherits)', async () => {
+    delete process.env['GOOGLE_ADS_CLIENT_ID'];
+    delete process.env['GOOGLE_ADS_CLIENT_SECRET'];
+    delete process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
+    getSecretMock.mockResolvedValue({
+      refresh_token: '1//0gReFrEsH',
+      ad_account_id: '1234567890',
+      client_id: 'byo-client.apps.googleusercontent.com',
+      client_secret: 'GOCSPX-byo-secret',
+      developer_token: 'byoDevTok',
+    });
+    const creds = await resolveGoogleCredentials(ARN, null);
+    expect(creds).not.toBeNull();
+    expect(creds!.clientId).toBe('byo-client.apps.googleusercontent.com');
+  });
+
+  it('a PARTIAL bundle (no developer_token) falls back to env for the missing field only', async () => {
+    getSecretMock.mockResolvedValue({
+      refresh_token: '1//0gReFrEsH',
+      ad_account_id: '1234567890',
+      client_id: 'byo-client.apps.googleusercontent.com',
+      client_secret: 'GOCSPX-byo-secret',
+    });
+    const creds = await resolveGoogleCredentials(ARN, null);
+    expect(creds!.clientId).toBe('byo-client.apps.googleusercontent.com');
+    expect(creds!.developerToken).toBe('devTok_AbCdEf123'); // env fallback
+  });
 });

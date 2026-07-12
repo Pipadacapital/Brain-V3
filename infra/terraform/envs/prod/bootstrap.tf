@@ -47,6 +47,14 @@ provider "aws" {
 provider "aws" {
   alias  = "replica"
   region = var.replica_region
+  # ap-south-2 is an OPT-IN region this account has NOT enabled — upfront STS
+  # validation fails (InvalidClientTokenId) and breaks EVERY plan, even with
+  # CRR count=0 (2026-07-12). Skip the upfront checks; real API calls still
+  # authenticate normally. BEFORE enabling CRR: opt in to ap-south-2
+  # (Account settings → Regions) or the module's own calls will fail the same way.
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
   default_tags {
     tags = module.tags.common_tags
   }
@@ -584,6 +592,11 @@ module "irsa_spark_jobs" {
   project              = local.project
   policy_arns = [
     module.s3_iceberg.spark_medallion_rw_policy_arn,
+    # journey-stitch-from-identity (runs as brain-jobs via the cron chart)
+    # fetches each brand's pixel salt from brain/connector/* — same read+CMK
+    # decrypt need as stream-worker. Without this the job fail-closed on
+    # kms:Decrypt (D-2 refuses empty-salt hashing; first e2e run 2026-07-12).
+    module.secrets.stream_worker_connector_secrets_read_policy_arn,
   ]
 }
 

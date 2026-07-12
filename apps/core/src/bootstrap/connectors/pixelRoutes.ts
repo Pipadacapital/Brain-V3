@@ -5,7 +5,7 @@
  * Guards, response shapes, and side effects are byte-for-byte identical to the prior inline
  * registration.
  */
-import { type FastifyInstance, type FastifyRequest, type preHandlerHookHandler } from 'fastify';
+import { type FastifyInstance, type FastifyRequest, type preHandlerAsyncHookHandler } from 'fastify';
 import { randomUUID } from 'node:crypto';
 
 import { registerPixelInstallerRoutes, buildDefaultSnippet, isValidIngestHost } from '../../modules/connector/pixel/interfaces/http/pixelRoutes.js';
@@ -36,7 +36,7 @@ export interface RegisterConnectorPixelRoutesDeps {
   pixelStatusRepo: PgPixelStatusRepository;
   getOrCreateInstallation: GetOrCreatePixelInstallationCommand;
   emitEvent: EmitEvent;
-  sessionPreHandler: preHandlerHookHandler;
+  sessionPreHandler: preHandlerAsyncHookHandler;
 }
 
 export function registerConnectorPixelRoutes(app: FastifyInstance, deps: RegisterConnectorPixelRoutesDeps): void {

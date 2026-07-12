@@ -16,6 +16,7 @@
     "typecheck":      { "dependsOn": ["^build"] },
     "lint":           {},
     "test:unit":      { "dependsOn": ["^build"] },
+    "test:integration": { "dependsOn": ["^build"] },
     "test:contract":  { "dependsOn": ["^build", "gen:contracts"] },
     "test:isolation": { "dependsOn": ["^build"] },
     "test:parity":    { "dependsOn": ["^build"] },

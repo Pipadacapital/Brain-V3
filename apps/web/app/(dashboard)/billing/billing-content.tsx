@@ -386,10 +386,10 @@ export function BillingContent() {
   const sortedByMonth = [...allPeriods].sort((a, b) =>
     a.billing_period.localeCompare(b.billing_period),
   );
-  const windowFrom = sortedByMonth.length ? `${sortedByMonth[0].billing_period}-01` : null;
-  const windowTo = sortedByMonth.length
-    ? sortedByMonth[sortedByMonth.length - 1].as_of_date
-    : null;
+  const firstPeriod = sortedByMonth[0];
+  const lastPeriod = sortedByMonth[sortedByMonth.length - 1];
+  const windowFrom = firstPeriod ? `${firstPeriod.billing_period}-01` : null;
+  const windowTo = lastPeriod ? lastPeriod.as_of_date : null;
 
   function onSeal(e: React.FormEvent) {
     e.preventDefault();

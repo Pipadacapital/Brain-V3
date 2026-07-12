@@ -106,6 +106,7 @@ async function seedDisconnectedInstance(brandId: string): Promise<string> {
        RETURNING id`,
       [brandId],
     );
+    if (!res.rows[0]) throw new Error(`connector_instance seed returned no row for brand: ${brandId}`);
     return res.rows[0].id;
   } finally {
     await client.end();

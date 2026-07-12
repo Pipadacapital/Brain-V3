@@ -401,7 +401,8 @@ function cohortMetricValue(
 /** Heatmap (rows = cohort, shaded by the chosen exact metric) + the exact-figures table. */
 function CohortRetentionPanel({ data }: { data: CohortHasData }) {
   const [metricKey, setMetricKey] = useState<CohortMetricKey>('repeat_order_share');
-  const metric = COHORT_METRICS.find((m) => m.key === metricKey) ?? COHORT_METRICS[0];
+  // COHORT_METRICS is a non-empty compile-time constant, so index 0 always exists.
+  const metric = COHORT_METRICS.find((m) => m.key === metricKey) ?? COHORT_METRICS[0]!;
 
   // Cell drill-down: which (cohort_month × period) cell the operator clicked, if any. Clicking a
   // cell loads the customers INSIDE that cohort cell via useCohortUsers; clicking it again closes it.

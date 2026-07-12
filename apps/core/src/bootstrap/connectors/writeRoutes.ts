@@ -6,7 +6,7 @@
  * and generic disconnect). Guards, response shapes, and side effects are byte-for-byte
  * identical to the prior inline registration.
  */
-import { type FastifyInstance, type FastifyRequest, type preHandlerHookHandler } from 'fastify';
+import { type FastifyInstance, type FastifyRequest, type preHandlerAsyncHookHandler } from 'fastify';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { beginRlsTxn } from '@brain/db';
 import type pg from 'pg';
@@ -42,7 +42,7 @@ export interface RegisterConnectorWriteRoutesDeps {
   emitEvent: EmitEvent;
   auditWriter: AuditWriter;
   authService: AuthService;
-  sessionPreHandler: preHandlerHookHandler;
+  sessionPreHandler: preHandlerAsyncHookHandler;
   oauthCommands: SharedOAuthCommands;
 }
 

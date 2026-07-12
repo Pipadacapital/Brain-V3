@@ -74,6 +74,7 @@ import {
   createLogger,
   renderPrometheusText,
   PROMETHEUS_CONTENT_TYPE,
+  registerProcessFailureHandlers,
 } from '@brain/observability';
 
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
@@ -143,6 +144,9 @@ export async function main(): Promise<void> {
     otlpEndpoint: getEnv('OTEL_EXPORTER_OTLP_ENDPOINT', '') || undefined,
   });
   const closeSentry = await initSentry({ serviceName: 'core' }); // gated by SENTRY_DSN (no-op in dev)
+  // Last-resort handlers (AUD-IMPL-003): route unhandledRejection/uncaughtException through the
+  // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
+  registerProcessFailureHandlers({ log, serviceName: 'core', flush: closeSentry });
 
   const nodeEnv = getEnv('NODE_ENV', 'development');
   const isProduction = nodeEnv === 'production';
@@ -961,8 +965,8 @@ export async function main(): Promise<void> {
     await closeSentry().catch(() => { /* ignore */ });
     process.exit(0);
   };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
 
   // Start server.
   try {

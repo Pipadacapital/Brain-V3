@@ -330,6 +330,24 @@ data "aws_iam_policy_document" "analytics_s3" {
     resources = local.namespace_object_arns
   }
 
+  # AUD-SL-10 pre-agg materialization: the hourly semantic-preagg-refresh cron
+  # has TRINO CTAS the compiled pre-aggs into brain_serving.preagg_* — a
+  # deliberate serving-layer materialization (not a transform; Spark stays the
+  # sole TRANSFORM compute). Write is scoped to brain_serving/ ONLY: the
+  # read-only posture on bronze/silver/gold is unchanged. Without this every
+  # refresh failed "Error committing write parquet" (24/24, 2026-07-12).
+  statement {
+    sid    = "AllowServingPreaggWrite"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
+    ]
+    resources = ["${aws_s3_bucket.bronze.arn}/brain_serving/*"]
+  }
+
   statement {
     sid       = "AllowBucketList"
     effect    = "Allow"

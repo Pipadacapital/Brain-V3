@@ -38,6 +38,8 @@ exec docker run --rm \
   -e MODE="${MODE:-maintain}" \
   -e ERASE_BRAND_ID="${ERASE_BRAND_ID:-}" \
   -e SNAPSHOT_TTL_MS="${SNAPSHOT_TTL_MS:-604800000}" \
+  -e DURABLE_SNAPSHOT_TTL_MS="${DURABLE_SNAPSHOT_TTL_MS:-1209600000}" \
+  -e DURABLE_TABLES="${DURABLE_TABLES:-collector_events_connect}" \
   "${SPARK_IMAGE}" \
   /opt/spark/bin/spark-submit \
     --master "local[2]" \

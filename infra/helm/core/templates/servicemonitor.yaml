@@ -1,0 +1,32 @@
+{{- /*
+ServiceMonitor (AUD-INFRA-033): core — the user-facing API/BFF tier — was unscraped, so its
+@brain/observability counters (connector_auth_rejected_total from the WebhookPipeline, job
+counters, …) never reached Prometheus and up{job=~"brain-.*"} could not cover it. Core serves
+/metrics on its MAIN Fastify port (apps/core/src/main.ts, registered next to /health), so this
+monitor rides the existing `http` Service port — same pattern as the collector chart. The job
+relabel pins "brain-core" so BrainTargetDown's brain-.* regex matches.
+
+Selected by the monitoring Prometheus via serviceMonitorSelector {} + namespaceSelector {}
+(kube-prometheus-stack values-prod sets serviceMonitorSelectorNilUsesHelmValues: false), so the
+monitor lives HERE, in the app's own namespace/chart — the team that owns the port owns the scrape.
+*/ -}}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "brain.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: {{ .Values.metrics.serviceMonitor.jobLabel }}
+{{- end }}

@@ -11,6 +11,7 @@
  *  6. no-pci-card-fields: ban card-network field names outside the mapper boundary (C4 / PCI SAQ-A / ADR-RZ-10).
  */
 import boundaries from 'eslint-plugin-boundaries';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tsParser from '@typescript-eslint/parser';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import noFloatMoney from './tools/eslint-rules/no-float-money.mjs';
@@ -229,6 +230,41 @@ export default [
       // assert on domain entities. The reach-around guard protects PRODUCTION boundaries
       // (consistent with boundaries/ignore, which already excludes tests).
       'no-restricted-imports': 'off',
+    },
+  },
+
+  // ── AUD-IMPL-002: promise safety for the Fastify/KafkaJS services ─────────
+  // tsc strict does NOT flag un-awaited promises; a dropped promise in an ingest/consumer
+  // loop silently swallows failures (event-loss risk). Type-aware, so scoped to the three
+  // service src trees to keep lint fast. projectService resolves each file's real tsconfig.
+  {
+    files: [
+      'apps/core/src/**/*.ts',
+      'apps/collector/src/**/*.ts',
+      'apps/stream-worker/src/**/*.ts',
+    ],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+    },
+  },
+
+  // ── AUD-IMPL-002: react-hooks correctness for the Next.js app ─────────────
+  // Catches conditional hook calls (rules-of-hooks) and stale-closure dependency bugs
+  // (exhaustive-deps) that tsc cannot see.
+  {
+    files: ['apps/web/**/*.ts', 'apps/web/**/*.tsx'],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'error',
     },
   },
 ];

@@ -82,8 +82,11 @@ export function parseEnv<T extends z.ZodType>(
       `[config] FATAL: Invalid environment configuration:\n${errors}\n` +
         'Fix the environment variables and restart the service.',
     );
-    // process.exit(1) in real services; throw in tests.
-    if (env === process.env) {
+    // process.exit(1) in real services; throw in tests. Loaders always pass process.env,
+    // so the "throw in tests" escape hatch only fires when a vitest worker is detected
+    // (AUD-IMPL-007): without the VITEST gate, env drift converts precise unit assertions
+    // (e.g. the ML eval-gate suite) into an opaque "process.exit unexpectedly called".
+    if (env === process.env && !process.env['VITEST']) {
       process.exit(1);
     }
     throw new Error(`Invalid environment configuration:\n${errors}`);

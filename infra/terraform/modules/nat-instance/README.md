@@ -16,6 +16,22 @@ instance, its EBS volume, or its AZ fails, **all private-subnet egress stops**
 until EC2 auto-recovery / a Terraform re-apply replaces it. There is no
 cross-AZ failover.
 
+### Auto-recovery (AUD-OPS-035 — default ON)
+
+`enable_auto_recovery = true` (the default) adds two CloudWatch alarms wired to
+EC2's built-in actions — the cheapest meaningful hardening (~$0.20/mo):
+
+| Alarm | Signal | Action |
+|---|---|---|
+| `…-nat-system-check-recover` | `StatusCheckFailed_System` (2×1m) | `ec2:recover` — same instance/ENI/private IP; routes + EIP association survive |
+| `…-nat-instance-check-reboot` | `StatusCheckFailed_Instance` (3×1m) | `ec2:reboot` — hung OS / network stack |
+
+This covers host failure and OS hangs; it does **not** cover AZ loss. Full
+fck-nat **HA mode** (warm standby + EIP failover) is a separate, larger apply
+decision — it replaces `aws_instance` with an ASG (a destructive change to this
+module) and roughly doubles the instance cost (~+$2-3/mo). Adopt it when
+connector-egress downtime tolerance drops below "minutes".
+
 - ✅ Acceptable for: `dev`, cost-sensitive starter `prod`, anything where a few
   minutes of egress downtime during instance replacement is tolerable.
 - ❌ Not acceptable for: workloads requiring HA egress SLAs. Keep the managed

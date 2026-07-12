@@ -29,10 +29,8 @@ set -euo pipefail
 
 SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
-# StarRocks speaks the MySQL wire protocol — the MySQL Connector/J driver reads the gold_revenue_ledger basis.
-MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.4.0}"
 SCALA="2.12"
-# Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio, starrocks) resolves — the
+# Join Redpanda's network namespace so service-name DNS (iceberg-rest, minio) resolves — the
 # same netns trick the other Spark run scripts use.
 REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 GOLD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,10 +39,10 @@ SPARK_DIR="$(cd "${GOLD_DIR}/.." && pwd)"   # holds iceberg_base.py (shared --py
 # Bounded retry around each (idempotent MERGE) spark-submit — a transient blip is safe to re-run.
 source "${SPARK_DIR}/_retry.sh"
 
-# Iceberg runtime + AWS bundle + MySQL JDBC (the cross-catalog recognized-basis read).
+# Iceberg runtime + AWS bundle. (The MySQL Connector/J jar + GOLD_SR_* env were StarRocks-era
+# relics — no attribution job reads JDBC anymore; removed per AUD-IMPL-021.)
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
-PACKAGES="${PACKAGES},com.mysql:mysql-connector-j:${MYSQL_JDBC_VERSION}"
 
 # Default: all four in dependency order. Override with MODEL=<one> to run a single job.
 MODELS="${MODEL:-gold_attribution_credit gold_marketing_attribution gold_attribution_paths snap_attribution_credit}"
@@ -80,9 +78,6 @@ for model in ${MODELS}; do
     -e ICEBERG_WAREHOUSE="${ICEBERG_WAREHOUSE:-s3://brain-bronze/}" \
     -e SILVER_NAMESPACE="${SILVER_NAMESPACE:-brain_silver}" \
     -e GOLD_NAMESPACE="${GOLD_NAMESPACE:-brain_gold}" \
-    -e GOLD_SR_JDBC_URL="${GOLD_SR_JDBC_URL:-jdbc:mysql://starrocks:9030}" \
-    -e GOLD_SR_USER="${GOLD_SR_USER:-root}" \
-    -e GOLD_SR_PASSWORD="${GOLD_SR_PASSWORD:-}" \
     -e S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}" \
     -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-brain}" \
     -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-brainbrain}" \

@@ -1,5 +1,15 @@
 # Runbook — Enable the production scheduled-job pipeline (insights stay fresh)
 
+> **SUPERSEDED (2026-07-12, AUD-OPS-019) — do NOT follow this document.** Everything below
+> describes the **RETIRED dbt/StarRocks pipeline** (removed at Brain V4, PR #285): the
+> `dbt-runner` image, `recognition-refresh`/`attribution-gold-refresh` dbt crons,
+> `STARROCKS_*` secret keys, the `brain_oltp_pg` JDBC catalog, and `mysql -P 9030` verify
+> commands **no longer exist**. Seeding those secret keys or looking for those crons is wasted
+> work. The CURRENT prod scheduled pipeline is **Spark-on-Iceberg CronWorkflows**
+> (`infra/helm/cronworkflows`: `v4-silver` :05, `v4-gold` :25, `bronze-maintenance`,
+> `bronze-raw-retention`, `v4-maintenance` weekly) enabled per **`GO-LIVE.md` steps 10–12**;
+> re-runs/backfills per **`rerun-medallion.md`**. Kept as historical context only.
+
 This wires the medallion refresh + Bronze sink + catalog registration into CI/CD so the **Insight/
 Copilot pipeline runs on fresh real data in production** (not a stale snapshot). The insight detectors
 read the gold marts; this keeps those marts rebuilt and provenance-fresh. See

@@ -11,7 +11,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { journeyApi } from '@/lib/api/client';
 
-export const JOURNEY_QUERY_KEY = ['analytics', 'journey'] as const;
+const JOURNEY_QUERY_KEY = ['analytics', 'journey'] as const;
 
 /** Trace the touchpoints that preceded an order (+ identity evidence). Disabled until an order id. */
 export function useJourneyTrace(orderId: string | null, lookbackDays?: number) {
@@ -29,16 +29,6 @@ export function useCustomerJourney(brainId: string | null, limit?: number) {
     queryKey: [...JOURNEY_QUERY_KEY, 'customer', brainId, limit ?? 50],
     queryFn: () => journeyApi.getCustomerJourney(brainId as string, { limit }),
     enabled: Boolean(brainId),
-    staleTime: 60_000,
-  });
-}
-
-/** Compare two customers' journeys side by side (t_minus_conversion per touch). */
-export function useJourneyCompare(left: string | null, right: string | null) {
-  return useQuery({
-    queryKey: [...JOURNEY_QUERY_KEY, 'compare', left, right],
-    queryFn: () => journeyApi.getCompare(left as string, right as string),
-    enabled: Boolean(left) && Boolean(right),
     staleTime: 60_000,
   });
 }

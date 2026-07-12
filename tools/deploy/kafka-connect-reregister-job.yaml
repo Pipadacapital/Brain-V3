@@ -10,6 +10,12 @@ metadata:
   name: kafka-connect-reregister
   namespace: kafka
 spec:
+  # AUD-INFRA-007: one-shot Jobs are unmanaged by any ArgoCD app — a finished
+  # Job lingering as Complete is imperative-deploy residue that pollutes the
+  # cluster inventory. Self-delete 24h after finishing (long enough to
+  # inspect the registration log; the source of truth for connector configs
+  # stays the chart's ConfigMap + post-upgrade hook).
+  ttlSecondsAfterFinished: 86400
   backoffLimit: 6
   template:
     spec:

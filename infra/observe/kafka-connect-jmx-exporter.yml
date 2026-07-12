@@ -1,9 +1,19 @@
 # JMX → Prometheus mapping for the Kafka Connect Bronze landing worker (ADR-0010).
 # Attached as a javaagent on :9405 (see the kafka-connect compose service; port published on the
 # `kafka` service because Connect shares its netns). Scraped by the 'kafka-connect-jmx' job in
-# infra/observe/prometheus.yml. brain-slo.rules.yml's BronzeConnectTaskFailed alert reads the
-# task-status series below; Bronze ingest lag continues to come from kafka-exporter's
-# kafka_consumergroup_lag (the sink's consumer groups are `connect-iceberg-bronze-*`).
+# infra/observe/prometheus.yml — and in PROD by the kafka-connect chart's PodMonitor (the chart's
+# ConfigMap is a VERBATIM copy of this file; KEEP THE TWO IN LOCKSTEP — AUD-INFRA-028).
+#
+# brain-slo.rules.yml reads three series from here:
+#   • kafka_connect_connector_task_status{status=}    → BronzeConnectTaskFailed
+#   • kafka_connect_consumer_records_lag              → BronzeConnectLagHigh (AUD-INFRA-028:
+#     kafka_exporter's kafka_consumergroup_lag is EMPTY for the sink's groups — the Iceberg sink
+#     coordinates commits over the control topic and stores offsets in the Iceberg snapshot
+#     metadata, not (reliably) in __consumer_offsets — so lag comes from the worker's OWN
+#     embedded-consumer JMX instead)
+#   • kafka_connect_sink_task_sink_record_read_total  → BrainIngestStale (Connect-era rewrite,
+#     AUD-INFRA-029: the old brain_bronze_write_total counter died with the Spark-SS sink at the
+#     ADR-0010 cutover)
 lowercaseOutputName: true
 lowercaseOutputLabelNames: true
 rules:
@@ -16,6 +26,26 @@ rules:
       connector: "$1"
       task: "$2"
       status: "$3"
+  # EXPLICIT sink-read counter (records the sink task has consumed from Kafka since task start).
+  # Named deterministically here — NOT via the generic catch-alls below — because BrainIngestStale
+  # keys on this exact series; a mapping-derived rename would silently kill the stall alert again
+  # (the AUD-INFRA-029 failure mode). FIRST-MATCH-WINS: must stay ABOVE the generic sink-task rule.
+  - pattern: 'kafka.connect<type=sink-task-metrics, connector=(.+), task=(\d+)><>sink-record-read-total'
+    name: kafka_connect_sink_task_sink_record_read_total
+    type: COUNTER
+    labels:
+      connector: "$1"
+      task: "$2"
+  # Per-partition lag of the worker's embedded sink consumers (KIP-225 records-lag) — the ONLY
+  # live lag signal for the Iceberg sink (see header) → BronzeConnectLagHigh.
+  # client-id shape: connector-consumer-<connector>-<task>.
+  - pattern: 'kafka.consumer<type=consumer-fetch-manager-metrics, client-id=(.+), topic=(.+), partition=(.+)><>records-lag'
+    name: kafka_connect_consumer_records_lag
+    type: GAUGE
+    labels:
+      client_id: "$1"
+      topic: "$2"
+      partition: "$3"
   # Per-task sink throughput/latency (records read/sent, put-batch time).
   - pattern: 'kafka.connect<type=sink-task-metrics, connector=(.+), task=(\d+)>([^:]+)'
     name: kafka_connect_sink_task_$3

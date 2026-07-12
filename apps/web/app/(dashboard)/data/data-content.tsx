@@ -289,7 +289,7 @@ export function DataContent() {
                           )}
                           title={row[c.key] ?? undefined}
                         >
-                          {formatCell(row[c.key], c, row)}
+                          {formatCell(row[c.key] ?? null, c, row)}
                         </td>
                       ))}
                     </tr>
@@ -336,7 +336,7 @@ export function DataContent() {
                       c.type === 'text' && 'font-mono text-xs',
                     )}
                   >
-                    {formatCell(selectedRow[c.key], c, selectedRow)}
+                    {formatCell(selectedRow[c.key] ?? null, c, selectedRow)}
                   </dd>
                 </div>
               ))}

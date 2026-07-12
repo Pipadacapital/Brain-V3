@@ -1,0 +1,47 @@
+{{- if and .Values.autoscaling.enabled .Values.autoscaling.keda.enabled }}
+# AUD-OPS-030: KEDA ScaledObject for the stream-worker — consumer LAG is the scale signal,
+# not CPU (an I/O-bound consumer can fall behind at <70% CPU; the gap matters most for burst
+# recovery after downtime/replay). The CPU trigger is KEPT alongside so the previous HPA
+# behaviour remains a floor. The plain HPA (templates/hpa.yaml) is suppressed while this
+# renders — KEDA materialises its own HPA and two controllers must never fight over one
+# Deployment. maxReplicas stays <= the live-topic partition count (12 — the strimzi chart
+# clamps partitions to 6..12): replicas beyond it own no partition and sit idle.
+# Same pattern as infra/helm/trino/templates/worker-scaledobject.yaml (KEDA proven in prod).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "brain.fullname" . }}
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  cooldownPeriod: {{ .Values.autoscaling.keda.cooldownPeriod | default 600 }}
+  {{- with .Values.autoscaling.behavior }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        {{- toYaml . | nindent 8 }}
+  {{- end }}
+  triggers:
+    # Primary: consumer lag on the live collector lane (plaintext in-cluster listener).
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ required "autoscaling.keda.kafka.bootstrapServers is required when keda is enabled" .Values.autoscaling.keda.kafka.bootstrapServers | quote }}
+        consumerGroup: {{ .Values.autoscaling.keda.kafka.consumerGroup | quote }}
+        topic: {{ required "autoscaling.keda.kafka.topic is required when keda is enabled" .Values.autoscaling.keda.kafka.topic | quote }}
+        lagThreshold: {{ .Values.autoscaling.keda.kafka.lagThreshold | default "1000" | quote }}
+        offsetResetPolicy: latest
+        allowIdleConsumers: {{ .Values.autoscaling.keda.kafka.allowIdleConsumers | default "false" | quote }}
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    # Secondary: keep the old CPU signal as a floor (same target as the suppressed HPA).
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ .Values.autoscaling.targetCPUUtilizationPercentage | quote }}
+    {{- end }}
+{{- end }}

@@ -41,6 +41,17 @@ provider "aws" {
   }
 }
 
+# AUD-OPS-014: the DR replica region for S3 CRR (module s3_warehouse_crr below).
+# ap-south-2 (Hyderabad) by default — IN-COUNTRY, so the AUD-OPS-042 residency
+# posture is unchanged (decision doc docs/adr/0011-s3-crr-residency.md).
+provider "aws" {
+  alias  = "replica"
+  region = var.replica_region
+  default_tags {
+    tags = module.tags.common_tags
+  }
+}
+
 locals {
   project     = "brain"
   environment = "prod"
@@ -119,6 +130,16 @@ module "vpc_endpoints" {
   region                  = "ap-south-1"
   private_subnet_ids      = module.network.private_subnet_ids
   private_route_table_ids = module.network.private_route_table_ids
+
+  # AUD-INFRA-012 / AUD-OPS-031: the full 5-service × 3-AZ endpoint set was
+  # ~$110-140/mo (15 ENI-hours) — the second-largest fixed line — for traffic
+  # that can ride the fee-free fck-nat (ADR-0009) at ~$0 marginal. Keep ONLY
+  # ecr.api/ecr.dkr (registry auth/manifests for image pulls; layer blobs come
+  # via the FREE S3 gateway endpoint) in a SINGLE subnet. logs/sts/secretsmanager
+  # calls (low-volume JSON) now traverse fck-nat like all other egress.
+  # Rollback: delete these two lines to restore the 5×3 legacy set.
+  interface_services   = ["ecr.api", "ecr.dkr"]
+  interface_subnet_ids = [module.network.private_subnet_ids[0]]
 }
 
 ###############################################################################
@@ -141,6 +162,14 @@ module "eks" {
   # operator allowlist (tfvars) opens the public endpoint pinned to those CIDRs
   # for the go-live bootstrap. Empty = private-only.
   public_access_cidrs = var.eks_public_access_cidrs
+
+  # AUD-OPS-028 / AUD-INFRA-019: EKS 1.33 upgrade gates. Defaults are the LIVE
+  # values (1.32 / AL2 / null) so this plan is a no-op; the operator flips them
+  # in terraform.tfvars per docs/runbooks/eks-1-33-upgrade.md (AL2023 first,
+  # then 1.33, then STANDARD support) to drop the $360/mo extended-support fee.
+  kubernetes_version   = var.cluster_version
+  system_ami_type      = var.system_ami_type
+  cluster_support_type = var.eks_support_type
 }
 
 ###############################################################################
@@ -222,6 +251,41 @@ resource "aws_ecr_repository" "iceberg_rest" {
     encryption_type = "KMS"
     kms_key         = module.kms.root_kms_key_arn
   }
+}
+
+# AUD-INFRA-018: the standalone repo lacked the lifecycle policy the eks-module
+# app repos get — IMMUTABLE tags + no lifecycle = every rebuild accumulates
+# forever. Mirrors the eks module's untagged-expiry and adds keep-last-N for
+# tagged images (immutable tagging means every build is a new tag). N=10 keeps
+# any digest a running pod could still pull after a node reschedule.
+resource "aws_ecr_lifecycle_policy" "iceberg_rest" {
+  repository = aws_ecr_repository.iceberg_rest.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 7 days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 7
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only the last 10 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
 }
 
 ###############################################################################
@@ -607,9 +671,49 @@ module "irsa_neo4j_backup" {
 }
 
 ###############################################################################
+# S3 cross-region replication (AUD-OPS-014) — DR replica of the medallion
+# warehouse bucket in ap-south-2 (Hyderabad; in-country, so the AUD-OPS-042
+# residency posture is unchanged — decision doc docs/adr/0011-s3-crr-residency.md).
+# GATED behind var.enable_cross_region_replication (default false): flipping it
+# on in terraform.tfvars is the recorded apply-decision. The tfstate bucket's
+# replica is gated the same way in infra/terraform/bootstrap (its own root).
+###############################################################################
+# Replica-region half (bucket + CMK in ap-south-2) — the module takes the
+# replica-region provider as its default `aws` (no configuration_aliases, so
+# the CI standalone-module validate matrix works).
+module "s3_warehouse_crr_replica" {
+  count  = var.enable_cross_region_replication ? 1 : 0
+  source = "../../modules/s3-crr-replica"
+  providers = {
+    aws = aws.replica
+  }
+  environment      = local.environment
+  project          = local.project
+  purpose          = "warehouse"
+  source_bucket_id = module.s3_iceberg.warehouse_bucket_name
+}
+
+# Source-region half: replication role + the replication configuration on the
+# warehouse bucket.
+module "s3_warehouse_crr" {
+  count               = var.enable_cross_region_replication ? 1 : 0
+  source              = "../../modules/s3-crr"
+  environment         = local.environment
+  project             = local.project
+  purpose             = "warehouse"
+  source_bucket_id    = module.s3_iceberg.warehouse_bucket_name
+  source_bucket_arn   = module.s3_iceberg.warehouse_bucket_arn
+  source_kms_key_arn  = module.kms.root_kms_key_arn
+  replica_bucket_arn  = module.s3_warehouse_crr_replica[0].replica_bucket_arn
+  replica_kms_key_arn = module.s3_warehouse_crr_replica[0].replica_kms_key_arn
+}
+
+###############################################################################
 # Outputs — the post-apply fill pass reads these (helm values-prod placeholders,
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.
 ###############################################################################
+# AUD-OPS-014: null until enable_cross_region_replication = true is applied.
+output "warehouse_crr_replica_bucket" { value = one(module.s3_warehouse_crr_replica[*].replica_bucket_name) }
 output "github_plan_role_arn" { value = module.oidc_github.github_plan_role_arn }
 output "github_ecr_push_role_arn" { value = module.oidc_github.github_ecr_push_role_arn }
 output "github_apply_role_arn" { value = module.oidc_github.github_apply_role_arn }

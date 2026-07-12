@@ -39,6 +39,31 @@ variable "system_node_max" {
   default = 6
 }
 
+# ── EKS 1.33 upgrade gates (AUD-OPS-028 + prereq AUD-INFRA-019) ──────────────
+# 1.32 bills EXTENDED support ($12/day ≈ $360/mo — 86% of the $500 target).
+# ALL THREE defaults equal the live state, so an un-flipped plan is a NO-OP.
+# Flip sequence (one apply each, docs/runbooks/eks-1-33-upgrade.md):
+#   1. system_ami_type = "AL2023_ARM_64_STANDARD"   (AL2 AMIs end at 1.32)
+#   2. cluster_version = "1.33"
+#   3. eks_support_type = "STANDARD"                 (fail-fast guard, post-upgrade)
+variable "cluster_version" {
+  description = "EKS control-plane Kubernetes version. Bump only after the system MNG is on AL2023 (AUD-INFRA-019)."
+  type        = string
+  default     = "1.32"
+}
+
+variable "system_ami_type" {
+  description = "System MNG AMI type. Flip to AL2023_ARM_64_STANDARD before cluster_version 1.33 (AL2 AMIs end at 1.32)."
+  type        = string
+  default     = "AL2_ARM_64"
+}
+
+variable "eks_support_type" {
+  description = "EKS upgradePolicy supportType. Set to STANDARD only AFTER the 1.33 upgrade (the API rejects it while the running version is extended-support)."
+  type        = string
+  default     = null
+}
+
 # AUD-COST-017: hosted zone id(s) external-dns may manage (e.g. ["Z0123456789ABC"]).
 # Empty = the role's ChangeResourceRecordSets falls back to hostedzone/* so the
 # first apply works before the zone exists — set the real id(s) once step 9 of
@@ -47,6 +72,23 @@ variable "external_dns_zone_ids" {
   description = "Route53 hosted zone IDs external-dns is allowed to change. Empty = all zones (bootstrap fallback; tighten ASAP)."
   type        = list(string)
   default     = []
+}
+
+# AUD-OPS-014 / AUD-OPS-042 (docs/adr/0011-s3-crr-residency.md): cross-region
+# replication of the medallion-warehouse bucket to a SECOND IN-COUNTRY region
+# (ap-south-2 Hyderabad — data never leaves India, DPDP residency unchanged).
+# Gated: false renders zero resources; flipping to true is the ratified DR
+# apply-decision (creates the replica bucket + CMK + replication role/config).
+variable "enable_cross_region_replication" {
+  description = "Enable S3 CRR of the medallion warehouse bucket to replica_region (AUD-OPS-014; residency decision ADR-0011)."
+  type        = bool
+  default     = false
+}
+
+variable "replica_region" {
+  description = "In-country DR replica region for S3 CRR (ADR-0011: must remain in India for DPDP residency)."
+  type        = string
+  default     = "ap-south-2"
 }
 
 # ADR-0009: Aurora Serverless v2, 0.5–2 ACU burst-elastic starter sizing.

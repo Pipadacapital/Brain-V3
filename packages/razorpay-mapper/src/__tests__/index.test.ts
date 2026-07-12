@@ -71,6 +71,8 @@ const FIXTURE_ITEM_WITH_CARD_FIELDS: RazorpaySettlementItem = {
   currency: 'INR',
   entity_type: 'payment',
   // card.* fields — these MUST be dropped at the boundary (C4)
+  /* eslint-disable brain-pci/no-pci-card-fields -- attack fixture: this test
+     PROVES the boundary drops every card field; the names must appear here. */
   card_last4: '4242',
   card_network: 'Visa',
   card_brand: 'Visa',
@@ -84,6 +86,7 @@ const FIXTURE_ITEM_WITH_CARD_FIELDS: RazorpaySettlementItem = {
     network: 'Visa',
     issuer: 'HDFC',
   },
+  /* eslint-enable brain-pci/no-pci-card-fields */
   // other non-allowlisted fields
   method: 'card',
   bank: 'HDFC',

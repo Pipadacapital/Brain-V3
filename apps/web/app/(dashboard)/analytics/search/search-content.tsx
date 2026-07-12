@@ -198,7 +198,8 @@ function TopSearchesCard({ data }: { data: BehaviorHasData | undefined }) {
 
 function SearchTrendCard({ data }: { data: SearchHasData }) {
   const series = data.days.map((d) => Number(d.searches));
-  const trending = series.length >= 2 && series[series.length - 1] >= series[0] ? 'up' : 'down';
+  const trending =
+    series.length >= 2 && (series[series.length - 1] ?? 0) >= (series[0] ?? 0) ? 'up' : 'down';
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -299,7 +300,8 @@ function SearchTab() {
 
 function FormsTrendCard({ data }: { data: FormHasData }) {
   const subs = data.days.map((d) => Number(d.submissions));
-  const trending = subs.length >= 2 && subs[subs.length - 1] >= subs[0] ? 'up' : 'down';
+  const trending =
+    subs.length >= 2 && (subs[subs.length - 1] ?? 0) >= (subs[0] ?? 0) ? 'up' : 'down';
   return (
     <Card>
       <CardHeader className="pb-2">

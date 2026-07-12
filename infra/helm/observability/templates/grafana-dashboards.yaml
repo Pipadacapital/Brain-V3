@@ -1,0 +1,25 @@
+{{- /*
+Brain Grafana dashboards (AUD-INFRA-032). Prod Grafana previously carried ONLY the
+kube-prometheus-stack defaults — operators debugging ingest/connector/revenue issues had raw
+PromQL. The three purpose-built dashboards the local compose Grafana provisions
+(infra/observe/grafana/provisioning/dashboards/*.json — canonical; files/dashboards/ are
+VERBATIM copies, KEEP IN LOCKSTEP) ship here as one ConfigMap per dashboard, labelled
+grafana_dashboard: "1" for the kube-prometheus-stack Grafana sidecar (enabled by default in
+chart 65.1.1; searchNamespace ALL; default datasource uid `prometheus` matches the JSONs'
+panel datasource refs).
+*/ -}}
+{{- if .Values.dashboards.enabled }}
+{{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: brain-dashboard-{{ base $path | trimSuffix ".json" }}
+  labels:
+    app.kubernetes.io/part-of: brain
+    grafana_dashboard: "1"
+data:
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+---
+{{- end }}
+{{- end }}

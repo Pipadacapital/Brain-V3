@@ -46,7 +46,8 @@ export function MetricsContent() {
   const [query, setQuery] = useState('');
 
   const catalog = catalogQ.data;
-  const metrics: SemanticMetricEntry[] = catalog?.metrics ?? [];
+  // Memoized so the array identity is stable across renders (downstream useMemo deps).
+  const metrics: SemanticMetricEntry[] = useMemo(() => catalog?.metrics ?? [], [catalog]);
 
   // Search narrows the visible metrics across the human-meaningful columns (name · entity · desc).
   const visibleMetrics = useMemo(

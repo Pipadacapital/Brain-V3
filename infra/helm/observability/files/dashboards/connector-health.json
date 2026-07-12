@@ -1,0 +1,145 @@
+{
+  "uid": "brain-connector-health",
+  "title": "Brain — Connector Health",
+  "description": "Per-connector ingest dispatch rates, error rates, rate-limiting, auth rejections, circuit breaker state.",
+  "tags": ["brain", "connectors"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Ingest Dispatch Rate by Provider (dispatches/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (provider) (rate(brain_ingest_scheduler_dispatch_total[5m]))",
+          "legendFormat": "{{ provider }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Dispatch Error Rate by Provider",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (provider) (rate(brain_ingest_scheduler_dispatch_error_total[5m]))",
+          "legendFormat": "{{ provider }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "red", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Rate-Limited Dispatches by Provider",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (provider) (rate(brain_ingest_scheduler_rate_limited_total[5m]))",
+          "legendFormat": "{{ provider }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "orange", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Auth Rejections (1h)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (provider) (increase(brain_connector_auth_rejected_total[1h]))",
+          "legendFormat": "{{ provider }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Circuit Breaker State Changes",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (name, to) (increase(brain_circuit_breaker_state_change_total[5m]))",
+          "legendFormat": "{{ name }} → {{ to }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Circuit Breaker Failures by Vendor",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (name) (rate(brain_circuit_breaker_failure_total[5m]))",
+          "legendFormat": "{{ name }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Scheduler Tick Overruns",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(brain_ingest_scheduler_tick_overrun_total[15m]))",
+          "legendFormat": "overruns (15m)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "fixedColor": "yellow", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Meta Token Refresh Errors",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (reason) (increase(brain_meta_token_refresh_error_total[2h]))",
+          "legendFormat": "{{ reason }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    }
+  ]
+}

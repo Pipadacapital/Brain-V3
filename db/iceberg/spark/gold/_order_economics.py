@@ -118,21 +118,26 @@ def apportion_by_share(total_minor: int, shares: Sequence[Tuple[str, int]]) -> D
     revenue), with ZERO leak — the largest-remainder method. Used to push an order's economics down
     onto its product lines so gold_product_economics reconciles to gold_order_economics EXACTLY.
 
-    shares = [(key, weight)]. If Σweights == 0, falls back to an equal split (allocate_prorata over
-    the keys in order). Returns {key: minor} with Σ == total_minor. Handles negative totals (a
-    reversed order's negative revenue) by apportioning the magnitude then re-signing, so the signed
-    sum still equals total_minor exactly."""
+    shares = [(key, weight)]. Weights MUST be non-negative — a negative weight raises ValueError
+    (AUD-IMPL-017: silently equal-splitting would mask a caller bug as a plausible allocation).
+    If Σweights == 0, falls back to an equal split (allocate_prorata over the keys in order).
+    Returns {key: minor} with Σ == total_minor. Handles negative totals (a reversed order's
+    negative revenue) by apportioning the magnitude then re-signing, so the signed sum still
+    equals total_minor exactly."""
     keys = [k for k, _ in shares]
     if not keys:
         return {}
+    if any(int(w) < 0 for _, w in shares):
+        raise ValueError("apportion_by_share: weights must be non-negative")
     total = int(total_minor)
     weight_sum = sum(int(w) for _, w in shares)
-    if weight_sum <= 0:
+    if weight_sum == 0:
         signed = allocate_prorata(abs(total), keys)
         return {k: (-v if total < 0 else v) for k, v in signed.items()}
     mag = abs(total)
     # floor share + remainder distributed to the largest fractional parts (deterministic tie-break:
-    # higher weight first, then input order) so Σ == mag exactly.
+    # larger remainder-numerator first, then input order — AUD-IMPL-017 docstring fix: the key is
+    # (-remainder, index), NOT weight) so Σ == mag exactly.
     provisional: List[Tuple[str, int, int]] = []  # (key, floor, remainder_numerator)
     for k, w in shares:
         num = mag * int(w)

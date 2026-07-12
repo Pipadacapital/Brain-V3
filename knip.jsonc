@@ -23,10 +23,7 @@
     // Load-bearing root devDep: tools/dev/v4-refresh-loop.sh runs `pnpm exec tsx`.
     "tsx",
     // Configured via .prettierrc.
-    "prettier",
-    // apps/stream-worker e2e helper still asserts the legacy Bronze table over mysql2;
-    // removable only after the AUD-CODE-002 Trino port lands.
-    "mysql2"
+    "prettier"
   ],
   "ignore": [
     "**/dist/**",
@@ -46,6 +43,10 @@
     "tools/dev/e2e-gate.wf.js",
     // Manual ops fixture, a documented runbook step (docs/runbooks/RB-4-local-lakehouse.md).
     "tools/pixel-fixture/seed-touchpoints.mjs",
+    // AUD-IMPL-022 decision: KEEP generating. Part of the D.2 semantic-metrics codegen set
+    // (views/preaggs/catalog.json/metric-ids.ts), snapshot-tested against a fresh compile —
+    // the compile-time metric-id enum awaiting consumers, not an orphan to delete piecemeal.
+    "packages/semantic-metrics/src/generated/metric-ids.ts",
     // Workflow-tool scripts launched by path (PR_BODY.md documents the reproducible
     // blueprint workflow; v4-naming-guard carves the dir out for the same reason).
     ".eos-workflows/**",
@@ -82,6 +83,15 @@
       "ignore": ["components/ui/**", "e2e/**"]
     },
     "packages/*": { "entry": ["src/index.ts"] },
-    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] }
+    "packages/pixel-sdk": {
+      // src/asset/entry.ts is the esbuild entrypoint of the served /pixel.js IIFE bundle
+      // (tools/pixel-asset-bundle.mjs entryPoints) — out-of-path for knip's import graph, so
+      // without this it false-positives entry.ts + auto-instrument.ts as unused (AUD-IMPL-022).
+      "entry": ["src/index.ts", "src/asset/entry.ts"]
+    },
+    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] },
+    // Operator-run DPDP drill harness (AUD-OPS-040): launched via `pnpm --filter
+    // @brain/tool-privacy drill`, never imported — the script IS the entrypoint.
+    "tools/privacy": { "entry": ["src/rtbf-drill.ts"] }
   }
 }

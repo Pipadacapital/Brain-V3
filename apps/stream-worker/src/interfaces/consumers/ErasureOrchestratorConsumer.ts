@@ -3,8 +3,10 @@
  *
  * Reads the SAME live collector topic as ConsentSuppressorConsumer / CapiDeletionConsumer
  * in a SEPARATE consumer group (stream-worker-erasure-orchestrator) — NO new topic, NO new
- * deployable (I-E05). On a subject-erasure event it drives the ordered 6-step sequence via
- * EraseSubjectUseCase. Most events are NOT erasures ('no_consent_flags' / 'not_an_erasure')
+ * deployable (I-E05). On a subject-erasure event it drives the full ordered sequence via
+ * EraseSubjectUseCase (DEK shred → contact_pii → surrogate → Neo4j graph purge → Gold
+ * re-projection + cache invalidation → Bronze raw sweep → CAPI deletion → complete).
+ * Most events are NOT erasures ('no_consent_flags' / 'not_an_erasure')
  * and are committed immediately as skips (normal — high-throughput filter pattern).
  *
  * Mirrors CapiDeletionConsumer EXACTLY in offset/DLQ/retry discipline:
@@ -117,6 +119,10 @@ export class ErasureOrchestratorConsumer {
                 `event=${result.eventId} brain_id=${result.brainId} ` +
                 `surrogate=${result.surrogateId} ` +
                 `bronze_raw_workflow=${result.bronzeRawWorkflow ?? 'not_configured'} ` +
+                // AUD-OPS-039 / AUD-TP-22 evidence fields: graph edges tombstoned + whether the
+                // serving-cache invalidation published (FAIL-OPEN — false is stale-until-TTL).
+                `graph_links_tombstoned=${result.graphLinksTombstoned ?? 'not_wired'} ` +
+                `cache_invalidated=${result.cacheInvalidated ?? false} ` +
                 `partition=${partition} offset=${offset}`,
               );
             } else if (result.outcome === 'no_brain_id') {

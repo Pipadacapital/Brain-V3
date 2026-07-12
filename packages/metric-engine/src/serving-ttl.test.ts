@@ -29,6 +29,12 @@ describe('resolveServingTtlMs', () => {
     expect(resolveServingTtlMs('cohort_retention', DEFAULT_MS)).toBe(SERVING_TTL_TIER_MS.analytics_long);
   });
 
+  it('AUD-IMPL-026: the Bronze health endpoint ids sit on the executive (5 min) tier', () => {
+    expect(resolveServingTtlMs('data_health', DEFAULT_MS)).toBe(SERVING_TTL_TIER_MS.executive);
+    expect(resolveServingTtlMs('tracking_health', DEFAULT_MS)).toBe(SERVING_TTL_TIER_MS.executive);
+    expect(resolveServingTtlMs('recent_events', DEFAULT_MS)).toBe(SERVING_TTL_TIER_MS.executive);
+  });
+
   it('covers the full live cache-key id set (swept from the BFF route call sites)', () => {
     // The metricId strings passed to ServingCacheReader.read()/cachedRead() in apps/core —
     // dashboard.routes.ts, analytics-core.routes.ts, analytics-logistics.routes.ts, bff.routes.ts.
@@ -40,6 +46,9 @@ describe('resolveServingTtlMs', () => {
       'orders_list', 'utm_source', 'insights_briefing', 'product_categories', 'product_detail',
       'product_affinity', 'delivery_time', 'cohort_retention', 'cohort_users', 'repeat_latency',
       'revenue_monthly',
+      // AUD-IMPL-026 — the Bronze health endpoints (tracking.routes.ts / analytics-marketing.routes.ts)
+      // are now cache-wrapped; their full-Bronze-scan reads must sit on the 5-min executive tier.
+      'data_health', 'tracking_health', 'recent_events',
     ];
     for (const id of LIVE_IDS) {
       expect(METRIC_TTL_TIER[id], `live id ${id} has no tier`).toBeDefined();

@@ -1419,9 +1419,6 @@ export type {
   JourneyTrace,
   TraceTouch,
   IdentityEvidenceItem,
-  JourneyCompare,
-  CompareJourney,
-  CompareTouch,
 } from '@brain/contracts';
 
 // ── Wave C — Metric lineage ("prove this number": the source facts behind a metric) ─────────

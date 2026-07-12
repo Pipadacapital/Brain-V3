@@ -105,7 +105,7 @@ def build(spark):
         """
     )
 
-    merge_on_pk(spark, fqtn, staged, ["brand_id", "funnel_date"])
+    merge_on_pk(spark, fqtn, staged, ["brand_id", "funnel_date"], delete_orphans=True)  # AUD-IMPL-012: full per-brand recompute — shed disappeared-group orphans
     return fqtn, spark.table(fqtn).count()
 
 

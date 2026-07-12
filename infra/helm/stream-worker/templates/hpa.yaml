@@ -1,7 +1,9 @@
-{{- if .Values.autoscaling.enabled }}
+{{- if and .Values.autoscaling.enabled (not .Values.autoscaling.keda.enabled) }}
 # HorizontalPodAutoscaler (P2.5). Enabled per-env via values-*.yaml. Requires resources.requests
 # (set in values.yaml) — HPA computes utilization as usage/request. When autoscaling is enabled the
 # Deployment OMITS a static replicas count (see deployment.yaml) so helm upgrades don't fight the HPA.
+# AUD-OPS-030: SUPPRESSED when autoscaling.keda.enabled — KEDA materialises its own HPA from the
+# ScaledObject (templates/scaledobject.yaml); two controllers must never fight over one Deployment.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

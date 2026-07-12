@@ -50,8 +50,6 @@ interface Requirement {
 
 // ── Readiness predicates (composable, foundation-general) ─────────────────────
 const storefrontConnected = (i: EntitlementInput): boolean => i.signals.commerceConnected;
-const foundationEstablished = (i: EntitlementInput): boolean =>
-  i.signals.commerceConnected && i.signals.pixelInstalled && i.signals.firstEventReceived;
 const foundationReady = (i: EntitlementInput): boolean => i.tier === 'ready' || i.tier === 'healthy';
 
 // ── Center unlock matrix ──────────────────────────────────────────────────────
@@ -100,9 +98,14 @@ const CATEGORY_REQUIREMENTS: readonly Requirement[] = [
   },
   {
     key: 'ads',
-    met: foundationEstablished,
-    reason: 'Ad ROAS needs revenue truth + journeys from an established foundation.',
-    unlockHint: 'Connect a storefront, install the pixel, and start receiving data.',
+    // Owner decision 2026-07-12: ads unlocks on storefront-connected alone (was
+    // foundationEstablished = storefront+pixel+first-event). Rationale: connecting
+    // Meta/Google early lets spend history backfill DURING pixel bring-up, so ROAS
+    // is ready sooner; ROAS surfaces themselves stay gated by the attribution
+    // center's foundationReady rule — this only opens the CONNECTOR.
+    met: storefrontConnected,
+    reason: 'Ad spend reconciles against your store orders.',
+    unlockHint: CONNECT_STOREFRONT_FIRST,
   },
   {
     key: 'messaging',

@@ -20,7 +20,7 @@
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 import { loadCollectorConfig } from '@brain/config';
-import { initObservability, initSentry, createLogger } from '@brain/observability';
+import { initObservability, initSentry, createLogger, registerProcessFailureHandlers } from '@brain/observability';
 import { registerSchema, ensureCompatibilityRule, defaultApicurioConfig } from '@brain/events';
 import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
 import {
@@ -187,6 +187,9 @@ export async function main(): Promise<void> {
   // Keep the flush fns so graceful shutdown can export the final telemetry batch before exit (C1).
   const shutdownObservability = await initObservability({ serviceName: 'collector', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
   const closeSentry = await initSentry({ serviceName: 'collector' }); // gated by SENTRY_DSN (no-op in dev)
+  // Last-resort handlers (AUD-IMPL-003): route unhandledRejection/uncaughtException through the
+  // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
+  registerProcessFailureHandlers({ log, serviceName: 'collector', flush: closeSentry });
 
   // ── 1. Infrastructure wiring ─────────────────────────────────────────────────
   const spoolRepo = new PgSpoolRepository(cfg.DATABASE_URL);

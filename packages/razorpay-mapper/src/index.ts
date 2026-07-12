@@ -83,6 +83,9 @@ export const RAZORPAY_FIELD_ALLOWLIST = new Set([
 // This Set lists the blocked names as string literals; the brain-pci/no-pci-card-fields
 // ESLint rule targets identifier and property-key usages, not string values in a Set.
 // This file IS the authoritative drop boundary (ADR-RZ-10) — the rule guards all OTHER files.
+/* eslint-disable brain-pci/no-pci-card-fields -- the boundary's own blocklist
+   enumeration (ADR-RZ-10): this Set IS the drop mechanism the rule enforces
+   everywhere else; the rule's own message directs the disable here. */
 export const CARD_FIELDS_BLOCKED = new Set([
   'card_last4',
   'card_network',
@@ -94,6 +97,7 @@ export const CARD_FIELDS_BLOCKED = new Set([
   // nested card.* fields — also blocked
   'card',
 ]);
+/* eslint-enable brain-pci/no-pci-card-fields */
 
 // ── Entity types (MB-2 / MB-3) ───────────────────────────────────────────────
 

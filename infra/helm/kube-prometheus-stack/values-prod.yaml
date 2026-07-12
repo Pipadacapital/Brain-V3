@@ -530,3 +530,61 @@ additionalPrometheusRulesMap:
             annotations:
               summary: "Data-freshness exporter cannot reach Trino"
               description: "brain_data_freshness_up is 0 or absent for 10m — the freshness exporter is down or cannot query Trino (the sole serving engine). All freshness SLAs are unverified until it recovers; check the trino service and the brain-freshness-exporter target."
+
+  ##############################################################################
+  # Brain scale-posture tripwires (Wave-3: AUD-IMPL-027 / AUD-OPS-029 /
+  # AUD-OPS-030). VERBATIM conversion of
+  # infra/observe/alerts/scale-tripwires.rules.yml — that file stays the
+  # canonical, promtool-checkable source (the local compose Prometheus loads
+  # alerts/*.rules.yml directly); KEEP THE TWO IN LOCKSTEP (same doctrine as
+  # brain-slo/freshness above). NEW rule file appended by the Wave-3
+  # scale-infra pass — the brain-slo/freshness blocks above are owned by other
+  # waves and were not touched.
+  #
+  # Series source: the Argo Workflows controller /metrics (metricsConfig +
+  # ServiceMonitor flipped on in infra/argocd/envs/prod/argo-workflows.yaml);
+  # the spark-v4 CronWorkflows emit the brain_spark_workflow_* metrics.
+  #
+  # HONESTY NOTE (AUD-OPS-032): the Aurora ACU / Redis eviction tripwires are
+  # CloudWatch metric alarms in terraform (modules/aurora + modules/elasticache)
+  # — no CloudWatch exporter runs in-cluster, so PromQL rules over those series
+  # would be loaded-but-dead. Knob decisions: docs/ops/scale-knobs.md.
+  ##############################################################################
+  scale-tripwires:
+    groups:
+      - name: brain-scale-tripwires
+        rules:
+          - alert: SparkTierCutoverTriggerBreached
+            # The DEFINED executionMode:k8s cutover trigger (docs/ops/spark-on-k8s-migration.md §1):
+            # a Silver/Gold tier sustaining >20 min wall-time. Silver must clear the :25 gold start;
+            # both must stay far from the 2400s activeDeadlineSeconds. Realtime gauge → this fires
+            # DURING the slow run, and the frozen final value keeps it visible after completion.
+            expr: max by (tier) (brain_spark_workflow_duration_seconds) > 1200
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Spark {{ $labels.tier }} tier ran > 20 min — k8s cutover trigger breached"
+              description: "The {{ $labels.tier }} CronWorkflow wall-time exceeded 1200s (value {{ $value | humanizeDuration }}). This is the DEFINED trigger to rehearse and flip sparkV4 executionMode: k8s (docs/ops/spark-on-k8s-migration.md §1). Per-mart durations: kubectl -n argo logs the workflow pod and grep '\"evt\":\"spark_job\"' (job_log.py duration_ms)."
+
+          - alert: SparkTierNearDeadline
+            # 2100s = 87% of the 2400s activeDeadlineSeconds — the run is about to be killed and the
+            # medallion (and every mv_* serving view over it) goes stale platform-wide.
+            expr: max by (tier) (brain_spark_workflow_duration_seconds) > 2100
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Spark {{ $labels.tier }} tier at {{ $value | humanizeDuration }} — approaching the 2400s deadline"
+              description: "The {{ $labels.tier }} CronWorkflow is within ~5 min of activeDeadlineSeconds (2400s). If it is killed, Silver/Gold freshness stalls platform-wide (serving reads only brain_serving.mv_* over these marts). Escalate the AUD-OPS-029 sizing knobs or execute the k8s cutover."
+
+          - alert: SparkTierRunFailed
+            # A tier run ended Failed (deadline, OOMKill, retries exhausted). Downstream mart staleness
+            # is caught by the freshness rules; this points at the CAUSE hours earlier.
+            expr: sum by (tier) (increase(brain_spark_workflow_failed_total[2h])) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Spark {{ $labels.tier }} tier workflow FAILED in the last 2h"
+              description: "A {{ $labels.tier }} CronWorkflow run ended Failed (deadline overrun, OOMKill, or retries exhausted). Inspect: argo -n argo list; kubectl -n argo logs <pod>. If failures correlate with duration near 2400s, the AUD-OPS-029 vertical ceiling is the likely cause — see docs/ops/spark-on-k8s-migration.md."

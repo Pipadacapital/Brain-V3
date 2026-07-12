@@ -411,20 +411,29 @@ export type { BackfillTriggerResponse, BackfillJobProgress };
  * Returns { job_id, status:'queued' } on 202.
  * Throws BffApiError with code RECONNECT_REQUIRED (409) or BACKFILL_ALREADY_RUNNING (409).
  * Throws BffApiError with status 403 for manager-role users (D-15).
+ *
+ * @param requestedWindowMs OPTIONAL depth-picker window (BackfillTriggerRequest, 0127) in ms.
+ *   Omitted = provider max — sent as a body-less POST (byte-identical to the pre-picker call).
+ *   The server clamps to the provider manifest's maxBackfillWindowMs at claim time.
  */
-async function triggerBackfill(connectorId: string): Promise<BackfillTriggerResponse> {
+async function triggerBackfill(connectorId: string, requestedWindowMs?: number): Promise<BackfillTriggerResponse> {
   const requestId = generateRequestId();
   const method = 'POST';
   const csrfToken = await ensureCsrfToken();
 
   const response = await fetch(`/api/v1/connectors/${encodeURIComponent(connectorId)}/backfill`, {
     method,
-    // No request body — do NOT declare a JSON content-type, or Fastify rejects the empty
-    // body with 400 "Body cannot be empty when content-type is set to 'application/json'".
+    // Body ONLY when a depth was picked. Otherwise no body — and do NOT declare a JSON
+    // content-type, or Fastify rejects the empty body with 400 "Body cannot be empty when
+    // content-type is set to 'application/json'".
     headers: {
       'X-Request-Id': requestId,
       ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+      ...(requestedWindowMs !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
+    ...(requestedWindowMs !== undefined
+      ? { body: JSON.stringify({ requested_window_ms: requestedWindowMs }) }
+      : {}),
     credentials: 'include',
   });
 

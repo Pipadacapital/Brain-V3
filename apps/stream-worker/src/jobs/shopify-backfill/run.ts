@@ -41,7 +41,7 @@ import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
-import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
+import { PgBackfillJobRepository, parseRequestedWindowMs } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import { ShopifyBackfillClient } from './shopify-paged-client.js';
@@ -174,6 +174,12 @@ export async function run(connectorInstanceId?: string): Promise<void> {
         continue;
       }
 
+      // Requested depth (0127): clamp the caller's requested window to the 24-month platform max
+      // (min(requested, BACKFILL_WINDOW_MS)) — the row stores the REQUEST, never the entitlement.
+      // Absent/malformed → the pre-0127 provider max, byte-identical behaviour.
+      const requestedWindowMs = parseRequestedWindowMs(claimedJob.requested_window_ms);
+      const targetWindowMs = Math.min(requestedWindowMs ?? BACKFILL_WINDOW_MS, BACKFILL_WINDOW_MS);
+
       // Execute the page loop
       await runBackfillLoop({
         jobId,
@@ -183,6 +189,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
         accessToken,
         saltHex,
         resumeSinceId: claimedJob.cursor_value,
+        targetWindowMs,
         producer,
         jobRepo,
         pool,
@@ -304,6 +311,8 @@ interface BackfillLoopParams {
   accessToken: string;
   saltHex: string;
   resumeSinceId: string | null;
+  /** Effective historical window (ms) — min(requested_window_ms, BACKFILL_WINDOW_MS) (0127). */
+  targetWindowMs: number;
   producer: Producer;
   jobRepo: PgBackfillJobRepository;
   pool: Pool;
@@ -312,13 +321,14 @@ interface BackfillLoopParams {
 async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
   const {
     jobId, brandId, connectorInstanceId, connectorRow, accessToken, saltHex,
-    resumeSinceId, producer, jobRepo, pool,
+    resumeSinceId, targetWindowMs, producer, jobRepo, pool,
   } = params;
 
   const shopClient = new ShopifyBackfillClient(connectorRow.shop_domain, accessToken);
 
-  // 24-month lower bound for the backfill window (D-8 / D-14)
-  const createdAtMin = new Date(Date.now() - BACKFILL_WINDOW_MS).toISOString();
+  // Lower bound for the backfill window (D-8 / D-14): the caller-requested depth clamped to the
+  // 24-month platform max (targetWindowMs, 0127). Default = the full 24-month window.
+  const createdAtMin = new Date(Date.now() - targetWindowMs).toISOString();
 
   // ── D-8: count orders before first page (HP-1: null on failure, never fabricate) ──
   let estimatedTotal: bigint | null = null;
@@ -466,7 +476,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
 
     // ── Terminal: completed ───────────────────────────────────────────────────
     const depthLabel = oldestOccurredAt
-      ? computeAchievedDepthLabel(oldestOccurredAt, BACKFILL_WINDOW_MS)
+      ? computeAchievedDepthLabel(oldestOccurredAt, targetWindowMs)
       : null;
 
     await jobRepo.finalize({

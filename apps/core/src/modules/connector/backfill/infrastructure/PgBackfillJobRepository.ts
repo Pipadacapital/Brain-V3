@@ -30,6 +30,7 @@ export interface BackfillJobRow {
   cursor_date: string | null;
   achieved_depth_label: string | null;
   failure_reason: string | null;
+  requested_window_ms: string | null; // PG returns BIGINT as string; NULL = provider max (0127)
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -78,12 +79,17 @@ export class PgBackfillJobRepository {
    * Caller MUST have already verified no active job exists (checkActiveJob returned null).
    * Returns the new job id (UUID).
    *
+   * @param requestedWindowMs OPTIONAL caller-requested historical depth in ms (0127). Persisted as
+   *   the REQUEST only — the claimers clamp to the provider manifest's maxBackfillWindowMs at
+   *   execution time. Omit/null = provider max (pre-0127 behaviour, byte-identical).
+   *
    * ADR-BF-3 / D-12.
    */
   async insertQueued(
     brandId: string,
     connectorInstanceId: string,
     correlationId: string,
+    requestedWindowMs?: number | null,
   ): Promise<string> {
     const ctx: QueryContext = { brandId, correlationId };
     const client = await this.pool.connect();
@@ -91,10 +97,10 @@ export class PgBackfillJobRepository {
       const result = await client.query<{ id: string }>(
         ctx,
         `INSERT INTO backfill_job
-           (brand_id, connector_instance_id, status, records_processed)
-         VALUES ($1, $2, 'queued', 0)
+           (brand_id, connector_instance_id, status, records_processed, requested_window_ms)
+         VALUES ($1, $2, 'queued', 0, $3)
          RETURNING id`,
-        [brandId, connectorInstanceId],
+        [brandId, connectorInstanceId, requestedWindowMs ?? null],
       );
       const row = result.rows[0];
       if (!row) throw new Error('[PgBackfillJobRepository] insertQueued: no row returned');

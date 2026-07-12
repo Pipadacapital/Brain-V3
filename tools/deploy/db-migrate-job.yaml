@@ -17,13 +17,24 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      # PodSecurity Admission `restricted` compliant (permanent — was patched
+      # ad-hoc at runtime): pod- and container-level fields the profile requires.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
         runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: migrate
           image: "380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod@sha256:955cbeda468e3fbb6175748ce2d6bcfff2e42195eec9760f57fcb245a9aa044d"
+          # NOTE: readOnlyRootFilesystem is deliberately NOT set — `pnpm migrate:up`
+          # writes to the workdir. Everything else is restricted-compliant.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
           # migrate:up is a ROOT script; the image WORKDIR is /repo/apps/core, so
           # run from /repo like the real PreSync hook does.
           workingDir: /repo

@@ -5,7 +5,7 @@
  * GET /api/v1/connectors and GET /api/v1/connectors/:id/status). Behavior, guards, and
  * response shapes are byte-for-byte identical to the prior inline registration.
  */
-import { type FastifyInstance, type FastifyRequest, type preHandlerHookHandler } from 'fastify';
+import { type FastifyInstance, type FastifyRequest, type preHandlerAsyncHookHandler } from 'fastify';
 import { randomUUID } from 'node:crypto';
 
 import { isAdPlatformProvider } from '@brain/connector-core';
@@ -23,7 +23,7 @@ import { getBrandId } from './shared.js';
 export interface RegisterConnectorReadRoutesDeps {
   connectorRepo: PgConnectorInstanceRepository;
   syncStatusRepo: PgConnectorSyncStatusRepository;
-  sessionPreHandler: preHandlerHookHandler;
+  sessionPreHandler: preHandlerAsyncHookHandler;
 }
 
 /**

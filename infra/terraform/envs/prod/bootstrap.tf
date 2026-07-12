@@ -584,6 +584,11 @@ module "irsa_spark_jobs" {
   project              = local.project
   policy_arns = [
     module.s3_iceberg.spark_medallion_rw_policy_arn,
+    # journey-stitch-from-identity (runs as brain-jobs via the cron chart)
+    # fetches each brand's pixel salt from brain/connector/* — same read+CMK
+    # decrypt need as stream-worker. Without this the job fail-closed on
+    # kms:Decrypt (D-2 refuses empty-salt hashing; first e2e run 2026-07-12).
+    module.secrets.stream_worker_connector_secrets_read_policy_arn,
   ]
 }
 

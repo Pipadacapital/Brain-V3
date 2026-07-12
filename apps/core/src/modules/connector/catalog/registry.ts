@@ -216,7 +216,34 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     connectMethod: 'oauth',
     availability: 'available',
     description: 'Campaign spend & performance.',
-    authFields: OAUTH_APP_FIELDS,
+    // TWO connect paths on one tile (dispatch in bootstrap/connectors/writeRoutes.ts):
+    //   1. RECOMMENDED — system-user token: paste a NEVER-EXPIRING token generated for a
+    //      system user in Meta Business Settings (+ optionally the ad account id). No browser
+    //      OAuth, no ~60-day token death, no proactive re-exchange needed
+    //      (ConnectMetaWithSystemUserTokenCommand).
+    //   2. OAuth redirect (browser login) — with the optional BYO-app Client ID/Secret pair.
+    // All fields optional: submitting none starts the OAuth flow (back-compat).
+    authFields: [
+      {
+        key: 'access_token',
+        label: 'System User Token',
+        type: 'password',
+        secret: true,
+        optional: true,
+        hint:
+          'Recommended: generate a never-expiring system-user token in Meta Business Settings ' +
+          '(System Users → Generate token, ads_read). Leave blank to connect with a browser login instead.',
+      },
+      {
+        key: 'ad_account_id',
+        label: 'Ad Account ID',
+        type: 'text',
+        secret: false,
+        optional: true,
+        hint: 'Optional with a system-user token — e.g. act_1234567890 (blank = all accessible accounts).',
+      },
+      ...OAUTH_APP_FIELDS,
+    ],
   },
   {
     id: 'google_ads',
@@ -225,7 +252,22 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     connectMethod: 'oauth',
     availability: 'available',
     description: 'Search & shopping campaigns.',
-    authFields: OAUTH_APP_FIELDS,
+    // BYO-app pair + the OPTIONAL brand-owned developer_token: a brand bringing its own Google
+    // Cloud OAuth app usually brings its own Google Ads developer token too. Stored in the SAME
+    // per-brand <provider>_app secret bundle (oauth-app-creds) and persisted into each
+    // per-account bundle at callback so the repull refreshes with the client that minted the
+    // refresh token (BYO refresh bug). Blank = Brain's env developer token.
+    authFields: [
+      ...OAUTH_APP_FIELDS,
+      {
+        key: 'developer_token',
+        label: 'Developer Token',
+        type: 'password',
+        secret: true,
+        optional: true,
+        hint: "Optional — your Google Ads API developer token; leave blank to use Brain's",
+      },
+    ],
   },
   // ── payments ──────────────────────────────────────────────────────────────────
   // Razorpay = payment processor (settlement). GoKwik + Shopflo = checkout/payment-gateway

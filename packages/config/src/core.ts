@@ -48,6 +48,11 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
   SHOPIFY_CLIENT_ID: z.string().optional(),
   META_APP_ID: z.string().optional(),
   GOOGLE_ADS_CLIENT_ID: z.string().optional(),
+  // Google Ads shared-app fallbacks: the OAuth callback resolves the brand's BYO app creds first
+  // and falls back to these (HandleGoogleAdsOAuthCallbackCommand / resolveGoogleCredentials).
+  // SECRET-TIER values — env-injected from the secret store in prod, never logged (I-S09).
+  GOOGLE_ADS_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_ADS_DEVELOPER_TOKEN: z.string().optional(),
   /** Shopify Admin API version (ShopifyAdminClient default). */
   SHOPIFY_API_VERSION: z.string().optional(),
 

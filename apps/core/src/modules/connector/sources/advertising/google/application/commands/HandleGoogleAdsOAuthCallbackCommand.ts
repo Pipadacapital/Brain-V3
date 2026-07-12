@@ -5,8 +5,11 @@
  * divergences specific to Google:
  *   - Google issues short-lived access tokens; we persist the REFRESH token (offline
  *     access) so the repull job can mint access tokens at run start. The secret is a
- *     JSON bundle `{ refresh_token, ad_account_id }` (same multi-cred-bundle pattern as
- *     the Razorpay credential bundle).
+ *     JSON bundle `{ refresh_token, client_id, client_secret, developer_token?,
+ *     ad_account_id, login_customer_id? }` (same multi-cred-bundle pattern as the
+ *     Razorpay credential bundle). client_id/client_secret are the creds that RESOLVED
+ *     this exchange (brand BYO-app else env) — a refresh_token is only valid against the
+ *     client that minted it, so the repull must refresh with the SAME client (BYO bug).
  *   - ad_account_id here is the Google Ads customer id (digits only, no dashes). It is
  *     stored INSIDE the bundle (the repull client needs it) AND on the connector_instance
  *     row (for enumeration / webhook-free brand resolution).
@@ -89,15 +92,17 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     if (!code) {
       throw new GoogleAdsOAuthError('Authorization code missing from callback');
     }
-    const { refreshToken, accessToken } = await this.exchangeCodeForTokens(code, brandId);
+    const { refreshToken, accessToken, clientId, clientSecret, developerToken } =
+      await this.exchangeCodeForTokens(code, brandId);
 
     // ── Step 3: Resolve ALL LEAF customer ids + their required manager login-CID (Gap B + MCC) ──
     // listAccessibleCustomers returns whatever the OAuth user can reach — for an agency/MCC login
     // that's the MANAGER CID, NOT the spend-carrying leaf clients. We expand each accessible CID via
     // `customer_client` to enumerate the real leaf accounts and capture the manager CID each leaf must
     // be queried THROUGH (login-customer-id). Without this, an MCC login offers only the manager (no
-    // spend) → permanent zero spend, the prod symptom.
-    const leaves = await this.resolveLeafCustomers(accessToken);
+    // spend) → permanent zero spend, the prod symptom. developerToken is the RESOLVED one (brand's
+    // BYO developer_token when stored, else env) — not a raw env read.
+    const leaves = await this.resolveLeafCustomers(accessToken, developerToken);
     const adAccountIds = leaves.map((l) => l.customerId);
     const adAccountId = adAccountIds[0] ?? null;
 
@@ -120,7 +125,19 @@ export class HandleGoogleAdsOAuthCallbackCommand {
 
       // Per-account bundle → ARN (NN-2 / I-S09). __default__ (no account) keeps a single
       // refresh-token-only bundle so a credentials-only connect still has a resolvable secret.
-      const bundle: Record<string, string> = { refresh_token: refreshToken };
+      //
+      // AUDIT FIX (BYO refresh bug, zero-spend defect): the bundle ALSO carries the client_id /
+      // client_secret (+ developer_token) that RESOLVED this exchange. A brand on BYO app creds
+      // minted its refresh_token against ITS OWN client — refreshing that token with the env
+      // app's client_id/client_secret is invalid_grant → permanent zero spend. Persisting the
+      // resolving creds per-account lets the repull (resolveGoogleCredentials) prefer the bundle
+      // over env, so ingestion + backfill inherit the correct client automatically.
+      const bundle: Record<string, string> = {
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+      };
+      if (developerToken) bundle['developer_token'] = developerToken;
       if (accountId) bundle['ad_account_id'] = accountId;
       if (loginCustomerId) bundle['login_customer_id'] = loginCustomerId;
       const { arn: secretRef } = await this.secretsManager.storeSecret(
@@ -195,14 +212,28 @@ export class HandleGoogleAdsOAuthCallbackCommand {
     };
   }
 
-  /** Exchange the authorization code for {refresh_token, access_token} via Google's token endpoint. */
+  /**
+   * Exchange the authorization code for {refresh_token, access_token} via Google's token endpoint.
+   * ALSO returns the creds that resolved the exchange (brand BYO-app else env) so the caller can
+   * persist them into each per-account secret bundle — the refresh_token is only ever valid
+   * against the client that minted it (BYO refresh bug).
+   */
   private async exchangeCodeForTokens(
     code: string,
     brandId: string,
-  ): Promise<{ refreshToken: string; accessToken: string }> {
+  ): Promise<{
+    refreshToken: string;
+    accessToken: string;
+    clientId: string;
+    clientSecret: string;
+    developerToken?: string;
+  }> {
     const creds = await resolveBrandOAuthAppCreds(this.secretsManager, 'google_ads', brandId, {
       clientId: process.env['GOOGLE_ADS_CLIENT_ID'] ?? '',
       clientSecret: process.env['GOOGLE_ADS_CLIENT_SECRET'] ?? '',
+      ...(process.env['GOOGLE_ADS_DEVELOPER_TOKEN']
+        ? { developerToken: process.env['GOOGLE_ADS_DEVELOPER_TOKEN'] }
+        : {}),
     });
     const callbackUrl = process.env['GOOGLE_ADS_CALLBACK_URL'];
     if (!creds?.clientId || !creds?.clientSecret) {
@@ -238,7 +269,13 @@ export class HandleGoogleAdsOAuthCallbackCommand {
         'Token exchange: refresh_token missing (offline access not granted — re-consent required)',
       );
     }
-    return { refreshToken: data.refresh_token, accessToken: data.access_token ?? '' };
+    return {
+      refreshToken: data.refresh_token,
+      accessToken: data.access_token ?? '',
+      clientId: creds.clientId,
+      clientSecret: creds.clientSecret,
+      ...(creds.developerToken ? { developerToken: creds.developerToken } : {}),
+    };
   }
 
   /**
@@ -246,8 +283,12 @@ export class HandleGoogleAdsOAuthCallbackCommand {
    * Returns an array of customer ids (digits only, e.g. ['1234567890', '9876543210']).
    * Returns empty array on any failure — caller falls back to __default__ instance.
    */
-  private async resolveAllCustomerIds(accessToken: string): Promise<string[]> {
-    const devToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
+  private async resolveAllCustomerIds(
+    accessToken: string,
+    developerToken?: string,
+  ): Promise<string[]> {
+    // Prefer the RESOLVED developer token (brand BYO bundle) — env is the shared-app fallback.
+    const devToken = developerToken ?? process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
     if (!accessToken || !devToken) return [];
     try {
       const response = await fetch(
@@ -282,12 +323,13 @@ export class HandleGoogleAdsOAuthCallbackCommand {
    */
   private async resolveLeafCustomers(
     accessToken: string,
+    developerToken?: string,
   ): Promise<GoogleAdsLeaf[]> {
-    const accessibleCids = await this.resolveAllCustomerIds(accessToken);
+    const accessibleCids = await this.resolveAllCustomerIds(accessToken, developerToken);
     const byLeaf = new Map<string, GoogleAdsLeaf>();
 
     for (const cid of accessibleCids) {
-      const expanded = await this.expandCustomerClients(accessToken, cid);
+      const expanded = await this.expandCustomerClients(accessToken, cid, developerToken);
       if (expanded === null) {
         // Expansion failed — keep the accessible CID itself as a direct leaf (fail-soft; no name).
         if (!byLeaf.has(cid)) byLeaf.set(cid, { customerId: cid, loginCustomerId: null, name: null });
@@ -309,8 +351,10 @@ export class HandleGoogleAdsOAuthCallbackCommand {
   private async expandCustomerClients(
     accessToken: string,
     managerCid: string,
+    developerToken?: string,
   ): Promise<GoogleAdsLeaf[] | null> {
-    const devToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
+    // Prefer the RESOLVED developer token (brand BYO bundle) — env is the shared-app fallback.
+    const devToken = developerToken ?? process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
     if (!accessToken || !devToken) return null;
     const query =
       'SELECT customer_client.id, customer_client.descriptive_name, customer_client.manager, ' +

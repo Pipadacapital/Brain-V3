@@ -26,6 +26,11 @@ import {
   ShopifyCredentialsInvalidError,
 } from '../../modules/connector/sources/storefront/shopify/application/commands/ConnectShopifyWithCredentialsCommand.js';
 import { StorefrontExclusivityError } from '../../modules/connector/sources/storefront/storefront-exclusivity.js';
+import {
+  ConnectMetaWithSystemUserTokenCommand,
+  MetaSystemUserTokenInvalidError,
+  MetaAdAccountAccessError,
+} from '../../modules/connector/sources/advertising/meta/application/commands/ConnectMetaWithSystemUserTokenCommand.js';
 import { DisconnectCommand, ConnectorNotFoundError } from '../../modules/connector/sources/storefront/shopify/application/commands/DisconnectCommand.js';
 import { registerMetaInstallRoute } from '../../modules/connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.js';
 import { registerGoogleAdsInstallRoute } from '../../modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
@@ -81,6 +86,33 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
     webhookOrigin,
   );
 
+  // Meta: generic per-brand system-user-token connect (credential path on the OAuth tile).
+  // The brand pastes a NEVER-EXPIRING system-user token (Meta Business Settings) + optionally
+  // the ad account id — no browser OAuth redirect, no ~60-day token death. Mirrors the wiring
+  // in registerConnectors.ts (setAdAccountId is the same brand-scoped column UPDATE).
+  const connectMetaWithSystemUserToken = new ConnectMetaWithSystemUserTokenCommand(
+    connectorSecretsManager,
+    connectorRepo,
+    syncStatusRepo,
+    emitEvent,
+    async (accBrandId, connectorInstanceId, adAccountId) => {
+      const client = await rawPgPool.connect();
+      try {
+        await beginRlsTxn(client, { correlationId: 'connector:set-ad-account', brandId: accBrandId });
+        await client.query(
+          `UPDATE connector_instance SET ad_account_id = $1 WHERE id = $2 AND brand_id = $3`,
+          [adAccountId, connectorInstanceId, accBrandId],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
   void app.register(async (scope) => {
     scope.addHook('preHandler', sessionPreHandler);
     scope.addHook('preHandler', requireRole('manager'));
@@ -106,6 +138,56 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
         return reply.code(422).send({ request_id: requestId, error: { code: 'CONNECTOR_NOT_AVAILABLE', message: `${def.displayName} is not yet available for connection.` } });
       }
 
+      // ── Meta: system-user token connect (credential dispatch on the OAuth tile) ──
+      // RECOMMENDED path: when the connect body carries an access_token, connect with it
+      // directly (validated via /me + optional ad-account fetch) — the token never expires,
+      // so the connection never dies on the ~60-day OAuth token expiry. No access_token →
+      // fall through to the browser OAuth redirect below (back-compat, BYO-app supported).
+      if (connectorType === 'meta') {
+        const metaCreds = body.credentials ?? {};
+        const systemUserToken = (metaCreds['access_token'] ?? '').trim();
+        if (systemUserToken) {
+          try {
+            const result = await connectMetaWithSystemUserToken.execute({
+              brandId,
+              accessToken: systemUserToken,
+              ...(metaCreds['ad_account_id']?.trim()
+                ? { adAccountId: metaCreds['ad_account_id'].trim() }
+                : {}),
+              idempotencyKey: (req.headers['idempotency-key'] as string | undefined) ?? requestId,
+            });
+            await auditWriter.append({
+              brand_id: brandId,
+              actor_id: auth?.userId ?? null,
+              actor_role: auth?.role ?? 'unknown',
+              action: 'connector.connected',
+              entity_type: 'connector_instance',
+              entity_id: result.connectorInstanceId,
+              // NEVER the token — only the connect metadata (I-S09).
+              payload: {
+                connector_type: 'meta',
+                auth_method: 'system_user_token',
+                ad_account_ids: result.adAccountIds,
+              },
+            });
+            return reply.code(200).send({
+              request_id: requestId,
+              data: {
+                kind: 'credential',
+                connected: true,
+                connector_instance_id: result.connectorInstanceId,
+              },
+            });
+          } catch (err) {
+            if (err instanceof MetaSystemUserTokenInvalidError || err instanceof MetaAdAccountAccessError) {
+              return reply.code(422).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+            }
+            throw err;
+          }
+        }
+        // no access_token → the browser OAuth redirect below handles the connect.
+      }
+
       if (def.connectMethod === 'oauth') {
         const dispatch = getOAuthDispatch(connectorType);
         if (!dispatch) {
@@ -122,6 +204,9 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
             await storeBrandOAuthAppCreds(connectorSecretsManager, provider, brandId, {
               clientId: appCreds['client_id'],
               clientSecret: appCreds['client_secret'],
+              // google_ads BYO-app: the brand's own developer token rides the same app bundle
+              // (resolved at callback + persisted into each per-account bundle for the repull).
+              ...(appCreds['developer_token'] ? { developerToken: appCreds['developer_token'] } : {}),
             });
           }
           const clientId = await resolveBrandOAuthClientId(connectorSecretsManager, provider, brandId);

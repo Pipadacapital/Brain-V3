@@ -29,13 +29,14 @@
  *     (uuidV5FromSpendRow's seed), so a re-read of the same daily row derives the SAME deterministic
  *     event_id → Bronze drops the replay (resume/replay-safe within this lane; see the cross-lane
  *     deviation note in the fetcher header).
- *   - maxBackfillWindowMs = TWO_YEARS_MS — Meta retains ad insights for ~37 months, but Brain's
- *     default historical target is 24 months; the driver clamps a requested window to this so we
- *     never claim more depth than we intend to ingest.
+ *   - maxBackfillWindowMs = THIRTY_SEVEN_MONTHS_MS — Meta retains ad insights for ~37 months
+ *     (the provider maximum, audit-cited); declaring the true platform cap lets a requested
+ *     deep-history backfill reach the full retention window instead of being clamped to 24
+ *     months (resolveBackfillFloor takes min(requested, platform cap) — the DEFAULT target
+ *     stays whatever the caller requests).
  */
 
 import {
-  TWO_YEARS_MS,
   type IngestionManifest,
   type ResourceDescriptor,
 } from '../contracts/IngestionManifest.js';
@@ -50,18 +51,25 @@ export const META_PROVIDER = 'meta' as const;
 const SPEND_LIVE_V1_EVENT_NAME = 'spend.live.v1' as const;
 
 /**
+ * Meta's ad-insights retention: 37 months (the provider maximum). Expressed in the repo's
+ * TWO_YEARS_MS style ((37/12) × 365 days). This is the PLATFORM cap the driver clamps against
+ * — declaring it at the true retention lets a deep-history backfill reach all ~37 months.
+ */
+export const THIRTY_SEVEN_MONTHS_MS = Math.round((37 / 12) * 365) * 24 * 60 * 60 * 1000;
+
+/**
  * Meta daily ad insights — the single Meta REST resource. Date-windowed enumeration; each raw row is
- * one daily insight at a hierarchy level (composite dedup identity). 24-month historical target
- * (Meta retains ~37 months; the driver clamps a requested window to TWO_YEARS_MS).
+ * one daily insight at a hierarchy level (composite dedup identity). Platform depth: 37 months
+ * (Meta's retention maximum — the driver clamps a requested window to it).
  */
 export const META_INSIGHTS_RESOURCE: ResourceDescriptor = {
   name: 'insights',
   kind: 'rest',
   emits: [SPEND_LIVE_V1_EVENT_NAME],
   backfillSupported: true,
-  // Meta retains ad insights ~37 months; Brain targets 24 months (the driver clamps a requested
-  // window to this — we never claim depth beyond our default ingestion target).
-  maxBackfillWindowMs: TWO_YEARS_MS,
+  // Meta retains ad insights for ~37 months — the provider max (audit-cited). Was TWO_YEARS_MS,
+  // which silently clamped a requested deep-history backfill 13 months short of what Meta serves.
+  maxBackfillWindowMs: THIRTY_SEVEN_MONTHS_MS,
   cursorStrategy: 'date_window',
   // CROSS-LANE ID PARITY: the fetcher PRECOMPUTES each record's event_id by calling the live lane's
   // own id fn — uuidV5FromSpendRow(brandId, 'meta', stat_date, level, level_id) (@brain/ad-spend-mapper)

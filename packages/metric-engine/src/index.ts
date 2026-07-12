@@ -98,8 +98,9 @@ export {
 } from './customer-scores-batch.js';
 export type { CustomerScoreEnrichment } from './customer-scores-batch.js';
 // Per-customer order list (Silver order-state fold) — backs the Customer 360 "Orders" sub-tab.
-export { getCustomerOrders } from './customer-orders.js';
-export type { CustomerOrderRow } from './customer-orders.js';
+// getCustomerOrdersPage (AUD-SL-11) = the keyset-paginated variant (opaque cursor, never OFFSET).
+export { getCustomerOrders, getCustomerOrdersPage } from './customer-orders.js';
+export type { CustomerOrderRow, CustomerOrdersPage, CustomerOrdersPageParams } from './customer-orders.js';
 // AI/ML input feature vector (Gold ai_features serving mart) — V4 runtime Silver fold, not a precompute table.
 export { getAiFeatures } from './ai-features.js';
 export type { AiFeaturesResult, AiFeatureRow, AiFeaturesOptions } from './ai-features.js';

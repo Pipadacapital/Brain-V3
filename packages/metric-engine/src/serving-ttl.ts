@@ -55,6 +55,15 @@ export const METRIC_TTL_TIER: Readonly<Record<string, ServingTtlTier>> = {
   orders_timeseries: 'executive',
   order_stats: 'executive',
   orders_list: 'executive',
+  // AUD-IMPL-026: the Bronze operational health endpoints (data-health / tracking-health /
+  // recent-events) full-scan the unprunable collector_events_connect lift view per request —
+  // brand_id/ingested_at/occurred_at are json_extract_scalar computed columns, so Trino gets no
+  // predicate pushdown and the scan cost grows with the forever-retained history. The 5-minute
+  // executive tier bounds that to at most one scan per (brand, params) per 5 min; AUD-IMPL-025's
+  // partition spec on the Bronze table is the longer-term pruning fix.
+  data_health: 'executive',
+  tracking_health: 'executive',
+  recent_events: 'executive',
   // Marketing / acquisition (10m)
   utm_source: 'attribution',
   // Derived insights (15m)

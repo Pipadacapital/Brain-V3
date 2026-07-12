@@ -314,3 +314,16 @@ jobs:
     # as brain_app. Idempotent (CREATE IF NOT EXISTS / guarded DROP) — Forbid + startingDeadline make
     # a missed/retried run safe. ALERT: if any *_pdefault has rows, partition creation has been
     # lagging — page on a non-zero row count (see infra/helm/cronworkflows/README.md → C4 alert).
+  - name: semantic-preagg-refresh
+    schedule: "40 * * * *"         # hourly at :40 — AFTER v4-gold (:25) commits the marts the entity views read
+    command: ["pnpm", "exec", "tsx", "src/jobs/semantic-preagg-refresh.ts"]
+    # AUD-SL-10: MATERIALIZES the semantic-layer pre-aggs. The @brain/semantic-metrics compiler has
+    # always emitted pre-agg DDL for every interactive metric×grain (§1.11.1) and the compiled FAST
+    # views read iceberg.brain_serving.preagg_* — but no job ever built those tables, so interactive
+    # grains silently fell back to base-entity scans (a latency/cost cliff at scale). This cron runs
+    # each pre-agg's ATOMIC Trino rebuild (CREATE OR REPLACE TABLE AS — one Iceberg replace
+    # transaction; readers see old rows until the new snapshot commits). Cross-brand batch build:
+    # brand_id is a GROUPING KEY here; serving reads only ever go through the compiled
+    # ${BRAND_PREDICATE}-guarded mv_metric_* views. Idempotent (re-run = replace again); exits
+    # non-zero if ANY table failed so a partial failure surfaces. Needs TRINO_HOST/TRINO_PORT in the
+    # pod env (core-env secret) — absent → every table errors and the run fails loudly (honest).

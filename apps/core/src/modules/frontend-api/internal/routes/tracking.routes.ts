@@ -13,7 +13,20 @@ import { getTrackingHealth, getRecentEvents } from '../../../analytics/index.js'
 import type { BffDeps } from './_shared.js';
 
 export function registerTrackingRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, rawPool, srPool } = deps;
+  const { bffProtectedPreHandler, rawPool, srPool, servingCache } = deps;
+
+  // AUD-IMPL-026: tracking-health/recent-events full-scan the unprunable Bronze lift view
+  // (collector_events_connect_lifted — every filter column is json_extract_scalar, no pushdown)
+  // on EVERY page load. Front them with the serving Redis cache (executive 5-min tier, ids mapped
+  // in serving-ttl.ts) so at most one Bronze scan per (brand, params) runs per TTL window. Same
+  // closure shape as dashboard.routes.ts; no-op passthrough when the cache is disabled/absent,
+  // and the reader is fail-soft (a cache error falls back to the direct Trino read).
+  const cachedRead = <T>(
+    brandId: string,
+    metricId: string,
+    params: Record<string, unknown>,
+    compute: () => Promise<T>,
+  ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
   // ── Tracking Center endpoints (Phase 1 Track C) ───────────────────────────
   // Stakeholder-visible proof that the pixel works. Bounded reads (D-2 allowed),
@@ -39,7 +52,9 @@ export function registerTrackingRoutes(fastify: FastifyInstance, deps: BffDeps):
       }
 
       try {
-        const result = await getTrackingHealth(auth.brandId, { pool: rawPool, srPool });
+        const result = await cachedRead(auth.brandId, 'tracking_health', {}, () =>
+          getTrackingHealth(auth.brandId!, { pool: rawPool, srPool }),
+        );
 
         return reply.send({ request_id: requestId, data: result });
       } catch {
@@ -89,7 +104,10 @@ export function registerTrackingRoutes(fastify: FastifyInstance, deps: BffDeps):
       const limit = query.limit ? Math.min(parseInt(query.limit, 10), 50) : 20;
 
       try {
-        const result = await getRecentEvents(auth.brandId, limit, { pool: rawPool, srPool });
+        // `limit` is part of the cache key (params hash) — different page sizes never collide.
+        const result = await cachedRead(auth.brandId, 'recent_events', { limit }, () =>
+          getRecentEvents(auth.brandId!, limit, { pool: rawPool, srPool }),
+        );
 
         return reply.send({ request_id: requestId, data: result });
       } catch {

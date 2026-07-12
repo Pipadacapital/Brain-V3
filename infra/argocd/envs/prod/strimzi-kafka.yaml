@@ -88,6 +88,13 @@ metadata:
     # revision ("manifest cache hit", zero helm renders). That is why the AUD-LIVE-5 PVC
     # guard annotations never reached the live KafkaNodePool despite 3 Succeeded syncs.
     argocd.argoproj.io/manifest-generate-paths: /infra/helm/strimzi-kafka
+    # AUD-INFRA-003: with ServerSideApply=true but client-side diff, the
+    # operator-defaulted CR/StatefulSet fields registered as permanent false
+    # OutOfSync. ServerSideDiff (SSA dry-run prediction) absorbs API-server/
+    # operator-injected defaults. (The 3 Kafka data PVCs showing OutOfSync are
+    # a SEPARATE finding — live prune candidates, AUD-INFRA-002 — guarded via
+    # IgnoreExtraneous/Prune=false in the chart, not hidden here.)
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   labels:
     project: brain
     environment: prod

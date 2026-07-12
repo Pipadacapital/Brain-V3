@@ -4,7 +4,11 @@ metadata:
   name: cronworkflows-prod
   namespace: argocd
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/cronworkflows
+    # Repo-root-absolute (leading '/') — a relative value is resolved AGAINST
+    # spec.source.path and silently forward-copies stale cached manifests
+    # (AUD-INFRA-002 root cause, same bug class as strimzi-kafka.yaml). On an
+    # AUTOMATED app a stale manifest cache silently deploys stale crons.
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/cronworkflows
   labels:
     project: brain
     environment: prod
@@ -22,8 +26,18 @@ spec:
     server: https://kubernetes.default.svc
     namespace: argo
   syncPolicy:
+    # AUD-INFRA-006 — RATIFIED EXCEPTION to the prod manual-promotion gate.
+    # WHY automated: the Spark image digest pins in values-prod.yaml are bumped
+    # by the deploy pipeline on every release→master promotion; the medallion
+    # crons (Silver/Gold/maintenance/erasure) must pick the new digest up
+    # hands-off, or every image release needs a human ArgoCD sync that in
+    # practice gets forgotten (Wave-1 relied on this behavior).
+    # WHY NO prune: a bad chart merge must never be able to DELETE prod
+    # CronWorkflows. Removing/renaming a cron therefore leaves the old
+    # CronWorkflow live-but-OutOfSync until an operator runs a reviewed
+    # prune sync:  argocd app sync cronworkflows-prod --prune
+    # All other workload/platform prod apps stay manual-sync by design.
     automated:
-      prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true

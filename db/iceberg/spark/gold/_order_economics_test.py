@@ -169,6 +169,17 @@ check("apportion Σ == total (weighted)", sum(ap2.values()), 1_000)
 apn = apportion_by_share(-89_900, [("skuA", 2), ("skuB", 1)])
 check("apportion negative total: signed Σ == total (exact)", sum(apn.values()), -89_900)
 check("apportion zero-weight lines → equal split", sum(apportion_by_share(90, [("a", 0), ("b", 0), ("c", 0)]).values()), 90)
+# AUD-IMPL-017: a negative weight is a caller bug — must RAISE, never silently equal-split.
+try:
+    apportion_by_share(100, [("a", -1), ("b", 2)])
+    check("apportion negative weight raises ValueError", "no raise", "ValueError")
+except ValueError:
+    check("apportion negative weight raises ValueError", "ValueError", "ValueError")
+# AUD-IMPL-017 tiebreak docstring fix: the deterministic tie-break is (-remainder, INPUT ORDER),
+# not weight. total=2 over weights [1,3]: remainder-numerators tie (2,2) → input order gives the
+# +1 to "a"; a weight-first tiebreak would have produced {"a": 0, "b": 2}.
+check("apportion tiebreak = (-remainder, input order), not weight",
+      apportion_by_share(2, [("a", 1), ("b", 3)]), {"a": 1, "b": 1})
 
 # ── is_new_customer per order (C.5.5) ────────────────────────────────────────────────────────────
 print("== is_new_customer per order (C.5.5) ==")

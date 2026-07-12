@@ -36,6 +36,12 @@ kafka:
     # streaming Karpenter pool — its WhenEmpty consolidation NEVER bin-packs live
     # brokers off a node, unlike the batch/trino pools' WhenEmptyOrUnderutilized.
     # Strimzi PodTemplate has no nodeSelector — required nodeAffinity is the contract.
+    # 2026-07-12 INCIDENT: brokers additionally pinned to ON-DEMAND capacity.
+    # Spot reclaims churned all 3 brokers through 3 node generations in ~40 min
+    # (repeated quorum loss; ap-south-1a t4g spot is volatile). Consumers/Connect
+    # stay on spot — only the 3 broker nodes pay on-demand (~+$100/mo vs the
+    # repeated-outage alternative). Karpenter provisions on-demand nodes for
+    # pods that REQUIRE karpenter.sh/capacity-type=on-demand.
     affinity:
       nodeAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
@@ -44,6 +50,9 @@ kafka:
                 - key: brain.platform/pool
                   operator: In
                   values: ["streaming"]
+                - key: karpenter.sh/capacity-type
+                  operator: In
+                  values: ["on-demand"]
 
   listeners:
     plain:

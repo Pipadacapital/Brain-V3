@@ -23,8 +23,24 @@
  */
 import type { BrainAssetRuntime } from './runtime.js';
 
+/**
+ * AUD-IMPL-004 (types-only): the loose structural shape of a DOM element exactly as these EXPORTED
+ * helpers probe it. They run against real browser elements but are written fence-everything (any
+ * property may be absent on exotic/mocked nodes), so the type mirrors that honesty instead of `any`
+ * (which disabled checking for every caller) or lib.dom `Element` (whose full surface the ES5-ish
+ * bodies never assume). Annotations only — the emitted JS is unchanged (golden parity holds).
+ */
+export interface AutodetectElementLike {
+  tagName?: string;
+  type?: string;
+  form?: AutodetectElementLike | null;
+  getAttribute?: (name: string) => string | null;
+  closest?: (selector: string) => AutodetectElementLike | null;
+  querySelector?: (selector: string) => unknown;
+}
+
 /** Classify an element as an auto-detect candidate: 'email' | 'tel' | null. */
-export function autodetectKind(el: any): string | null {
+export function autodetectKind(el: AutodetectElementLike | null | undefined): string | null {
   try {
     if (!el || !el.tagName || ('' + el.tagName).toLowerCase() !== 'input') return null;
     var type = ('' + (el.type || (el.getAttribute && el.getAttribute('type')) || '')).toLowerCase();
@@ -38,7 +54,7 @@ export function autodetectKind(el: any): string | null {
 }
 
 /** The spec selector rule — true ⇔ el sits in a password-adjacent form (NEVER capture). Fail-closed. */
-export function isPasswordAdjacent(el: any): boolean {
+export function isPasswordAdjacent(el: AutodetectElementLike): boolean {
   try {
     var f = el.form || (el.closest && el.closest('form'));
     if (!f) return false; // form-less input: nothing password-adjacent to it

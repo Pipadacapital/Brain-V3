@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:c73430ce1d3f85272fad03dd587413d816f3f8b870030a4125bd7125f5fa02d4"
+  digest: "sha256:59a898aed251531b99859f386126b963863f6dad58210e0af7d03984ab6639db"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:55d0b9aac81a01bdfd2f9de121c396e1ce7eea1d8612d479f9c50d2286572ec5"
+  digest: "sha256:1f646f60bfdff649b4d6b9d5bd9a9f48005edf79991d2ddee77a779e34ef90e4"
 # spark image — bronze-maintenance cron + reused by the V4 Spark silver/gold/mv-refresh crons
 # (.sparkV4.image — CI promotes both digests build-once from staging). Bronze LANDING is the
 # kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
@@ -40,8 +40,8 @@ sparkV4:
   # docs/ops/spark-on-k8s-migration.md §1 (brain_spark_workflow_duration_seconds).
   driverMemory: "6g"
   resources:
-    requests: { cpu: "2", memory: 6Gi }
-    limits: { cpu: "3", memory: 8Gi }
+    requests: {cpu: "2", memory: 6Gi}
+    limits: {cpu: "3", memory: 8Gi}
 envSecretName: core-env
 serviceAccount:
   name: brain-jobs

@@ -17,12 +17,19 @@
  *   validates, the request is accepted. This ensures zero event loss during rotation.
  *
  * payloadMap:
- *   payment.captured → map-table upsert (MB-1 HARD prerequisite, throwOnSideEffectError=true).
- *   settlement.processed / refund.created / payment.failed → emit to live lane (existing settlement lane).
- *   refund.processed / refund.failed → emit to live lane with entity_type='refund'.
- *   payment.dispute.created / payment.dispute.under_review / payment.dispute.won →
+ *   payment.captured → map-table upsert (MB-1 HARD prerequisite, throwOnSideEffectError=true)
+ *     AND emit to live lane with entity_type='payment_captured' (fee/tax coverage). The previous
+ *     shape emitted eventId = the RAW Razorpay evt_XXX id with empty properties — the pipeline's
+ *     CollectorEventV1Schema (event_id z.string().uuid()) rejected it, so every payment.captured
+ *     500'd after the upsert. Now a uuid-shaped id + mapped properties land it correctly.
+ *   payment.failed → emit to live lane with entity_type='payment_failed' (was mis-routed through
+ *     the settlement branch reading payload.settlement.entity — payment.failed carries
+ *     payload.payment.entity, so every one was silently skipped).
+ *   settlement.processed → emit to live lane (existing settlement lane).
+ *   refund.created / refund.processed / refund.failed → emit to live lane with entity_type='refund'
+ *     (refund.created was also mis-routed through the settlement branch and silently skipped).
+ *   payment.dispute.* (created / under_review / action_required / won / lost / closed) →
  *     emit to live lane with entity_type='dispute'; dispute.lost is a REVENUE REVERSAL (dispute_direction=debit).
- *   payment.dispute.lost → emit to live lane with entity_type='dispute', dispute_direction='debit' (REVENUE REVERSAL).
  *   order.paid → emit to live lane with entity_type='order_paid'.
  *   payment.authorized → emit to live lane with entity_type='payment_authorized'.
  *   Other events → fast-ack (skip=true).
@@ -44,6 +51,7 @@ import {
   mapDisputeWebhookToEvent,
   mapOrderPaidWebhookToEvent,
   mapPaymentAuthorizedToEvent,
+  mapPaymentLifecycleToEvent,
   uuidV5FromRazorpayWebhook,
   uuidV5FromRazorpayWebhookWithType,
   SETTLEMENT_LIVE_V1_EVENT_NAME,
@@ -54,6 +62,7 @@ import {
   type DisputeLifecycleType,
   type RazorpayOrderEntity,
   type RazorpayPaymentAuthorizedEntity,
+  type RazorpayPaymentEntity,
 } from '@brain/razorpay-mapper';
 import { PgRazorpayOrderMapRepository } from '../../sources/payment/razorpay/infrastructure/repositories/PgRazorpayOrderMapRepository.js';
 
@@ -81,19 +90,29 @@ interface RazorpayWebhookEnvelope {
   };
 }
 
-// Settled events that route through the settlement mapper (existing behaviour).
+// Settled events that route through the settlement mapper (payload.settlement.entity).
+// refund.created / payment.failed were WRONGLY listed here — they carry payload.refund.entity /
+// payload.payment.entity, so the settlement read always came up empty and they were silently
+// skipped. They now route through the refund / payment-lifecycle branches below.
 const LEGACY_SETTLEMENT_EVENTS = new Set([
   'settlement.processed',
-  'refund.created',
-  'payment.failed',
 ]);
 
-// Dispute lifecycle events keyed by Razorpay event name.
+// Refund lifecycle events → payload.refund.entity via mapRefundWebhookToEvent.
+const REFUND_EVENTS = new Set([
+  'refund.created',
+  'refund.processed',
+  'refund.failed',
+]);
+
+// Dispute lifecycle events keyed by Razorpay event name (full payment.dispute.* coverage).
 const DISPUTE_LIFECYCLE_MAP: Record<string, DisputeLifecycleType> = {
-  'payment.dispute.created':      'dispute.created',
-  'payment.dispute.under_review': 'dispute.under_review',
-  'payment.dispute.won':          'dispute.won',
-  'payment.dispute.lost':         'dispute.lost',
+  'payment.dispute.created':         'dispute.created',
+  'payment.dispute.under_review':    'dispute.under_review',
+  'payment.dispute.action_required': 'dispute.action_required',
+  'payment.dispute.won':             'dispute.won',
+  'payment.dispute.lost':            'dispute.lost',
+  'payment.dispute.closed':          'dispute.closed',
 };
 
 export class RazorpayWebhookStrategy implements IWebhookStrategy {
@@ -180,17 +199,23 @@ export class RazorpayWebhookStrategy implements IWebhookStrategy {
       throw err;
     }
 
-    // ── payment.captured → map-table upsert (MB-1 HARD prerequisite) ─────────
+    // ── payment.captured → map-table upsert (MB-1 HARD prerequisite) + live-lane emit ──
+    // The emit uses a uuid-shaped event_id (the raw evt_XXX id failed the pipeline's
+    // CollectorEventV1Schema uuid check → every payment.captured 500'd post-upsert) and carries
+    // the mapped fee/tax payment properties (entity_type='payment_captured').
     if (eventName === 'payment.captured') {
       const paymentEntity = envelope.payload?.payment?.entity;
+      const mapped = paymentEntity
+        ? mapPaymentLifecycleToEvent(paymentEntity as RazorpayPaymentEntity, 'payment_captured', brandId, saltHex)
+        : null;
       return {
-        eventId,
-        eventName: 'payment.captured',
-        occurredAt: new Date().toISOString(),
-        properties: {},
+        eventId: mapped ? uuidV5FromRazorpayWebhookWithType(brandId, eventId, 'payment.captured') : randomUUID(),
+        eventName: SETTLEMENT_LIVE_V1_EVENT_NAME,
+        occurredAt: mapped ? mapped.occurred_at : new Date().toISOString(),
+        properties: mapped ? (mapped.properties as unknown as Record<string, unknown>) : {},
         ageCheckTimestampSeconds: createdAt,
         dedupKey: eventId,
-        skip: false,
+        skip: !mapped,
         sideEffect: paymentEntity
           ? async (_brandId: string, rawPgPool: pg.Pool, _reqId: string): Promise<void> => {
               const mapRow = mapPaymentWebhookToMapRow(_brandId, paymentEntity);
@@ -205,6 +230,35 @@ export class RazorpayWebhookStrategy implements IWebhookStrategy {
             }
           : undefined,
         throwOnSideEffectError: true, // MB-1 HARD prerequisite — 500 so Razorpay retries
+      };
+    }
+
+    // ── payment.failed → settlement.live.v1 lane with entity_type='payment_failed' ─
+    if (eventName === 'payment.failed') {
+      const paymentEntity = envelope.payload?.payment?.entity;
+      if (!paymentEntity) {
+        return {
+          eventId: randomUUID(),
+          eventName: SETTLEMENT_LIVE_V1_EVENT_NAME,
+          occurredAt: new Date().toISOString(),
+          properties: {},
+          ageCheckTimestampSeconds: createdAt,
+          dedupKey: eventId,
+          skip: true,
+        };
+      }
+
+      const mapped = mapPaymentLifecycleToEvent(paymentEntity as RazorpayPaymentEntity, 'payment_failed', brandId, saltHex);
+      const bronzeEventId = uuidV5FromRazorpayWebhookWithType(brandId, eventId, 'payment.failed');
+
+      return {
+        eventId: bronzeEventId,
+        eventName: SETTLEMENT_LIVE_V1_EVENT_NAME,
+        occurredAt: mapped.occurred_at,
+        properties: mapped.properties as unknown as Record<string, unknown>,
+        ageCheckTimestampSeconds: createdAt,
+        dedupKey: eventId,
+        skip: false,
       };
     }
 
@@ -237,8 +291,8 @@ export class RazorpayWebhookStrategy implements IWebhookStrategy {
       };
     }
 
-    // ── refund.processed / refund.failed → settlement.live.v1 lane with entity_type='refund' ─
-    if (eventName === 'refund.processed' || eventName === 'refund.failed') {
+    // ── refund.created / refund.processed / refund.failed → settlement.live.v1, entity_type='refund' ─
+    if (REFUND_EVENTS.has(eventName)) {
       const refundEntity = envelope.payload?.refund?.entity;
       if (!refundEntity) {
         return {

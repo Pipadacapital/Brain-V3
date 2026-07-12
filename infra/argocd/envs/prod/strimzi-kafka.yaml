@@ -34,7 +34,12 @@ spec:
     chart: strimzi-kafka-operator
     # Pin the operator release; keep in lockstep with the Kafka broker version (3.8.1). Verify the
     # exact tag that ships Kafka 3.8.1 before promote (`helm search repo strimzi/strimzi-kafka-operator`).
-    targetRevision: 0.45.0
+    # 0.45.2: MINIMUM version whose fabric8 client parses the Kubernetes 1.33
+    # /version response (1.33 added emulationMajor/Minor; 0.45.0's client threw
+    # UnrecognizedPropertyException at startup → operator CrashLoop after the
+    # EKS 1.33 upgrade, 2026-07-12). Patch release, same CRD API — live-verified
+    # reconciling on brain-prod.
+    targetRevision: 0.45.2
     helm:
       releaseName: strimzi-operator
       values: |

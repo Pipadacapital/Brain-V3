@@ -160,7 +160,11 @@ sparkV4:
     pullPolicy: IfNotPresent
   silverSchedule: "5 * * * *"     # hourly :05 — order_state spine + the rest of Silver (after identity :02)
   goldSchedule: "25 * * * *"      # hourly :25 — revenue → attribution → customer/gap/exec (after stitch :15/:16)
-  activeDeadlineSeconds: 2400     # 40 min per Silver/Gold build
+  # 2026-07-12: 2400→4500. With real data BOTH tiers outgrew their caps across
+  # retries (v4-silver 30-min-era deadline kills; v4-gold Error 'retry exceeded
+  # workflow deadline' at 2400 twice on first-fill days). 75 min covers the
+  # worst observed full pass with headroom; Forbid still serializes runs.
+  activeDeadlineSeconds: 4500
   driverMemory: "3g"              # < resources.limits.memory (non-heap overhead margin) — same as sparkBronze
   sparkMaxRetries: "1"            # bounded in-pod retry per spark-submit (idempotent MERGE); + Argo backoffLimit
   # Non-secret config. Secrets (ICEBERG_REST_URI/Glue, AWS_*, NEO4J_*) come from envSecretName.

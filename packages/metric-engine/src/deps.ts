@@ -103,12 +103,15 @@ export async function withBrandTxn<T>(
   const brandGuc = brandGucLiteral(brandId);
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    // Drop superuser/owner privilege to the NOBYPASSRLS app role so RLS is enforced
-    // for the duration of this transaction (audit R-01). Resets on COMMIT/ROLLBACK.
-    await client.query(`SET LOCAL ROLE ${appRole}`);
-    // GUC: transaction-scoped (SET LOCAL, UUID-validated literal) — resets on COMMIT/ROLLBACK.
-    await client.query(`SET LOCAL app.current_brand_id = '${brandGuc}'`);
+    // Open the txn, drop to the NOBYPASSRLS app role (audit R-01), and set the brand GUC in ONE
+    // round-trip — exactly like @brain/db's executeInRlsTxn. This matters under pgbouncer transaction
+    // pooling: sending BEGIN/SET LOCAL ROLE/SET LOCAL guc as SEPARATE queries let the GUC land on a
+    // different server backend than the business query (RLS then reads an empty app.current_brand_id
+    // → `''::uuid` → 22P02, 500-ing contribution-margin / orders-FX). Batching them guarantees the
+    // GUC and the query share the pinned backend. SET LOCAL is UUID-validated literal (injection-safe).
+    await client.query(
+      `BEGIN; SET LOCAL ROLE ${appRole}; SET LOCAL app.current_brand_id = '${brandGuc}'`,
+    );
     const result = await fn(client);
     await client.query('COMMIT');
     return result;

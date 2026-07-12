@@ -13,9 +13,11 @@
  *  - Honest-empty = z.discriminatedUnion('state', [...]); `no_data` carries NO has_data fields —
  *    a NEW endpoint ships and answers honest-empty when no journey exists.
  *  - Schemas are NOT `.strict()` (§7): core may ADD a benign field without breaking a web read.
- *  - matched_via / journey_version are NULLABLE: matched_via is blocked on the B.1 stitch-provenance
- *    column (delta-plan), so it is honestly null until stitch v2 lands; journey_version is the
- *    DERIVED journey-level version (AMD-11 — max data_version), null on the pre-ledger cache path.
+ *  - matched_via / journey_version are NULLABLE: matched_via (AUD-JE-34/35) is the B.4 coarse
+ *    stitch-provenance basis ('order' | 'deterministic' | 'anonymous') — always populated on the
+ *    Trino ledger/trace paths, honestly null ONLY on the A.4 timeline cache hot path (the cache
+ *    member carries no provenance); journey_version is the DERIVED journey-level version
+ *    (AMD-11 — max data_version), null on the pre-ledger cache path.
  */
 import { z } from 'zod';
 import { MinorUnitsSchema, DataSourceSchema } from './_money.js';
@@ -32,7 +34,10 @@ export const CustomerJourneyItemSchema = z.object({
   campaign: z.string().nullable(),
   url_path: z.string().nullable(),
   session_id: z.string().nullable(),
-  /** Stitch provenance — NULL until B.1 matched_via column lands (honest). */
+  /**
+   * Stitch provenance (AUD-JE-34) — the B.4 coarse basis ('order' | 'deterministic' | 'anonymous')
+   * on the Trino ledger path; NULL only on the A.4 cache hot path (no provenance in the cache member).
+   */
   matched_via: z.string().nullable(),
   /** Derived journey-level version (AMD-11 — max data_version); null on the cache path. */
   journey_version: z.number().nullable(),
@@ -67,7 +72,10 @@ export const TraceTouchSchema = z.object({
   event_type: z.string(),
   utm_campaign: z.string().nullable(),
   landing_path: z.string().nullable(),
-  /** Stitch provenance — NULL until B.1 matched_via lands (honest). */
+  /**
+   * Stitch provenance (AUD-JE-35) — per-touch coarse basis: 'deterministic' (the touch carries a
+   * stitched_brain_id) | 'anonymous'. Kept nullable for wire back-compat with pre-provenance cores.
+   */
   matched_via: z.string().nullable(),
 });
 export type TraceTouch = z.infer<typeof TraceTouchSchema>;

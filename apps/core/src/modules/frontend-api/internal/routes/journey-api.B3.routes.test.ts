@@ -98,7 +98,7 @@ describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
 
   it('falls back to the Trino ledger when the cache is cold (source=trino) + sets X-Journey-Version', async () => {
     const app = await buildApp({
-      srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(2, { data_version: 3 }), ledgerRow(1)] : [])),
+      srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(2, { data_version: 3, brain_id_asof: BRAIN }), ledgerRow(1)] : [])),
       touchpointCacheReader: fakeTpCache([]), // cold
     });
     const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey?limit=10` });
@@ -107,6 +107,23 @@ describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
     expect(data.source).toBe('trino');
     expect(data.journey_version).toBe(3); // max data_version (AMD-11)
     expect(res.headers['x-journey-version']).toBe('3');
+    // AUD-JE-34 — the ledger path serializes the B.4 coarse matched_via basis (never null):
+    // brain_id_asof present → 'deterministic'; absent (pre-identification) → 'anonymous'.
+    expect(data.items[0].matched_via).toBe('deterministic');
+    expect(data.items[1].matched_via).toBe('anonymous');
+    await app.close();
+  });
+
+  it('serializes matched_via="order" on composite transaction rows (AUD-JE-34)', async () => {
+    const app = await buildApp({
+      srPool: fakeSrPool((sql) =>
+        sql.includes('mv_journey_events_current')
+          ? [ledgerRow(1, { is_composite: true, event_type: 'order.placed', revenue_minor: '129900', currency_code: 'INR' })]
+          : [],
+      ),
+    });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey` });
+    expect(res.json().data.items[0].matched_via).toBe('order');
     await app.close();
   });
 
@@ -161,6 +178,41 @@ describe('B3 (2) GET /api/v1/journeys/trace', () => {
     const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/trace?order_id=ord-1` });
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toEqual({ state: 'no_data' });
+    await app.close();
+  });
+
+  it('serializes per-touch matched_via on the trace touches (AUD-JE-35)', async () => {
+    // Fake PG pool for the order→anon stitch-map read (withBrandTxn: BEGIN/SET ROLE/GUC/COMMIT no-ops).
+    const rawPool = {
+      connect: async () => ({
+        query: async (sql: string) =>
+          typeof sql === 'string' && sql.includes('stitched_anon_id') && sql.includes('SELECT')
+            ? { rows: [{ stitched_anon_id: 'anon-x' }] }
+            : { rows: [] },
+        release: () => undefined,
+      }),
+    };
+    const timelineRow = (seq: number, stitched: string | null) => ({
+      brain_anon_id: 'anon-x', touch_seq: seq, is_first_touch: seq === 1, is_last_touch: seq === 2,
+      occurred_at: `2026-07-01 0${seq}:00:00 UTC`, channel: 'referral',
+      utm_source: null, utm_medium: null, utm_campaign: null, utm_term: null, utm_content: null,
+      fbclid: null, gclid: null, ttclid: null, referrer_host: null, landing_path: '/',
+      stitched_brain_id: stitched, event_type: 'page.viewed',
+    });
+    const app = await buildApp({
+      srPool: fakeSrPool((sql) =>
+        sql.includes('mv_gold_journey_timeline') ? [timelineRow(1, null), timelineRow(2, BRAIN)] : [],
+      ),
+      rawPool: rawPool as never,
+    });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/trace?order_id=ord-1` });
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data;
+    expect(data.state).toBe('has_data');
+    expect(data.brain_id).toBe(BRAIN);
+    // Un-stitched touch → 'anonymous'; stitched touch → 'deterministic' (never null).
+    expect(data.touches[0].matched_via).toBe('anonymous');
+    expect(data.touches[1].matched_via).toBe('deterministic');
     await app.close();
   });
 });

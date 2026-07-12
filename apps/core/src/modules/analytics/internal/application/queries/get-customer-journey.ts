@@ -13,10 +13,13 @@
  * cache is the hot recent window, the ledger is the durable full history. An invalid/foreign
  * cursor decodes to null → first page (a read projection never hard-fails on a cursor).
  *
- * matched_via is honestly NULL (blocked on the B.1 stitch-provenance column, delta-plan);
- * journey_version is the DERIVED journey-level version (AMD-11 = max data_version) — present on
- * the ledger path, null on the pre-ledger cache path. brand_id is from the SESSION (D-1), NEVER
- * the path — the {brain_id} path segment only scopes WITHIN the caller's brand.
+ * matched_via (AUD-JE-34) is the B.4 coarse stitch-provenance basis on the ledger path
+ * ('order' | 'deterministic' | 'anonymous' — derived by the metric-engine journey-events read,
+ * never null there); it stays honestly NULL on the A.4 cache path only (the hot-cache member
+ * carries no provenance). journey_version is the DERIVED journey-level version (AMD-11 = max
+ * data_version) — present on the ledger path, null on the pre-ledger cache path. brand_id is from
+ * the SESSION (D-1), NEVER the path — the {brain_id} path segment only scopes WITHIN the caller's
+ * brand.
  *
  * @see packages/metric-engine/src/journey-touchpoint-cache.ts (cache read)
  * @see packages/metric-engine/src/journey-events.ts (Trino ledger fallback)
@@ -100,7 +103,7 @@ export async function getCustomerJourney(
           campaign: null, // the A.4 member carries no campaign (behavioral hot cache)
           url_path: t.url_path,
           session_id: t.session_id,
-          matched_via: null, // B.1 gap — honest null until stitch-provenance lands
+          matched_via: null, // the A.4 hot-cache member carries no stitch provenance (honest null)
           journey_version: null, // the cache predates the versioned ledger
         }));
         return {
@@ -140,7 +143,9 @@ export async function getCustomerJourney(
       campaign: e.campaign,
       url_path: null, // the ledger mart carries no url_path column (honest null)
       session_id: null, // the ledger metric read does not project session_key (honest null)
-      matched_via: null, // B.1 gap — honest null until stitch-provenance lands
+      // AUD-JE-34 — B.4 coarse stitch-provenance basis ('order'|'deterministic'|'anonymous');
+      // never null on the ledger path (same serialization as the B.4 replay endpoints).
+      matched_via: e.matchedVia,
       journey_version: e.dataVersion,
     };
   });

@@ -478,8 +478,9 @@ function resolveResourceChunkBudget(): number {
  *
  * Called per-connector from the woocommerce-orders-repull run() (which the ingest-scheduler dispatches
  * every connected tick AND the sync-now claimer dispatches on demand). For each resource it composes
- * the SAME generic `runResumableBackfill` driver the CLI path uses — initial 2-year window (the
- * manifest's maxBackfillWindowMs = TWO_YEARS_MS), cursor-paginated, RESUMABLE/chunked (a bounded page
+ * the SAME generic `runResumableBackfill` driver the CLI path uses — initial window = the manifest's
+ * maxBackfillWindowMs (woo: wooMaxBackfillWindowMs(), 5-year policy default), cursor-paginated,
+ * RESUMABLE/chunked (a bounded page
  * budget per tick), strictly DEDUPED + NO-LOSS, emitting to the BACKFILL lane (gate-off; Bronze
  * server-trusts the brand_id). A 'completed' resource is an instant no-op on later ticks.
  *
@@ -589,13 +590,21 @@ function resolveIngestionBackfillChunkBudget(): number {
  * brand_id is the caller's (from the connector enumeration / job row) — NEVER an API payload (MT-1).
  * Tokens/secrets are NEVER logged (I-S09). Self-contained pool + producer (own connections), released
  * in finally. A no-queued-job is a clean no-op (returns without side effects).
+ *
+ * WOOCOMMERCE (uniform "Pull historical data" UX): the queue drains ONLY the NON-ORDER resources
+ * (WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES) — orders flow on the live lane via
+ * woocommerce-orders-repull (uuidV5FromOrderLive ids, full manifest-window depth); driving them here
+ * too would mint DIFFERENT deterministic event_ids and double-count in Bronze. The per-resource
+ * cursors are SHARED with the scheduled per-tick lane (same jobs.resource_backfill_state rows), so a
+ * queued job and the scheduler never duplicate work — the button simply drives the same resumable
+ * walk to completion faster.
  */
 export async function runIngestionBackfillFromQueue(
   connectorInstanceId: string,
   provider: SupportedProvider,
   brandId: string,
 ): Promise<void> {
-  if (!isIngestionProvider(provider)) {
+  if (!isIngestionProvider(provider) && provider !== 'woocommerce') {
     throw new Error(`[ingestion-backfill] runIngestionBackfillFromQueue: provider "${provider}" is not an ingestion-framework provider`);
   }
   const jobRepo = new PgBackfillJobRepository(DB_URL);
@@ -628,9 +637,13 @@ export async function runIngestionBackfillFromQueue(
       return;
     }
 
-    // Drive every backfill-supported (rest) resource the manifest declares.
+    // Drive every backfill-supported (rest) resource the manifest declares — EXCEPT woocommerce
+    // orders (live-lane owned; different deterministic id ⇒ Bronze double-count — see fn docstring).
     const manifest = manifestFor(provider);
-    const resources = backfillableResources(manifest).map((r) => r.name);
+    const resources =
+      provider === 'woocommerce'
+        ? [...WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES]
+        : backfillableResources(manifest).map((r) => r.name);
     if (resources.length === 0) {
       // Misconfiguration guard: a provider with NO backfill-supported resources would otherwise
       // requeue forever. Finalize 'completed' (nothing to do) so the job terminates loudly.

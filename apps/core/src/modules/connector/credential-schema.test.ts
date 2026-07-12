@@ -33,9 +33,33 @@ describe('planCredentialConnect — razorpay', () => {
     expect(plan.shopDomain).toBe('');
     expect(plan.missingRequired).toEqual([]);
   });
-  it('webhook_secret is REQUIRED (missing → reported)', () => {
+  it('webhook_secret is OPTIONAL (blank → not reported missing; Brain mints it at connect)', () => {
     const plan = planFor('razorpay', { ...values, webhook_secret: '' });
-    expect(plan.missingRequired).toContain('webhook_secret');
+    expect(plan.missingRequired).toEqual([]);
+    expect(plan.secretBundle).toEqual({ key_id: 'rzp_k', key_secret: 'rzp_s' });
+  });
+  it('blank webhook_secret is minted by provisionGeneratedSecrets (GoKwik SR-2 mechanism)', () => {
+    const def = getDefinition('razorpay')!;
+    expect(def.credentialConnect!.generatedSecretFields).toEqual(['webhook_secret']);
+    const plan = planFor('razorpay', { ...values, webhook_secret: '' });
+    const { bundle, generated } = provisionGeneratedSecrets(
+      plan.secretBundle,
+      def.credentialConnect!,
+      () => 'rzp-minted-1',
+    );
+    expect(generated).toEqual({ webhook_secret: 'rzp-minted-1' });
+    expect(bundle).toEqual({ key_id: 'rzp_k', key_secret: 'rzp_s', webhook_secret: 'rzp-minted-1' });
+  });
+  it('user-supplied webhook_secret is never regenerated', () => {
+    const def = getDefinition('razorpay')!;
+    const plan = planFor('razorpay', values);
+    const { generated, bundle } = provisionGeneratedSecrets(
+      plan.secretBundle,
+      def.credentialConnect!,
+      () => 'rzp-minted-never',
+    );
+    expect(generated).toEqual({});
+    expect(bundle['webhook_secret']).toBe('whsec');
   });
 });
 
@@ -201,9 +225,10 @@ describe('provisionGeneratedSecrets — connect-time minted secrets (SR-2)', () 
     expect(bundle['webhook_secret']).toBe('user-set');
   });
 
-  it('no-ops for a spec without generatedSecretFields (razorpay)', () => {
-    const rzp = getDefinition('razorpay')!.credentialConnect!;
-    const { bundle, generated } = provisionGeneratedSecrets({ key_id: 'k' }, rzp, gen);
+  it('no-ops for a spec without generatedSecretFields', () => {
+    // Razorpay now mints webhook_secret too, so pin the no-op path with an inline spec.
+    const noGenSpec = { accountKeyField: 'acct', instanceColumn: 'acct_col' };
+    const { bundle, generated } = provisionGeneratedSecrets({ key_id: 'k' }, noGenSpec, gen);
     expect(generated).toEqual({});
     expect(bundle).toEqual({ key_id: 'k' });
   });

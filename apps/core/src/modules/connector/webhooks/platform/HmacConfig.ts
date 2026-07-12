@@ -111,6 +111,11 @@ export const WOOCOMMERCE_HMAC_CONFIG = new HmacConfig({
  * Algorithm: hex(HMAC-SHA256(rawBody, webhookSecret)) — the reversible Razorpay-scheme default.
  * Header: env SHOPFLO_SIG_HEADER (default 'x-shopflo-signature').
  * Verified byte-compatible with ShopfloHmac.validateWebhook() + signatureHeaderName().
+ *
+ * POSTURE NOTE: whether a MISSING signature header is fatal is decided per instance by
+ * ShopfloWebhookStrategy (verify-if-present when the bundle's webhook_secret_origin === 'minted' —
+ * the merchant may be unable to set Brain's minted secret in Shopflo's UI; strict otherwise, and
+ * SHOPFLO_REQUIRE_SIGNATURE=1 forces strict). A PRESENT signature is always strictly verified here.
  */
 export function buildShopfloHmacConfig(): HmacConfig {
   const configured = process.env['SHOPFLO_SIG_HEADER'];

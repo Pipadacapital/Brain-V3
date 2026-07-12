@@ -25,7 +25,7 @@ import { resolveBrandOAuthAppCreds } from '../../oauth-app-creds.js';
 import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.js';
 import { ShopfloWebhookStrategy } from '../strategies/ShopfloWebhookStrategy.js';
 import { WooCommerceWebhookStrategy } from '../strategies/WooCommerceWebhookStrategy.js';
-import { ShiprocketWebhookStrategy } from '../strategies/ShiprocketWebhookStrategy.js';
+import { ShiprocketWebhookStrategy, timingSafeTokenEqual } from '../strategies/ShiprocketWebhookStrategy.js';
 import { GokwikWebhookStrategy } from '../strategies/GokwikWebhookStrategy.js';
 
 export interface WebhookRegistrationDeps {
@@ -192,13 +192,42 @@ export function registerAllWebhookRoutes(
 
   // ── Shiprocket: POST /api/v1/webhooks/shiprocket ─────────────────────────
   // Verification: X-Api-Key shared-token compare (token scheme, not HMAC).
-  // Lookup key: x-shiprocket-channel-id header (fallback: x-shiprocket-account-id).
+  // Lookup key: x-shiprocket-channel-id header (fallback: x-shiprocket-account-id), and — when
+  //   the merchant's webhook config can't set custom headers — a TOKEN FALLBACK that resolves
+  //   the tenant from the Brain-minted X-Api-Key itself (see resolver below).
   // Resolver fn: resolve_shiprocket_connector_by_channel (SECURITY DEFINER).
   // FAIL-CLOSED: if webhook_secret is unset in the connector secret bundle,
   //   verification fails — surfaces 'not connected / needs credentials'. No spoofed events.
   {
+    // TENANT-ROUTING TOKEN FALLBACK (header-less deliveries): enumerate connected Shiprocket
+    // connectors (list_shiprocket_connectors_for_webhook, SECURITY DEFINER — migration 0128) and
+    // timing-safe-compare the presented token against each bundle's webhook_secret. The token is
+    // Brain-MINTED (SR-2, high-entropy, unique per connector) so a match uniquely identifies the
+    // tenant; lookup_key = COALESCE(channel_id, account_key), the same value
+    // resolve_shiprocket_connector_by_channel resolves — Step-3 brand resolution works unchanged.
+    // Fail-closed: any error / no match → null → LOOKUP_KEY_MISSING (no spoofed events). The
+    // Shiprocket connector count per deployment is small, so the linear scan is bounded; the
+    // strategy only invokes this when BOTH routing headers are absent.
+    const resolveShiprocketLookupKeyByToken = async (receivedToken: string): Promise<string | null> => {
+      if (!receivedToken) return null;
+      try {
+        const result = await deps.rawPgPool.query<{ secret_ref: string; lookup_key: string | null }>(
+          `SELECT secret_ref, lookup_key FROM list_shiprocket_connectors_for_webhook()`,
+        );
+        for (const row of result.rows) {
+          if (!row.lookup_key) continue;
+          const creds = await deps.secretsManager.getSecret(row.secret_ref).catch(() => null);
+          const stored = creds?.['webhook_secret'] ?? '';
+          if (stored && timingSafeTokenEqual(receivedToken, stored)) return row.lookup_key;
+        }
+      } catch {
+        /* fail-closed — the strategy throws LOOKUP_KEY_MISSING */
+      }
+      return null;
+    };
+
     const pipeline = new WebhookPipeline(
-      new ShiprocketWebhookStrategy(),
+      new ShiprocketWebhookStrategy(resolveShiprocketLookupKeyByToken),
       {
         path: '/api/v1/webhooks/shiprocket',
         resolverFn: 'resolve_shiprocket_connector_by_channel',

@@ -84,6 +84,71 @@ describe('ShiprocketShipmentClient — live HTTP mode', () => {
     expect(page.items[0]!.order_id).not.toBe('SLW67226');
   });
 
+  it('falls back to the shipments[] sub-array for awb/courier/pincode/status (docs-verified shape)', async () => {
+    // DOCS-VERIFIED: on the real orders-list payload, shipment details ride as a `shipments`
+    // sub-array on each order — the previous top-level-only map left awb/courier/pincode null.
+    process.env['SHIPROCKET_LIVE'] = '1';
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/v1/external/auth/login')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'jwt-abc' }) } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              // order-level fields only — shipment detail is nested (real payload shape)
+              channel_order_id: '7730585099999',
+              status: 'DELIVERED',
+              payment_method: 'COD',
+              customer_pincode: '110001',
+              shipments: [
+                { awb: 'NESTED-AWB-1', courier: 'Ekart', updated_at: '2026-06-13T09:00:00' },
+              ],
+            },
+          ],
+        }),
+      } as unknown as Response;
+    }));
+
+    const client = new ShiprocketShipmentClient(CREDS);
+    const page = await client.fetchShipmentPage(FROM, TO, 0);
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      awb: 'NESTED-AWB-1',        // from shipments[0]
+      order_id: '7730585099999',  // top-level channel id still wins
+      status: 'DELIVERED',        // top-level wins over nested
+      courier: 'Ekart',           // from shipments[0]
+      pincode: '110001',
+    });
+  });
+
+  it('clamps the from→to span to the documented 30-day max on the request URL', async () => {
+    // apidocs.shiprocket.in: the orders list rejects a from→to range wider than 30 days. The
+    // 45-day repull cold-start window must therefore be clamped per-request, not sent as-is.
+    process.env['SHIPROCKET_LIVE'] = '1';
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.includes('/v1/external/auth/login')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'jwt-abc' }) } as unknown as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ data: [] }) } as unknown as Response;
+    }));
+
+    const to = Math.floor(Date.parse('2026-06-30T00:00:00Z') / 1000);
+    const from45 = to - 45 * 24 * 60 * 60; // 45-day ask (the repull cold-start window)
+    const client = new ShiprocketShipmentClient(CREDS);
+    await client.fetchShipmentPage(from45, to, 0);
+
+    const listUrl = urls.find((u) => !u.includes('/auth/login'))!;
+    // from is clamped to to − 30d (2026-05-31), NOT the requested 2026-05-16.
+    expect(listUrl).toContain('from=2026-05-31');
+    expect(listUrl).toContain('to=2026-06-30');
+  });
+
   it('throws SHIPROCKET_AUTH_ERROR on a 401 shipments response', async () => {
     process.env['SHIPROCKET_LIVE'] = '1';
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {

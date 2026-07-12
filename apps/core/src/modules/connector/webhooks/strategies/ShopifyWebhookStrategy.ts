@@ -57,8 +57,26 @@ import {
   projectOrderStitch,
   uuidV5FromOrderLive,
   ORDER_LIVE_V1_EVENT_NAME,
+  SHOPIFY_PROVIDER,
+  SHOPIFY_PRODUCTS_RESOURCE,
+  SHOPIFY_CUSTOMERS_RESOURCE,
+  SHOPIFY_REFUNDS_RESOURCE,
+  SHOPIFY_FULFILLMENTS_RESOURCE,
+  SHOPIFY_INVENTORY_LEVELS_RESOURCE,
+  mapProductToDraft,
+  mapCustomerToDraft,
+  mapRefundToDraft,
+  mapFulfillmentToDraft,
+  mapInventoryLevelToDraft,
   type ShopifyOrderShape,
+  type ShopifyProductShape,
+  type ShopifyCustomerShape,
+  type ShopifyRefundShape,
+  type ShopifyFulfillmentShape,
+  type ShopifyInventoryLevelShape,
+  type MappedResourceRecord,
 } from '@brain/shopify-mapper';
+import { deterministicDedupKeyDeriver, type ResourceDescriptor } from '@brain/connector-core';
 import { redactShopifyPii } from '../../sources/storefront/shopify/domain/redactPii.js';
 import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
 import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
@@ -74,6 +92,17 @@ const ORDER_TOPICS = new Set([
 /** app/uninstalled: invalidate secret + mark ConnectorInstance Disconnected. */
 const UNINSTALL_TOPIC = 'app/uninstalled' as const;
 
+// ── Resource topic sets (P1 webhook expansion) — the real-time peers of the scheduled resource
+// backfills. Mapped with the SAME pure mappers + the framework's deterministicDedupKeyDeriver over
+// the SAME manifest ResourceDescriptors the resumable backfill uses, so a product/customer/refund/
+// fulfillment state seen on BOTH lanes derives one byte-identical event_id → Bronze drops the
+// replay (live↔backfill dedup parity — the WooCommerceWebhookStrategy pattern).
+const PRODUCT_UPSERT_TOPICS = new Set(['products/create', 'products/update']);
+const CUSTOMER_UPSERT_TOPICS = new Set(['customers/create', 'customers/update']);
+const REFUND_CREATE_TOPIC = 'refunds/create' as const;
+const FULFILLMENT_TOPICS = new Set(['fulfillments/create', 'fulfillments/update']);
+const INVENTORY_LEVEL_TOPIC = 'inventory_levels/update' as const;
+
 /** The full canonical (slash-form) topic set the strategy handles — used for underscore reverse-mapping. */
 const ALL_HANDLED_TOPICS: readonly string[] = [
   ...ORDER_TOPICS,
@@ -81,7 +110,52 @@ const ALL_HANDLED_TOPICS: readonly string[] = [
   'customers/redact',
   'shop/redact',
   UNINSTALL_TOPIC,
+  ...PRODUCT_UPSERT_TOPICS,
+  ...CUSTOMER_UPSERT_TOPICS,
+  REFUND_CREATE_TOPIC,
+  ...FULFILLMENT_TOPICS,
+  INVENTORY_LEVEL_TOPIC,
 ];
+
+/** Uniform fast-ack (HTTP 200, no Kafka produce) — mirrors the WooCommerce strategy's SKIP. */
+const SKIP: PayloadMapResult = {
+  eventId: '',
+  eventName: '',
+  occurredAt: '',
+  properties: {},
+  ageCheckTimestampSeconds: null,
+  dedupKey: null,
+  skip: true,
+};
+
+/**
+ * Project a framework MappedResourceRecord (its single draft) into a PayloadMapResult, deriving the
+ * deterministic event_id with the SAME deriver the resumable backfill uses — so the live webhook and
+ * the backfill page for the same record state produce one byte-identical Bronze id (dedup parity).
+ * Mirrors WooCommerceWebhookStrategy's resourceResult helper.
+ */
+function resourceResult(record: MappedResourceRecord, brandId: string, resource: ResourceDescriptor): PayloadMapResult {
+  const draft = record.events[0];
+  if (!draft) return SKIP;
+  const eventId = deterministicDedupKeyDeriver.deriveEventId({
+    brandId,
+    provider: SHOPIFY_PROVIDER,
+    resource,
+    providerId: record.providerId,
+    eventName: draft.event_name,
+  });
+  return {
+    eventId,
+    eventName: draft.event_name,
+    occurredAt: draft.occurred_at,
+    properties: draft.properties as unknown as Record<string, unknown>,
+    // No transport replay-age gate (same reasoning as orders): Shopify retries up to ~48h; the
+    // deterministic event_id + Bronze MERGE dedup a late/replayed delivery instead of dropping it.
+    ageCheckTimestampSeconds: null,
+    dedupKey: eventId,
+    skip: false,
+  };
+}
 
 /**
  * Resolve the canonical (slash-form) Shopify topic from request headers.
@@ -347,6 +421,73 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         sideEffect,
         throwOnSideEffectError: false, // fire-and-forget; we ack 200 regardless
       };
+    }
+
+    // ── Resource grains (P1 webhook expansion) → canonical resource events ─────────────────────
+    // products/customers/refunds/fulfillments/inventory_levels: the real-time peers of the
+    // scheduled resource backfills. Same pure mappers, same deterministic dedup namespace →
+    // live↔backfill parity (a state seen on both lanes is ONE Bronze row).
+    const isResourceTopic =
+      PRODUCT_UPSERT_TOPICS.has(topic) ||
+      CUSTOMER_UPSERT_TOPICS.has(topic) ||
+      topic === REFUND_CREATE_TOPIC ||
+      FULFILLMENT_TOPICS.has(topic) ||
+      topic === INVENTORY_LEVEL_TOPIC;
+
+    if (isResourceTopic) {
+      let resourceBody: Record<string, unknown>;
+      try {
+        resourceBody = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
+      } catch {
+        const err = new Error('Webhook body is not valid JSON');
+        (err as NodeJS.ErrnoException & { code: string }).code = 'INVALID_JSON';
+        throw err;
+      }
+
+      // Shopify delivers the resource object directly as the body. An id-less delivery (a
+      // registration ping / malformed payload) is fast-acked — a 4xx would put Shopify into a
+      // ~48h retry storm for a payload that can never map.
+      const hasId = resourceBody['id'] !== undefined && resourceBody['id'] !== null && String(resourceBody['id']).length > 0;
+
+      try {
+        if (PRODUCT_UPSERT_TOPICS.has(topic)) {
+          if (!hasId) return SKIP;
+          const record = mapProductToDraft(resourceBody as unknown as ShopifyProductShape, brandId);
+          return resourceResult(record, brandId, SHOPIFY_PRODUCTS_RESOURCE);
+        }
+        if (CUSTOMER_UPSERT_TOPICS.has(topic)) {
+          if (!hasId) return SKIP;
+          // Raw email/phone are hashed INSIDE the mapper and dropped (D-10 / I-S02).
+          const record = mapCustomerToDraft(
+            resourceBody as unknown as ShopifyCustomerShape,
+            brandId,
+            saltHex,
+            ctx.regionCode ?? 'IN',
+          );
+          return resourceResult(record, brandId, SHOPIFY_CUSTOMERS_RESOURCE);
+        }
+        if (topic === REFUND_CREATE_TOPIC) {
+          if (!hasId) return SKIP;
+          // Currency: honest-null when the refund payload doesn't carry it (the /orders backfill
+          // lane restates the same refund id with the order currency — same event_id, Bronze dedups).
+          const record = mapRefundToDraft(resourceBody as unknown as ShopifyRefundShape, brandId, null);
+          return resourceResult(record, brandId, SHOPIFY_REFUNDS_RESOURCE);
+        }
+        if (FULFILLMENT_TOPICS.has(topic)) {
+          if (!hasId) return SKIP;
+          const record = mapFulfillmentToDraft(resourceBody as unknown as ShopifyFulfillmentShape, brandId);
+          return resourceResult(record, brandId, SHOPIFY_FULFILLMENTS_RESOURCE);
+        }
+        // inventory_levels/update — keyed on inventory_item_id (NOT id; the payload has no id field).
+        const level = resourceBody as unknown as ShopifyInventoryLevelShape;
+        if (level.inventory_item_id == null || String(level.inventory_item_id).length === 0) return SKIP;
+        const record = mapInventoryLevelToDraft(level, brandId);
+        return resourceResult(record, brandId, SHOPIFY_INVENTORY_LEVELS_RESOURCE);
+      } catch {
+        // A permanently-unmappable payload (e.g. unparseable timestamp) → fast-ack, never a
+        // 4xx retry storm. Bronze idempotency is unaffected (nothing was emitted).
+        return SKIP;
+      }
     }
 
     if (!ORDER_TOPICS.has(topic)) {

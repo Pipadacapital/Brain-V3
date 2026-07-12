@@ -53,6 +53,12 @@ export interface RequestConnectorBackfillInput {
   correlationId: string;
   actorId: string | null;
   actorRole: string;
+  /**
+   * OPTIONAL caller-requested historical depth in ms (BackfillTriggerRequest.requested_window_ms,
+   * 0127). Persisted verbatim on the queued job; the claimers clamp to the provider manifest's
+   * maxBackfillWindowMs at execution time. undefined = provider max (pre-0127 behaviour).
+   */
+  requestedWindowMs?: number;
 }
 
 export class RequestConnectorBackfillCommand {
@@ -65,6 +71,17 @@ export class RequestConnectorBackfillCommand {
 
   async execute(input: RequestConnectorBackfillInput): Promise<BackfillRequestResult> {
     const { connectorInstanceId, brandId, correlationId, actorId, actorRole } = input;
+
+    // Sanitize the OPTIONAL requested depth (body-sourced, so never trusted): only a positive
+    // finite safe integer is persisted; anything else degrades to undefined = provider max. The
+    // window is a REQUEST — claimers clamp to the provider manifest's maxBackfillWindowMs, so a
+    // huge value can never widen a backfill past the platform cap.
+    const requestedWindowMs =
+      typeof input.requestedWindowMs === 'number' &&
+      Number.isSafeInteger(input.requestedWindowMs) &&
+      input.requestedWindowMs > 0
+        ? input.requestedWindowMs
+        : undefined;
 
     // Step 1: Load connector_instance (brand-scoped via RLS — NN-1).
     const connectorInstance = await this.connectorRepo.findById(connectorInstanceId, brandId);
@@ -80,7 +97,7 @@ export class RequestConnectorBackfillCommand {
     // @brain/connector-core supportsHistoricalBackfill, shared with the stream-worker claimer). A
     // provider is accepted iff it is drained by EITHER the bespoke shopify queue runner
     // (BACKFILL_QUEUE_PROVIDERS) OR the generic ingestion framework (INGESTION_BACKFILL_PROVIDERS:
-    // meta/google_ads/razorpay/shiprocket/ga4). GoKwik (webhook-first) has no claimer for
+    // meta/google_ads/razorpay/shiprocket/ga4/woocommerce). GoKwik (webhook-first) has no claimer for
     // jobs.backfill_job — enqueuing one would orphan it as `queued` forever. Fail fast & clearly
     // instead of silently inserting an un-drainable row.
     if (!supportsHistoricalBackfill(connectorInstance.provider)) {
@@ -117,8 +134,13 @@ export class RequestConnectorBackfillCommand {
       };
     }
 
-    // Step 4: INSERT backfill_job status=queued.
-    const jobId = await this.backfillJobRepo.insertQueued(brandId, connectorInstanceId, correlationId);
+    // Step 4: INSERT backfill_job status=queued (carrying the sanitized requested depth, 0127).
+    const jobId = await this.backfillJobRepo.insertQueued(
+      brandId,
+      connectorInstanceId,
+      correlationId,
+      requestedWindowMs ?? null,
+    );
 
     // Step 5: Audit connector.backfill.requested — actor, connector_instance_id, brand_id.
     // NO secret_ref, NO token in payload (I-S09 / I-S02).
@@ -132,6 +154,8 @@ export class RequestConnectorBackfillCommand {
       payload: {
         job_id: jobId,
         connector_instance_id: connectorInstanceId,
+        // Requested depth (ms) — auditable, non-secret. null = provider max.
+        requested_window_ms: requestedWindowMs ?? null,
         // NO secret_ref, NO token (I-S09)
       },
     });

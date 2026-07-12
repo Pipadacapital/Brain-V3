@@ -34,6 +34,7 @@ import type { IConnectorSyncStatusRepository } from '@brain/connector-core';
 import type { ISecretsManager } from '@brain/connector-secrets';
 import type { IOAuthStateStore } from '../../../../storefront/shopify/infrastructure/state/IOAuthStateStore.js';
 import { META_GRAPH_API_VERSION } from './InitiateMetaOAuthCommand.js';
+import { resolveAllMetaAdAccounts } from '../meta-graph.js';
 import { resolveBrandOAuthAppCreds } from '../../../../../oauth-app-creds.js';
 
 export interface MetaOAuthCallbackInput {
@@ -303,35 +304,12 @@ export class HandleMetaOAuthCallbackCommand {
 
   /**
    * Resolve ALL accessible ad accounts via /me/adaccounts (Gap B), each with its human name.
-   * Returns e.g. [{ id: 'act_123', name: 'Acme Store' }, …]. `name` is null when Meta omits it.
-   * Returns empty array on any failure — caller falls back to a single __default__ instance.
+   * Delegates to the shared meta-graph helper so the system-user-token connect path
+   * (ConnectMetaWithSystemUserTokenCommand) resolves accounts IDENTICALLY (SEC-AD-M1 intact).
    */
   private async resolveAllAdAccounts(
     accessToken: string,
   ): Promise<Array<{ id: string; name: string | null }>> {
-    try {
-      // SEC-AD-M1: the access_token rides the Authorization header, never the URL query string.
-      // `name` is requested so the UI can label each account sub-card (not just act_<id>).
-      const response = await fetch(
-        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/adaccounts?fields=account_id,name`,
-        {
-          method: 'GET',
-          headers: { Authorization: `Bearer ${accessToken}` },
-          signal: AbortSignal.timeout(15_000),
-        },
-      );
-      if (!response.ok) return [];
-      const data = (await response.json()) as {
-        data?: Array<{ account_id?: string; id?: string; name?: string }>;
-      };
-      return (data.data ?? [])
-        .map((entry) => {
-          const id = entry.id ?? (entry.account_id ? `act_${entry.account_id}` : null);
-          return id ? { id, name: entry.name ?? null } : null;
-        })
-        .filter((e): e is { id: string; name: string | null } => e !== null);
-    } catch {
-      return [];
-    }
+    return resolveAllMetaAdAccounts(accessToken);
   }
 }

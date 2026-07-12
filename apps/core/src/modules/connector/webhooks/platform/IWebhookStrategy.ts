@@ -137,7 +137,18 @@ export interface IWebhookStrategy {
   signatureVerify(
     rawBody: Buffer,
     headers: FastifyRequest['headers'],
-    getSecret: (lookupKey: string) => Promise<{ webhookSecret: string; connectorLookupKey: string }>,
+    getSecret: (lookupKey: string) => Promise<{
+      webhookSecret: string;
+      connectorLookupKey: string;
+      /**
+       * Optional per-instance provenance of the webhook secret, read from the credential bundle's
+       * `webhook_secret_origin` marker: 'minted' = Brain generated it at connect (the merchant never
+       * entered one — they may be UNABLE to configure it in the provider UI, e.g. Shopflo), 'merchant'
+       * = the merchant supplied their own (signatures are expected → strict verify). Absent for
+       * legacy bundles / providers that don't stamp it — strategies MUST treat absent as strict.
+       */
+      webhookSecretOrigin?: string;
+    }>,
   ): Promise<SignatureVerifyResult>;
 
   /**

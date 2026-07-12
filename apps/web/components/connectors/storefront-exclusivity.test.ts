@@ -100,3 +100,21 @@ describe('storefrontLockReason', () => {
     expect(storefrontLockReason(wooDisconnected, null)).toBeNull();
   });
 });
+
+// ── supportsHistoricalBackfill (the "Pull historical data" control gate) ───────
+
+// Imported separately (appended with the woocommerce onboarding) to keep the diff append-style.
+import { supportsHistoricalBackfill } from './storefront-exclusivity';
+
+describe('supportsHistoricalBackfill', () => {
+  it.each(['shopify', 'meta', 'google_ads', 'razorpay', 'shiprocket', 'ga4', 'woocommerce'])(
+    'renders the backfill control for %s (a provider with a queue runner)',
+    (id) => {
+      expect(supportsHistoricalBackfill({ id })).toBe(true);
+    },
+  );
+
+  it('does NOT render the control for gokwik (webhook-first, no REST backfill surface)', () => {
+    expect(supportsHistoricalBackfill({ id: 'gokwik' })).toBe(false);
+  });
+});

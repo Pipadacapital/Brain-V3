@@ -54,6 +54,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { Badge } from '@/components/ui/badge';
 import { useBackfillProgress, useTriggerBackfill } from '@/lib/hooks/use-backfill';
+import {
+  backfillDepthOptions,
+  providerMaxBackfillMonths,
+  requestedWindowMsForValue,
+} from '@/components/connectors/backfill-depth';
 import { useSessionRole } from '@/lib/hooks/use-session-role';
 import { BffApiError } from '@/lib/api/client';
 import { cn } from '@/lib/utils';
@@ -309,6 +314,11 @@ function TerminalState({
 interface BackfillControlProps {
   /** connector_instance UUID — used to poll /connectors/:id/jobs */
   connectorId: string;
+  /**
+   * Provider id (marketplace tile id, e.g. 'shopify' | 'meta' | 'ga4') — drives the depth-picker
+   * options + the "up to N months" honesty copy. Defaults to 'shopify' (the original sole user).
+   */
+  provider?: string;
   className?: string;
 }
 
@@ -318,12 +328,18 @@ interface BackfillControlProps {
  * Mount on the connected Shopify tile in ConnectorCard or a detail view.
  * Handles all states: idle → trigger; queued/running → progress; terminal → result.
  */
-export function BackfillControl({ connectorId, className }: BackfillControlProps) {
+export function BackfillControl({ connectorId, provider = 'shopify', className }: BackfillControlProps) {
   const role = useSessionRole();
   const canTrigger = role === 'owner' || role === 'brand_admin';
 
   // Controlled error state for trigger failures (RECONNECT_REQUIRED, etc.)
   const [triggerError, setTriggerError] = useState<BffApiError | null>(null);
+
+  // Depth picker (0127): which historical window to request. 'max' = provider max (no body sent,
+  // byte-identical to the pre-picker call). Options are clamped to the provider's manifest max.
+  const depthOptions = backfillDepthOptions(provider);
+  const [depthValue, setDepthValue] = useState<string>('max');
+  const maxMonths = providerMaxBackfillMonths(provider);
 
   const { mutate: trigger, isPending: isTriggering } = useTriggerBackfill(connectorId);
 
@@ -344,7 +360,8 @@ export function BackfillControl({ connectorId, className }: BackfillControlProps
 
   function handleTrigger() {
     setTriggerError(null);
-    trigger(undefined, {
+    // 'max' resolves to undefined → body-less POST → provider max (pre-picker behaviour).
+    trigger(requestedWindowMsForValue(provider, depthValue), {
       onError: (err) => {
         if (err instanceof BffApiError) {
           setTriggerError(err);
@@ -355,7 +372,8 @@ export function BackfillControl({ connectorId, className }: BackfillControlProps
 
   function handleRetry() {
     setTriggerError(null);
-    trigger(undefined, {
+    // Retry re-uses the last picked depth (state persists across the failed attempt).
+    trigger(requestedWindowMsForValue(provider, depthValue), {
       onError: (err) => {
         if (err instanceof BffApiError) {
           setTriggerError(err);
@@ -466,15 +484,35 @@ export function BackfillControl({ connectorId, className }: BackfillControlProps
         </div>
       )}
 
-      {/* ── Trigger button (brand_admin+ only, idle or no job yet) ──────── */}
+      {/* ── Trigger button + depth picker (brand_admin+ only, idle or no job yet) ──────── */}
       {canTrigger && !hasActiveJob && !hasTerminalJob && (
+        <div className="flex items-center gap-2">
+          <label htmlFor="backfill-depth-picker" className="sr-only">
+            History depth
+          </label>
+          {/* Depth picker (0127): options clamped to the provider max; 'Max (N months)' default. */}
+          <select
+            id="backfill-depth-picker"
+            data-testid="backfill-depth-picker"
+            value={depthValue}
+            onChange={(e) => setDepthValue(e.target.value)}
+            disabled={isTriggering}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="How far back to import history"
+          >
+            {depthOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         <Button
           size="sm"
           variant="outline"
           onClick={handleTrigger}
           disabled={isTriggering}
           data-testid="backfill-trigger"
-          aria-label="Import Shopify order history"
+          aria-label="Import order history"
           aria-describedby="backfill-trigger-hint"
         >
           {isTriggering ? (
@@ -489,6 +527,7 @@ export function BackfillControl({ connectorId, className }: BackfillControlProps
             </>
           )}
         </Button>
+        </div>
       )}
 
       {canTrigger && !hasActiveJob && !hasTerminalJob && (
@@ -497,7 +536,8 @@ export function BackfillControl({ connectorId, className }: BackfillControlProps
           className="text-xs text-muted-foreground"
           aria-live="polite"
         >
-          Imports up to 24 months of Shopify order history.
+          {/* Honesty copy: never promise more depth than the provider manifest allows. */}
+          Imports up to {maxMonths} months of history.
         </p>
       )}
 

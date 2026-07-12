@@ -12,6 +12,7 @@
     "test:e2e:demo": "playwright test --config=playwright.demo.config.ts --headed"
   },
   "dependencies": {
+    "@brain/connector-core": "workspace:*",
     "@brain/contracts": "workspace:*",
     "@brain/money": "workspace:*",
     "@brain/pixel-sdk": "workspace:*",

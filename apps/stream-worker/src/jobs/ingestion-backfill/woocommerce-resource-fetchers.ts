@@ -161,6 +161,14 @@ export class WooCustomersFetcher implements IResourcePageFetcher {
     this.client = new WooCommerceListClient<WooCustomerShape>(creds, {
       resourcePath: 'customers',
       fixturePath: resourceFixturePath('customers'),
+      // FIX (the historically-FAILED customers lane): wc/v3 /customers does NOT support the
+      // modified-window query params the other list endpoints do — its `orderby` enum is
+      // id|include|name|registered_date (no 'modified') and the controller has no date filters
+      // (no modified_after / dates_are_gmt). The shared '?orderby=modified&modified_after=…' URL
+      // therefore 400'd (rest_invalid_param) on EVERY live poll → customers=FAILED each tick.
+      // Walk the full directory ordered by registered_date instead (see windowing:'none' in the
+      // client) — the framework's deterministic dedup makes the re-walk idempotent.
+      windowing: 'none',
     });
   }
 
@@ -321,15 +329,29 @@ class WooCommerceListClient<T extends WooListRecord> {
   private readonly baseUrl: string;
   private readonly resourcePath: string;
   private readonly fixturePath: string;
+  /**
+   * How the endpoint is windowed/ordered:
+   *   'modified' (default) — ?orderby=modified&modified_after=<floor> (products/coupons; the same
+   *                           incremental window orders use).
+   *   'none'               — the endpoint supports NEITHER (wc/v3 /customers: orderby enum is
+   *                           id|include|name|registered_date, no date filters at all — sending the
+   *                           'modified' params 400s rest_invalid_param). Walk the full list ordered
+   *                           by registered_date asc; dedup makes the re-walk idempotent.
+   */
+  private readonly windowing: 'modified' | 'none';
   private fixture: T[] | null = null;
 
-  constructor(creds: WooCommerceApiCredentials, opts: { resourcePath: string; fixturePath: string }) {
+  constructor(
+    creds: WooCommerceApiCredentials,
+    opts: { resourcePath: string; fixturePath: string; windowing?: 'modified' | 'none' },
+  ) {
     this.live = process.env['NODE_ENV'] === 'production' || process.env['WOOCOMMERCE_LIVE'] === '1';
     this.authHeader =
       'Basic ' + Buffer.from(`${creds.consumer_key}:${creds.consumer_secret}`).toString('base64');
     this.baseUrl = (creds.site_url ?? '').replace(/\/+$/, '');
     this.resourcePath = opts.resourcePath;
     this.fixturePath = opts.fixturePath;
+    this.windowing = opts.windowing ?? 'modified';
   }
 
   async fetchListPage(modifiedAfterIso: string, page: number, perPage: number): Promise<WooListPage<T>> {
@@ -343,9 +365,14 @@ class WooCommerceListClient<T extends WooListRecord> {
       throw new Error(`${WOOCOMMERCE_AUTH_ERROR}: site_url missing for WooCommerce ${this.resourcePath} read`);
     }
     const url =
-      `${this.baseUrl}/wp-json/wc/v3/${this.resourcePath}` +
-      `?per_page=${perPage}&page=${page}&orderby=modified&order=asc&dates_are_gmt=true` +
-      `&modified_after=${encodeURIComponent(modifiedAfterIso)}`;
+      this.windowing === 'modified'
+        ? `${this.baseUrl}/wp-json/wc/v3/${this.resourcePath}` +
+          `?per_page=${perPage}&page=${page}&orderby=modified&order=asc&dates_are_gmt=true` +
+          `&modified_after=${encodeURIComponent(modifiedAfterIso)}`
+        : // windowing 'none' (customers): registered_date is the only stable chronological orderby
+          // the endpoint accepts; NO date-window params exist — full-directory walk.
+          `${this.baseUrl}/wp-json/wc/v3/${this.resourcePath}` +
+          `?per_page=${perPage}&page=${page}&orderby=registered_date&order=asc`;
     let res: Response;
     try {
       res = await fetch(url, { method: 'GET', headers: { Authorization: this.authHeader, Accept: 'application/json' } });
@@ -375,6 +402,9 @@ class WooCommerceListClient<T extends WooListRecord> {
       .filter((r) => {
         const m = r.date_modified_gmt ?? r.date_created_gmt ?? null;
         if (!m) return false;
+        // windowing 'none' (customers): the live endpoint has no date window — fixture parity means
+        // every dated record is eligible (full-directory walk), never filtered by the floor.
+        if (this.windowing === 'none') return true;
         const hasTz = /[zZ]$/.test(m) || /[+-]\d{2}:?\d{2}$/.test(m);
         const ms = Date.parse(hasTz ? m : `${m}Z`);
         return !Number.isNaN(ms) && ms >= afterMs;

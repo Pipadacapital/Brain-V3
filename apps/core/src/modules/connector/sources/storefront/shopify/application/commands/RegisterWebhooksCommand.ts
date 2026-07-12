@@ -33,6 +33,12 @@ const SHOPIFY_API_VERSION = '2025-07' as const;
  *
  * App lifecycle:
  *   app/uninstalled — marks ConnectorInstance Disconnected + invalidates secret.
+ *
+ * Resource topics (P1 webhook expansion — real-time peers of the scheduled resource backfills):
+ *   products/create|update, customers/create|update, refunds/create,
+ *   fulfillments/create|update, inventory_levels/update
+ *   Mapped in ShopifyWebhookStrategy with the SAME deterministic dedup ids the resumable backfill
+ *   derives, so a record seen on both lanes lands ONCE in Bronze (live↔backfill dedup parity).
  */
 const ALL_WEBHOOK_TOPICS = [
   'orders/create',
@@ -44,6 +50,15 @@ const ALL_WEBHOOK_TOPICS = [
   'customers/redact',
   'shop/redact',
   'app/uninstalled',
+  // P1 webhook expansion — resource grains (products/customers/refunds/fulfillments/inventory):
+  'products/create',
+  'products/update',
+  'customers/create',
+  'customers/update',
+  'refunds/create',
+  'fulfillments/create',
+  'fulfillments/update',
+  'inventory_levels/update',
 ] as const;
 
 export interface RegisterWebhooksInput {

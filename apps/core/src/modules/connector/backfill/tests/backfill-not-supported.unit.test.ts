@@ -6,9 +6,9 @@
  *
  * Single source of truth = @brain/connector-core supportsHistoricalBackfill — the union of
  * BACKFILL_QUEUE_PROVIDERS (bespoke shopify runner) + INGESTION_BACKFILL_PROVIDERS (the generic
- * ingestion framework: meta/google_ads/razorpay/shiprocket/ga4) — shared with the stream-worker
- * claimer (apps/stream-worker/src/main.ts). Only providers in NEITHER set are rejected (gokwik —
- * webhook-first; woocommerce — re-pulls via the SYNC lane, not the backfill queue).
+ * ingestion framework: meta/google_ads/razorpay/shiprocket/ga4/woocommerce) — shared with the
+ * stream-worker claimer (apps/stream-worker/src/main.ts). Only providers in NEITHER set are rejected
+ * (gokwik — webhook-first, no REST backfill surface).
  *
  * Pure unit test (no DB): the only collaborator exercised is connectorRepo.findById; the secrets
  * manager / job repo / audit writer are stubs that MUST NOT be called on the reject path.
@@ -60,8 +60,9 @@ const INPUT = {
 
 describe('RequestConnectorBackfillCommand — BACKFILL_NOT_SUPPORTED guard', () => {
   // Only providers with NO jobs.backfill_job claimer must be rejected, never enqueued: gokwik
-  // (webhook-first, no REST backfill) and woocommerce (history via the SYNC lane, not the queue).
-  it.each(['gokwik', 'woocommerce', 'unknown_provider'])(
+  // (webhook-first, no REST backfill). woocommerce moved to the accepted set — the generic
+  // ingestion-framework claimer now drains its queued jobs (non-order resources).
+  it.each(['gokwik', 'unknown_provider'])(
     'rejects %s with BACKFILL_NOT_SUPPORTED before touching secrets/DB/audit',
     async (provider) => {
       const { command, getSecret, checkActiveJob, insertQueued, append } = makeCommand(provider);
@@ -80,7 +81,7 @@ describe('RequestConnectorBackfillCommand — BACKFILL_NOT_SUPPORTED guard', () 
 
   // Every provider with a backfill runner (bespoke shopify OR generic ingestion framework) must pass
   // the guard into Step 2 (the secret read) rather than being rejected.
-  it.each(['shopify', 'meta', 'google_ads', 'razorpay', 'shiprocket', 'ga4'])(
+  it.each(['shopify', 'meta', 'google_ads', 'razorpay', 'shiprocket', 'ga4', 'woocommerce'])(
     'lets %s (a provider with a backfill runner) PAST the guard into Step 2',
     async (provider) => {
       const { command, getSecret } = makeCommand(provider);

@@ -438,6 +438,11 @@ export {
   WOOCOMMERCE_CUSTOMERS_RESOURCE,
   WOOCOMMERCE_COUPONS_RESOURCE,
   WOOCOMMERCE_REFUNDS_RESOURCE,
+  // Historical-depth policy cap (WOOCOMMERCE_MAX_HISTORY_YEARS env-overridable, default 5y):
+  WOOCOMMERCE_DEFAULT_MAX_HISTORY_YEARS,
+  WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS,
+  resolveWooMaxHistoryYears,
+  wooMaxBackfillWindowMs,
 } from './manifest.js';
 
 export {

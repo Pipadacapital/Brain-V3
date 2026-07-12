@@ -47,6 +47,9 @@ export const GOOGLE_ADS_INGESTION_MANIFEST: IngestionManifest = {
       emits: ['spend.live.v1'],
       backfillSupported: true,
       // Brain's 24-month default target is the binding depth for Google Ads (retention exceeds it).
+      // DELIBERATELY kept at TWO_YEARS_MS (unlike Meta, which was raised to its 37-month provider
+      // max): Google's Reports/GAQL daily-stats guarantee is ~37 months, so 24 months leaves ~13
+      // months of headroom under the platform limit — never at risk of requesting past retention.
       maxBackfillWindowMs: TWO_YEARS_MS,
       // GAQL segments.date BETWEEN windows — paged one date-range chunk at a time (oldest-ward).
       cursorStrategy: 'date_window',

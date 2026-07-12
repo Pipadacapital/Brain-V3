@@ -106,6 +106,12 @@ SERVER_TRUSTED = {
     # SAME lane as order.live.v1 (server-derived, no pixel signal). Kept BYTE-IDENTICAL with
     # the retired Bronze-landing gate twin (pre-ADR-0010).
     "product.upsert.v1", "customer.upsert.v1", "refund.recorded.v1", "fulfillment.recorded.v1",
+    # P1 webhook expansion: inventory_levels/update -> inventory.level.v1 (Shopify CONNECTOR-derived,
+    # server-derived brand_id via the webhook pipeline -- no install_token/consent, so it MUST take
+    # the server-trusted lane or the PIXEL-lane R2 join silently drops it). Admitted-but-unconsumed
+    # today (like customer.upsert.v1 was): the Silver stock-history widening lifts it later; Bronze
+    # + the gated keystone keep every observation meanwhile (no event loss).
+    "inventory.level.v1",
     # WOO-3: coupon.upsert.v1 is the NEW canonical coupon grain (no Shopify peer). The WooCommerce
     # connector emits it server-derived (brand_id from the resolved connector row, MT-1 — NEVER the API
     # response) with NO install_token / consent signal, so — exactly like the CRIT-4 resource events — it

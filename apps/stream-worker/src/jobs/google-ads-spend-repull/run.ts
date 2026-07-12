@@ -433,24 +433,25 @@ async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: stri
 export async function resolveGoogleCredentials(
   secretRef: string, adAccountIdCol: string | null,
 ): Promise<GoogleAdsCredentials | null> {
-  // P0 CREDENTIAL-BUNDLE FIX: the OAuth callback stores ONLY {refresh_token, ad_account_id} in the
-  // per-brand secret. The app-level Google Cloud creds (client_id, client_secret, developer_token)
-  // are the SAME for every brand and come from ENV — NOT the per-brand bundle. The previous resolver
-  // demanded all five from the bundle → b.client_id/etc were undefined → returned null → ZERO spend
-  // on every real connect. App creds from env + the bundle's refresh_token/ad_account_id is correct.
-  const clientId = process.env['GOOGLE_ADS_CLIENT_ID'];
-  const clientSecret = process.env['GOOGLE_ADS_CLIENT_SECRET'];
-  const developerToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
+  // BYO REFRESH FIX (audit-verified zero-spend defect): a refresh_token is only ever valid against
+  // the OAuth client that MINTED it. The callback now persists the resolving client_id /
+  // client_secret (+ developer_token) INTO the per-account bundle, so the bundle is PREFERRED here
+  // — a brand on BYO app creds refreshes with its own client (env creds would be invalid_grant →
+  // permanent zero spend). ENV stays the fallback for legacy bundles minted by the shared env app
+  // (the P0 fix's behaviour, unchanged for them). Ingestion-backfill resolves through this same fn.
+  const bundle = await readGoogleSecretBundle(secretRef);
+  if (!bundle?.refresh_token) return null;
+
+  const clientId = bundle.client_id ?? process.env['GOOGLE_ADS_CLIENT_ID'];
+  const clientSecret = bundle.client_secret ?? process.env['GOOGLE_ADS_CLIENT_SECRET'];
+  const developerToken = bundle.developer_token ?? process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
   if (!clientId || !clientSecret || !developerToken) {
     log.warn(
-      '[google-ads] app-level creds missing (GOOGLE_ADS_CLIENT_ID / GOOGLE_ADS_CLIENT_SECRET / ' +
-        'GOOGLE_ADS_DEVELOPER_TOKEN) — cannot resolve credentials',
+      '[google-ads] client creds missing (neither the secret bundle nor GOOGLE_ADS_CLIENT_ID / ' +
+        'GOOGLE_ADS_CLIENT_SECRET / GOOGLE_ADS_DEVELOPER_TOKEN env provides them) — cannot resolve credentials',
     );
     return null;
   }
-
-  const bundle = await readGoogleSecretBundle(secretRef);
-  if (!bundle?.refresh_token) return null;
   // customer_id (CID), digits only. MULTI-ACCOUNT FIX: the connector_instance's OWN ad_account_id
   // (adAccountIdCol, passed per-connector by the caller) MUST win. One OAuth login creates N
   // connectors that SHARE a single secret bundle (subKey = the FIRST account at connect), so the

@@ -38,15 +38,31 @@ export interface BackfillJobRow {
   cursor_date: string | null;   // ISO-8601 from PG TIMESTAMPTZ
   achieved_depth_label: string | null;
   failure_reason: string | null;
+  requested_window_ms: string | null; // PG returns BIGINT as string; NULL = provider max (0127)
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
+/**
+ * Parse a claimed job's `requested_window_ms` (PG BIGINT-as-string, nullable) into the
+ * `requestedWindowMs` number the backfill runners consume. Pure + fail-open: any absent,
+ * non-numeric, zero/negative, or unsafely-large value degrades to `undefined` = provider max
+ * (the pre-0127 behaviour), so a malformed row can never break or zero-out a backfill. The
+ * runners STILL clamp the returned value to the provider manifest's maxBackfillWindowMs.
+ */
+export function parseRequestedWindowMs(raw: string | null | undefined): number | undefined {
+  if (raw == null || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
 export interface InsertQueuedParams {
   brandId: string;
   connectorInstanceId: string;
+  /** OPTIONAL caller-requested depth in ms (0127). Omit/null = provider max. */
+  requestedWindowMs?: number | null;
 }
 
 export interface UpdateProgressParams {
@@ -99,10 +115,10 @@ export class PgBackfillJobRepository {
       );
       const result = await client.query<{ id: string }>(
         `INSERT INTO backfill_job
-           (brand_id, connector_instance_id, status, records_processed)
-         VALUES ($1, $2, 'queued', 0)
+           (brand_id, connector_instance_id, status, records_processed, requested_window_ms)
+         VALUES ($1, $2, 'queued', 0, $3)
          RETURNING id`,
-        [params.brandId, params.connectorInstanceId],
+        [params.brandId, params.connectorInstanceId, params.requestedWindowMs ?? null],
       );
       await client.query('COMMIT');
       const row = result.rows[0];

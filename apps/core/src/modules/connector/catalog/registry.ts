@@ -216,7 +216,34 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     connectMethod: 'oauth',
     availability: 'available',
     description: 'Campaign spend & performance.',
-    authFields: OAUTH_APP_FIELDS,
+    // TWO connect paths on one tile (dispatch in bootstrap/connectors/writeRoutes.ts):
+    //   1. RECOMMENDED — system-user token: paste a NEVER-EXPIRING token generated for a
+    //      system user in Meta Business Settings (+ optionally the ad account id). No browser
+    //      OAuth, no ~60-day token death, no proactive re-exchange needed
+    //      (ConnectMetaWithSystemUserTokenCommand).
+    //   2. OAuth redirect (browser login) — with the optional BYO-app Client ID/Secret pair.
+    // All fields optional: submitting none starts the OAuth flow (back-compat).
+    authFields: [
+      {
+        key: 'access_token',
+        label: 'System User Token',
+        type: 'password',
+        secret: true,
+        optional: true,
+        hint:
+          'Recommended: generate a never-expiring system-user token in Meta Business Settings ' +
+          '(System Users → Generate token, ads_read). Leave blank to connect with a browser login instead.',
+      },
+      {
+        key: 'ad_account_id',
+        label: 'Ad Account ID',
+        type: 'text',
+        secret: false,
+        optional: true,
+        hint: 'Optional with a system-user token — e.g. act_1234567890 (blank = all accessible accounts).',
+      },
+      ...OAUTH_APP_FIELDS,
+    ],
   },
   {
     id: 'google_ads',
@@ -225,7 +252,22 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     connectMethod: 'oauth',
     availability: 'available',
     description: 'Search & shopping campaigns.',
-    authFields: OAUTH_APP_FIELDS,
+    // BYO-app pair + the OPTIONAL brand-owned developer_token: a brand bringing its own Google
+    // Cloud OAuth app usually brings its own Google Ads developer token too. Stored in the SAME
+    // per-brand <provider>_app secret bundle (oauth-app-creds) and persisted into each
+    // per-account bundle at callback so the repull refreshes with the client that minted the
+    // refresh token (BYO refresh bug). Blank = Brain's env developer token.
+    authFields: [
+      ...OAUTH_APP_FIELDS,
+      {
+        key: 'developer_token',
+        label: 'Developer Token',
+        type: 'password',
+        secret: true,
+        optional: true,
+        hint: "Optional — your Google Ads API developer token; leave blank to use Brain's",
+      },
+    ],
   },
   // ── payments ──────────────────────────────────────────────────────────────────
   // Razorpay = payment processor (settlement). GoKwik + Shopflo = checkout/payment-gateway
@@ -241,15 +283,40 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     authFields: [
       { key: 'key_id', label: 'Key ID', type: 'text', secret: false },
       { key: 'key_secret', label: 'Key Secret', type: 'password', secret: true },
-      // Required: the inbound webhook HMAC secret — the Razorpay webhook receiver fails closed without it.
-      { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', secret: true },
-      { key: 'razorpay_account_id', label: 'Account ID', type: 'text', secret: false },
+      // The inbound webhook HMAC secret — the Razorpay webhook receiver fails closed without it.
+      // OPTIONAL on the form: when left blank Brain MINTS one at connect (generatedSecretFields,
+      // same SR-2 mechanism as GoKwik) and surfaces it ONCE so the merchant pastes it into
+      // Dashboard → Settings → Webhooks as the webhook's Secret.
+      {
+        key: 'webhook_secret',
+        label: 'Webhook Secret',
+        type: 'password',
+        secret: true,
+        optional: true,
+        hint: 'Leave blank — Brain generates one and shows it once; paste it as the Secret when creating the webhook in your Razorpay dashboard.',
+      },
+      {
+        key: 'razorpay_account_id',
+        label: 'Account ID',
+        type: 'text',
+        secret: false,
+        // EXACT-MATCH webhook routing: the webhook receiver resolves the tenant by comparing the
+        // envelope's account_id to this value verbatim — a typo or un-prefixed id silently drops
+        // every webhook (HMAC secret lookup misses), so the format is spelled out here.
+        hint: 'Your Razorpay Account ID exactly as shown in Dashboard → My Account (format acc_XXXXXXXXXXXXXX). Webhook events are routed by an exact match on this ID.',
+      },
     ],
     credentialConnect: {
       accountKeyField: 'razorpay_account_id',
       instanceColumn: 'razorpay_account_id',
       // key_id is non-secret but the settlement-repull API client reads it from the bundle.
       bundleNonSecretFields: ['key_id'],
+      // Brain MINTS webhook_secret when the merchant leaves the optional field blank (the
+      // Razorpay webhook lane is HMAC-gated, fail-closed — RazorpayWebhookStrategy reads
+      // webhook_secret from this bundle). provisionGeneratedSecrets never overwrites a
+      // user-supplied value; a minted value is returned ONCE in the connect response so the
+      // merchant can paste it into the Razorpay dashboard webhook config.
+      generatedSecretFields: ['webhook_secret'],
     },
   },
   {
@@ -314,8 +381,22 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     availability: 'available',
     description: 'Shipment lifecycle, delivery & RTO outcome, courier performance.',
     authFields: [
-      { key: 'email', label: 'Email', type: 'text', secret: false },
-      { key: 'password', label: 'Password', type: 'password', secret: true },
+      {
+        key: 'email',
+        label: 'API user email',
+        type: 'text',
+        secret: false,
+        hint:
+          'Use a DEDICATED API user, not your Shiprocket dashboard login — create one under ' +
+          'Shiprocket → Settings → API → Configure (dashboard credentials are rejected with 403).',
+      },
+      {
+        key: 'password',
+        label: 'API user password',
+        type: 'password',
+        secret: true,
+        hint: 'The password set for the dedicated API user (not your dashboard password).',
+      },
       { key: 'channel_id', label: 'Channel ID', type: 'text', secret: false, optional: true },
     ],
     credentialConnect: {
@@ -358,16 +439,45 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     id: 'ga4',
     category: 'analytics',
     displayName: 'Google Analytics 4',
-    connectMethod: 'oauth',
+    // GENERIC PER-BRAND CONNECT (GA4 rebuild, 2026-07-12): the brand pastes a GCP SERVICE-ACCOUNT
+    // JSON key + the numeric GA4 property id; the server validates them with a cheap runReport and
+    // stores the key per-brand (Secrets Manager). Auth at repull time is the SA JWT-bearer grant
+    // (scope analytics.readonly) — NO browser OAuth redirect, NO shared GOOGLE_CLIENT_ID env app.
+    // The previous oauth tile was never wired end-to-end (the connect dispatch had no ga4 handler
+    // and the SA client path threw EXTERNAL BLOCKER).
+    connectMethod: 'credential',
     availability: 'available',
     description:
       'Web session analytics via GA4 Data API — sessions, source/medium, revenue, conversions.',
-    // GA4 connects through the OAuth2 authorization-code flow using Brain's registered Google app —
-    // there is NO merchant-entered credential. authFields is therefore intentionally OMITTED so the
-    // marketplace renders a pure OAuth "Connect" action, NOT a credential form. (Previously, a
-    // field-less connector fell through to another connector's hardcoded fields — e.g. Razorpay's —
-    // on the web; that fallback has been removed so a missing authFields can never leak another
-    // connector's credential inputs.) Unlike Shopify/Meta/Google Ads, GA4 does not expose the
-    // optional "bring your own OAuth app" pair, so it carries no authFields at all.
+    authFields: [
+      {
+        key: 'property_id',
+        label: 'Property ID',
+        type: 'text',
+        secret: false,
+        hint: 'The numeric GA4 property id — GA4 Admin → Property settings (e.g. 123456789). Not the "G-…" measurement id.',
+      },
+      {
+        key: 'service_account_json',
+        label: 'Service account JSON key',
+        type: 'password',
+        secret: true,
+        hint:
+          'Create a service account in Google Cloud (IAM & Admin → Service Accounts), create a JSON key for it, ' +
+          'then grant the service account\'s email Viewer access on the GA4 property ' +
+          '(GA4 Admin → Property access management). Paste the full JSON key file contents here.',
+      },
+      {
+        key: 'currency_code',
+        label: 'Reporting currency',
+        type: 'text',
+        secret: false,
+        optional: true,
+        hint: 'The property\'s reporting currency (ISO 4217, e.g. INR) — GA4 Admin → Property settings. Defaults to USD when blank.',
+      },
+    ],
+    // NO credentialConnect spec: GA4 credential connect is the bespoke HandleGa4ConnectCommand
+    // (service-account key parse + runReport validation + property-id column write), not the
+    // generic store-and-save path. Mirrors the Shopify bespoke-command pattern above.
   },
 ] as const;

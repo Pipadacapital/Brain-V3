@@ -56,7 +56,7 @@ import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { DlqRecordRepository } from '../../infrastructure/pg/DlqRecordRepository.js';
-import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
+import { PgBackfillJobRepository, parseRequestedWindowMs } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { buildWorkerSecretsManager } from '../shopify-backfill/worker-secrets.js';
 import { PgResourceBackfillStateRepository } from './PgResourceBackfillStateRepository.js';
 import { KafkaEventSink, PgDeadLetterSink } from './sinks.js';
@@ -447,6 +447,22 @@ export const WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES: readonly string[] = [
   'refunds',
 ];
 
+/**
+ * The non-order SHOPIFY resources the scheduler drives onto the resumable framework every connected
+ * tick (the shopify-repull job hosts the seam, mirroring the WooCommerce one above). All four have
+ * had fetchers + manifest descriptors since the ingestion-framework onboarding but were NEVER
+ * scheduled — this const puts them on the ~45s repull cadence. Orders are DELIBERATELY excluded:
+ * they flow on the live lane via shopify-repull itself (uuidV5FromOrderLive) and historically via
+ * the bespoke shopify-backfill queue runner (uuidV5FromOrderBackfill); driving them here too would
+ * mint a THIRD deterministic event_id namespace and double-count the order in Bronze.
+ */
+export const SHOPIFY_SCHEDULED_BACKFILL_RESOURCES: readonly string[] = [
+  'products',
+  'customers',
+  'refunds',
+  'fulfillments',
+];
+
 /** Default per-resource page budget per scheduled tick (keeps a tick within the dispatch deadline;
  *  the resumable cursor carries the rest forward to the next tick). Override via
  *  WOOCOMMERCE_RESOURCE_BACKFILL_CHUNKS (clamped 1..50). */
@@ -462,8 +478,9 @@ function resolveResourceChunkBudget(): number {
  *
  * Called per-connector from the woocommerce-orders-repull run() (which the ingest-scheduler dispatches
  * every connected tick AND the sync-now claimer dispatches on demand). For each resource it composes
- * the SAME generic `runResumableBackfill` driver the CLI path uses — initial 2-year window (the
- * manifest's maxBackfillWindowMs = TWO_YEARS_MS), cursor-paginated, RESUMABLE/chunked (a bounded page
+ * the SAME generic `runResumableBackfill` driver the CLI path uses — initial window = the manifest's
+ * maxBackfillWindowMs (woo: wooMaxBackfillWindowMs(), 5-year policy default), cursor-paginated,
+ * RESUMABLE/chunked (a bounded page
  * budget per tick), strictly DEDUPED + NO-LOSS, emitting to the BACKFILL lane (gate-off; Bronze
  * server-trusts the brand_id). A 'completed' resource is an instant no-op on later ticks.
  *
@@ -480,6 +497,14 @@ export async function driveResourceBackfillsForConnector(args: {
   saltHex: string;
   resources?: readonly string[];
   maxChunksPerResource?: number;
+  /**
+   * OPTIONAL caller-requested historical depth in ms (a claimed backfill_job's
+   * requested_window_ms, 0127). Passed into runResumableBackfill, where resolveBackfillFloor
+   * clamps it to each resource's manifest maxBackfillWindowMs. Omit = provider max. NOTE: the
+   * window only shapes a NEWLY-SEEDED jobs.resource_backfill_state floor — an already-persisted
+   * resource state keeps its original floor (resume semantics, never restart).
+   */
+  requestedWindowMs?: number;
 }): Promise<{ resource: string; stopReason: string; recordsThisRun: number }[]> {
   const { pool, producer, provider, connectorInstanceId, brandId, saltHex } = args;
   const resources = args.resources ?? WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES;
@@ -512,6 +537,8 @@ export async function driveResourceBackfillsForConnector(args: {
         // live event_id on each FetchedRecord.providerId → stamp it through unchanged so backfill ids
         // match the live/repull lane. Shopify/woocommerce KEEP the default DeterministicDedup deriver.
         ...(isIngestionProvider(provider) ? { dedup: precomputedEventIdDeriver } : {}),
+        // Requested depth (0127): clamped per-resource by resolveBackfillFloor to the manifest max.
+        ...(args.requestedWindowMs !== undefined ? { requestedWindowMs: args.requestedWindowMs } : {}),
         maxChunksThisRun: maxChunks,
       });
       outcomes.push({ resource: resourceName, stopReason: result.stopReason, recordsThisRun: result.recordsThisRun });
@@ -563,13 +590,21 @@ function resolveIngestionBackfillChunkBudget(): number {
  * brand_id is the caller's (from the connector enumeration / job row) — NEVER an API payload (MT-1).
  * Tokens/secrets are NEVER logged (I-S09). Self-contained pool + producer (own connections), released
  * in finally. A no-queued-job is a clean no-op (returns without side effects).
+ *
+ * WOOCOMMERCE (uniform "Pull historical data" UX): the queue drains ONLY the NON-ORDER resources
+ * (WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES) — orders flow on the live lane via
+ * woocommerce-orders-repull (uuidV5FromOrderLive ids, full manifest-window depth); driving them here
+ * too would mint DIFFERENT deterministic event_ids and double-count in Bronze. The per-resource
+ * cursors are SHARED with the scheduled per-tick lane (same jobs.resource_backfill_state rows), so a
+ * queued job and the scheduler never duplicate work — the button simply drives the same resumable
+ * walk to completion faster.
  */
 export async function runIngestionBackfillFromQueue(
   connectorInstanceId: string,
   provider: SupportedProvider,
   brandId: string,
 ): Promise<void> {
-  if (!isIngestionProvider(provider)) {
+  if (!isIngestionProvider(provider) && provider !== 'woocommerce') {
     throw new Error(`[ingestion-backfill] runIngestionBackfillFromQueue: provider "${provider}" is not an ingestion-framework provider`);
   }
   const jobRepo = new PgBackfillJobRepository(DB_URL);
@@ -602,9 +637,13 @@ export async function runIngestionBackfillFromQueue(
       return;
     }
 
-    // Drive every backfill-supported (rest) resource the manifest declares.
+    // Drive every backfill-supported (rest) resource the manifest declares — EXCEPT woocommerce
+    // orders (live-lane owned; different deterministic id ⇒ Bronze double-count — see fn docstring).
     const manifest = manifestFor(provider);
-    const resources = backfillableResources(manifest).map((r) => r.name);
+    const resources =
+      provider === 'woocommerce'
+        ? [...WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES]
+        : backfillableResources(manifest).map((r) => r.name);
     if (resources.length === 0) {
       // Misconfiguration guard: a provider with NO backfill-supported resources would otherwise
       // requeue forever. Finalize 'completed' (nothing to do) so the job terminates loudly.
@@ -620,6 +659,9 @@ export async function runIngestionBackfillFromQueue(
       log.warn(`[ingestion-backfill] queue job=${claimed.id} provider=${provider} has NO backfill-supported resources — finalized completed (no-op)`);
       return;
     }
+    // Requested depth (0127): the trigger persisted the caller's window on the job row. Parse it
+    // (fail-open to provider max) and hand it to the driver, which clamps per-resource.
+    const requestedWindowMs = parseRequestedWindowMs(claimed.requested_window_ms);
     const outcomes = await driveResourceBackfillsForConnector({
       pool,
       producer,
@@ -629,6 +671,7 @@ export async function runIngestionBackfillFromQueue(
       saltHex,
       resources,
       maxChunksPerResource: resolveIngestionBackfillChunkBudget(),
+      ...(requestedWindowMs !== undefined ? { requestedWindowMs } : {}),
     });
 
     const anyFailed = outcomes.some((o) => o.stopReason === 'failed');

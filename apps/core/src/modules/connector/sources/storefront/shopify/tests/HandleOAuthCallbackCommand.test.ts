@@ -371,6 +371,16 @@ describe('HandleOAuthCallbackCommand', () => {
         'orders/paid',
         'orders/updated',
         'shop/redact',
+        // P1 webhook expansion — real-time resource peers of the scheduled resource backfills
+        // (RegisterWebhooksCommand ALL_WEBHOOK_TOPICS). Kept in lock-step with the command's list.
+        'products/create',
+        'products/update',
+        'customers/create',
+        'customers/update',
+        'refunds/create',
+        'fulfillments/create',
+        'fulfillments/update',
+        'inventory_levels/update',
       ].sort(),
     );
   });

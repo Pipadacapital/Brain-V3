@@ -62,10 +62,13 @@ function stubFetch(respond: (url: URL, callIndex: number) => Response | Promise<
 }
 
 function jsonResponse(items: RazorpayReconItem[], status = 200): Response {
+  // Cast via `unknown` to the ambient global Response — matches the codebase convention for fetch
+  // stubs (see meta-insights-client / shiprocket-client tests); avoids the undici-types `bytes()`
+  // structural mismatch between the DOM lib Response and the runtime `new Response`.
   return new Response(JSON.stringify({ entity: 'collection', count: items.length, items }), {
     status,
     headers: { 'Content-Type': 'application/json' },
-  });
+  }) as unknown as Response;
 }
 
 const CREDS = { keyId: 'rzp_test_key', keySecret: 'rzp_test_secret' };
@@ -221,7 +224,7 @@ describe('CL-6/CL-7: rate limit + auth errors', () => {
 
   it('429 with Retry-After backs off then succeeds', async () => {
     stubFetch((_url, i) => {
-      if (i === 0) return new Response('', { status: 429, headers: { 'Retry-After': '1' } });
+      if (i === 0) return new Response('', { status: 429, headers: { 'Retry-After': '1' } }) as unknown as Response;
       return jsonResponse([reconItem()]);
     });
     const client = new RazorpaySettlementsClient(CREDS);
@@ -232,7 +235,7 @@ describe('CL-6/CL-7: rate limit + auth errors', () => {
   });
 
   it('401 throws RAZORPAY_AUTH_ERROR (repull lane keys RECONNECT_REQUIRED on it)', async () => {
-    stubFetch(() => new Response('', { status: 401 }));
+    stubFetch(() => new Response('', { status: 401 }) as unknown as Response);
     const client = new RazorpaySettlementsClient(CREDS);
     await expect(client.fetchReconMonthPage(2025, 7, 0)).rejects.toThrow('RAZORPAY_AUTH_ERROR');
   });

@@ -20,16 +20,18 @@ export const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Provider → max historical depth in whole 30-day months (floor of the manifest window).
- * ga4 is the only sub-24-month platform (GA4 API retention ≈ 14 months / 420 days).
- * Parity with the real manifests is test-enforced (see module doc).
+ * meta is the deepest platform (Meta retains ad insights ~37 months); every other provider is at
+ * Brain's 24-month default (incl. ga4, which now claims 24mo — GA4 returns empty rows for dates
+ * that predate the property, so over-claiming is honest). Parity with the real manifests is
+ * test-enforced (see module doc + backfill-depth.test.ts).
  */
 export const PROVIDER_MAX_BACKFILL_MONTHS: Readonly<Record<string, number>> = {
   shopify: 24,
-  meta: 24,
+  meta: 37,
   google_ads: 24,
   razorpay: 24,
   shiprocket: 24,
-  ga4: 14,
+  ga4: 24,
 };
 
 /** Fallback for a provider missing from the map (Brain's default 2-year target). */

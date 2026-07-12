@@ -68,7 +68,8 @@ describe('PROVIDER_MAX_BACKFILL_MONTHS — manifest parity (the mirror MUST matc
 describe('providerMaxBackfillMonths', () => {
   it('returns the mirrored max for a known provider', () => {
     expect(providerMaxBackfillMonths('shopify')).toBe(24);
-    expect(providerMaxBackfillMonths('ga4')).toBe(14);
+    expect(providerMaxBackfillMonths('ga4')).toBe(24);
+    expect(providerMaxBackfillMonths('meta')).toBe(37);
   });
 
   it('falls back to the 24-month default for an unknown provider', () => {
@@ -88,12 +89,14 @@ describe('backfillDepthOptions', () => {
     expect(opts[0]).toMatchObject({ value: '3mo', requestedWindowMs: 3 * MONTH_MS });
   });
 
-  it('clamps the fixed steps to a sub-24-month provider max, and labels Max honestly (ga4 = 14mo)', () => {
-    const opts = backfillDepthOptions('ga4');
-    // 3/6/12 are below 14; 24 is above 14 → dropped. Max is labeled 14, never 24 (honesty).
-    expect(opts.map((o) => o.value)).toEqual(['3mo', '6mo', '12mo', 'max']);
-    expect(opts.at(-1)).toMatchObject({ value: 'max', label: 'Max (14 months)' });
-    expect(opts.some((o) => o.requestedWindowMs !== undefined && o.requestedWindowMs > 14 * MONTH_MS)).toBe(false);
+  it('keeps every fixed step below a DEEPER-than-24-month provider max, and labels Max honestly (meta = 37mo)', () => {
+    const opts = backfillDepthOptions('meta');
+    // meta retains ~37 months, so 3/6/12/24 are ALL strictly below the max and survive as fixed
+    // steps; "Max" reaches the ceiling and is labeled 37, never a fixed value (honesty).
+    expect(opts.map((o) => o.value)).toEqual(['3mo', '6mo', '12mo', '24mo', 'max']);
+    expect(opts.at(-1)).toMatchObject({ value: 'max', label: 'Max (37 months)' });
+    // No fixed step ever reaches or exceeds the provider ceiling — only "Max" does.
+    expect(opts.some((o) => o.requestedWindowMs !== undefined && o.requestedWindowMs >= 37 * MONTH_MS)).toBe(false);
   });
 
   it('never promises a step at or beyond the provider max (only "Max" reaches the ceiling)', () => {

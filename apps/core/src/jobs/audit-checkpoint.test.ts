@@ -12,13 +12,22 @@ import { writeAuditCheckpoint, runAuditCheckpoint, type CheckpointSink } from '.
 /** Minimal pg.Pool stand-in: routes the head + count queries to scripted rows.
  *
  * Since the RLS hardening (2b322aa1, migration 0067 — audit.audit_log FORCEs RLS), readAuditHead
- * acquires a DEDICATED client via pool.connect() to claim the `SET app.role = 'audit_reader'`
- * escape for the global chain walk (and RESETs it before release). The fake mirrors that shape:
- * connect() hands out a client whose query() answers the GUC statements + the head/count reads. */
-function fakePool(head: { id: string; entry_hash: string } | null, count: string): pg.Pool {
+ * claims the `app.role = 'audit_reader'` escape for the global chain walk. Since the pgbouncer
+ * fix (prod 2026-07-12 uuid-cast fatal), it does so with `SET LOCAL` inside ONE transaction
+ * (BEGIN … COMMIT) so transaction pooling can't split the GUC from the reads. The fake mirrors
+ * that shape: connect() hands out a client whose query() answers the txn/GUC statements + the
+ * head/count reads, and RECORDS every statement so tests can assert the txn pinning. */
+function fakePool(
+  head: { id: string; entry_hash: string } | null,
+  count: string,
+): pg.Pool & { statements: string[] } {
+  const statements: string[] = [];
   const client = {
     query: async (sql: string) => {
-      if (sql.startsWith('SET ') || sql.startsWith('RESET ')) return { rows: [], rowCount: 0 };
+      statements.push(sql);
+      if (/^(BEGIN|COMMIT|ROLLBACK)/.test(sql) || sql.startsWith('SET ') || sql.startsWith('RESET ')) {
+        return { rows: [], rowCount: 0 };
+      }
       if (sql.includes('count(*)')) return { rows: [{ n: count }], rowCount: 1 };
       return { rows: head ? [head] : [], rowCount: head ? 1 : 0 };
     },
@@ -28,7 +37,8 @@ function fakePool(head: { id: string; entry_hash: string } | null, count: string
   };
   return {
     connect: async () => client,
-  } as unknown as pg.Pool;
+    statements,
+  } as unknown as pg.Pool & { statements: string[] };
 }
 
 class FakeSink implements CheckpointSink {
@@ -83,13 +93,44 @@ describe('writeAuditCheckpoint', () => {
     expect(sink.puts).toHaveLength(1); // the WORM write still happened
   });
 
-  it('handles an empty audit_log (genesis checkpoint, head hash null)', async () => {
+  it('skips cleanly on an empty audit_log (no rows yet → no-op, no WORM write)', async () => {
+    // Fresh deployment: zero audit rows → there is no chain head to anchor. The job must NO-OP
+    // honestly (empty_chain, exit-0 semantics) instead of writing meaningless genesis checkpoints
+    // or crashing (prod 2026-07-12: the empty/fresh env surfaced the RLS uuid-cast fatal).
     const pool = fakePool(null, '0');
     const sink = new FakeSink(null);
     const res = await writeAuditCheckpoint(pool, sink, NOW);
-    expect(res.checkpoint?.headId).toBe('0');
-    expect(res.checkpoint?.headEntryHash).toBeNull();
-    expect(verifyAuditCheckpoint(res.checkpoint!)).toBe(true);
+    expect(res.written).toBe(false);
+    expect(res.reason).toBe('empty_chain');
+    expect(res.checkpoint).toBeUndefined();
+    expect(sink.puts).toHaveLength(0); // nothing anchored — no false/empty anchor in the WORM bucket
+  });
+
+  it('claims the audit_reader escape with SET LOCAL inside ONE transaction (pgbouncer-safe)', async () => {
+    // Prod runs through pgbouncer in TRANSACTION pooling mode: a bare session-level SET can land on
+    // a different server connection than the reads (losing the RLS escape), and a pooled connection
+    // can carry app.current_brand_id = '' (RESET on a placeholder GUC), which the 0067 policy casts
+    // to uuid — the `invalid input syntax for type uuid: ""` fatal. The fix pins one txn + SET LOCAL
+    // + a nil-uuid brand GUC. This test locks that shape.
+    const pool = fakePool({ id: '9', entry_hash: 'f'.repeat(64) }, '9');
+    const sink = new FakeSink(null);
+    await writeAuditCheckpoint(pool, sink, NOW);
+
+    const stmts = pool.statements;
+    const begin = stmts.findIndex((s) => s.startsWith('BEGIN'));
+    const setRole = stmts.findIndex((s) => s.includes(`SET LOCAL app.role = 'audit_reader'`));
+    const setBrand = stmts.findIndex((s) =>
+      s.includes(`SET LOCAL app.current_brand_id = '00000000-0000-0000-0000-000000000000'`),
+    );
+    const headRead = stmts.findIndex((s) => s.includes('FROM audit_log'));
+    const commit = stmts.findIndex((s) => s.startsWith('COMMIT'));
+
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(setRole).toBeGreaterThan(begin); // escape is txn-local, AFTER BEGIN
+    expect(setBrand).toBeGreaterThan(begin); // brand GUC pinned to a castable uuid, AFTER BEGIN
+    expect(headRead).toBeGreaterThan(setRole); // reads ride the SAME txn as the escape
+    expect(commit).toBeGreaterThan(headRead); // txn closed before release
+    expect(stmts.some((s) => /^SET app\.role/.test(s))).toBe(false); // no session-level SET (leaks via pgbouncer)
   });
 });
 

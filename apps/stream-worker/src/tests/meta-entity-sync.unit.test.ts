@@ -5,8 +5,22 @@
  *      and a VERSION-DETERMINISTIC event_id (unchanged state → same id; updated_time change → new id).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { MetaEntityClient } from '../jobs/meta-entity-sync/meta-entity-client.js';
+import { MetaEntityClient, type MetaAdEntity } from '../jobs/meta-entity-sync/meta-entity-client.js';
 import { emitEntities, AD_ENTITY_UPDATED_EVENT_NAME } from '../jobs/meta-entity-sync/run.js';
+
+/** Fill the ADDITIVE firehose entity-depth fields with null so test literals stay concise. */
+function mkEntity(partial: Partial<MetaAdEntity> & Pick<MetaAdEntity, 'level' | 'entity_id'>): MetaAdEntity {
+  return {
+    campaign_id: null, parent_id: null, name: null, status: null, objective: null,
+    entity_updated_at: null, buying_type: null, daily_budget_minor: null,
+    lifetime_budget_minor: null, bid_strategy: null, effective_status: null, start_time: null,
+    stop_time: null, optimization_goal: null, billing_event: null, bid_amount: null,
+    targeting_json: null, creative_id: null, object_story_spec_json: null, title: null,
+    body: null, image_url: null, video_id: null, call_to_action_type: null, link_url: null,
+    subtype: null, approximate_count: null,
+    ...partial,
+  };
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FetchStub = (...args: any[]) => Promise<Response>;
@@ -112,7 +126,7 @@ describe('emitEntities (ad.entity.updated)', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       producer: producer as any,
       entities: [
-        { level: 'campaign', entity_id: 'c1', campaign_id: 'c1', parent_id: null, name: 'Camp', status: 'ACTIVE', objective: 'OUTCOME_SALES', entity_updated_at: '2026-06-20T00:00:00.000Z' },
+        mkEntity({ level: 'campaign', entity_id: 'c1', campaign_id: 'c1', parent_id: null, name: 'Camp', status: 'ACTIVE', objective: 'OUTCOME_SALES', entity_updated_at: '2026-06-20T00:00:00.000Z' }),
       ],
     });
     expect(n).toBe(1);
@@ -130,7 +144,7 @@ describe('emitEntities (ad.entity.updated)', () => {
   });
 
   it('event_id is VERSION-deterministic: unchanged state → same id; updated_time change → new id', async () => {
-    const base = { level: 'campaign' as const, entity_id: 'c1', campaign_id: 'c1', parent_id: null, name: 'Camp', status: 'ACTIVE', objective: 'X' };
+    const base = mkEntity({ level: 'campaign', entity_id: 'c1', campaign_id: 'c1', parent_id: null, name: 'Camp', status: 'ACTIVE', objective: 'X' });
 
     const p1 = fakeProducer();
     await emitEntities({ brandId: BRAND, ciId: 'ci-1', producer: p1 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any

@@ -140,6 +140,29 @@ function syncDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * FIREHOSE (§2.D): a STABLE content-hash version for grains Meta returns WITHOUT updated_time
+ * (adcreatives / custom_audiences / saved_audiences). Hashing the projected content fields means an
+ * UNCHANGED entity re-mints the SAME event_id (dedup — no re-sync churn), while a real content change
+ * advances the version → a new event Silver picks as latest. Never random, never a day-bucket.
+ */
+function contentHashVersion(e: MetaAdEntity): string {
+  const parts = [
+    e.name,
+    e.status,
+    e.subtype,
+    e.approximate_count,
+    e.title,
+    e.body,
+    e.image_url,
+    e.video_id,
+    e.call_to_action_type,
+    e.link_url,
+    e.object_story_spec_json,
+  ].map((v) => v ?? '');
+  return hashToUuidShaped(`meta:entity-content:${e.level}:${e.entity_id}:${parts.join('')}`);
+}
+
 /** Normalize Meta's updated_time to a valid UTC ISO (offset:false) for occurred_at, or null. */
 function toUtcIso(s: string | null): string | null {
   if (!s) return null;
@@ -154,7 +177,15 @@ export async function emitEntities(p: EmitParams): Promise<number> {
   for (const e of p.entities) {
     // version-deterministic event_id: same metadata state → same id (dedup); a real change advances
     // Meta's updated_time → a new version → a new event Silver can pick as latest.
-    const version = e.entity_updated_at ?? syncDate();
+    // FIREHOSE (§2.D): adcreatives/audiences lack updated_time → derive a STABLE content-hash version
+    // from the projected fields (NOT random / NOT syncDate churn), so an unchanged creative/audience
+    // re-mints the SAME id (dedup) and a real content change advances it. Hierarchy grains keep
+    // updated_time (falling back to syncDate only when Meta omits it).
+    const version =
+      e.entity_updated_at ??
+      (e.level === 'adcreative' || e.level === 'custom_audience' || e.level === 'saved_audience'
+        ? contentHashVersion(e)
+        : syncDate());
     const eventId = hashToUuidShaped(
       `${p.brandId}:meta:${e.level}:${e.entity_id}:${version}:ad.entity.updated`,
     );
@@ -180,6 +211,29 @@ export async function emitEntities(p: EmitParams): Promise<number> {
         advertising_channel_type: null, // Meta has no channel-type concept (Google-only)
         bidding_strategy: null,          // not pulled for Meta (optional per the A1 contract)
         entity_updated_at: e.entity_updated_at,
+        // ── FIREHOSE entity depth (all additive + nullable; grain-specific). Budgets/bid are MINOR-unit
+        //    strings in the account currency (NEVER float). Audiences carry NO member PII. ────────────
+        buying_type: e.buying_type,
+        daily_budget_minor: e.daily_budget_minor,
+        lifetime_budget_minor: e.lifetime_budget_minor,
+        bid_strategy: e.bid_strategy,
+        effective_status: e.effective_status,
+        start_time: e.start_time,
+        stop_time: e.stop_time,
+        optimization_goal: e.optimization_goal,
+        billing_event: e.billing_event,
+        bid_amount: e.bid_amount,
+        targeting_json: e.targeting_json,
+        creative_id: e.creative_id,
+        object_story_spec_json: e.object_story_spec_json,
+        title: e.title,
+        body: e.body,
+        image_url: e.image_url,
+        video_id: e.video_id,
+        call_to_action_type: e.call_to_action_type,
+        link_url: e.link_url,
+        subtype: e.subtype,
+        approximate_count: e.approximate_count,
       },
     });
 

@@ -39,6 +39,42 @@ const metaRows: Array<{ row: any; account_currency: string; account_timezone: st
     },
     account_currency: 'inr', account_timezone: null,
   },
+  {
+    // FIREHOSE demographic breakdown (age+gender) — breakdown_key folds the dims; event_id distinct
+    // from the base row at the same (brand,platform,statDate,level,levelId).
+    row: {
+      level: 'campaign', campaign_id: 'c_42', campaign_name: 'Summer Sale',
+      spend: '10.00', impressions: '100', clicks: '5', date_start: '2026-06-10',
+      age: '25-34', gender: 'female',
+    },
+    account_currency: 'usd', account_timezone: 'America/Los_Angeles',
+  },
+  {
+    // FIREHOSE placement breakdown (publisher_platform + platform_position + device_platform).
+    row: {
+      level: 'campaign', campaign_id: 'c_42', spend: '5.50', impressions: '50', clicks: '2',
+      date_start: '2026-06-10', publisher_platform: 'instagram', platform_position: 'feed',
+      device_platform: 'mobile_app',
+    },
+    account_currency: 'usd', account_timezone: null,
+  },
+  {
+    // FIREHOSE geo breakdown (country + region) — verifies escaping-free byte join + sort order.
+    row: {
+      level: 'campaign', campaign_id: 'c_42', spend: '3.25', impressions: '30', clicks: '1',
+      date_start: '2026-06-10', country: 'US', region: 'California',
+    },
+    account_currency: 'usd', account_timezone: null,
+  },
+  {
+    // FIREHOSE hourly breakdown — a single-dim breakdown_key.
+    row: {
+      level: 'campaign', campaign_id: 'c_42', spend: '1.00', impressions: '10', clicks: '0',
+      date_start: '2026-06-10',
+      hourly_stats_aggregated_by_advertiser_time_zone: '00:00:00 - 00:59:59',
+    },
+    account_currency: 'usd', account_timezone: null,
+  },
 ];
 
 const googleRows: Array<{ row: any; account_currency: string; account_timezone: string | null }> = [
@@ -64,9 +100,14 @@ const googleRows: Array<{ row: any; account_currency: string; account_timezone: 
 
 function expectedFrom(ev: ReturnType<typeof mapMetaInsightToEvent>) {
   const p = ev.properties;
-  const event_id = uuidV5FromSpendRow(BRAND, p.platform, p.stat_date, p.level, p.level_id);
+  // FIREHOSE: fold the row's breakdown_key ('' for base) into the event_id seed (§2.A). Base vectors
+  // keep breakdown_key='' → base event_ids are byte-unchanged; a breakdown vector proves distinctness.
+  const event_id = uuidV5FromSpendRow(
+    BRAND, p.platform, p.stat_date, p.level, p.level_id, p.breakdown_key ?? '',
+  );
   return {
     event_id,
+    breakdown_key: p.breakdown_key,
     occurred_at: ev.occurred_at,
     platform: p.platform,
     level: p.level,

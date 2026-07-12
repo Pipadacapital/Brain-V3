@@ -79,8 +79,35 @@ def stat_date_to_iso(stat_date):
     return f"{d}T00:00:00.000Z"
 
 
-def event_id_spend_live(brand_id, platform, stat_date, level, level_id):
-    return uuid_shaped(f"{brand_id}:{platform}:{stat_date}:{level}:{level_id}:spend.live.v1")
+def event_id_spend_live(brand_id, platform, stat_date, level, level_id, breakdown_key=""):
+    bk = breakdown_key or ""
+    return uuid_shaped(f"{brand_id}:{platform}:{stat_date}:{level}:{level_id}:{bk}:spend.live.v1")
+
+
+# FIREHOSE canonical breakdownKey (byte-mirror of @brain/ad-spend-mapper canonicalBreakdownKey +
+# _raw_normalize.canonical_breakdown_key). Duplicated here (pyspark-free test) as the reference impl.
+def canonical_breakdown_key(dims):
+    def esc(s):
+        return s.replace("\\", "\\\\").replace("|", "\\|").replace("=", "\\=")
+
+    pairs = []
+    for name, raw_val in (dims or {}).items():
+        if raw_val is None:
+            continue
+        val = str(raw_val)
+        if val == "":
+            continue
+        pairs.append((esc(str(name)), esc(val)))
+    pairs.sort(key=lambda p: p[0])
+    return "|".join(f"{n}={v}" for n, v in pairs)
+
+
+# The Meta breakdown dim names folded into breakdown_key (fixed order; canonicalization sorts them).
+_META_BREAKDOWN_DIMS = (
+    "age", "gender", "country", "region", "dma", "publisher_platform",
+    "platform_position", "device_platform", "impression_device",
+    "hourly_stats_aggregated_by_advertiser_time_zone",
+)
 
 
 def _s(v):
@@ -98,8 +125,10 @@ def _normalize_meta(v):
     level_id = resolve_level_id(level, campaign_id, adset_id, ad_id)
     parent_id = resolve_parent_id(level, campaign_id, adset_id, ad_id)
     stat_date = (o.get("date_start") or "").strip()
+    breakdown_key = canonical_breakdown_key({d: o.get(d) for d in _META_BREAKDOWN_DIMS})
     return {
-        "event_id": event_id_spend_live(brand, "meta", stat_date, level, level_id),
+        "event_id": event_id_spend_live(brand, "meta", stat_date, level, level_id, breakdown_key),
+        "breakdown_key": breakdown_key,
         "occurred_at": stat_date_to_iso(stat_date),
         "platform": "meta",
         "level": level,
@@ -126,8 +155,10 @@ def _normalize_google(v):
     parent_id = resolve_parent_id(level, campaign_id, adset_id, ad_id)
     stat_date = (o.get("segments_date") or "").strip()
     currency = (o.get("currency_code") if o.get("currency_code") is not None else v["account_currency"])
+    # Google base lane in the Meta firehose PR uses breakdown_key='' (Impl-G folds its segment dims later).
     return {
-        "event_id": event_id_spend_live(brand, "google_ads", stat_date, level, level_id),
+        "event_id": event_id_spend_live(brand, "google_ads", stat_date, level, level_id, ""),
+        "breakdown_key": "",
         "occurred_at": stat_date_to_iso(stat_date),
         "platform": "google_ads",
         "level": level,

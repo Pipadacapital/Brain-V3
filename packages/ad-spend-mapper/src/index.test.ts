@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   uuidV5FromSpendRow,
+  canonicalBreakdownKey,
   microsToMinorString,
   majorDecimalToMinorString,
   mapMetaInsightToEvent,
@@ -252,5 +253,158 @@ describe('mapGoogleRowToEvent', () => {
     expect(ev.properties.cpm_minor).toBe('1370');
     expect(ev.properties.advertising_channel_type).toBe('SEARCH');
     expect(ev.properties.currency_code).toBe('USD');
+  });
+});
+
+// ── FIREHOSE: canonical breakdownKey (COMMON — shared TS+Py canonicalization) ──────────────────────
+describe('canonicalBreakdownKey (FIREHOSE §2.B)', () => {
+  it('is empty for no dims (base pass) → base event_ids stay byte-unchanged', () => {
+    expect(canonicalBreakdownKey({})).toBe('');
+    expect(canonicalBreakdownKey({ age: undefined, gender: null })).toBe('');
+    expect(canonicalBreakdownKey({ age: '' })).toBe('');
+  });
+
+  it('sorts pairs ascending by name and joins with |', () => {
+    expect(
+      canonicalBreakdownKey({ gender: 'female', age: '25-34', publisher_platform: 'instagram' }),
+    ).toBe('age=25-34|gender=female|publisher_platform=instagram');
+  });
+
+  it('omits absent/empty dims (partial breakdown is stable + disjoint from a fuller one)', () => {
+    expect(canonicalBreakdownKey({ age: '25-34', gender: undefined })).toBe('age=25-34');
+  });
+
+  it('escapes delimiter chars (backslash, pipe, equals) in name and value', () => {
+    expect(canonicalBreakdownKey({ region: 'a|b=c\\d' })).toBe('region=a\\|b\\=c\\\\d');
+  });
+});
+
+// ── FIREHOSE: dedup event_id folds breakdownKey — base + every breakdown row are distinct ───────────
+describe('uuidV5FromSpendRow breakdownKey (FIREHOSE §2.A)', () => {
+  const B = 'a7e40001-a700-4a70-8a70-000000000001';
+
+  it('base pass (breakdownKey="") is byte-identical to the legacy 5-arg id (zero re-dedup churn)', () => {
+    const legacy = uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1');
+    const base = uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', '');
+    expect(base).toBe(legacy);
+  });
+
+  it('a breakdown row never collides with the base row at the same grain', () => {
+    const base = uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', '');
+    const demo = uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', 'age=25-34|gender=female');
+    expect(demo).not.toBe(base);
+  });
+
+  it('two different breakdown rows at the same grain never collide with each other', () => {
+    const a = uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', 'age=25-34|gender=female');
+    const b = uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', 'age=35-44|gender=female');
+    const c = uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', 'publisher_platform=instagram');
+    expect(new Set([a, b, c]).size).toBe(3);
+  });
+
+  it('an idempotent re-pull of the same breakdown row re-mints the same id (MERGE dedups)', () => {
+    const k = 'country=US|region=California';
+    expect(uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', k)).toBe(
+      uuidV5FromSpendRow(B, 'meta', '2026-06-10', 'campaign', 'c1', k),
+    );
+  });
+});
+
+// ── FIREHOSE: Meta enriched insight set + breakdown dim tagging + array-lift preservation ───────────
+describe('mapMetaInsightToEvent — FIREHOSE fields', () => {
+  it('lifts the enriched base-grain metrics (money=minor, counts, ratios, rankings)', () => {
+    const ev = mapMetaInsightToEvent(
+      {
+        level: 'ad', campaign_id: 'c1', adset_id: 's1', ad_id: 'a1',
+        spend: '10.00', impressions: '100', clicks: '5', date_start: '2026-06-10',
+        reach: '80', frequency: '1.25', cpp: '0.50', unique_clicks: '4', unique_ctr: '0.04',
+        inline_link_clicks: '3', inline_link_click_ctr: '0.03',
+        cost_per_unique_click: '2.50', cost_per_inline_link_click: '3.33',
+        outbound_clicks: [{ action_type: 'outbound_click', value: '2' }],
+        purchase_roas: [{ action_type: 'omni_purchase', value: '4.2' }],
+        video_play_actions: [{ action_type: 'video_view', value: '40' }],
+        video_p25_watched_actions: [{ action_type: 'video_view', value: '30' }],
+        actions: [
+          { action_type: 'purchase', value: '3' },
+          { action_type: 'post_engagement', value: '9' },
+          { action_type: 'landing_page_view', value: '12' },
+        ],
+        quality_ranking: 'ABOVE_AVERAGE',
+      },
+      'usd',
+      null,
+    );
+    const p = ev.properties;
+    expect(p.reach).toBe('80');
+    expect(p.frequency).toBe('1.25');           // ratio passthrough, NOT minor units
+    expect(p.cpp_minor).toBe('50');             // 0.50 major → 50 minor
+    expect(p.unique_clicks).toBe('4');
+    expect(p.unique_ctr).toBe('0.04');
+    expect(p.cost_per_unique_click_minor).toBe('250');
+    expect(p.cost_per_inline_link_click_minor).toBe('333');
+    expect(p.outbound_clicks).toBe('2');
+    expect(p.purchase_roas_ratio).toBe('4.2');
+    expect(p.video_views).toBe('40');
+    expect(p.video_p25_watched).toBe('30');
+    expect(p.post_engagement).toBe('9');
+    expect(p.landing_page_views).toBe('12');
+    expect(p.quality_ranking).toBe('ABOVE_AVERAGE');
+    // Array-lift preservation (ADR-AD-8): every raw array is still verbatim in conversions_raw.
+    expect((p.conversions_raw as Record<string, unknown>)['outbound_clicks']).toEqual([
+      { action_type: 'outbound_click', value: '2' },
+    ]);
+    expect((p.conversions_raw as Record<string, unknown>)['video_play_actions']).toEqual([
+      { action_type: 'video_view', value: '40' },
+    ]);
+  });
+
+  it('base pass leaves breakdown_key="" and all breakdown dims null', () => {
+    const ev = mapMetaInsightToEvent(
+      { level: 'campaign', campaign_id: 'c1', spend: '1.00', date_start: '2026-06-10' },
+      'usd',
+      null,
+    );
+    expect(ev.properties.breakdown_key).toBe('');
+    expect(ev.properties.age).toBeNull();
+    expect(ev.properties.publisher_platform).toBeNull();
+  });
+
+  it('tags a demographic breakdown row and folds the dims into breakdown_key', () => {
+    const ev = mapMetaInsightToEvent(
+      {
+        level: 'campaign', campaign_id: 'c1', spend: '1.00', date_start: '2026-06-10',
+        age: '25-34', gender: 'female',
+      },
+      'usd',
+      null,
+    );
+    expect(ev.properties.age).toBe('25-34');
+    expect(ev.properties.gender).toBe('female');
+    expect(ev.properties.breakdown_key).toBe('age=25-34|gender=female');
+  });
+
+  it('leaves the Meta-only enriched fields null when absent (never fabricated 0)', () => {
+    const ev = mapMetaInsightToEvent(
+      { level: 'campaign', campaign_id: 'c1', spend: '1.00', date_start: '2026-06-10' },
+      'usd',
+      null,
+    );
+    expect(ev.properties.reach).toBeNull();
+    expect(ev.properties.cpp_minor).toBeNull();
+    expect(ev.properties.video_views).toBeNull();
+  });
+});
+
+// ── FIREHOSE: Google lane keeps Meta-only fields null + breakdown_key='' (Impl-G fills later) ───────
+describe('mapGoogleRowToEvent — FIREHOSE null-passthrough', () => {
+  it('sets breakdown_key="" and Meta-only fields null on the Google base lane', () => {
+    const ev = mapGoogleRowToEvent(
+      { level: 'campaign', campaign_id: 'gc1', cost_micros: '1000000', segments_date: '2026-06-10' },
+      'USD',
+      null,
+    );
+    expect(ev.properties.breakdown_key).toBe('');
+    expect(ev.properties.reach).toBeNull();
+    expect(ev.properties.age).toBeNull();
   });
 });

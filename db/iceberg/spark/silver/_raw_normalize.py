@@ -172,6 +172,30 @@ def uuid_shaped(inp):
     return f"{hx[0:8]}-{hx[8:12]}-{hx[12:16]}-{hx[16:20]}-{hx[20:32]}"
 
 
+def canonical_breakdown_key(dims):
+    """@brain/ad-spend-mapper canonicalBreakdownKey — order-stable, delimiter-safe join of the breakdown/
+    segment dimension name=value pairs PRESENT on a row (the SIXTH seed arg to uuidV5FromSpendRow). MUST
+    stay BYTE-IDENTICAL to the TS port (packages/ad-spend-mapper/src/index.ts). Rule:
+      1. take pairs whose value is not None and not '' (as strings),
+      2. escape '\\', '|', '=' in BOTH name and value with a backslash,
+      3. sort by ESCAPED name ascending (code-point order — matches TS default string sort on ASCII),
+      4. join with '|'; empty set -> ''.
+    Base pass -> '' so base-grain event_ids are byte-unchanged (zero re-dedup churn)."""
+    def esc(s):
+        return s.replace("\\", "\\\\").replace("|", "\\|").replace("=", "\\=")
+
+    pairs = []
+    for name, raw_val in (dims or {}).items():
+        if raw_val is None:
+            continue
+        val = str(raw_val)
+        if val == "":
+            continue
+        pairs.append((esc(str(name)), esc(val)))
+    pairs.sort(key=lambda p: p[0])
+    return "|".join(f"{n}={v}" for n, v in pairs)
+
+
 def event_id_order_live(brand_id, order_id, updated_at_ms):
     """uuidV5FromOrderLive(brandId, orderId, updatedAtUtcMs) — Silver now derives the event_id the
     connector used to stamp, from the server-trusted brand_id + the raw order id + updated_at ms."""

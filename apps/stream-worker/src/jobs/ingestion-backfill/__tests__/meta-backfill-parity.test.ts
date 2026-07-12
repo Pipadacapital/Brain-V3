@@ -44,8 +44,16 @@ function stubClientOnto(fetcher: MetaInsightsFetcher): void {
     async fetchAccountMeta() {
       return { currencyCode: ACCOUNT_CURRENCY, timezoneName: ACCOUNT_TZ };
     },
-    async fetchInsightsForWindow(level: 'campaign' | 'adset' | 'ad') {
-      return level === 'campaign' ? [RAW_ROW] : [];
+    // FIREHOSE: the fetcher now loops base + every breakdown pass across levels. Return RAW_ROW ONLY
+    // for the base (breakdown=null/undefined) campaign pass — a real account returns breakdown rows only
+    // on breakdown passes; this keeps the base-grain parity assertion (one base row) intact.
+    async fetchInsightsForWindow(
+      level: 'campaign' | 'adset' | 'ad',
+      _since: string,
+      _until: string,
+      breakdown?: string | null,
+    ) {
+      return level === 'campaign' && (breakdown === null || breakdown === undefined) ? [RAW_ROW] : [];
     },
   };
   // The fetcher holds the client on a private field; replace it for the test (no network).

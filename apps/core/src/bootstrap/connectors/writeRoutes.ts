@@ -285,6 +285,16 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
           () => randomBytes(24).toString('hex'),
         );
 
+        // ── Shopflo extension: per-instance signature posture marker ──────────────────────────────
+        // Shopflo's dashboard may not let the merchant configure Brain's MINTED webhook_secret, which
+        // would leave the HMAC-gated webhook lane permanently-401. Record the secret's provenance in
+        // the bundle (non-secret marker): 'minted' ⇒ ShopfloWebhookStrategy runs verify-if-present
+        // (unsigned deliveries accepted with a posture warning; signed ones still strictly verified);
+        // 'merchant' (they pasted their own Shopflo-configured secret) ⇒ strict fail-closed verify.
+        if (connectorType === 'shopflo') {
+          secretBundle['webhook_secret_origin'] = generated['webhook_secret'] ? 'minted' : 'merchant';
+        }
+
         let arn: string;
         try {
           ({ arn } = await connectorSecretsManager.storeSecret(

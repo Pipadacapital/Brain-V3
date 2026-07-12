@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:59a898aed251531b99859f386126b963863f6dad58210e0af7d03984ab6639db"
+  digest: "sha256:20f16f0f16474171f7b669c1e728c10001bd6c98893191014c5e1e1eab3f31cc"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:1f646f60bfdff649b4d6b9d5bd9a9f48005edf79991d2ddee77a779e34ef90e4"
+  digest: "sha256:e7427478830e30295be1f48330939ddb9359f6c9d997c1dce1e12278489e51d0"
 # spark image — runs the bronze-maintenance cron (db/iceberg/spark/Dockerfile). Also reused by the
 # V4 Spark silver/gold/mv-refresh crons (.sparkV4.image — CI digest-pins both). Bronze LANDING is
 # the kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.

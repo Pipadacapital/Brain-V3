@@ -34,6 +34,7 @@ import {
   CUSTOMER_UPSERT_V1_EVENT_NAME,
   REFUND_RECORDED_V1_EVENT_NAME,
   FULFILLMENT_RECORDED_V1_EVENT_NAME,
+  INVENTORY_LEVEL_V1_EVENT_NAME,
 } from './event-names.js';
 
 /** Provider id — matches CONNECTOR_CATALOG + IConnector.provider + the ConnectorFactory key. */
@@ -123,6 +124,26 @@ export const SHOPIFY_FULFILLMENTS_RESOURCE: ResourceDescriptor = {
 };
 
 /**
+ * Inventory levels — REAL-TIME ONLY (kind 'webhook', inventory_levels/update): a point-in-time
+ * stock observation at the inventory-item×location grain. No historical backfill — Shopify's REST
+ * inventory_levels endpoint is a current-state snapshot, not a history (the paired catalogue
+ * history is the 'products' resource, whose variants[] carry inventory_item_id as the join key).
+ * backfillableResources() filters on kind==='rest', so this descriptor can never reach the
+ * resumable driver; it exists to give the live webhook lane its dedup namespace + event routing.
+ */
+export const SHOPIFY_INVENTORY_LEVELS_RESOURCE: ResourceDescriptor = {
+  name: 'inventory_levels',
+  kind: 'webhook',
+  emits: [INVENTORY_LEVEL_V1_EVENT_NAME],
+  backfillSupported: false,
+  // Real-time only; the platform serves no history for this grain. TWO_YEARS_MS keeps the
+  // manifest validity invariant (maxBackfillWindowMs > 0) without implying a backfill exists.
+  maxBackfillWindowMs: TWO_YEARS_MS,
+  dedupKeyStrategy: 'provider_id+kind',
+  description: 'Shopify inventory_levels/update webhook — per-item×location stock observations.',
+};
+
+/**
  * The complete Shopify ingestion manifest. Declared once; consumed by the generic backfill driver,
  * the repull scheduler, and the dedup layer. Validate with assertManifestValid() at startup.
  */
@@ -134,5 +155,6 @@ export const SHOPIFY_MANIFEST: IngestionManifest = {
     SHOPIFY_CUSTOMERS_RESOURCE,
     SHOPIFY_REFUNDS_RESOURCE,
     SHOPIFY_FULFILLMENTS_RESOURCE,
+    SHOPIFY_INVENTORY_LEVELS_RESOURCE,
   ],
 };

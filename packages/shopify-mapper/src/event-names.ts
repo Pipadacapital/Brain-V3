@@ -24,3 +24,12 @@ export const PRODUCT_UPSERT_V1_EVENT_NAME = 'product.upsert.v1' as const;
 export const CUSTOMER_UPSERT_V1_EVENT_NAME = 'customer.upsert.v1' as const;
 export const REFUND_RECORDED_V1_EVENT_NAME = 'refund.recorded.v1' as const;
 export const FULFILLMENT_RECORDED_V1_EVENT_NAME = 'fulfillment.recorded.v1' as const;
+/**
+ * Point-in-time stock observation from Shopify's inventory_levels/update webhook (P1 webhook
+ * expansion). A DISTINCT grain from product.upsert.v1: the webhook payload carries ONLY
+ * (inventory_item_id, location_id, available) — no product_id — so it cannot honestly restate the
+ * product/variant grain silver_inventory_level reads (that mart requires properties.product_id).
+ * The variant → inventory_item_id join key is emitted on product.upsert.v1 variants[] so a Silver
+ * widening can lift this lane later. Bronze lands it now (Bronze is source of truth).
+ */
+export const INVENTORY_LEVEL_V1_EVENT_NAME = 'inventory.level.v1' as const;

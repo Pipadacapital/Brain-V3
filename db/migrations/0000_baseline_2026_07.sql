@@ -23,6 +23,14 @@ BEGIN
   END IF;
 END $$;
 
+-- Role search_path (from the retired 0063/0066 schema-split migrations). pg_dump --schema-only does
+-- NOT emit ALTER ROLE ... SET, so this MUST be restored here or unqualified app SQL (SELECT ... FROM
+-- brand / connector_instance / collector_spool …) fails with "relation does not exist" on a fresh DB:
+-- every operational table lives in a schema (tenancy/connectors/…), resolved via this search_path, not
+-- public. On an existing DB the baseline is skipped, but that DB already carries this setting from 0066.
+ALTER ROLE brain_app SET search_path = public, iam, tenancy, connectors, jobs, billing, audit, ai_config, identity, consent, pixel, data_plane;
+ALTER ROLE brain     SET search_path = public, iam, tenancy, connectors, jobs, billing, audit, ai_config, identity, consent, pixel, data_plane;
+
 --
 -- PostgreSQL database dump
 --

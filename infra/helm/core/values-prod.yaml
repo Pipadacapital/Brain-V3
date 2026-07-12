@@ -60,3 +60,8 @@ autoscaling:
   enabled: true
   minReplicas: 3
   maxReplicas: 12
+
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in core-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""

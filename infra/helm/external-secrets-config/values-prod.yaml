@@ -8,6 +8,15 @@ region: ap-south-1
 secrets:
   # core BFF — DATABASE_URL/BRAIN_APP_DATABASE_URL (via pgbouncer:6432), REDIS_URL,
   # KAFKA_BROKERS, TRINO_HOST, NEO4J_*, AI gateway + connector secrets, ...
+  #
+  # AUD-OBS-2 — OPTIONAL observability keys, supported by every service env map
+  # (core-env / collector-env / stream-worker-env). Both are env-gated no-ops
+  # when absent, so adding them to the SM JSON is the entire ON-switch:
+  #   SENTRY_DSN                  → error-tracking backend (initSentry; PII-scrubbed
+  #                                 via redactLogRecord beforeSend, sendDefaultPii=false)
+  #   OTEL_EXPORTER_OTLP_HEADERS  → auth headers for the OTLP endpoint enabled by the
+  #                                 charts' otelExporterOtlpEndpoint value (e.g.
+  #                                 "authorization=Basic <grafana-cloud-token>")
   - name: core-env
     namespace: core
     key: brain/prod/k8s/core-env

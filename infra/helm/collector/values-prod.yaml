@@ -7,6 +7,11 @@ image:
 
 envSecretName: collector-env
 
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in collector-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""
+
 # AUD-LOCAL-016-FUP1: prod kube-prometheus-stack scrapes the collector's /metrics (main port)
 # as job "brain-collector" — the brain-slo rules' job name (up{job=~"brain-.*"}).
 metrics:

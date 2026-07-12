@@ -44,6 +44,12 @@ env:
   - name: PORT
     value: "3001"
 
+# AUD-OBS-2: OTel OTLP export flag — empty (default) keeps initObservability() a no-op
+# (no SDK loaded; spans/metrics stay in-process). Set per env to the collector/vendor
+# OTLP endpoint to turn tracing+metrics export ON; auth headers (if the endpoint needs
+# them) belong in the envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS.
+otelExporterOtlpEndpoint: ""
+
 serviceAccount:
   annotations: {}   # IRSA role for AWS Secrets Manager access (set per env)
 

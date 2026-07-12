@@ -34,7 +34,24 @@ export interface InsightForRecommendation {
   delta_pct: string | null;
   direction: 'up' | 'down' | 'flat' | null;
   confidence: 'high' | 'medium' | 'low';
-  evidence: Record<string, string | number | null>;
+  evidence: Record<string, string | number | boolean>;
+}
+
+/**
+ * Defence in depth on the WRITE path: strip null/undefined evidence values before persisting, so a
+ * detector that (historically) emitted a null can never poison a stored row that the BFF read then
+ * rejects against the record(string, string|number|boolean) contract. The producer already omits
+ * nulls; this is the belt to that suspenders.
+ */
+function sanitizeEvidence(
+  raw: Record<string, unknown>,
+): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[k] = v;
+  }
+  return out;
 }
 
 export interface MaterializedInsight {
@@ -75,6 +92,7 @@ export async function materializeInsightsAsRecommendations(
       const confidence = CONFIDENCE_MAP[insight.confidence] ?? 'Insufficient';
       // Per-currency dedup subject (insight ids are per-currency, e.g. 'rto_leakage:INR').
       const subject = insight.currency_code ?? 'brand';
+      const evidence = sanitizeEvidence(insight.evidence);
       // Money-weighted priority: severity band dominates, ₹-impact (in hundreds, capped) breaks ties.
       const impactScaled = insight.impact_minor ? Number(absBigint(BigInt(insight.impact_minor)) / 100000n) : 0;
       const priority = (SEVERITY_WEIGHT[insight.severity] ?? 0) * 1_000_000 + Math.min(impactScaled, 999_999);
@@ -82,7 +100,7 @@ export async function materializeInsightsAsRecommendations(
         title: insight.title,
         summary: insight.why,
         recommended_action: insight.recommended_action,
-        evidence: insight.evidence,
+        evidence,
         impact_minor: insight.impact_minor,
         delta_pct: insight.delta_pct,
         direction: insight.direction,
@@ -113,7 +131,7 @@ export async function materializeInsightsAsRecommendations(
           ctx,
           `INSERT INTO decision_log (brand_id, kind, recommendation_id, actor, action, reason, payload)
            VALUES ($1, 'recommendation', $2, $3, 'raised', $4, $5::jsonb)`,
-          [brandId, row.recommendation_id, `insight:${insight.detector}`, insight.title, JSON.stringify(insight.evidence)],
+          [brandId, row.recommendation_id, `insight:${insight.detector}`, insight.title, JSON.stringify(evidence)],
         );
       }
 

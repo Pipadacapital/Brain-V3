@@ -162,6 +162,11 @@ export type { CredentialField } from './credential-fields';
 
 const credentialFieldsFor = _credentialFieldsFor;
 
+// The "bring your own OAuth app" credential pair. On an OAuth tile these two are the ADVANCED path
+// (tucked behind the disclosure); every OTHER declared field (Meta system-user token + ad account,
+// Google developer token) is a recommended primary credential shown inline. Universal OAuth keys.
+const OAUTH_APP_FIELD_KEYS = new Set(['client_id', 'client_secret']);
+
 // 1 brand = 1 storefront: pure helpers that mirror the backend exclusivity rule so the UI can
 // disable the other storefront tiles instead of letting the user hit a 409 STOREFRONT_ALREADY_CONNECTED.
 import { findConnectedStorefront, storefrontLockReason, supportsHistoricalBackfill } from './storefront-exclusivity';
@@ -342,10 +347,16 @@ function ConnectorTile({
       ? authFieldsToCredentialFields(tile.auth_fields)
       : credentialFieldsFor(tile.id);
 
-  // Credential connectors render their required fields inline. OAuth tiles render the optional BYO-app
-  // fields ONLY when the catalog declares them (so GA4, with none, stays a pure Connect button).
+  // Credential connectors render their required fields inline. OAuth tiles SPLIT their catalog fields:
+  //   - primary/recommended credentials (e.g. Meta's system-user token + ad account, Google's
+  //     developer token) render INLINE so the simplest connect path is visible, and
+  //   - the "bring your own OAuth app" Client ID/Secret pair stays behind the advanced disclosure.
+  // Previously ALL oauth fields were lumped under "Use your own OAuth app (optional)", which buried
+  // Meta's recommended token path and left users clicking a bare Connect (→ OAUTH_NOT_CONFIGURED).
+  // GA4 has no fields → still a pure Connect button.
   const credentialFields = isCredential ? serverFields : [];
-  const oauthAppFields = isOauth ? serverFields : [];
+  const oauthPrimaryFields = isOauth ? serverFields.filter((f) => !OAUTH_APP_FIELD_KEYS.has(f.key)) : [];
+  const oauthAppFields = isOauth ? serverFields.filter((f) => OAUTH_APP_FIELD_KEYS.has(f.key)) : [];
   const hasOauthAppFields = oauthAppFields.length > 0;
 
   const credsComplete = credentialFields.every((f) => f.optional || (creds[f.key] ?? '').trim().length > 0);
@@ -416,7 +427,7 @@ function ConnectorTile({
     // Include any optional BYO-app Client ID/Secret the brand entered; omitting them lets the server
     // fall back to Brain's env-registered OAuth app. (oauthAppFields is empty for GA4 → never set.)
     const oauthCredentials = (() => {
-      const entries = oauthAppFields
+      const entries = [...oauthPrimaryFields, ...oauthAppFields]
         .map((f) => [f.key, (creds[f.key] ?? '').trim()] as const)
         .filter(([, v]) => v.length > 0);
       return entries.length > 0 ? Object.fromEntries(entries) : undefined;
@@ -738,6 +749,11 @@ function ConnectorTile({
 
             {/* Credential connectors: required fields rendered inline (server catalog SoR). */}
             {isCredential && credentialFields.length > 0 && renderFields(credentialFields)}
+
+            {/* OAuth tiles: recommended primary credentials (e.g. Meta system-user token, Google
+                developer token) rendered inline so the simplest connect path is visible — the BYO
+                OAuth app Client ID/Secret stays behind the disclosure below. */}
+            {isOauth && oauthPrimaryFields.length > 0 && renderFields(oauthPrimaryFields)}
 
             <Button
               onClick={handleConnect}

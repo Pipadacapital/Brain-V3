@@ -36,6 +36,17 @@ secret:
 # rotate the catalog DB credential afterwards).
 javaToolOptions: "-Dorg.slf4j.simpleLogger.log.org.apache.iceberg.rest.RESTCatalogServer=warn"
 
+# PodSecurity Admission `restricted` compliance (pod-level). The container-level
+# fields (allowPrivilegeEscalation / capabilities.drop) are fixed in the template.
+# uid/gid 1000 == the `iceberg` user baked into apache/iceberg-rest-fixture (verified
+# non-root); expressed NUMERICALLY because runAsNonRoot rejects a non-numeric image user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
 serviceAccount:
   create: true
   name: iceberg-rest

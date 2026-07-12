@@ -15,10 +15,25 @@ spec:
         {{- include "iceberg-rest.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      # PodSecurity Admission `restricted` compliant (Wave-2 hardening extension —
+      # only the 4 app charts were covered; iceberg-rest tripped a restricted warning
+      # on pod restart). runAsUser is NUMERIC: the apache/iceberg-rest-fixture image
+      # declares a non-numeric user (`iceberg`, uid 1000), and runAsNonRoot needs a
+      # numeric uid or kubelet refuses the pod (same as pgbouncer's `postgres` user).
+      securityContext:
+        runAsNonRoot: {{ .Values.podSecurityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        seccompProfile:
+          type: {{ .Values.podSecurityContext.seccompProfile.type }}
       containers:
         - name: iceberg-rest
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: rest
               containerPort: 8181

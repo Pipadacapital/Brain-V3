@@ -194,4 +194,59 @@ describe('computeInsights — deterministic Insight + Opportunity Engine', () =>
     const res = await computeInsights(BRAND, { srPool: pool });
     expect(res.insights.find((i) => i.detector === 'cac_trend')).toBeUndefined();
   });
+
+  // ── evidence values must NEVER be null (BFF contract drift fix) ──────────────
+  // The recommendation evidence contract is record(string, string|number|boolean) with NO null.
+  // A persisted null (e.g. top_driver_event on a non-primary currency, or a null funnel step_pct)
+  // makes the web↔core parse reject the whole response. Detectors must OMIT the key, not emit null.
+  it('emits NO null evidence values across a rich multi-detector fixture', async () => {
+    const res = await computeInsights(BRAND, {
+      srPool: fakePool({
+        // Two currencies → USD is a NON-primary currency (INR has the larger current window),
+        // which is exactly where top_driver_event was previously emitted as null.
+        revenue: [
+          { currency_code: 'INR', event_type: 'order_paid', cur_minor: '100000', prior_minor: '80000' },
+          { currency_code: 'INR', event_type: 'rto_reversal', cur_minor: '-9000', prior_minor: '0' },
+          { currency_code: 'USD', event_type: 'order_paid', cur_minor: '2000', prior_minor: '3000' },
+        ],
+        exec: [{ currency_code: 'INR', realized_value_minor: '1000000', total_orders: '100', terminal_orders: '90', rto_orders: '18' }],
+        churn: [{ currency_code: 'INR', high_risk_customers: '12', ltv_at_risk_minor: '870000' }],
+        vip: [{ currency_code: 'INR', vip_customers: '5', vip_ltv_minor: '500000' }],
+        cac: [
+          { currency_code: 'INR', acquisition_month: '2026-06', spend_minor: '60000', new_customers: '40' },
+          { currency_code: 'INR', acquisition_month: '2026-05', spend_minor: '40000', new_customers: '30' },
+        ],
+        spend: [{ currency_code: 'INR', spend_minor: '50000' }],
+        orderline: [
+          { currency_code: 'INR', title: 'Hero SKU', prod_minor: '400000' },
+          { currency_code: 'INR', title: 'Other', prod_minor: '100000' },
+        ],
+        funnel: [{ sessions: 660, product_viewed: 541, cart_added: 34, checkout_started: 0, purchased: 0 }],
+      }),
+    });
+    expect(res.insights.length).toBeGreaterThan(0);
+    for (const insight of res.insights) {
+      for (const [key, value] of Object.entries(insight.evidence)) {
+        expect(value, `${insight.detector}.evidence.${key} must not be null`).not.toBeNull();
+        expect(['string', 'number', 'boolean']).toContain(typeof value);
+      }
+    }
+  });
+
+  it('OMITS top_driver_event on a non-primary currency (never persists it as null)', async () => {
+    const res = await computeInsights(BRAND, {
+      srPool: fakePool({
+        revenue: [
+          { currency_code: 'INR', event_type: 'order_paid', cur_minor: '100000', prior_minor: '80000' },
+          { currency_code: 'USD', event_type: 'order_paid', cur_minor: '2000', prior_minor: '3000' },
+        ],
+      }),
+    });
+    const inr = res.insights.find((i) => i.id === 'revenue_trend:INR')!;
+    const usd = res.insights.find((i) => i.id === 'revenue_trend:USD')!;
+    // primary (INR) carries the driver …
+    expect(inr.evidence.top_driver_event).toBe('order_paid');
+    // … non-primary (USD) OMITS the key entirely rather than storing null.
+    expect('top_driver_event' in usd.evidence).toBe(false);
+  });
 });

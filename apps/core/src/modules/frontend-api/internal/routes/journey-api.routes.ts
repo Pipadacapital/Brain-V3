@@ -1,6 +1,6 @@
 // SPEC: B.3
 /**
- * Wave-B Journey APIs (SPEC: B.3, AMD-14) — the three spec-named journey surfaces on the
+ * Wave-B Journey APIs (SPEC: B.3, AMD-14) — the two spec-named journey surfaces on the
  * sanctioned core BFF seam (AMD-14 R1: no standalone gateway; these are additive routes that
  * reuse the existing analytics use-cases — NOT a parallel implementation).
  *
@@ -11,11 +11,12 @@
  *   2. GET /api/v1/journeys/trace?order_id=
  *        the attribution-lookback touchpoints preceding an order + per-touch matched_via +
  *        identity_evidence [{identifier_type,first_seen,source}] — the explainability surface.
- *   3. GET /api/v1/journeys/compare?left=&right=
- *        two resolved journeys with t_minus_conversion_ms per touch.
+ *
+ * (A third surface, GET /api/v1/journeys/compare, was removed in the Wave-3 cleanup —
+ * AUD-IMPL-020: zero consumers end-to-end. git history preserves the full chain.)
  *
  * TENANT: brand_id is ALWAYS from the auth session (D-1) — NEVER a query param. The :brainId path
- * segment + order_id/left/right query keys are lookups WITHIN the caller's brand (every downstream
+ * segment + order_id query keys are lookups WITHIN the caller's brand (every downstream
  * read is brand-scoped at the metric-engine seam / PG RLS). Honest-empty when no journey exists —
  * a NEW endpoint ships and answers no_data rather than fabricating.
  *
@@ -27,8 +28,8 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import type { AuthenticatedRequest } from '../../../workspace-access/index.js';
-import { getCustomerJourney, getJourneyTrace, getJourneyCompare } from '../../../analytics/index.js';
-import type { CustomerJourneyTimeline, JourneyTrace, JourneyCompare } from '@brain/contracts';
+import { getCustomerJourney, getJourneyTrace } from '../../../analytics/index.js';
+import type { CustomerJourneyTimeline, JourneyTrace } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
 
 const UUID_RE = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
@@ -36,7 +37,7 @@ const UUID_RE = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 export function registerJourneyApiRoutes(fastify: FastifyInstance, deps: BffDeps): void {
   const { bffProtectedPreHandler, srPool, rawPool, touchpointCacheReader, servingCache } = deps;
 
-  // §1.11 Redis result-cache wrapper for the Trino-only journey reads (trace/compare) — the
+  // §1.11 Redis result-cache wrapper for the Trino-only journey read (trace) — the
   // 'journey' TTL tier (serving-ttl.ts). Safe-OFF: no cache wired → read Trino directly. The
   // per-customer timeline (1) is served from the A.4 real-time cache instead (not wrapped here).
   const cachedRead = <T>(brandId: string, metricId: string, params: unknown, compute: () => Promise<T>): Promise<T> =>
@@ -153,60 +154,4 @@ export function registerJourneyApiRoutes(fastify: FastifyInstance, deps: BffDeps
     },
   );
 
-  // ── (3) GET /api/v1/journeys/compare?left=&right= — two journeys with t_minus_conversion_ms ─
-  fastify.get(
-    '/api/v1/journeys/compare',
-    {
-      preHandler: [bffProtectedPreHandler],
-      schema: {
-        querystring: {
-          type: 'object',
-          properties: {
-            left: { type: 'string', pattern: UUID_RE },
-            right: { type: 'string', pattern: UUID_RE },
-          },
-          required: ['left', 'right'],
-          additionalProperties: false,
-        },
-      },
-      attachValidation: true,
-    },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const requestId = randomUUID();
-      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
-      if (validationError) {
-        return reply.code(400).send({
-          request_id: requestId,
-          error: { code: 'INVALID_PARAMS', message: 'left and right must both be customer brain_id UUIDs.' },
-        });
-      }
-
-      const auth = (request as AuthenticatedRequest).auth;
-      if (!auth.brandId) {
-        // Compare is not a discriminated no_data union; an unauthenticated-brand read returns two
-        // empty journeys honestly (never another brand's data).
-        const { left, right } = request.query as { left: string; right: string };
-        return reply.send({
-          request_id: requestId,
-          data: {
-            left: { brain_id: left, conversion_at: null, touches: [] },
-            right: { brain_id: right, conversion_at: null, touches: [] },
-            data_source: 'live',
-          },
-        });
-      }
-      if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
-      }
-
-      const { left, right } = request.query as { left: string; right: string };
-      const brandId = auth.brandId; // narrowed const (property narrowing is lost across the closure)
-
-      const result: JourneyCompare = await cachedRead(brandId, 'journey_compare', { left, right }, () =>
-        getJourneyCompare(brandId, { srPool }, { left, right, dataSource: 'live' }),
-      );
-
-      return reply.send({ request_id: requestId, data: result });
-    },
-  );
 }

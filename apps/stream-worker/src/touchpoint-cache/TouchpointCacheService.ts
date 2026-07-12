@@ -31,7 +31,7 @@ export const TP_CACHE_FLAG = 'identity.tp_cache' as const;
  * The journey/behavioral event set silver_touchpoint.py admits (TOUCHPOINT_EVENT_TYPES, verbatim).
  * Non-touchpoint events (orders backfill, spend, connector metadata, identity.*) are skipped.
  */
-export const TOUCHPOINT_EVENT_TYPES: ReadonlySet<string> = new Set([
+const TOUCHPOINT_EVENT_TYPES: ReadonlySet<string> = new Set([
   'page.viewed', 'product.viewed', 'collection.viewed', 'cart.viewed', 'cart.item_added',
   'cart.item_removed', 'cart.updated', 'search.submitted', 'checkout.started',
   'checkout.step_viewed', 'checkout.shipping_selected', 'payment.initiated', 'payment.succeeded',

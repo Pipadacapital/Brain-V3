@@ -91,7 +91,7 @@ export type AttributionTouchpointSource = 'silver_touchpoint' | 'journey';
  * silver_touchpoint source. FAIL-CLOSED: a flag-read error → 'silver_touchpoint' (default OFF, pre-wave).
  * This is the TS-driver twin of the Spark job's ATTRIBUTION_SOURCE env (gold_attribution_credit.py).
  */
-export async function resolveAttributionTouchpointSource(
+async function resolveAttributionTouchpointSource(
   brandId: string,
   deps: ReconcileDeps,
 ): Promise<AttributionTouchpointSource> {
@@ -201,7 +201,7 @@ async function readReversalsOnCredited(
  * identity is held constant (journey.engine OFF at construction) → identical resolution. Deterministic-only
  * (§1.4 / invariant 5). Both branches order by touch_seq ASC and pick the earliest anon → byte-identical.
  */
-export async function resolveBrainAnonId(
+async function resolveBrainAnonId(
   srPool: SilverPool,
   brandId: string,
   brainId: string,

@@ -4,7 +4,7 @@
 # dual-run path, BESIDE the live dbt→StarRocks ones. Mirrors run-provision-silver-gold.sh.
 #
 # It spins one-shot Spark containers on the compose network (Redpanda's netns, so service DNS like
-# neo4j / iceberg-rest / minio / starrocks resolves), pulls the Iceberg + Neo4j-connector + MySQL-JDBC
+# neo4j / iceberg-rest / minio resolves), pulls the Iceberg + Neo4j-connector
 # jars, and spark-submits the two Silver jobs IN DEPENDENCY ORDER:
 #   1. silver_customer_identity.py  (reads Neo4j → Iceberg brain_silver.silver_customer_identity)
 #   2. silver_customer.py           (rolls up silver_order_state ⨝ silver_customer_identity → Iceberg)
@@ -17,8 +17,9 @@
 #   STAGE=identity db/iceberg/spark/run-silver-customer.sh  # only silver_customer_identity
 #   STAGE=customer db/iceberg/spark/run-silver-customer.sh  # only silver_customer
 # silver_customer now reads the Iceberg brain_silver.silver_order_state ONLY (Spark Phase 1 always
-# writes it) — the old StarRocks-JDBC order-state fallback is gone, so no brain_silver. dbt-DB read.
-# Env: SPARK_IMAGE, ICEBERG_VERSION, NEO4J_CONNECTOR_VERSION, MYSQL_JDBC_VERSION, REDPANDA_CONTAINER,
+# writes it) — the old StarRocks-JDBC order-state fallback is gone (AUD-IMPL-021 removed the last
+# dead MySQL-jar/SILVER_SR_* plumbing), so no brain_silver. dbt-DB read.
+# Env: SPARK_IMAGE, ICEBERG_VERSION, NEO4J_CONNECTOR_VERSION, REDPANDA_CONTAINER,
 #      NEO4J_URI/USER/PASSWORD overridable.
 set -euo pipefail
 
@@ -30,8 +31,6 @@ SPARK_IMAGE="${SPARK_IMAGE:-apache/spark:3.5.3}"
 ICEBERG_VERSION="${ICEBERG_VERSION:-1.9.2}"
 # Neo4j Spark connector for Spark 3.5 / Scala 2.12 (reads Customer nodes via a Cypher query).
 NEO4J_CONNECTOR_VERSION="${NEO4J_CONNECTOR_VERSION:-5.3.1_for_spark_3}"
-# MySQL Connector/J — StarRocks speaks the MySQL wire protocol (silver_customer order-state fallback).
-MYSQL_JDBC_VERSION="${MYSQL_JDBC_VERSION:-8.0.33}"
 SCALA="2.12"
 REDPANDA_CONTAINER="${REDPANDA_CONTAINER:-brainv3-kafka-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +39,6 @@ STAGE="${STAGE:-both}"
 PACKAGES="org.apache.iceberg:iceberg-spark-runtime-3.5_${SCALA}:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.apache.iceberg:iceberg-aws-bundle:${ICEBERG_VERSION}"
 PACKAGES="${PACKAGES},org.neo4j:neo4j-connector-apache-spark_${SCALA}:${NEO4J_CONNECTOR_VERSION}"
-PACKAGES="${PACKAGES},com.mysql:mysql-connector-j:${MYSQL_JDBC_VERSION}"
 
 echo "[silver-customer] image=${SPARK_IMAGE} netns=container:${REDPANDA_CONTAINER} stage=${STAGE}"
 echo "[silver-customer] packages=${PACKAGES}"
@@ -76,9 +74,6 @@ run_job() {
     -e NEO4J_USER="${NEO4J_USER:-neo4j}" \
     -e NEO4J_PASSWORD="${NEO4J_PASSWORD:-brain_neo4j}" \
     -e ORDER_STATE_SOURCE="${ORDER_STATE_SOURCE:-auto}" \
-    -e SILVER_SR_JDBC_URL="${SILVER_SR_JDBC_URL:-jdbc:mysql://starrocks:9030}" \
-    -e SILVER_SR_USER="${SILVER_SR_USER:-root}" \
-    -e SILVER_SR_PASSWORD="${SILVER_SR_PASSWORD:-}" \
     "${SPARK_IMAGE}" \
     /opt/spark/bin/spark-submit \
       --master "local[2]" \

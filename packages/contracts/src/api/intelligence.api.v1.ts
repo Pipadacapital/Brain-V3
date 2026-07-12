@@ -7,8 +7,9 @@
  * and it ADDS no new attribution-model enum:
  *   - the attribution math + model set: packages/metric-engine/src/attribution-models.ts
  *     (AttributionModelId, WEIGHT_SCALE=1e8, computeWeightUnits, PER_JOURNEY_MODEL_IDS, data_driven=global).
- *   - the medallion mart descriptor: db/iceberg/spark/parity/mart_registry.py (MartSpec: name/layer/pk/
- *     money_columns/provisional). GoldDataProduct is the TS contract form of that Python MartSpec.
+ *   - the medallion mart descriptor: the StarRocks-era parity oracle's mart_registry.py MartSpec
+ *     (name/layer/pk/money_columns/provisional — removed with the oracle in the Wave-3 cleanup,
+ *     AUD-IMPL-021; git history preserves it). GoldDataProduct is the TS contract form of that shape.
  *
  * INVARIANTS (NON-NEGOTIABLE — V4 rules + 02/05-architecture.md):
  *  - NO FLOAT for money OR weights. Credit weights are INTEGER 1e8-scaled units (bigint), summing to
@@ -202,7 +203,7 @@ export function assertAttributionModelEnabled(id: string): AttributionModelId {
 
 /**
  * GoldDataProduct — the declarative descriptor of one Iceberg medallion data product, the TS contract
- * form of db/iceberg/spark/parity/mart_registry.py MartSpec. The IntelligenceJob template reads it to
+ * form of the retired parity oracle's mart_registry.py MartSpec. The IntelligenceJob template reads it to
  * know WHAT to (re)build + MERGE on, and the lineage/parity layer reads it to know the product's identity,
  * its money columns and its upstreams.
  *
@@ -265,7 +266,7 @@ export type GoldDataProducts = z.infer<typeof GoldDataProductsSchema>;
  * GOLD_DATA_PRODUCT_REGISTRY — the canonical, validated array of the Gold data products that have a
  * built Spark job + a Trino serving view (db/trino/views/mv_*.sql) + a metric-engine read seam. A mart
  * is "done" only once it has a row HERE (the V4 definition-of-done registry entry). This is the TS
- * mirror of db/iceberg/spark/parity/mart_registry.py for the products the intelligence/serving layer
+ * mirror of the retired parity oracle's mart_registry.py for the products the intelligence/serving layer
  * binds to — NOT every mart, but the ones with a formal serving contract.
  *
  * Parsed through GoldDataProductsSchema at module load so a malformed entry fails loudly at import.

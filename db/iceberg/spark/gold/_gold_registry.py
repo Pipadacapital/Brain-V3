@@ -353,7 +353,8 @@ _GOLD_MARTS: List[GoldMartSpec] = [
         # cross-Gold build-ordering dependency (it runs in Phase 1 before those marts are built).
         reads_from=["silver_customer"],
         # Row-identity only: segment_value_minor blends all currencies for a brand-segment bucket
-        # (no currency_code on the segment grain — honest deviation documented in parity/mart_registry.py).
+        # (no currency_code on the segment grain — honest deviation; formerly documented in the retired
+        # parity oracle's mart_registry.py, removed in the Wave-3 cleanup AUD-IMPL-021).
         # The money rule requires a sibling currency_code, which this grain lacks; verified reconciled
         # out-of-band by the MERGE log.
         money_columns=[],
@@ -740,7 +741,7 @@ GOLD_MART_REGISTRY: Dict[str, GoldMartSpec] = {spec.name: spec for spec in _GOLD
 def resolve_mart(name: str) -> GoldMartSpec:
     """Look up a GoldMartSpec by name; raise a clear SystemExit on a typo.
 
-    Mirrors parity/mart_registry.py resolve_mart — the same "fail loudly, list known names"
+    Mirrors the retired parity oracle's resolve_mart — the same "fail loudly, list known names"
     convention so a mis-spelled mart name in a script is immediately diagnosable.
     """
     spec = GOLD_MART_REGISTRY.get(name)

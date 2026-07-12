@@ -14,10 +14,6 @@ two ways, both PURE (no external service):
      correct, not just a hand-rolled reference);
   2. via the pure-Python reference resolver (_snap_as_of.resolve_as_of) — proof the reference agrees.
 
-A LIVE StarRocks variant runs the identical seam SQL against brain_serving.mv_snap_identity_link when a
-connection is configured (env SNAP_ASOF_STARROCKS_DSN = host:port:user:password). When it is NOT
-configured it prints a loud [SKIP] and does NOT count as a pass — never silently green.
-
 Run: python3 db/iceberg/spark/gold/snap_identity_link_asof_test.py
 Exit 0 = all green, exit 1 = one or more failures.
 """
@@ -183,45 +179,9 @@ def test_asof_is_not_current_state() -> None:
         )
 
 
-# ── 4. LIVE StarRocks variant — guard-skip when unavailable (never silently green) ──
-
-def test_asof_sql_live_starrocks() -> None:
-    """Run the identical seam SQL against brain_serving.mv_snap_identity_link when a DSN is configured.
-
-    Configure via env SNAP_ASOF_STARROCKS_DSN="host:port:user:password". Absent → loud [SKIP]
-    (printed to stderr, NOT counted as a pass). Requires a `pymysql` driver (StarRocks MySQL wire).
-    """
-    dsn = os.environ.get("SNAP_ASOF_STARROCKS_DSN", "").strip()
-    if not dsn:
-        print(
-            "  [SKIP] test_asof_sql_live_starrocks: SNAP_ASOF_STARROCKS_DSN not set — "
-            "live StarRocks AS-OF e2e not run (set host:port:user:password to enable). NOT a pass.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        import pymysql  # type: ignore  # noqa: F401
-    except Exception:  # noqa: BLE001
-        print(
-            "  [SKIP] test_asof_sql_live_starrocks: pymysql not installed — cannot reach StarRocks. NOT a pass.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        host, port, user, password = dsn.split(":", 3)
-        conn = pymysql.connect(host=host, port=int(port), user=user, password=password)
-        # AS-OF today against the live serving MV; smoke-assert the query SHAPE is valid on StarRocks
-        # (it executes and returns one row per identifier — the same seam SQL the readers use).
-        sql = as_of_sql(
-            "brain_serving.mv_snap_identity_link", ENTITY_KEY, as_of_param="CURRENT_DATE()"
-        )
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            cur.fetchall()
-        conn.close()
-        _pass("asof_sql_live_starrocks", "canonical seam SQL executed against live mv_snap_identity_link")
-    except Exception as exc:  # noqa: BLE001 — a configured-but-broken live run must FAIL, not skip
-        _fail("asof_sql_live_starrocks", f"live StarRocks AS-OF query failed: {exc}")
+# (A fourth, LIVE StarRocks variant of this test was removed in the Wave-3 cleanup —
+# AUD-IMPL-021: StarRocks is retired, so the SNAP_ASOF_STARROCKS_DSN leg was permanently
+# skipped and unrunnable. Serving-side AS-OF coverage lives in the Trino live suites.)
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────────
@@ -231,7 +191,6 @@ def run_all() -> None:
         test_asof_sql_sqlite,
         test_asof_reference,
         test_asof_is_not_current_state,
-        test_asof_sql_live_starrocks,
     ]
     print(f"\n[snap-identity-link-asof-test] running {len(tests)} assertions\n")
     passed = 0

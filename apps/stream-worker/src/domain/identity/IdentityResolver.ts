@@ -51,7 +51,7 @@ export const DEFAULT_IDENTITY_PRIORITY: readonly IdentityPriorityClass[] = [
  * pre-hashed twin so the same person resolves identically whether the hash arrived salted
  * (first-party pixel) or pre-hashed (connector) — see AMD-01/AMD-02.
  */
-export const PRIORITY_CLASS_TO_TYPES: Record<IdentityPriorityClass, readonly string[]> = {
+const PRIORITY_CLASS_TO_TYPES: Record<IdentityPriorityClass, readonly string[]> = {
   platform_customer_id: ['storefront_customer_id'],
   email: ['email', 'pre_hashed_email'],
   phone: ['phone', 'pre_hashed_phone'],

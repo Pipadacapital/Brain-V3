@@ -1,16 +1,15 @@
 // SPEC: B.3
 /**
- * B3 — Wave-B Journey API contracts (customer timeline / trace / compare; AMD-14).
+ * B3 — Wave-B Journey API contracts (customer timeline / trace; AMD-14).
  * Locks the honest-empty unions, the matched_via serialization (AUD-JE-34/35: populated coarse
  * basis on ledger/trace paths, null only on the cache hot path) + nullable journey_version
- * (AMD-11), the identity_evidence explainability shape, and the compare t_minus_conversion_ms
- * nullability.
+ * (AMD-11), and the identity_evidence explainability shape. (The compare surface was removed
+ * in the Wave-3 cleanup — AUD-IMPL-020.)
  */
 import { describe, it, expect } from 'vitest';
 import {
   CustomerJourneyTimelineSchema,
   JourneyTraceSchema,
-  JourneyCompareSchema,
   IdentityEvidenceItemSchema,
 } from './journey-api.v1.js';
 
@@ -86,34 +85,5 @@ describe('B3 JourneyTrace (2) /api/v1/journeys/trace', () => {
 
   it('honest no_data union carries no fields', () => {
     expect(JourneyTraceSchema.parse({ state: 'no_data' })).toEqual({ state: 'no_data' });
-  });
-});
-
-describe('B3 JourneyCompare (3) /api/v1/journeys/compare', () => {
-  it('accepts two journeys; t_minus_conversion_ms nullable + sequence_number bigint-string', () => {
-    const parsed = JourneyCompareSchema.parse({
-      left: {
-        brain_id: 'L',
-        conversion_at: '2026-07-01 12:00:00 UTC',
-        touches: [
-          { sequence_number: '1', occurred_at: '2026-07-01 09:00:00 UTC', event_type: 'page.viewed', channel: 'direct', campaign: null, is_composite: false, t_minus_conversion_ms: 10800000 },
-          { sequence_number: '2', occurred_at: '2026-07-01 12:00:00 UTC', event_type: 'order.placed', channel: 'paid_meta', campaign: 'c', is_composite: true, t_minus_conversion_ms: 0 },
-        ],
-      },
-      right: { brain_id: 'R', conversion_at: null, touches: [] },
-      data_source: 'live',
-    });
-    expect(parsed.left.touches[1]?.t_minus_conversion_ms).toBe(0);
-    expect(parsed.right.conversion_at).toBeNull();
-  });
-
-  it('rejects a float sequence_number (money/position is bigint-string only)', () => {
-    expect(
-      JourneyCompareSchema.safeParse({
-        left: { brain_id: 'L', conversion_at: null, touches: [{ sequence_number: 1.5, occurred_at: 't', event_type: 'x', channel: null, campaign: null, is_composite: false, t_minus_conversion_ms: null }] },
-        right: { brain_id: 'R', conversion_at: null, touches: [] },
-        data_source: 'live',
-      }).success,
-    ).toBe(false);
   });
 });

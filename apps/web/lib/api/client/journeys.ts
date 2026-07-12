@@ -1,22 +1,18 @@
 // AUD-IMPL-006: extracted VERBATIM from the former 2,640-line apps/web/lib/api/client.ts
 // (per-domain decomposition mirroring the backend CQ-1 split). Import from '@/lib/api/client'
 // — the index re-exports this module's public surface unchanged.
-import {
-  CustomerJourneyTimelineSchema,
-  JourneyTraceSchema,
-  JourneyCompareSchema,
-} from '@brain/contracts';
+import { CustomerJourneyTimelineSchema, JourneyTraceSchema } from '@brain/contracts';
 import type {
   CustomerJourneyTimeline,
   JourneyTrace,
-  JourneyCompare,
   MetricLineageResult,
   SemanticMetricsCatalog,
   ContributionMarginResponse,
 } from '../types';
 import { bffFetch, parseData, type BffEnvelope } from './core';
 
-// ── Wave B — Journey deep-dive APIs (B.3): trace an order, a customer timeline, compare two ──
+// ── Wave B — Journey deep-dive APIs (B.3): trace an order, a customer timeline ──
+// (GET /v1/journeys/compare was removed in the Wave-3 cleanup — AUD-IMPL-020.)
 // Reachable at core /api/v1/journeys/* + /api/v1/customers/:id/journey (AMD-14 canonical prefix).
 export const journeyApi = {
   /** GET /api/v1/journeys/trace?order_id=&lookback_days= — the touchpoints preceding an order
@@ -41,13 +37,6 @@ export const journeyApi = {
       `/v1/customers/${encodeURIComponent(brainId)}/journey${suffix}`,
     );
     return parseData(CustomerJourneyTimelineSchema, env);
-  },
-
-  /** GET /api/v1/journeys/compare?left=&right= — two resolved journeys with t_minus_conversion_ms. */
-  getCompare: async (left: string, right: string): Promise<JourneyCompare> => {
-    const qs = new URLSearchParams({ left, right });
-    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/journeys/compare?${qs.toString()}`);
-    return parseData(JourneyCompareSchema, env);
   },
 };
 

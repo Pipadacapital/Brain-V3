@@ -27,7 +27,7 @@ import { computeTouchpointTimeline, computeIdentityEvidence } from '@brain/metri
 import type { JourneyTrace, TraceTouch, IdentityEvidenceItem } from '@brain/contracts';
 
 /** Default attribution lookback (days) applied before the conversion touch. */
-export const DEFAULT_TRACE_LOOKBACK_DAYS = 30;
+const DEFAULT_TRACE_LOOKBACK_DAYS = 30;
 
 export interface JourneyTraceParams {
   orderId: string;

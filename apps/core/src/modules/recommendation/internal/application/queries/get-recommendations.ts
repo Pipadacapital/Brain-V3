@@ -16,6 +16,26 @@ function toIso(v: unknown): string {
 /** Detector evidence — loosely typed (varies by detector); matches the @brain/contracts shape. */
 export type RecommendationEvidence = Record<string, string | number | boolean>;
 
+/**
+ * Sanitize persisted evidence to the @brain/contracts shape (string|number|boolean values only).
+ *
+ * Detectors historically persisted `null` values for conditional evidence keys (e.g.
+ * `top_driver_event: … : null` for non-primary currencies). The BFF contract
+ * (RecommendationEvidenceSchema) is a `record(string, string|number|boolean)` with NO null, so a
+ * persisted null makes zod reject the whole response ("Invalid input" at evidence.top_driver_event).
+ * We strip null/undefined keys here so already-persisted prod rows read cleanly; the producer also
+ * omits nulls going forward (defence in depth on both write and read paths).
+ */
+function sanitizeEvidence(raw: unknown): RecommendationEvidence {
+  if (raw === null || typeof raw !== 'object') return {};
+  const out: RecommendationEvidence = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[k] = v;
+  }
+  return out;
+}
+
 /** Measured effectiveness (the learning loop): the detector's headline metric then vs now. */
 export interface RecommendationOutcome {
   metric: string;
@@ -113,7 +133,7 @@ export async function getRecommendations(
         title: r.payload?.title ?? '',
         summary: r.payload?.summary ?? '',
         recommended_action: r.payload?.recommended_action ?? '',
-        evidence: r.payload?.evidence ?? {},
+        evidence: sanitizeEvidence(r.payload?.evidence),
         outcome: r.outcome ?? null,
         created_at: toIso(r.created_at),
         held: g.held,

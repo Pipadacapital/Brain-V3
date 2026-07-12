@@ -144,13 +144,15 @@ function biggestDropOff(
   let best: { index: number; leavePct: number; fromLabel: string; toLabel: string } | null = null;
   stages.forEach((s, i) => {
     if (i === 0 || s.step_pct === null) return;
+    const prev = stages[i - 1];
+    if (!prev) return;
     const leavePct = 100 - Number(s.step_pct);
     if (leavePct <= 0) return;
     if (!best || leavePct > best.leavePct) {
       best = {
         index: i,
         leavePct,
-        fromLabel: STAGE_LABELS[stages[i - 1].key] ?? stages[i - 1].key,
+        fromLabel: STAGE_LABELS[prev.key] ?? prev.key,
         toLabel: STAGE_LABELS[s.key] ?? s.key,
       };
     }

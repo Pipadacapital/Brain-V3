@@ -43,6 +43,15 @@ kafka:
     # repeated-outage alternative). Karpenter provisions on-demand nodes for
     # pods that REQUIRE karpenter.sh/capacity-type=on-demand.
     affinity:
+      # 2026-07-12 post-roll finding: two brokers landed on ONE node (quorum =
+      # one node loss away). REQUIRED anti-affinity spreads the 3 brokers across
+      # distinct nodes — with 3 on-demand broker nodes this is always satisfiable.
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                strimzi.io/name: brain-prod-kafka-kafka
+            topologyKey: kubernetes.io/hostname
       nodeAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
           nodeSelectorTerms:

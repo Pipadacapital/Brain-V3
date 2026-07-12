@@ -62,6 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pyspark.sql import SparkSession  # noqa: E402
+from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.utils import AnalysisException  # noqa: E402
 
 from iceberg_base import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
@@ -328,6 +329,68 @@ def _compute_brand_rows(brand_id, touches_by_anon, brain_to_anon, recognized, ch
     return rows
 
 
+def _supersede_refolded_credits(spark: SparkSession, fqtn: str, src) -> int:
+    """AUD-IMPL-013 — SUPERSEDE-ON-REFOLD: keep the per-(order, model) credit set CLOSED-SUM when an
+    already-attributed order is re-folded with a DIFFERENT journey shape.
+
+    THE DEFECT: the credit MERGE is insert-only on the deterministic credit_id =
+    sha256(brand‖order‖anon‖touch_seq‖model). If an order's journey MUTATED since it was credited (a
+    stitch-v2 lift added day-1..6 touches, or an identity merge changed the earliest-touch anon), the
+    re-fold emits NEW credit_ids (new touch_seqs / new anon) with weights over the NEW touch set, while
+    the OLD rows keep weights over the OLD set → for that (brand, order, model)
+    Σ weight_fraction ≠ 1 and Σ credited_revenue_minor ≠ realized. A changed anon even duplicates the
+    entire credit set.
+
+    THE FIX: this run's fold is AUTHORITATIVE for every (brand_id, order_id, model_id) group it emits —
+    before the insert MERGE, DELETE the target's 'credit' rows in exactly those groups whose credit_id is
+    NOT in the fresh set (deterministic ids: an unchanged journey reproduces identical ids → deletes
+    nothing → byte-identical replay). SCOPED to the emitted groups only: an order absent from this fold
+    (not re-folded, or its journey no longer resolves) keeps its saved rows — stale-but-consistent, never
+    half-mutated.
+
+    LEDGER HONESTY: a credit row referenced by a clawback (reversed_of_credit_id) is NEVER deleted —
+    deleting it would orphan the economic reversal; the clawed pair already nets to zero. Same MERGE-
+    DELETE-with-target-derived-source pattern as gold_journey_events_reversion (persist pins the
+    pre-delete snapshot)."""
+    try:
+        tgt = spark.table(fqtn)
+    except Exception:  # noqa: BLE001 — first run, table just created → nothing to supersede
+        return 0
+    staged_groups = src.select("brand_id", "order_id", "model_id").distinct()
+    staged_ids = src.select("brand_id", "credit_id").distinct()
+    clawed = (
+        tgt.where(F.col("reversed_of_credit_id").isNotNull())
+        .select("brand_id", F.col("reversed_of_credit_id").alias("credit_id"))
+        .distinct()
+    )
+    stale = (
+        tgt.where(F.col("row_kind") == F.lit("credit"))
+        .join(staged_groups, ["brand_id", "order_id", "model_id"], "left_semi")
+        .join(staged_ids, ["brand_id", "credit_id"], "left_anti")
+        .join(clawed, ["brand_id", "credit_id"], "left_anti")
+        .select("brand_id", "credit_id")
+    )
+    stale.persist()  # pin the pre-delete snapshot (the DELETE below must not re-evaluate this plan)
+    n_stale = stale.count()
+    if n_stale > 0:
+        stale.createOrReplaceTempView("_superseded_credit_ids")
+        spark.sql(
+            f"""
+            MERGE INTO {fqtn} t
+            USING _superseded_credit_ids s
+            ON t.brand_id = s.brand_id AND t.credit_id = s.credit_id
+            WHEN MATCHED THEN DELETE
+            """
+        )
+        print(
+            f"[gold_attribution_credit] superseded {n_stale} stale credit row(s) from re-folded "
+            f"(order, model) groups [AUD-IMPL-013]",
+            flush=True,
+        )
+    stale.unpersist()
+    return n_stale
+
+
 def materialize(spark: SparkSession) -> str:
     fqtn = create_iceberg_table(
         spark, GOLD_NAMESPACE, TABLE_NAME, _COLUMNS, partitioned_by="bucket(8, brand_id)"
@@ -415,6 +478,8 @@ def materialize(spark: SparkSession) -> str:
 
     src = spark.createDataFrame(all_rows, schema=_ROW_SCHEMA)
     src.createOrReplaceTempView("attribution_credit_src")
+
+    _supersede_refolded_credits(spark, fqtn, src)
 
     # Idempotent MERGE on the PK (brand_id, credit_id). ON-CONFLICT-keep: WHEN MATCHED preserves the saved
     # credit (the deterministic id makes a re-run a no-op); WHEN NOT MATCHED inserts the new credit.

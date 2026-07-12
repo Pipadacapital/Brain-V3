@@ -213,6 +213,10 @@ function CopyRow({ tileId, fieldKey, label, value, secret }: { tileId: string; f
 }
 
 function WebhookSetupPanel({ tileId, displayName, setup, onDismiss }: { tileId: string; displayName: string; setup: ConnectWebhookSetup; onDismiss: () => void }) {
+  // Manual setup = the merchant must paste something into the provider dashboard (a minted API key
+  // and/or routing header — Shiprocket/GoKwik). Shopify registers its webhooks automatically via the
+  // Admin API and returns only the delivery URL (api_key null) — informational, nothing to paste.
+  const manualSetup = Boolean(setup.api_key || setup.routing_header);
   return (
     <div
       className="mb-4 space-y-3 rounded-md border border-primary/30 bg-primary/5 p-4"
@@ -223,9 +227,13 @@ function WebhookSetupPanel({ tileId, displayName, setup, onDismiss }: { tileId: 
       <div className="flex items-start gap-2">
         <Webhook className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
         <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">Finish in your {displayName} dashboard</p>
+          <p className="text-sm font-medium text-foreground">
+            {manualSetup ? `Finish in your ${displayName} dashboard` : 'Webhooks registered automatically'}
+          </p>
           <p className="text-xs text-muted-foreground">
-            Add this webhook so shipment updates reach Brain in real time. Copy the API key now — it is shown only once.
+            {manualSetup
+              ? 'Add this webhook so updates reach Brain in real time. Copy the API key now — it is shown only once.'
+              : `Brain registered its webhooks on your ${displayName} store for you — no action needed. This is the delivery URL, for reference.`}
           </p>
         </div>
       </div>
@@ -347,11 +355,13 @@ function ConnectorTile({
               // provider dashboard (Shiprocket). Returned once — persist it on the tile.
               if (data.webhook) setWebhookSetup(data.webhook);
               const description =
-                tile.id === 'gokwik' || tile.id === 'shopflo'
-                  ? 'Data will appear here as it syncs. CoD/RTO shows sample data until live courier tracking is available.'
-                  : tile.id === 'shiprocket'
-                    ? 'Shipment data syncs automatically. Finish the webhook setup below to get real-time delivery & RTO updates.'
-                    : 'Settlement data will appear once Razorpay sends settlements.';
+                tile.id === 'shopify'
+                  ? 'Store connected — webhooks were registered automatically. Orders, products and customers will sync shortly.'
+                  : tile.id === 'gokwik' || tile.id === 'shopflo'
+                    ? 'Data will appear here as it syncs. CoD/RTO shows sample data until live courier tracking is available.'
+                    : tile.id === 'shiprocket'
+                      ? 'Shipment data syncs automatically. Finish the webhook setup below to get real-time delivery & RTO updates.'
+                      : 'Settlement data will appear once Razorpay sends settlements.';
               toast({ title: `${tile.display_name} connected`, description });
             }
           },

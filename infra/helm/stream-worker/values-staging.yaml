@@ -3,7 +3,7 @@ replicaCount: 1
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:b62a7ae1a1197efd8999f17009cccf04c2debb560c42162309ae3428dcb9d26b"
+  digest: "sha256:bb25b6c6666b6ce7bc6893d2085bf71fbeff0ac4d4437de4ebdabfa592e546ae"
 
 envSecretName: stream-worker-env
 

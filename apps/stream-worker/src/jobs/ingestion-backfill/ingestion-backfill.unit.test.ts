@@ -37,7 +37,12 @@ import {
 import { WOOCOMMERCE_MANIFEST } from '@brain/woocommerce-mapper';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { KafkaEventSink, PgDeadLetterSink, frameworkDlqTopic } from './sinks.js';
-import { BACKFILL_TOPIC, WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES } from './run.js';
+import {
+  BACKFILL_TOPIC,
+  WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES,
+  SHOPIFY_SCHEDULED_BACKFILL_RESOURCES,
+} from './run.js';
+import { parseRequestedWindowMs } from '../../infrastructure/pg/BackfillJobRepository.js';
 
 const BRAND = '11111111-1111-1111-1111-111111111111';
 const CONNECTOR = '99999999-9999-9999-9999-999999999999';
@@ -175,6 +180,43 @@ describe('ingestion framework — multi-resource onboarding via the generic driv
     // Orders flow on the live lane via woocommerce-orders-repull (uuidV5FromOrderLive event_id);
     // driving them through the framework too would mint a different id → duplicate Bronze rows.
     expect(WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES).not.toContain('orders');
+  });
+
+  it('the SHOPIFY scheduled set drives the 4 never-before-scheduled resources and EXCLUDES orders', () => {
+    expect([...SHOPIFY_SCHEDULED_BACKFILL_RESOURCES].sort()).toEqual(
+      ['customers', 'fulfillments', 'products', 'refunds'],
+    );
+    // Orders are owned by the live shopify-repull lane (uuidV5FromOrderLive) + the bespoke backfill
+    // queue (uuidV5FromOrderBackfill); a third framework namespace would double-count in Bronze.
+    expect(SHOPIFY_SCHEDULED_BACKFILL_RESOURCES).not.toContain('orders');
+    // Every scheduled resource must be a REAL backfill-supported Shopify manifest resource
+    // (getResource throws on a typo — a rename here would orphan cursors silently otherwise).
+    for (const r of SHOPIFY_SCHEDULED_BACKFILL_RESOURCES) {
+      const descriptor = getResource(SHOPIFY_MANIFEST, r);
+      expect(descriptor.backfillSupported).toBe(true);
+      expect(descriptor.kind).toBe('rest');
+    }
+  });
+});
+
+describe('requested backfill depth (0127) — parseRequestedWindowMs', () => {
+  const MO = 30 * 24 * 60 * 60 * 1000;
+
+  it('parses a valid BIGINT-as-string window', () => {
+    expect(parseRequestedWindowMs(String(6 * MO))).toBe(6 * MO);
+  });
+
+  const degradeCases: ReadonlyArray<readonly [string | null | undefined, string]> = [
+    [null, 'NULL column (provider max — pre-0127 rows)'],
+    [undefined, 'absent'],
+    ['', 'empty string'],
+    ['0', 'zero'],
+    ['-100', 'negative'],
+    ['abc', 'non-numeric'],
+    ['9007199254740993', 'beyond MAX_SAFE_INTEGER'],
+  ];
+  it.each(degradeCases)('degrades %s (%s) to undefined = provider max (fail-open, never zero-out a backfill)', (raw) => {
+    expect(parseRequestedWindowMs(raw)).toBeUndefined();
   });
 });
 

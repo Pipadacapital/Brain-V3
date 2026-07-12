@@ -125,11 +125,14 @@ export function registerConnectorBackfillSyncRoutes(app: FastifyInstance, deps: 
 
     // B1 — Backfill trigger (ADR-BF-3). Re-tighten to brand_admin+ (Manager → 403).
     // CQ-3: thin route → RequestConnectorBackfillCommand.execute().
-    scope.post<{ Params: { id: string } }>('/api/v1/connectors/:id/backfill', { preHandler: requireRole('brand_admin') }, async (req, reply) => {
+    // Body is OPTIONAL (BackfillTriggerRequest, 0127): { requested_window_ms } = the depth-picker
+    // request in ms; absent/invalid = provider max (the command sanitizes; the claimers clamp).
+    scope.post<{ Params: { id: string }; Body: { requested_window_ms?: unknown } | null }>('/api/v1/connectors/:id/backfill', { preHandler: requireRole('brand_admin') }, async (req, reply) => {
       const requestId = (req.id as string) ?? randomUUID();
       const brandId = getBrandId(req);
       const connectorInstanceId = req.params.id;
       const auth = (req as typeof req & { auth?: { userId?: string; role?: string } }).auth;
+      const rawWindow = req.body?.requested_window_ms;
 
       const result = await requestConnectorBackfill.execute({
         connectorInstanceId,
@@ -137,6 +140,7 @@ export function registerConnectorBackfillSyncRoutes(app: FastifyInstance, deps: 
         correlationId: requestId,
         actorId: auth?.userId ?? null,
         actorRole: auth?.role ?? 'unknown',
+        ...(typeof rawWindow === 'number' ? { requestedWindowMs: rawWindow } : {}),
       });
 
       if (!result.ok) {

@@ -319,6 +319,7 @@ export {
   isBackfillInProgress,
 } from './api/connector.backfill.api.v1.js';
 export type {
+  BackfillTriggerRequest,
   BackfillTriggerResponse,
   BackfillJobProgress,
   BackfillErrorCode,

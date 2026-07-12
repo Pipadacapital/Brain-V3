@@ -74,7 +74,13 @@ COLUMNS_SQL = """
           received_conversion_while_inactive boolean,
           campaign_status            string,
           objective                  string,
-          advertising_channel_type   string
+          advertising_channel_type   string,
+          -- ── FIREHOSE campaign entity depth (additive/nullable; ALTER-ADDed by the reconciler). ──
+          advertising_channel_sub_type  string,
+          bidding_strategy_type         string,
+          start_date                    string,
+          end_date                      string,
+          campaign_budget_amount_minor  bigint
 """.strip("\n")
 
 
@@ -139,6 +145,12 @@ def build(spark):
         lower(prop("pj", "status")).alias("entity_status"),
         prop("pj", "objective").alias("objective"),
         prop("pj", "advertising_channel_type").alias("advertising_channel_type"),
+        # ── FIREHOSE campaign entity depth (additive; null on non-firehose/legacy entity rows). ──
+        prop("pj", "advertising_channel_sub_type").alias("advertising_channel_sub_type"),
+        prop("pj", "bidding_strategy_type").alias("bidding_strategy_type"),
+        prop("pj", "campaign_start_date").alias("start_date"),
+        prop("pj", "campaign_end_date").alias("end_date"),
+        prop("pj", "campaign_budget_amount_minor").cast("bigint").alias("campaign_budget_amount_minor"),
         col("occurred_at").alias("entity_occurred_at"),
     ).where(
         (col("level") == "campaign")
@@ -158,6 +170,11 @@ def build(spark):
             col("entity_status"),
             col("objective"),
             col("advertising_channel_type"),
+            col("advertising_channel_sub_type"),
+            col("bidding_strategy_type"),
+            col("start_date"),
+            col("end_date"),
+            col("campaign_budget_amount_minor"),
             col("entity_occurred_at"),
         )
     )
@@ -196,6 +213,12 @@ def build(spark):
         col("entity_status").alias("campaign_status"),
         col("objective"),
         col("advertising_channel_type"),
+        # ── FIREHOSE campaign entity depth (additive/nullable). budget is bigint MINOR (currency_code). ──
+        col("advertising_channel_sub_type"),
+        col("bidding_strategy_type"),
+        col("start_date"),
+        col("end_date"),
+        col("campaign_budget_amount_minor"),
     )
 
     merge_on_pk(

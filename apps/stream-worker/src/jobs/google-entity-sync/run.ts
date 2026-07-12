@@ -34,6 +34,7 @@
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
 import { hashToUuidShaped } from '@brain/connector-core';
+import { microsToMinorString } from '@brain/ad-spend-mapper';
 import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
@@ -200,6 +201,25 @@ async function emitEntities(p: EmitEntityParams): Promise<number> {
       objective: null, // Meta-only attribute; null for Google
       advertising_channel_type: row.advertising_channel_type,
       bidding_strategy: row.bidding_strategy,
+      // ── FIREHOSE entity depth (additive/nullable; only the fields present at this level are set).
+      //    campaign_budget/cpc_bid are MICROS → minor via the shared money port (I-S07, no float). ──
+      advertising_channel_sub_type: row.advertising_channel_sub_type,
+      bidding_strategy_type: row.bidding_strategy, // alias for canonical entity col naming
+      campaign_status: row.level === 'campaign' ? row.status : null,
+      campaign_start_date: row.start_date,
+      campaign_end_date: row.end_date,
+      campaign_budget_amount_minor:
+        row.campaign_budget_amount_micros != null
+          ? microsToMinorString(row.campaign_budget_amount_micros)
+          : null,
+      ad_group_type: row.ad_group_type,
+      ad_group_status: row.level === 'adset' ? row.status : null,
+      ad_group_cpc_bid_minor:
+        row.ad_group_cpc_bid_micros != null ? microsToMinorString(row.ad_group_cpc_bid_micros) : null,
+      ad_type: row.ad_type,
+      ad_final_urls: row.ad_final_urls != null ? JSON.stringify(row.ad_final_urls) : null,
+      ad_headlines: row.ad_headlines != null ? JSON.stringify(row.ad_headlines) : null,
+      ad_descriptions: row.ad_descriptions != null ? JSON.stringify(row.ad_descriptions) : null,
       entity_updated_at: p.syncIso,
     };
 

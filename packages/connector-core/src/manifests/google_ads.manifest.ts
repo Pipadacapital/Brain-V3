@@ -29,8 +29,32 @@
  * response (MT-1).
  */
 
-import type { IngestionManifest } from '../contracts/IngestionManifest.js';
+import type { IngestionManifest, ResourceDescriptor } from '../contracts/IngestionManifest.js';
 import { TWO_YEARS_MS } from '../contracts/IngestionManifest.js';
+
+/** 90 days in ms — the click_view API-enforced backfill cap (Google retains click_view stats 90d only). */
+const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * FIREHOSE date-window views (spec §3.B). Each is a DISTINCT GAQL FROM-resource carrying its own
+ * segment dims; the fetcher (google-ads-resource-fetchers.ts) folds those dims into the breakdownKey
+ * seed so every breakdown row gets a distinct, collision-free Bronze event_id (dedupKeyStrategy stays
+ * 'provider_id' — the precomputed uuidV5FromSpendRow id). All emit spend.live.v1, all date_window
+ * cursor. click_view is capped at 90d (its maxBackfillWindowMs reflects that); the rest are 2y.
+ */
+const FIREHOSE_RESOURCES: readonly ResourceDescriptor[] = [
+  'spend_by_device', 'ad_schedule', 'keyword', 'search_term', 'geo',
+  'age_range', 'gender', 'shopping_product', 'conversion_action',
+].map((name) => ({
+  name,
+  kind: 'rest' as const,
+  emits: ['spend.live.v1'],
+  backfillSupported: true,
+  maxBackfillWindowMs: TWO_YEARS_MS,
+  cursorStrategy: 'date_window' as const,
+  dedupKeyStrategy: 'provider_id' as const,
+  description: `Google Ads ${name} segmented spend/insight view via GAQL SearchStream (breakdownKey-folded event_id; 30-day backfill chunks).`,
+}));
 
 /**
  * Google Ads ingestion manifest. Consumed by the generic ingestion-backfill job
@@ -60,6 +84,21 @@ export const GOOGLE_ADS_INGESTION_MANIFEST: IngestionManifest = {
       description:
         'Daily Google Ads spend + insight set (cost/impressions/clicks/conversions/value) per ' +
         'campaign / ad_group / ad, via GAQL SearchStream. Historical backfill in 30-day chunks.',
+    },
+    ...FIREHOSE_RESOURCES,
+    {
+      // click_view — API-capped at the last 90 days. The 90d maxBackfillWindowMs makes resolveBackfillFloor
+      // clamp the backfill floor so the driver never asks click_view for older-than-90d (Google errors).
+      name: 'click',
+      kind: 'rest',
+      emits: ['spend.live.v1'],
+      backfillSupported: true,
+      maxBackfillWindowMs: NINETY_DAYS_MS,
+      cursorStrategy: 'date_window',
+      dedupKeyStrategy: 'provider_id',
+      description:
+        'Google Ads click_view (per-click segments incl. click_type) via GAQL SearchStream. API-capped ' +
+        'at the last 90 days; breakdownKey-folded event_id; 30-day backfill chunks.',
     },
   ],
 };

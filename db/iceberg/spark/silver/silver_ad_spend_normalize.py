@@ -170,10 +170,38 @@ def stat_date_to_iso(stat_date):
     return f"{d}T00:00:00.000Z"
 
 
-def event_id_spend_live(brand_id, platform, stat_date, level, level_id):
-    """uuidV5FromSpendRow(brandId, platform, statDate, level, levelId) — REUSES the SHARED uuid_shaped
-    port. Seed: `${brandId}:${platform}:${statDate}:${level}:${levelId}:spend.live.v1` (ADR-AD-5)."""
-    return rn.uuid_shaped(f"{brand_id}:{platform}:{stat_date}:{level}:{level_id}:spend.live.v1")
+def event_id_spend_live(brand_id, platform, stat_date, level, level_id, breakdown_key=""):
+    """uuidV5FromSpendRow(brandId, platform, statDate, level, levelId, breakdownKey='') — REUSES the
+    SHARED uuid_shaped port. Seed: `${brandId}:${platform}:${statDate}:${level}:${levelId}[:breakdownKey]
+    :spend.live.v1` (ADR-AD-5 + breakdown spec §2). breakdownKey='' (base pass) → seed byte-identical to
+    the pre-breakdown 5-arg seed (backward-compat: base event_ids unchanged, zero re-dedup churn)."""
+    bk = "" if breakdown_key == "" else f":{breakdown_key}"
+    return rn.uuid_shaped(f"{brand_id}:{platform}:{stat_date}:{level}:{level_id}{bk}:spend.live.v1")
+
+
+def google_breakdown_key(
+    device=None, ad_network_type=None, day_of_week=None, hour=None, click_type=None,
+    conversion_action=None, geo_target=None, age_range=None, gender=None,
+    keyword_id=None, search_term=None, product_item_id=None,
+):
+    """GOOGLE-ONLY (spec §2.C) — byte-port of googleBreakdownKey(props). Maps the projected Google
+    segment dims onto the canonical breakdownKey. A base spend row has all dims None → "" → base id."""
+    return rn.canonical_breakdown_key(
+        {
+            "device": device,
+            "ad_network_type": ad_network_type,
+            "day_of_week": day_of_week,
+            "hour": hour,
+            "click_type": click_type,
+            "conversion_action": conversion_action,
+            "geo_target": geo_target,
+            "age_range": age_range,
+            "gender": gender,
+            "keyword_id": keyword_id,
+            "search_term": search_term,
+            "product_item_id": product_item_id,
+        }
+    )
 
 
 # ── A1: Meta purchase action lookup (byte-port of @brain/ad-spend-mapper metaActionValue) ──────────────
@@ -203,6 +231,8 @@ u_minor_major_opt = udf(lambda v: major_decimal_to_minor(v) if v is not None els
 u_minor_micros_opt = udf(lambda v: micros_to_minor(v) if v is not None else None, StringType())
 u_meta_action = udf(lambda a: meta_action_value(a), StringType())
 u_count = udf(lambda v: to_count_string(v), StringType())
+# Ratio passthrough (spec §1: NOT scaled) — trimmed string, empty/None → None. Byte-port of toRatioString.
+u_ratio = udf(lambda v: (str(v).strip() or None) if v is not None else None, StringType())
 u_level = udf(lambda r: resolve_level(r, "campaign"), StringType())
 u_level_id = udf(lambda lvl, c, a, ad: resolve_level_id(lvl, c, a, ad), StringType())
 u_parent = udf(lambda lvl, c, a, ad: resolve_parent_id(lvl, c, a, ad), StringType())
@@ -211,6 +241,20 @@ u_eid = udf(
     lambda b, p, d, lvl, lid: event_id_spend_live(b, p, d, lvl, lid)
     if (b and p and d and lvl and lid is not None)
     else None,
+    StringType(),
+)
+# Google breakdown-aware event_id: folds the projected segment dims into the seed (spec §2.C). Base
+# Google spend rows (all dims None) collapse to breakdownKey='' → byte-identical to the 5-arg u_eid.
+u_eid_gbk = udf(
+    lambda b, p, d, lvl, lid, bk: event_id_spend_live(b, p, d, lvl, lid, bk or "")
+    if (b and p and d and lvl and lid is not None)
+    else None,
+    StringType(),
+)
+u_gbk = udf(
+    lambda dev, net, dow, hr, ct, ca, geo, age, gen, kid, st, pid: google_breakdown_key(
+        dev, net, dow, hr, ct, ca, geo, age, gen, kid, st, pid
+    ),
     StringType(),
 )
 
@@ -393,6 +437,42 @@ def build_google(spark: SparkSession):
         col(f"{r}.advertising_channel_type").cast("string").alias("adv_channel_raw"),
         col(f"{r}.segments_date").cast("string").alias("stat_date_raw"),
         col(f"{r}.currency_code").cast("string").alias("row_currency_code"),
+        # ── FIREHOSE metrics (additive; nullable). money = micros/major; count = int; ratio = passthrough. ──
+        col(f"{r}.cost_per_conversion").cast("string").alias("cost_per_conv_raw"),  # micros
+        col(f"{r}.value_per_conversion").cast("string").alias("value_per_conv_raw"),  # micros
+        col(f"{r}.all_conversions_value").cast("string").alias("all_conv_value_raw"),  # MAJOR double
+        col(f"{r}.cost_per_all_conversions").cast("string").alias("cost_per_all_conv_raw"),  # micros
+        col(f"{r}.average_cost").cast("string").alias("avg_cost_raw"),  # micros
+        col(f"{r}.search_impression_share").cast("string").alias("search_is_raw"),
+        col(f"{r}.search_budget_lost_impression_share").cast("string").alias("search_budget_lost_is_raw"),
+        col(f"{r}.search_rank_lost_impression_share").cast("string").alias("search_rank_lost_is_raw"),
+        col(f"{r}.absolute_top_impression_percentage").cast("string").alias("abs_top_imp_pct_raw"),
+        col(f"{r}.top_impression_percentage").cast("string").alias("top_imp_pct_raw"),
+        col(f"{r}.interactions").cast("string").alias("interactions_raw"),
+        col(f"{r}.interaction_rate").cast("string").alias("interaction_rate_raw"),
+        col(f"{r}.engagements").cast("string").alias("engagements_raw"),
+        col(f"{r}.engagement_rate").cast("string").alias("engagement_rate_raw"),
+        col(f"{r}.video_views").cast("string").alias("video_views_raw"),
+        col(f"{r}.video_view_rate").cast("string").alias("video_view_rate_raw"),
+        col(f"{r}.conversions_from_interactions_rate").cast("string").alias("conv_from_interactions_rate_raw"),
+        # ── FIREHOSE segment/breakdown dims (fold into breakdownKey) ──
+        col(f"{r}.segment_device").cast("string").alias("seg_device"),
+        col(f"{r}.segment_ad_network_type").cast("string").alias("seg_ad_network_type"),
+        col(f"{r}.segment_day_of_week").cast("string").alias("seg_day_of_week"),
+        col(f"{r}.segment_hour").cast("string").alias("seg_hour"),
+        col(f"{r}.segment_click_type").cast("string").alias("seg_click_type"),
+        col(f"{r}.segment_conversion_action").cast("string").alias("seg_conversion_action"),
+        col(f"{r}.segment_conversion_action_name").cast("string").alias("seg_conversion_action_name"),
+        col(f"{r}.segment_geo_target").cast("string").alias("seg_geo_target"),
+        col(f"{r}.segment_age_range").cast("string").alias("seg_age_range"),
+        col(f"{r}.segment_gender").cast("string").alias("seg_gender"),
+        col(f"{r}.keyword_id").cast("string").alias("keyword_id"),
+        col(f"{r}.keyword_text").cast("string").alias("keyword_text"),
+        col(f"{r}.keyword_match_type").cast("string").alias("keyword_match_type"),
+        col(f"{r}.search_term").cast("string").alias("search_term"),
+        col(f"{r}.product_item_id").cast("string").alias("product_item_id"),
+        col(f"{r}.product_title").cast("string").alias("product_title"),
+        col(f"{r}.product_brand").cast("string").alias("product_brand"),
     )
 
     canon = (
@@ -420,10 +500,41 @@ def build_google(spark: SparkSession):
         .withColumn("cpc_minor", u_minor_micros_opt(col("avg_cpc_raw")))
         .withColumn("cpm_minor", u_minor_micros_opt(col("avg_cpm_raw")))
         .withColumn("advertising_channel_type", col("adv_channel_raw"))
+        # ── FIREHOSE metrics (mirror mapGoogleRowToEvent, byte-for-byte). money → minor; count; ratio. ──
+        .withColumn("video_views", u_count(col("video_views_raw")))
+        .withColumn("video_view_rate", u_ratio(col("video_view_rate_raw")))
+        .withColumn("engagements", u_count(col("engagements_raw")))
+        .withColumn("engagement_rate", u_ratio(col("engagement_rate_raw")))
+        .withColumn("cost_per_conversion_minor", u_minor_micros_opt(col("cost_per_conv_raw")))
+        .withColumn("value_per_conversion_minor", u_minor_micros_opt(col("value_per_conv_raw")))
+        .withColumn("all_conversions_value_minor", u_minor_major_opt(col("all_conv_value_raw")))
+        .withColumn("cost_per_all_conversions_minor", u_minor_micros_opt(col("cost_per_all_conv_raw")))
+        .withColumn("average_cost_minor", u_minor_micros_opt(col("avg_cost_raw")))
+        .withColumn("search_impression_share", u_ratio(col("search_is_raw")))
+        .withColumn("search_budget_lost_impression_share", u_ratio(col("search_budget_lost_is_raw")))
+        .withColumn("search_rank_lost_impression_share", u_ratio(col("search_rank_lost_is_raw")))
+        .withColumn("absolute_top_impression_percentage", u_ratio(col("abs_top_imp_pct_raw")))
+        .withColumn("top_impression_percentage", u_ratio(col("top_imp_pct_raw")))
+        .withColumn("interactions", u_count(col("interactions_raw")))
+        .withColumn("interaction_rate", u_ratio(col("interaction_rate_raw")))
+        .withColumn("conversions_from_interactions_rate", u_ratio(col("conv_from_interactions_rate_raw")))
+        # breakdownKey folds this row's segment dims (base spend row → all None → "" → base id).
+        .withColumn(
+            "breakdown_key",
+            u_gbk(
+                col("seg_device"), col("seg_ad_network_type"), col("seg_day_of_week"), col("seg_hour"),
+                col("seg_click_type"), col("seg_conversion_action"), col("seg_geo_target"),
+                col("seg_age_range"), col("seg_gender"), col("keyword_id"), col("search_term"),
+                col("product_item_id"),
+            ),
+        )
         .withColumn("occurred_at_iso", u_stat_iso(col("stat_date")))
         .withColumn(
             "event_id",
-            u_eid(col("brand_id"), col("platform"), col("stat_date"), col("level"), col("level_id")),
+            u_eid_gbk(
+                col("brand_id"), col("platform"), col("stat_date"), col("level"), col("level_id"),
+                col("breakdown_key"),
+            ),
         )
     )
 
@@ -458,6 +569,43 @@ def build_google(spark: SparkSession):
         col("advertising_channel_type").alias("advertising_channel_type"),
         conversions_raw.alias("conversions_raw"),
         col("account_timezone").alias("account_timezone"),
+        # ── COMMON (spec §1.A) firehose analog metrics ──
+        col("video_views").alias("video_views"),
+        col("video_view_rate").alias("video_view_rate"),
+        col("engagements").alias("engagements"),
+        col("engagement_rate").alias("engagement_rate"),
+        col("cost_per_conversion_minor").alias("cost_per_conversion_minor"),
+        col("value_per_conversion_minor").alias("value_per_conversion_minor"),
+        # ── GOOGLE-ONLY firehose metrics (money = MINOR sharing currency_code; ratio passthrough) ──
+        col("all_conversions_value_minor").alias("all_conversions_value_minor"),
+        col("cost_per_all_conversions_minor").alias("cost_per_all_conversions_minor"),
+        col("average_cost_minor").alias("average_cost_minor"),
+        col("search_impression_share").alias("search_impression_share"),
+        col("search_budget_lost_impression_share").alias("search_budget_lost_impression_share"),
+        col("search_rank_lost_impression_share").alias("search_rank_lost_impression_share"),
+        col("absolute_top_impression_percentage").alias("absolute_top_impression_percentage"),
+        col("top_impression_percentage").alias("top_impression_percentage"),
+        col("interactions").alias("interactions"),
+        col("interaction_rate").alias("interaction_rate"),
+        col("conversions_from_interactions_rate").alias("conversions_from_interactions_rate"),
+        # ── GOOGLE-ONLY breakdown/segment dims (projected to payload for the breakdown marts) ──
+        col("seg_device").alias("segment_device"),
+        col("seg_ad_network_type").alias("segment_ad_network_type"),
+        col("seg_day_of_week").alias("segment_day_of_week"),
+        col("seg_hour").alias("segment_hour"),
+        col("seg_click_type").alias("segment_click_type"),
+        col("seg_conversion_action").alias("segment_conversion_action"),
+        col("seg_conversion_action_name").alias("segment_conversion_action_name"),
+        col("seg_geo_target").alias("segment_geo_target"),
+        col("seg_age_range").alias("segment_age_range"),
+        col("seg_gender").alias("segment_gender"),
+        col("keyword_id").alias("keyword_id"),
+        col("keyword_text").alias("keyword_text"),
+        col("keyword_match_type").alias("keyword_match_type"),
+        col("search_term").alias("search_term"),
+        col("product_item_id").alias("product_item_id"),
+        col("product_title").alias("product_title"),
+        col("product_brand").alias("product_brand"),
         col("occurred_at_iso").alias("occurred_at"),
     )
     payload = to_json(

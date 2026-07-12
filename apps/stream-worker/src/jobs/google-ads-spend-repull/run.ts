@@ -35,6 +35,7 @@ import { loadStreamWorkerConfig } from '@brain/config';
 import {
   mapGoogleRowToEvent,
   uuidV5FromSpendRow,
+  googleBreakdownKey,
   SPEND_LIVE_V1_EVENT_NAME,
 } from '@brain/ad-spend-mapper';
 import {
@@ -63,6 +64,14 @@ const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 const CURSOR_RESOURCE = 'google_ads.spend' as const;
 const WINDOW_DAYS = 35;
 const GOOGLE_LEVELS: Array<'campaign' | 'adset' | 'ad'> = ['campaign', 'adset', 'ad'];
+
+// FIREHOSE views pulled on the SAME trailing window as base spend (each a distinct GAQL view carrying
+// its own segment dims; the mapper folds those into a distinct breakdownKey → collision-free ids).
+// click is a date_window view but API-capped at 90d; the 35d trailing window is well inside that cap.
+const GOOGLE_FIREHOSE_RESOURCES: readonly string[] = [
+  'spend_by_device', 'ad_schedule', 'keyword', 'search_term', 'geo',
+  'age_range', 'gender', 'shopping_product', 'click', 'conversion_action',
+];
 
 interface AdConnectorRow {
   connector_instance_id: string;
@@ -221,6 +230,41 @@ async function repullConnector(params: RepullParams): Promise<void> {
     totalEmitted += emitted;
     if (maxDate && (maxStatDate === null || maxDate > maxStatDate)) maxStatDate = maxDate;
     if (maxStatDate) await upsertCursorValue(pool, brandId, ciId, CURSOR_RESOURCE, maxStatDate);
+  }
+
+  // ── FIREHOSE views (device/network, ad-schedule, keyword, search-term, geo, demo, shopping, click,
+  //    conversion-action) over the SAME trailing window. Each is best-effort per-resource: a view a
+  //    given account can't serve (e.g. no shopping campaigns) logs + continues; quota/auth aborts the
+  //    whole run via the SAME two-error branch as base spend. Distinct breakdownKey → no collision.
+  for (const resource of GOOGLE_FIREHOSE_RESOURCES) {
+    let rows;
+    try {
+      rows = await client.streamResource(resource, from, to);
+    } catch (err) {
+      const s = String(err);
+      if (s.includes(GOOGLE_RESOURCE_EXHAUSTED) || s.includes(GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED)) {
+        log.error(`connector=${ciId} RateLimited on firehose ${resource} — aborting run (retry next)`);
+        await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
+        return;
+      }
+      if (s.includes(GOOGLE_AUTH_ERROR)) {
+        recordConnectorAuthRejected('google_ads');
+        await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+        return;
+      }
+      if (s.includes(GOOGLE_ACCOUNT_DISABLED)) {
+        await setSyncState(pool, brandId, ciId, 'error', 'ad account disabled — re-enable or reconnect');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'account_disabled');
+        return;
+      }
+      // A view the account cannot serve is non-fatal — keep the run going.
+      log.warn(`connector=${ciId} firehose ${resource} stream error (non-fatal)`, { err });
+      continue;
+    }
+    const { emitted } = await emitRows({ rows, brandId, ciId, producer });
+    totalEmitted += emitted;
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
@@ -398,8 +442,10 @@ async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: stri
     const props = mapped.properties;
     if (!props.stat_date || !props.level_id) continue;
 
+    // breakdownKey folds any segment dims present on the row (base spend pass → '' → byte-identical
+    // base event_id). A firehose (segmented) row gets a distinct id → no collision under the MERGE.
     const eventId = uuidV5FromSpendRow(
-      p.brandId, 'google_ads', props.stat_date, props.level, props.level_id,
+      p.brandId, 'google_ads', props.stat_date, props.level, props.level_id, googleBreakdownKey(props),
     );
 
     const envelope = CollectorEventV1Schema.parse({

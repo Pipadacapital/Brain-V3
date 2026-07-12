@@ -10,10 +10,12 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyGoogleError,
   extractGoogleErrorDetail,
+  FIREHOSE_RESOURCE_NAMES,
   GOOGLE_RESOURCE_EXHAUSTED,
   GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED,
   GOOGLE_ACCOUNT_DISABLED,
 } from './google-ads-searchstream-client.js';
+import { GOOGLE_ADS_INGESTION_MANIFEST } from '@brain/connector-core';
 
 describe('classifyGoogleError (ADR-AD-7 two-error branch)', () => {
   it('classifies RESOURCE_EXHAUSTED (daily ops-quota) as DAILY → abort run', () => {
@@ -85,5 +87,25 @@ describe('classifyGoogleError (ADR-AD-7 two-error branch)', () => {
     expect(GOOGLE_RESOURCE_EXHAUSTED).toBe('GOOGLE_RESOURCE_EXHAUSTED');
     expect(GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED).toBe('GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED');
     expect(GOOGLE_ACCOUNT_DISABLED).toBe('GOOGLE_ACCOUNT_DISABLED');
+  });
+});
+
+// ── FIREHOSE — client views ↔ manifest resources consistency (no orphaned resource) ──────────────
+describe('google firehose resource ↔ manifest consistency', () => {
+  it('every backfillable manifest resource (except base spend) has a client GAQL query template', () => {
+    const backfillable = GOOGLE_ADS_INGESTION_MANIFEST.resources
+      .filter((r) => r.backfillSupported && r.name !== 'spend')
+      .map((r) => r.name)
+      .sort();
+    const clientViews = [...FIREHOSE_RESOURCE_NAMES].sort();
+    expect(clientViews).toEqual(backfillable);
+  });
+
+  it('click_view manifest resource is capped at 90 days (API limit), the rest at 2 years', () => {
+    const click = GOOGLE_ADS_INGESTION_MANIFEST.resources.find((r) => r.name === 'click');
+    expect(click).toBeDefined();
+    expect(click!.maxBackfillWindowMs).toBe(90 * 24 * 60 * 60 * 1000);
+    const keyword = GOOGLE_ADS_INGESTION_MANIFEST.resources.find((r) => r.name === 'keyword');
+    expect(keyword!.maxBackfillWindowMs).toBe(2 * 365 * 24 * 60 * 60 * 1000);
   });
 });

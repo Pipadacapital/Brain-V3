@@ -80,7 +80,7 @@ export class RequestConnectorBackfillCommand {
     // @brain/connector-core supportsHistoricalBackfill, shared with the stream-worker claimer). A
     // provider is accepted iff it is drained by EITHER the bespoke shopify queue runner
     // (BACKFILL_QUEUE_PROVIDERS) OR the generic ingestion framework (INGESTION_BACKFILL_PROVIDERS:
-    // meta/google_ads/razorpay/shiprocket/ga4). GoKwik (webhook-first) has no claimer for
+    // meta/google_ads/razorpay/shiprocket/ga4/woocommerce). GoKwik (webhook-first) has no claimer for
     // jobs.backfill_job — enqueuing one would orphan it as `queued` forever. Fail fast & clearly
     // instead of silently inserting an un-drainable row.
     if (!supportsHistoricalBackfill(connectorInstance.provider)) {

@@ -720,8 +720,9 @@ export async function main(): Promise<void> {
     // Drain only providers with a backfill runner (single source of truth shared with the
     // RequestConnectorBackfillCommand reject guard: @brain/connector-core). Two lanes:
     //   - supportsBackfillQueue (shopify) → the BESPOKE shopify paged-backfill runner.
-    //   - supportsIngestionBackfill (meta/google_ads/razorpay/shiprocket/ga4) → the GENERIC resumable
-    //     ingestion framework (claim + drive every manifest resource + finalize the backfill_job).
+    //   - supportsIngestionBackfill (meta/google_ads/razorpay/shiprocket/ga4/woocommerce) → the
+    //     GENERIC resumable ingestion framework (claim + drive every manifest resource + finalize the
+    //     backfill_job; woocommerce drives its NON-ORDER resources — orders stay on the sync lane).
     // A connector in neither lane is never claimed (no orphan job mis-claim).
     for (const c of connectors.filter(
       (x) => supportsBackfillQueue(x.provider) || supportsIngestionBackfill(x.provider),
@@ -748,7 +749,7 @@ export async function main(): Promise<void> {
     }
   };
   const backfillClaimerJob = startPeriodicJob('backfill-claimer', backfillClaimerIntervalMs, runBackfillClaim);
-  log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job: shopify bespoke + meta/google_ads/razorpay/shiprocket/ga4 generic)`);
+  log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job: shopify bespoke + meta/google_ads/razorpay/shiprocket/ga4/woocommerce generic)`);
 
   const metaEntitySyncJob = startPeriodicJob('meta-entity-sync', adEntitySyncIntervalMs, () => runMetaEntitySync());
   const googleEntitySyncJob = startPeriodicJob('google-entity-sync', adEntitySyncIntervalMs, () => runGoogleEntitySync());

@@ -21,11 +21,11 @@
 --
 -- CHECK > 0: a zero/negative window is meaningless and would silently no-op a backfill.
 --
--- Rollback: ALTER TABLE backfill_job DROP COLUMN requested_window_ms.
+-- Rollback: ALTER TABLE jobs.backfill_job DROP COLUMN requested_window_ms.
 
-ALTER TABLE backfill_job
+ALTER TABLE jobs.backfill_job
   ADD COLUMN IF NOT EXISTS requested_window_ms BIGINT NULL
     CHECK (requested_window_ms IS NULL OR requested_window_ms > 0);
 
-COMMENT ON COLUMN backfill_job.requested_window_ms IS
+COMMENT ON COLUMN jobs.backfill_job.requested_window_ms IS
   'Caller-requested historical depth in ms (NULL = provider max). Clamped to the provider manifest maxBackfillWindowMs at claim time — never a depth entitlement.';

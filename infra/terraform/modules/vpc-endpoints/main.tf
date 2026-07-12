@@ -78,6 +78,17 @@ variable "interface_services" {
   ]
 }
 
+# AUD-INFRA-012 / AUD-OPS-031: each interface endpoint bills ~$7/mo PER SUBNET
+# (AZ). With fee-free fck-nat egress the endpoints are a cost ADDITION, so envs
+# may pin the ENIs to fewer subnets than the full private set (cross-AZ traffic
+# to a single-AZ endpoint is $0.01/GB — negligible at API-call volumes). null =
+# legacy behaviour (one ENI in every private subnet).
+variable "interface_subnet_ids" {
+  description = "Subnets for the interface-endpoint ENIs. null = use private_subnet_ids (one per AZ)."
+  type        = list(string)
+  default     = null
+}
+
 variable "tags" {
   description = "Extra tags merged over the mandatory tag set."
   type        = map(string)
@@ -165,7 +176,7 @@ resource "aws_vpc_endpoint" "interface" {
   vpc_id              = var.vpc_id
   service_name        = "com.amazonaws.${local.region}.${each.key}"
   vpc_endpoint_type   = "Interface"
-  subnet_ids          = var.private_subnet_ids
+  subnet_ids          = var.interface_subnet_ids != null ? var.interface_subnet_ids : var.private_subnet_ids
   security_group_ids  = [aws_security_group.endpoints.id]
   private_dns_enabled = true
 

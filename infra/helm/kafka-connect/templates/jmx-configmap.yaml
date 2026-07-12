@@ -1,0 +1,67 @@
+{{- /*
+JMX-exporter mapping for the Connect worker (AUD-INFRA-028).
+
+The data key below is a VERBATIM copy of infra/observe/kafka-connect-jmx-exporter.yml — the
+config the local compose worker runs the prometheus/jmx_exporter agent with. KEEP THE TWO IN
+LOCKSTEP when a rule changes (same doctrine as the strimzi-kafka broker metrics ConfigMap; a
+python byte-compare of the yaml-loaded structures is the verification used at commit time).
+brain-slo.rules.yml reads kafka_connect_connector_task_status (BronzeConnectTaskFailed),
+kafka_connect_consumer_records_lag (BronzeConnectLagHigh) and
+kafka_connect_sink_task_sink_record_read_total (BrainIngestStale) from this mapping.
+*/ -}}
+{{- if and .Values.enabled .Values.metrics.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-kafka-connect-jmx
+  labels:
+    app.kubernetes.io/name: kafka-connect
+    app.kubernetes.io/part-of: brain
+data:
+  kafka-connect-jmx-exporter.yml: |
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+    rules:
+      # Connector/task STATUS (a string MBean attribute) → labeled gauge, constant value 1.
+      # Alert shape: kafka_connect_connector_task_status{status="failed"} == 1.
+      - pattern: 'kafka.connect<type=connector-task-metrics, connector=(.+), task=(\d+)><>status: ([a-z-]+)'
+        name: kafka_connect_connector_task_status
+        value: 1
+        labels:
+          connector: "$1"
+          task: "$2"
+          status: "$3"
+      # EXPLICIT sink-read counter — BrainIngestStale keys on this exact series (AUD-INFRA-029).
+      # FIRST-MATCH-WINS: must stay ABOVE the generic sink-task rule.
+      - pattern: 'kafka.connect<type=sink-task-metrics, connector=(.+), task=(\d+)><>sink-record-read-total'
+        name: kafka_connect_sink_task_sink_record_read_total
+        type: COUNTER
+        labels:
+          connector: "$1"
+          task: "$2"
+      # Per-partition lag of the worker's embedded sink consumers (KIP-225 records-lag) — the
+      # ONLY live lag signal for the Iceberg sink → BronzeConnectLagHigh.
+      - pattern: 'kafka.consumer<type=consumer-fetch-manager-metrics, client-id=(.+), topic=(.+), partition=(.+)><>records-lag'
+        name: kafka_connect_consumer_records_lag
+        type: GAUGE
+        labels:
+          client_id: "$1"
+          topic: "$2"
+          partition: "$3"
+      # Per-task sink throughput/latency (records read/sent, put-batch time).
+      - pattern: 'kafka.connect<type=sink-task-metrics, connector=(.+), task=(\d+)>([^:]+)'
+        name: kafka_connect_sink_task_$3
+        labels:
+          connector: "$1"
+          task: "$2"
+      - pattern: 'kafka.connect<type=connector-task-metrics, connector=(.+), task=(\d+)>([^:]+)'
+        name: kafka_connect_connector_task_$3
+        labels:
+          connector: "$1"
+          task: "$2"
+      # Worker totals (connector/task counts, startup failures) + rebalance health.
+      - pattern: 'kafka.connect<type=connect-worker-metrics>([^:]+)'
+        name: kafka_connect_worker_$1
+      - pattern: 'kafka.connect<type=connect-worker-rebalance-metrics>([^:]+)'
+        name: kafka_connect_worker_rebalance_$1
+{{- end }}

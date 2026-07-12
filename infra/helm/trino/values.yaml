@@ -92,3 +92,24 @@ probes:
   enabled: true
   # Trino readiness/liveness endpoint (same as the local healthcheck: /v1/info).
   path: /v1/info
+
+# ── Prometheus JMX exporter on the COORDINATOR (AUD-INFRA-030) ─────────────────────────────────
+# Trino is the SOLE serving engine and was completely unscraped — a serving outage was only
+# detectable by users seeing 500s. trinodb/trino emits JMX only, so the coordinator runs the
+# prometheus/jmx_exporter javaagent (same jar+version as the Kafka broker/Connect paths): an
+# initContainer fetches the jar into an emptyDir and coordinator-jvm.config attaches it. The
+# PodMonitor relabels job → "trino", driving TrinoServingDown / TrinoQueryFailureRateHigh and the
+# BrainTargetDown regex (kube-prometheus-stack values-prod). Coordinator-only by design: it owns
+# the cluster-level QueryManager/DispatchManager MBeans, and worker liveness is already the
+# coordinator's problem (discovery). Off by default (no Prometheus Operator CRDs in kind/staging);
+# values-prod enables it. NOTE deliberate asymmetry with kafka-connect: here the agent is a HARD
+# dependency of pod start (jvm.config is static) — acceptable for a stateless serving pod whose
+# RollingUpdate keeps the old coordinator running if an init download ever hangs.
+metrics:
+  enabled: false
+  jmxExporterJarUrl: "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/1.0.1/jmx_prometheus_javaagent-1.0.1.jar"
+  initImage: curlimages/curl:8.8.0    # same one-shot download image as the local compose jmx-exporter-init
+  port: 9404
+  podMonitor:
+    jobLabel: trino
+    interval: 30s

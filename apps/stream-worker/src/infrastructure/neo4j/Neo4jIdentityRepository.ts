@@ -78,6 +78,21 @@ const CANONICAL_OF_C = `
           AND NOT EXISTS { MATCH (canon)-[ra:ALIAS_OF]->() WHERE ra.valid_to IS NULL }`;
 const CANONICAL_BRAIN_ID = 'coalesce(canon.brain_id, c.brain_id)';
 
+/**
+ * Every node label the identity graph writes (AUD-IMPL-028). purgeBrand deletes per-label so each
+ * MATCH is label-scoped (index/label-scan backed) instead of an AllNodesScan. Keep this list in
+ * sync with every `CREATE (:X …)` / `MERGE (:X …)` in the graph writers (this repo + core's
+ * neo4j-identity-reader unmerge path); the purge's final label-less sweep still catches drift.
+ */
+export const IDENTITY_GRAPH_LABELS = [
+  'Identifier',
+  'Customer',
+  'MergeEvent',
+  'MergeReview',
+  'SharedUtility',
+  'UnmergeEvent',
+] as const;
+
 export class Neo4jIdentityRepository {
   private readonly driver: Driver;
   private readonly pgPool: Pool;
@@ -573,10 +588,129 @@ export class Neo4jIdentityRepository {
     }
   }
 
-  /** Delete an entire brand subgraph (test cleanup / brand offboarding / crypto-shred). */
+  // ── DPDP/PDPL erasure lane (AUD-OPS-039 — consumer-side Neo4j purge) ─────────
+
+  /**
+   * Erasure-lane brain_id resolution: matches the identifier REGARDLESS of edge is_active
+   * (active preferred), following the live ALIAS_OF chain to the canonical survivor (same
+   * walk as readState).
+   *
+   * WHY any-state (replay-safety, D-4): eraseSubjectGraph() tombstones the IDENTIFIES edges.
+   * A replayed erasure event (consumer retry after a mid-sequence failure PAST the graph
+   * purge) must STILL resolve the subject so the remaining idempotent steps re-run —
+   * readState()'s active-only match would return null and the replay would skip as
+   * 'no_brain_id', permanently stranding the erasure short of completion. NEVER use this
+   * for the resolver/live-identity paths — active-only semantics are correct there.
+   */
+  async findBrainIdForErasure(
+    brandId: string,
+    identifierType: string,
+    identifierHash: string,
+  ): Promise<string | null> {
+    const session = this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      const res = await session.run(
+        `MATCH (i:Identifier {brand_id:$brand, type:$type, hash:$hash})-[r:IDENTIFIES]->(c:Customer)${CANONICAL_OF_C}
+         RETURN ${CANONICAL_BRAIN_ID} AS brain_id, r.is_active AS is_active
+         ORDER BY r.is_active DESC
+         LIMIT 1`,
+        { brand: brandId, type: identifierType, hash: identifierHash },
+      );
+      return res.records.length > 0 ? (res.records[0]!.get('brain_id') as string) : null;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Every identifier hash linked to a brain_id (its merged aliases included), ANY edge state.
+   * Keys the Bronze raw-PII sweep (erasure STEP 4) for brain_id-only triggers — the UI
+   * erase route hard-deletes contact_pii synchronously, so no raw identifier survives to
+   * re-derive the hash; the graph is the only remaining source (AUD-OPS-036 residual).
+   * Any-state match keeps replays complete after the graph purge tombstones the edges.
+   * Hashes only — the graph never holds raw PII, so nothing raw can leave here.
+   */
+  async listIdentifierHashesForErasure(brandId: string, brainId: string): Promise<string[]> {
+    const session = this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      const res = await session.run(
+        `MATCH (c:Customer {brand_id:$brand})
+         WHERE c.brain_id = $id
+            OR EXISTS { MATCH (c)-[:ALIAS_OF*1..50]->(:Customer {brand_id:$brand, brain_id:$id}) }
+         MATCH (i:Identifier {brand_id:$brand})-[:IDENTIFIES]->(c)
+         RETURN DISTINCT i.hash AS hash`,
+        { brand: brandId, id: brainId },
+      );
+      return res.records.map((r) => r.get('hash') as string);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Graph-side subject purge — MIRRORS core's Neo4jIdentityReader.eraseCustomer Cypher
+   * exactly (one erase shape everywhere): tombstone the active IDENTIFIES edges
+   * (is_active=false) + mark the Customer lifecycle_state='erased'. The identifier hashes
+   * stay (needed for replay resolution + Bronze sweep keying); raw PII never lived here.
+   * Idempotent: re-run matches 0 active edges and re-SETs the same lifecycle_state.
+   * Tenant-scoped: (brand_id, brain_id) exact pair — a foreign pair matches 0 nodes.
+   */
+  async eraseSubjectGraph(
+    brandId: string,
+    brainId: string,
+  ): Promise<{ existed: boolean; linksTombstoned: number }> {
+    const session = this.driver.session();
+    try {
+      let existed = false;
+      let linksTombstoned = 0;
+      await session.executeWrite(async (tx) => {
+        const res = await tx.run(
+          `MATCH (c:Customer {brand_id:$b, brain_id:$id})
+           OPTIONAL MATCH (i:Identifier {brand_id:$b})-[r:IDENTIFIES]->(c) WHERE r.is_active = true
+           SET r.is_active = false
+           WITH c, count(r) AS tombstoned
+           SET c.lifecycle_state='erased'
+           RETURN tombstoned`,
+          { b: brandId, id: brainId },
+        );
+        if (res.records.length > 0) {
+          existed = true;
+          linksTombstoned = toNum(res.records[0]!.get('tombstoned'));
+        }
+      });
+      return { existed, linksTombstoned };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Delete an entire brand subgraph (test cleanup / brand offboarding / crypto-shred).
+   *
+   * AUD-IMPL-028: per-label + batched, NOT one label-less all-nodes scan in a single unbounded
+   * DETACH DELETE transaction. The label-less form is an AllNodesScan (none of bootstrap()'s
+   * label-scoped indexes apply) and the single transaction accumulates the whole brand subgraph
+   * in the fixed 2g heap — on the RTBF/brand-erasure path, running exactly when the tenant's
+   * graph is largest, against the single non-replicated neo4j that also serves live per-event
+   * resolution. `CALL { … } IN TRANSACTIONS OF 10000 ROWS` (Neo4j 4.4+; we run 5.x) bounds each
+   * commit; per-label MATCH keeps every scan label-scoped.
+   *
+   * NOTE: CALL … IN TRANSACTIONS is only legal in an implicit (auto-commit) transaction —
+   * session.run() qualifies; NEVER wrap this in an explicit tx function. The final label-less
+   * sweep stays as a drift-catcher: after the label passes it matches (near-)zero nodes, so it
+   * is heap-bounded, and it guarantees the crypto-shred is COMPLETE even if a new label is
+   * added without updating IDENTITY_GRAPH_LABELS.
+   */
   async purgeBrand(brandId: string): Promise<void> {
     const session = this.driver.session();
     try {
+      for (const label of IDENTITY_GRAPH_LABELS) {
+        await session.run(
+          `MATCH (n:${label} {brand_id: $b}) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS`,
+          { b: brandId },
+        );
+      }
+      // Drift-catcher (see doc above): completeness beats scan cost on the erasure path.
       await session.run('MATCH (n) WHERE n.brand_id = $b DETACH DELETE n', { b: brandId });
     } finally {
       await session.close();

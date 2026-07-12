@@ -63,7 +63,9 @@ from pyspark.sql.functions import (  # noqa: E402
 )
 from pyspark.sql.window import Window  # noqa: E402
 
-from iceberg_base import CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table  # noqa: E402
+from iceberg_base import (  # noqa: E402
+    CATALOG, SILVER_NAMESPACE, build_spark, create_iceberg_table, read_job_watermark, write_job_watermark,
+)
 from job_log import emit_job_log  # noqa: E402
 from _silver_technical import (  # noqa: E402
     event_category_udf, identify_consent_denied_udf, write_consent_rejected, write_quarantine,
@@ -387,22 +389,46 @@ def build(spark: SparkSession):
         to_timestamp(get_json_object(_p, "$.ingested_at")).alias("ingested_at"),
         to_timestamp(get_json_object(_p, "$.ingested_at")).alias("received_at"),
         get_json_object(_p, "$.correlation_id").alias("correlation_id"),
+        # AUD-IMPL-025: the sink-inserted PHYSICAL kafka coordinate timestamp — the ONLY column on
+        # this table Iceberg can push a predicate into (everything above is computed from the payload
+        # JSON, so a filter on it forces a full scan + parse of the forever-retained history).
+        # Watermark-filter column ONLY: _process_window's explicit select() drops it, so nothing
+        # downstream (target schema, quarantine, MERGE) changes.
+        col("kafka_timestamp"),
         _p.cast("string").alias("payload"),
     )
 
-    # ── INCREMENTAL WATERMARK ───────────────────────────────────────────────────────────────────────
-    # Process only Bronze rows newer than what Silver already has (minus a small overlap; the MERGE
-    # dedups). FULL_REFRESH=1 ignores it; an empty target (first run) → full scan.
+    # ── INCREMENTAL WATERMARK (AUD-IMPL-025: physical kafka_timestamp) ─────────────────────────────
+    # Process only Bronze rows newer than the last run (minus a small overlap; the MERGE dedups).
+    # The watermark is the max PHYSICAL kafka_timestamp processed, tracked in the silver_job_watermark
+    # side-table — a predicate on it gets Iceberg file pruning (and, once the one-time
+    # bronze_collector_partition_migrate.py ALTER lands, day-partition pruning), so the hourly delta
+    # scan stays O(new data) instead of growing with all-time history. The JSON-lifted ingested_at
+    # stays the BUSINESS clock (batching windows + the newer-ingested-wins MERGE tiebreak) — semantics
+    # unchanged. Safety: kafka_timestamp is broker append time (per-partition monotonic; the sink
+    # commits every ~30s) — the overlap window absorbs cross-partition skew and redelivery, and rows
+    # with a NULL kafka_timestamp are ALWAYS re-included (the MERGE dedups; the safe direction).
+    # UPGRADE PATH: no side-table watermark yet → ONE legacy-cost run filtered on the target's
+    # max(ingested_at) (exactly today's behavior), then the kafka_timestamp watermark takes over.
+    # FULL_REFRESH=1 ignores both; an empty target (first run) → full scan.
     full_refresh = os.environ.get("FULL_REFRESH", "").lower() in ("1", "true", "yes")
     overlap_hours = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
-    wm = None
+    wm = None    # legacy fallback: target max(ingested_at) — JSON-lifted, NO pushdown
+    kwm = None   # physical kafka_timestamp watermark — pushdown/pruning-capable
     if not full_refresh:
-        try:
-            wm = spark.sql(f"SELECT max(ingested_at) AS wm FROM {TARGET}").collect()[0]["wm"]
-        except Exception:
-            wm = None  # target absent/empty → full scan
+        kwm = read_job_watermark(spark, "silver_collector_event")
+        if kwm is None:
+            try:
+                wm = spark.sql(f"SELECT max(ingested_at) AS wm FROM {TARGET}").collect()[0]["wm"]
+            except Exception:
+                wm = None  # target absent/empty → full scan
     src = raw_all
-    if wm is not None:
+    if kwm is not None:
+        src = raw_all.where(
+            col("kafka_timestamp").isNull()
+            | (col("kafka_timestamp") >= lit(kwm - timedelta(hours=overlap_hours)))
+        )
+    elif wm is not None:
         src = raw_all.where(col("ingested_at") >= lit(wm - timedelta(hours=overlap_hours)))
 
     installs = _load_installs(spark)  # small + constant — load once, broadcast per batch
@@ -411,8 +437,10 @@ def build(spark: SparkSession):
     # Size the number of batches to the ACTUAL delta: ~SILVER_BATCH_TARGET_ROWS per batch. Steady state
     # → 1 small batch; a large backlog → many bounded batches (time-windowed, processed oldest-first so
     # the newer-ingested-wins MERGE stays correct). The delta is watermark-bounded, so count() is cheap.
-    rng = src.selectExpr("min(ingested_at) AS lo", "max(ingested_at) AS hi").collect()[0]
-    lo_ts, hi_ts = rng["lo"], rng["hi"]
+    rng = src.selectExpr(
+        "min(ingested_at) AS lo", "max(ingested_at) AS hi", "max(kafka_timestamp) AS k_hi"
+    ).collect()[0]
+    lo_ts, hi_ts, k_hi = rng["lo"], rng["hi"], rng["k_hi"]
     if lo_ts is None:  # nothing new since the watermark
         n = spark.sql(f"SELECT COUNT(*) AS n FROM {TARGET}").collect()[0]["n"]
         return TARGET, n
@@ -422,7 +450,10 @@ def build(spark: SparkSession):
     total = src.count()
     n_chunks = max(1, min(max_chunks, math.ceil(total / target_rows)))
 
-    _mode = "FULL_REFRESH" if full_refresh else ("INCREMENTAL" if wm is not None else "FIRST_FULL")
+    _mode = (
+        "FULL_REFRESH" if full_refresh
+        else ("INCREMENTAL_KAFKA_TS" if kwm is not None else ("INCREMENTAL_LEGACY" if wm is not None else "FIRST_FULL"))
+    )
     print(
         f"[silver-collector-event] {_mode}: delta={total} rows over [{lo_ts} .. {hi_ts}] "
         f"→ {n_chunks} adaptive batch(es) (~{target_rows} rows/batch, driver heap {os.environ.get('SPARK_DRIVER_MEMORY', '4g')})",
@@ -439,6 +470,11 @@ def build(spark: SparkSession):
             if i < n_chunks - 1:  # last batch has no upper bound → catches hi_ts exactly
                 window = window.where(col("ingested_at") < lit(lo_ts + span * (i + 1)))
             _process_window(spark, window, installs)
+
+    # AUD-IMPL-025: advance the kafka_timestamp watermark ONLY after every batch merged — a crash
+    # mid-run re-processes from the old mark (idempotent MERGE), never skips data. k_hi None (e.g. a
+    # backfill of rows without kafka coords) → no-op: the mark never regresses/poisons.
+    write_job_watermark(spark, "silver_collector_event", k_hi)
 
     n = spark.sql(f"SELECT COUNT(*) AS n FROM {TARGET}").collect()[0]["n"]
     return TARGET, n

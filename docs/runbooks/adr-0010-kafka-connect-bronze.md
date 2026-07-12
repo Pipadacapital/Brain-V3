@@ -71,6 +71,45 @@ history:
 4. Connect keeps writing its own `*_connect` tables harmlessly in the meantime;
    `docker compose stop kafka-connect` to silence it.
 
+## Connector registration lost (`_connect-configs` wiped) — prod recovery (AUD-OPS-018)
+
+Kafka Connect stores its connector configs in the broker-side internal topic
+`_connect-configs`. If the broker PVCs are ever recreated (the exact hazard the AUD-INFRA-002
+prune guard exists for — see `kafka-operations.md`), the Connect **worker comes back healthy
+but with ZERO connectors registered**, which **silently stops ALL Bronze landing**: no errors,
+no crash loops, just no commits. Left unnoticed past the 7-day topic retention this becomes
+real event loss.
+
+**Detection** — any of:
+```bash
+kubectl -n kafka exec deploy/kafka-connect-prod-kafka-connect -- \
+  curl -s localhost:8083/connectors          # → []  ⇒ registration lost (should list 10)
+# Prometheus: kafka_connect_connector_task_status absent / BronzeConnectTaskFailed silent while
+# kafka_consumergroup_lag{consumergroup=~"connect-.*"} has NO group at all (group gone ≠ lag 0)
+# Freshness: brain_data_freshness_seconds climbing on every mart at once
+```
+Trino cross-check: `SELECT max(kafka_timestamp) FROM iceberg.brain_bronze.collector_events_connect`
+frozen while the collector is accepting 2xx.
+
+**Recovery** — re-register all sink connectors from the chart's ConfigMap (the same configs the
+post-upgrade hook applies), as a one-shot Job:
+```bash
+kubectl apply -f tools/deploy/kafka-connect-reregister-job.yaml
+kubectl -n kafka wait --for=condition=complete job/kafka-connect-reregister --timeout=300s
+kubectl -n kafka logs job/kafka-connect-reregister     # every connector: "OK (200|201)"
+kubectl -n kafka delete job kafka-connect-reregister   # allow a future re-run (name is fixed)
+```
+The Job PUTs each `/config/*.json` from the `kafka-connect-prod-kafka-connect-connectors`
+ConfigMap to the Connect REST API — idempotent (PUT upserts), safe to re-run. Verified in prod
+2026-07-11 (Job `Complete` in ~4s after the broker-PVC recreation).
+
+**Replay-window caveat:** sink offsets live in the **Iceberg snapshot metadata**, not in
+`_connect-configs`, so re-registration resumes exactly where each table left off — **no
+duplicates, no gaps — provided the unlanded offsets still exist on the brokers**. Standard
+lanes retain **7 days** (long lanes 30d — `infra/helm/strimzi-kafka/values.yaml`); if the
+outage exceeded retention, the aged-out window is unrecoverable from Kafka (re-pull via
+connector backfill where the provider supports it) — do not let a `[]` connector list sit.
+
 ## Ops notes
 
 - **Update a connector config**: edit `infra/kafka-connect/<name>.json`, then

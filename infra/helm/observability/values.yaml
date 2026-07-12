@@ -1,0 +1,49 @@
+# brain-observability — prod monitoring companions (AUD-INFRA-030/-032).
+# Default values; values-prod.yaml overrides per environment.
+
+# ── Data-freshness SLA exporter (AUD-INFRA-030; closes AUD-OBS-1) ───────────────────────────────
+# Runs tools/observability/freshness-exporter/freshness_exporter.py (stdlib-only) on the stock
+# python image with the script mounted from a ConfigMap — NO image build, mirroring the script's
+# own "no Dockerfile required" contract. The chart's files/freshness_exporter.py is a VERBATIM
+# copy of the tools/ source of truth; KEEP THE TWO IN LOCKSTEP (byte-compare at commit time).
+# It queries Trino (the sole serving engine) for each Gold mart's latest Iceberg snapshot and
+# emits brain_data_freshness_seconds{mart,schema,sla_class} — lighting up the four
+# freshness rules already loaded in kube-prometheus-stack values-prod (BrainExecutiveMartStale /
+# BrainSegmentMartStale / BrainMartSnapshotMissing / BrainFreshnessExporterDown).
+freshnessExporter:
+  enabled: true
+  # Multi-arch official image (arm64 Graviton system nodes) — pinned minor, no :latest.
+  image: python:3.13-slim
+  # Trino coordinator base URL — per-env (values-prod points at brain-prod-trino).
+  trinoUrl: "http://trino:8080"
+  trinoUser: brain
+  trinoCatalog: iceberg
+  goldSchema: brain_gold
+  listenPort: 9095
+  refreshSeconds: 60
+  serviceMonitor:
+    # Job relabel pins the EXACT name the freshness rules + local compose use
+    # ('brain-freshness-exporter'), which also matches BrainTargetDown's brain-.* regex.
+    jobLabel: brain-freshness-exporter
+    interval: 30s
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  # Monitoring control-plane doctrine (kube-prometheus-stack values-prod): observers ride the
+  # fixed on-demand system node group, not the Spot capacity they observe.
+  nodeSelector:
+    role: system
+
+# ── Grafana dashboards (AUD-INFRA-032) ──────────────────────────────────────────────────────────
+# The three purpose-built Brain dashboards (canonical:
+# infra/observe/grafana/provisioning/dashboards/*.json — the local compose Grafana provisions
+# them from there; the chart's files/dashboards/ are VERBATIM copies, KEEP IN LOCKSTEP). Shipped
+# as ConfigMaps labelled grafana_dashboard: "1" — discovered by the kube-prometheus-stack Grafana
+# dashboard sidecar (enabled by default in chart 65.1.1: label grafana_dashboard, value "1",
+# searchNamespace ALL; the default provisioned datasource uid `prometheus` matches the JSONs).
+dashboards:
+  enabled: true

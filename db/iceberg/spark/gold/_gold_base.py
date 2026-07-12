@@ -107,14 +107,54 @@ def ensure_gold_table(spark: SparkSession, table: str, columns_sql: str, *, part
     )
 
 
-def merge_on_pk(spark: SparkSession, fqtn: str, staged: DataFrame, pk: list[str]) -> None:
+def _orphan_delete_clause(bucket_brands: "list | None") -> str:
+    """AUD-IMPL-012 — the WHEN NOT MATCHED BY SOURCE DELETE branch for a FULL-recompute mart.
+
+    A MERGE with only MATCHED-UPDATE / NOT-MATCHED-INSERT can never REMOVE a Gold row whose source group
+    disappeared from Silver (RTBF erasure, dedup correction, quarantine) — the exact orphan class that
+    inflated gold_revenue_ledger by +₹0.98 Cr before it moved to overwritePartitions()
+    (gold_revenue_ledger.py). Spark 3.5 supports `WHEN NOT MATCHED BY SOURCE [AND cond] THEN DELETE`.
+
+    TENANT-SCOPING (critical): under PARTITION-INCREMENTAL the staged rollup covers ONLY the current
+    bucket's brands — an UNscoped not-matched-by-source DELETE would wipe every other brand's rows. So
+    when `bucket_brands` is given (the authoritative recompute scope, NOT the brands present in staged —
+    a fully-erased brand has zero staged rows but must still shed its orphans) the DELETE is scoped
+    `t.brand_id IN (<bucket brands>)`. bucket_brands=None → full recompute → unscoped DELETE.
+    Returns '' for an EMPTY bucket list (nothing was recomputed → delete nothing)."""
+    if bucket_brands is None:
+        return "\n        WHEN NOT MATCHED BY SOURCE THEN DELETE"
+    brands = [b for b in bucket_brands if b]
+    if not brands:
+        return ""
+    in_list = ", ".join("'" + str(b).replace("'", "''") + "'" for b in brands)
+    return f"\n        WHEN NOT MATCHED BY SOURCE AND t.brand_id IN ({in_list}) THEN DELETE"
+
+
+def merge_on_pk(spark: SparkSession, fqtn: str, staged: DataFrame, pk: list[str], *,
+                delete_orphans: bool = False) -> None:
     """Idempotent MERGE of a fully-recomputed Gold rollup `staged` into `fqtn` on the mart PK.
 
     The rollup is already 1 row per PK (a GROUP BY upstream), so there is no in-batch dedup to do —
     MERGE: WHEN MATCHED UPDATE * (refresh the latest authoritative rollup), WHEN NOT MATCHED INSERT *.
     Replay-safe: a re-run over the same Silver yields identical rows.
+
+    delete_orphans=True (AUD-IMPL-012, opt-in — ONLY for marts whose staged rollup is a FULL recompute
+    of every group it owns, per brand): additionally DELETE target rows whose group disappeared from the
+    recompute (WHEN NOT MATCHED BY SOURCE), scoped to the brands actually recomputed this pass (the
+    partition-incremental bucket; unscoped on a full pass). NEVER set it on a mart that stages a partial
+    (e.g. time-bounded) slice — the out-of-slice history would be wiped. Default False = prior behavior.
     """
     staged.createOrReplaceTempView("_gold_stage")
+    orphan_clause = ""
+    if delete_orphans:
+        if _BRAND_BUCKET_VIEW is not None:
+            bucket_brands = [
+                r["brand_id"]
+                for r in spark.table(_BRAND_BUCKET_VIEW).select("brand_id").distinct().collect()
+            ]
+            orphan_clause = _orphan_delete_clause(bucket_brands)
+        else:
+            orphan_clause = _orphan_delete_clause(None)
     on_clause = " AND ".join(f"t.{c} = s.{c}" for c in pk)
     # Best-effort, brand-AGNOSTIC merge-upserted + rows_in signal for the structured job line. The Gold
     # staged rollup is already 1 row per PK, so its count IS the set of PKs the MERGE inserts-or-updates
@@ -132,7 +172,7 @@ def merge_on_pk(spark: SparkSession, fqtn: str, staged: DataFrame, pk: list[str]
         USING _gold_stage s
         ON {on_clause}
         WHEN MATCHED THEN UPDATE SET *
-        WHEN NOT MATCHED THEN INSERT *
+        WHEN NOT MATCHED THEN INSERT *{orphan_clause}
         """
     )
 

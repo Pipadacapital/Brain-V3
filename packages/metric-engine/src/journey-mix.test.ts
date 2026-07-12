@@ -291,6 +291,9 @@ describe('computeTouchpointTimeline — ordered touch projection for one journey
     expect(result.touches[1]?.touchSeq).toBe(2);
     expect(result.touches[1]?.isLastTouch).toBe(true);
     expect(result.touches[1]?.channel).toBe('direct');
+    // SPEC: B.4 (AUD-JE-35) — stitched touches carry matched_via='deterministic' (never null).
+    expect(result.touches[0]?.matchedVia).toBe('deterministic');
+    expect(result.touches[1]?.matchedVia).toBe('deterministic');
   });
 
   it('stitched=true when any touch carries a stitched_brain_id (deterministic read-back)', async () => {
@@ -324,6 +327,9 @@ describe('computeTouchpointTimeline — ordered touch projection for one journey
     const result = await computeTouchpointTimeline(BRAND_ID, fakeDeps, { brainAnonId: 'anon-x' });
     expect(result.hasData).toBe(true);
     expect(result.stitched).toBe(false);
+    // SPEC: B.4 (AUD-JE-35) — un-stitched touches carry matched_via='anonymous' (honest, never null).
+    expect(result.touches[0]?.matchedVia).toBe('anonymous');
+    expect(result.touches[1]?.matchedVia).toBe('anonymous');
   });
 
   it('touchSeq is an integer (count, never float)', async () => {

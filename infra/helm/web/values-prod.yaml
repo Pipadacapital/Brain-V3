@@ -7,6 +7,12 @@ image:
 
 envSecretName: web-env
 
+# AUD-INFRA-033: scrape the user-facing tier (job brain-web → BrainTargetDown coverage via
+# the /api/metrics process-gauge exposition).
+metrics:
+  serviceMonitor:
+    enabled: true
+
 # AUD-COST-003: the app UI on the shared brain-prod ALB (host-routed, ACM TLS).
 ingress:
   enabled: true
@@ -21,10 +27,15 @@ serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-web
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 21m / max 22m, mem p95 ~251Mi / max 254Mi per pod. Was 250m/512Mi.
+# New: cpu 100m (HPA fires at 70m ≈ 3x max seen — SSR bursts are spiky), mem
+# 384Mi (80% target = 307Mi > observed max 254Mi). LIMITS UNCHANGED. Revert =
+# restore old requests.
 resources:
   requests:
-    cpu: 250m
-    memory: 512Mi
+    cpu: 100m
+    memory: 384Mi
   limits:
     cpu: "1"
     memory: 1Gi

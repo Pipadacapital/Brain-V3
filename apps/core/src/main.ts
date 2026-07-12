@@ -68,7 +68,14 @@ import {
 import type { BrandSaltSource } from './modules/identity/index.js';
 import { Neo4jIdentityReader } from './modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 import { createMcpDispatch } from './modules/ai/index.js';
-import { initObservability, initSentry, createLogger } from '@brain/observability';
+import {
+  initObservability,
+  initSentry,
+  createLogger,
+  renderPrometheusText,
+  PROMETHEUS_CONTENT_TYPE,
+  registerProcessFailureHandlers,
+} from '@brain/observability';
 
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
 const log = createLogger({ serviceName: 'core' });
@@ -137,6 +144,9 @@ export async function main(): Promise<void> {
     otlpEndpoint: getEnv('OTEL_EXPORTER_OTLP_ENDPOINT', '') || undefined,
   });
   const closeSentry = await initSentry({ serviceName: 'core' }); // gated by SENTRY_DSN (no-op in dev)
+  // Last-resort handlers (AUD-IMPL-003): route unhandledRejection/uncaughtException through the
+  // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
+  registerProcessFailureHandlers({ log, serviceName: 'core', flush: closeSentry });
 
   const nodeEnv = getEnv('NODE_ENV', 'development');
   const isProduction = nodeEnv === 'production';
@@ -375,6 +385,17 @@ export async function main(): Promise<void> {
     version: '0.1.0',
     timestamp: new Date().toISOString(),
   }));
+
+  // GET /metrics — Prometheus text exposition of the in-process @brain/observability counter
+  // registry (AUD-INFRA-033). Core already RECORDS counters (connector_auth_rejected_total in the
+  // WebhookPipeline, job counters, …) but never exposed them — the core chart's ServiceMonitor
+  // (job brain-core) scrapes this, which also puts core under BrainTargetDown{job=~"brain-.*"}.
+  // Same exposure posture as the collector's ungated /metrics: the payload is bounded
+  // low-cardinality operational counters (provider/reason-class labels, no tenant payloads),
+  // so no auth gate — a degraded core must still be scrapable.
+  app.get('/metrics', async (_req, reply) => {
+    return reply.status(200).header('content-type', PROMETHEUS_CONTENT_TYPE).send(renderPrometheusText());
+  });
 
   // Create Redis client for rate limiting (AC-3 / MA-04). FAIL-OPEN: the RateLimiter
   // itself handles Redis errors by allowing the request (no Redis = no blocking).
@@ -944,8 +965,8 @@ export async function main(): Promise<void> {
     await closeSentry().catch(() => { /* ignore */ });
     process.exit(0);
   };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
 
   // Start server.
   try {

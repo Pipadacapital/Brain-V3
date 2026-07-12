@@ -400,7 +400,9 @@ export function SegmentsContent() {
       cancelled = true;
       clearTimeout(handle);
     };
-    // defKey is the stable serialisation of `definition` — deps-narrowed intentionally.
+    // defKey is the stable serialisation of `definition` — deps-narrowed intentionally
+    // (depending on the `definition` object identity would re-run the preview every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defKey, runPreview]);
 
   const addRule = () => {

@@ -43,6 +43,8 @@ describe('D2.snapshot — committed generated/** equals a fresh compile (drift g
       for (const g of compileMetric(m).grains) {
         if (g.preagg) {
           expect(await read(join('preaggs', `${m.name}_${g.grain}.sql`))).toBe(`${g.preagg.createDdl}\n${g.preagg.refreshSql}`);
+          // AUD-SL-10: the committed Trino atomic-CTAS statement is pinned too.
+          expect(await read(join('preaggs', `${m.name}_${g.grain}.trino.sql`))).toBe(g.preagg.trinoCtasSql);
         }
       }
     }

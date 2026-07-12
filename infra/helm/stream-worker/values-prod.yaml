@@ -7,6 +7,11 @@ image:
 
 envSecretName: stream-worker-env
 
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in stream-worker-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""
+
 # Helm lists REPLACE (no merge) — the two defaults are repeated verbatim, then the prod-only wiring.
 env:
   - name: SERVICE_NAME
@@ -39,22 +44,44 @@ serviceAccount:
 nodeSelector:
   brain.platform/pool: streaming
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 138m / max 156m, mem p95 ~242Mi / max 479Mi (replay burst) per pod.
+# Was 500m/1Gi. New: cpu 250m — the CPU-only HPA (70%) now fires at 175m, just
+# above the observed max, so real consumer lag scales out instead of sitting at
+# 20%/70% forever; mem 640Mi keeps ~1.3x the burst max (no memory HPA target on
+# this chart). LIMITS UNCHANGED (2 CPU / 2Gi burst+OOM budget). Revert =
+# restore old requests.
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 250m
+    memory: 640Mi
   limits:
     cpu: "2"
     memory: 2Gi
 
-# P2.5: HPA on in prod. The live-topic partition count is the HARD ceiling on useful replicas
-# (a replica beyond the partition count owns no partition → idle). The prod live topic is now 96
-# partitions (infra/helm/strimzi-kafka → live_topic_partition_count, H5 audit), so the
-# worker is no longer pinned at the old hard 12. maxReplicas=48 gives generous headroom while
-# staying well under 96. Raise toward 96 if sustained lag warrants; never exceed the partition
-# count. A *real* repartition (per-brand key) is gated on the producer key change (analytics/identity
-# stream) — see the kafka module header.
+# P2.5 + AUD-OPS-030: autoscaling on in prod, now KEDA-lag-driven. The live-topic partition
+# count is the HARD ceiling on useful replicas (a replica beyond it owns no partition → idle).
+# MEASURED prod reality (2026-07-11 audit): ALL topics are 12 partitions — the strimzi chart
+# clamps `partitions` to 6..12 and values-prod sets 12; the previous "96 partitions (H5)"
+# comment here was never true against that chart. The old maxReplicas=48 was ALSO
+# unschedulable: 48×500m = 24 CPU > the whole 20-CPU streaming pool (shared with Kafka
+# 3×1CPU + collector). maxReplicas=12 == partitions == honest schedulable capacity; raise
+# partitions + pool limits + this ceiling together as ONE deliberate change.
+# CPU was also the wrong trigger for an I/O-bound consumer (lag grows under 70% CPU —
+# burst recovery after downtime/replay) → keda.enabled renders the kafka-lag ScaledObject
+# (KEDA operator installed via infra/argocd/envs/prod/keda.yaml, proven on trino) and
+# suppresses the plain CPU HPA. Rollback = keda.enabled: false (plain CPU HPA returns).
 autoscaling:
   enabled: true
   minReplicas: 3
-  maxReplicas: 48
+  maxReplicas: 12
+  keda:
+    enabled: true
+    kafka:
+      # Strimzi in-cluster plaintext bootstrap (same host the app's KAFKA_BROKERS points at).
+      bootstrapServers: "brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
+      # LIVE collector lane consumer group (packages/config stream-worker CONSUMER_GROUP_ID).
+      consumerGroup: stream-worker-live
+      # prod.* lane (strimzi values-prod prefix) — the partition-bearing live topic.
+      topic: prod.collector.event.v1
+      lagThreshold: "1000"

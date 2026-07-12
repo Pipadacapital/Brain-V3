@@ -111,8 +111,10 @@ def test_a24_unmerge_uses_the_pure_derivation_helper():
 def test_a24_unmerge_reuses_the_versioned_copy_machinery():
     src = _src()
     # Un-reversion must go through the SAME flip-then-copy (data_version + 1, is_current flip) as merge —
-    # additive, event-sourced, never a destructive edit.
-    assert "_flip_and_copy(spark, fqtn)" in src
+    # additive, event-sourced, never a destructive edit. The helper carries a provenance `cause` kwarg
+    # (merge|unmerge); assert BOTH passes route through it (AUD-IMPL-010: keep in sync with the signature).
+    assert '_flip_and_copy(spark, fqtn, cause="merge")' in src
+    assert '_flip_and_copy(spark, fqtn, cause="unmerge")' in src
     assert "data_version + 1" in src  # the version bump in _copies_sql
 
 

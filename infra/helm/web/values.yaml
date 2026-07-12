@@ -28,6 +28,19 @@ probes:
   path: /                 # SSR root; any non-5xx is healthy
   readinessPath: /
 
+# Prometheus scrape (AUD-INFRA-033). Web serves a minimal process-gauge exposition at
+# /api/metrics (app/api/metrics/route.ts — /metrics is the dashboard metrics PAGE) on its MAIN
+# port, so the ServiceMonitor rides the existing `http` Service port. The job relabel pins
+# "brain-web" so BrainTargetDown{job=~"brain-.*"} finally covers the user-facing tier — before
+# this, a dead web deployment had NO `up` series and was invisible to the liveness rule.
+# Off by default (kind/staging have no Prometheus Operator CRDs); values-prod enables it.
+metrics:
+  serviceMonitor:
+    enabled: false
+    jobLabel: brain-web
+    path: /api/metrics
+    interval: 30s
+
 # Next.js needs the BFF base URL at runtime (BFF_BASE_URL / CORE_API_URL).
 envSecretName: ""
 
@@ -58,3 +71,31 @@ autoscaling:
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300
+
+# ── Wave-2 workload hardening (AUD-OPS-001/002/004, AUD-INFRA-022) ────────────
+# AUD-OPS-001: survive node drains / Spot reclaims / Karpenter consolidation.
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# AUD-OPS-002: best-effort zone + node spread (ScheduleAnyway never blocks
+# scheduling on kind/single-pool topologies).
+topologySpread:
+  enabled: true
+  constraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+# AUD-OPS-004: SIGTERM → next start shutdown; preStop sleep first so the ALB
+# (target-type=ip) stops routing to the Terminating pod before shutdown begins.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 10
+
+# AUD-INFRA-022: read-only root FS. OFF until verified against the runtime image
+# (next start writes .next/cache — emptyDirs are mounted at /tmp and .next/cache
+# when enabled). Flip after a staging soak; PSA `restricted` does NOT require it.
+readOnlyRootFilesystem: false

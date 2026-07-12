@@ -1,0 +1,145 @@
+{
+  "uid": "brain-revenue-integrity",
+  "title": "Brain — Revenue Integrity",
+  "description": "Ledger write rates, RTO/CoD clawbacks, over-reversals, Silver lag, DLQ redrive health.",
+  "tags": ["brain", "revenue"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "60s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Revenue Ledger Writes (rows/s)",
+      "description": "Rate of realized_revenue_ledger and cod_rto_ledger inserts.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (event_type) (rate(brain_ledger_write_total[5m]))",
+          "legendFormat": "{{ event_type }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Over-Reversals (1h)",
+      "description": "cumulative reversals > recognized sale for an order (F2).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(brain_revenue_over_reversal_total[1h]))",
+          "legendFormat": "over-reversals"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CoD RTO Clawbacks Written (rows/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(brain_ledger_write_total{event_type=\"cod_rto_clawback\"}[5m]))",
+          "legendFormat": "cod_rto_clawback/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Silver Lag Breach (Bronze↔Silver reconciliation)",
+      "description": "Sustained increase = Silver is stale vs Bronze.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (reason) (increase(brain_dq_silver_lag_breach_total[1h]))",
+          "legendFormat": "{{ reason }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "fixedColor": "orange", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "DLQ Redrive — Exhausted Poison Messages",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (target_topic) (increase(brain_dlq_redrive_exhausted_total[1h]))",
+          "legendFormat": "{{ target_topic }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "fixedColor": "red", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Ad Spend Ledger Writes (rows/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(brain_ledger_write_total{event_type=\"ad_spend\"}[5m]))",
+          "legendFormat": "ad_spend/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Settlement Ledger Writes (rows/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(brain_ledger_write_total{event_type=~\"settlement.*\"}[5m]))",
+          "legendFormat": "settlement/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "Revenue Integrity Errors (Loki)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service_name=~\"stream-worker|core\"} |= \"over_reversal\" or \"revenue\" and level=`error`",
+          "legendFormat": ""
+        }
+      ]
+    }
+  ]
+}

@@ -5,6 +5,14 @@ image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-iceberg-rest-prod
   tag: "1.9.2-pg42.7.4"
 
+# AUD-OPS-011 (SPOF review, docs/ops/scale-knobs.md §4): 2 replicas — EVERY catalog
+# operation platform-wide (Spark Silver/Gold commits, Trino serving reads, Kafka-Connect
+# Bronze landing commits) rides this facade, and it was single-replica. The server is a
+# STATELESS REST front over the JdbcCatalog on Aurora: Iceberg commits are optimistic
+# compare-and-swap at the catalog DB, so concurrent replicas are safe (the local-only
+# SQLite lock issue does not apply to PG). Cost: one extra 500m/1Gi pod.
+replicaCount: 2
+
 catalog:
   # AUD-COST-016: the SINGLE medallion warehouse root — terraform output
   # `warehouse_bucket_name` (modules/s3-iceberg, brain-bronze-prod-<acct>, NO
@@ -21,9 +29,15 @@ catalog:
 serviceAccount:
   roleArn: "arn:aws:iam::380254378136:role/brain-prod-iceberg-rest"   # IRSA: S3 RW on the warehouse namespace prefixes
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 7m, mem p95/max ~254/256Mi. Was 500m/1Gi requests. New: cpu 100m,
+# mem 512Mi (2x observed max). MEMORY LIMIT UNCHANGED at 2Gi — the JVM sizes
+# its heap from the cgroup LIMIT (no explicit -Xmx in the chart), so heap
+# behavior is untouched; only the scheduler reservation shrinks. Single
+# replica, no HPA. Revert = restore old requests.
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 100m
+    memory: 512Mi
   limits:
     memory: 2Gi

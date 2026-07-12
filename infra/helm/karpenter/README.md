@@ -27,10 +27,16 @@ operator. An autoscaler must not run on the Spot capacity it manages, so:
 
 | Pool | Instance | Capacity | Scale-to-zero | Bound (`limits`) | Consolidation |
 |---|---|---|---|---|---|
-| `streaming` | `t4g.large` | spot | **no** (warm) | cpu 20 / 80Gi | `WhenEmpty` |
-| `batch` | `t4g.xlarge` | spot | **yes** (0→3) | cpu 12 / 48Gi | `WhenEmptyOrUnderutilized` |
-| `trino` | `t4g.xlarge` | spot | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmptyOrUnderutilized` |
-| `ondemand` | `t4g.xlarge` | **on-demand** | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmpty` |
+| `streaming` | `t4g.large/xlarge` + `m7g.large/xlarge` | spot | **no** (warm) | cpu 20 / 80Gi | `WhenEmpty` |
+| `batch` | `t4g.xlarge` + `m7g.xlarge` | spot | **yes** (0→3) | cpu 12 / 48Gi | `WhenEmptyOrUnderutilized` |
+| `trino` | `t4g.xlarge` + `m7g.xlarge` | spot | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmptyOrUnderutilized` |
+| `ondemand` | `t4g.xlarge` + `m7g.xlarge` | **on-demand** | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmpty` |
+
+**AUD-OPS-033:** the aggregate ceiling (48 vCPU / 192Gi across the 4 pools) is deliberate and
+documented in `values.yaml` — it is intentionally below the sum of all HPA maxima under a
+fully-correlated burst; raise pool `limits` and workload maxima together. The `m7g.*` entries
+are the t4g spot-drought fallback (same 1:4 vCPU:GiB shape, Graviton3, arm64 — one EC2NodeClass
+covers all); Karpenter still provisions the cheaper t4g first.
 
 **`ondemand` (AUD-COST-018)** is the tainted (`brain.platform/pool=ondemand:NoSchedule`)
 home for single-instance stateful SoRs — Neo4j (identity SoR, Community = no HA) pins here via

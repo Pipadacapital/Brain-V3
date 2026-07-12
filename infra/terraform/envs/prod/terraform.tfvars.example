@@ -1,6 +1,7 @@
 # Prod go-live inputs — copy to terraform.tfvars and fill before the first apply.
-# (terraform.tfvars is gitignored; nothing here is a secret, but keep it out of
-# the repo so per-account values don't drift into source.)
+# (AUD-INFRA-008c: terraform.tfvars for THIS env is TRACKED in git — the
+# applied per-account values are reviewed in PRs like any other IaC. Nothing
+# in it may be a secret. This .example stays as the template for new accounts.)
 #
 # REMINDER (not a variable — backends can't interpolate): fill <PROD_ACCOUNT_ID>
 # in backend.tf, and apply infra/terraform/bootstrap first (state bucket + lock
@@ -21,6 +22,11 @@ system_node_max     = 6
 # ADR-0009 Aurora Serverless v2 starter sizing (raise max_capacity under load).
 aurora_min_capacity = 0.5
 aurora_max_capacity = 2
+
+# AUD-OPS-014 (DR): S3 CRR of the medallion warehouse bucket to an IN-COUNTRY
+# second region (residency decision docs/adr/0011-s3-crr-residency.md).
+enable_cross_region_replication = true
+replica_region                  = "ap-south-2"
 
 # AUD-INFRA-004: hosted zone id(s) external-dns may mutate. [] = hostedzone/*
 # bootstrap fallback — tighten to the real zone id as soon as it exists.

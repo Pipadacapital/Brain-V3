@@ -63,6 +63,23 @@ MODE = os.environ.get("MODE", "maintain")
 # (the raw-lane D4 window lives in bronze_raw_retention.py — rows in the durable collector lane are
 # NEVER deleted: no event loss).
 SNAPSHOT_TTL_MS = int(os.environ.get("SNAPSHOT_TTL_MS", str(604_800_000)))  # 7 days
+# AUD-OPS-015: the DURABLE collector lane (brain_bronze.collector_events_connect — the append-only
+# system-of-record whose rows are NEVER deleted) keeps a LONGER Iceberg time-travel window than the
+# default 7d, so a bad downstream job / erroneous delete discovered late can still be rolled back via
+# snapshot rollback instead of the last-resort S3 noncurrent-version restore (90d bucket lifecycle,
+# tools/dr/s3-version-restore.sh + docs/runbooks/DR.md). Cost is metadata + superseded files only:
+# the lane is append-mostly, so the extra window carries compaction-superseded files for 14d instead
+# of 7d — pennies at current volume (audit 04 AUD-OPS-015 sizing). The PII raw lanes (*_raw_connect)
+# deliberately stay on the SHORT default window — their 7-day D4 retention (bronze_raw_retention.py)
+# is a privacy contract, and a long time-travel window would resurrect purged raw PII.
+# NOTE: erase mode below calls _expire(ttl_ms=0) explicitly, so RTBF still purges the durable lane's
+# pre-deletion snapshots immediately — the longer window never weakens erasure.
+DURABLE_SNAPSHOT_TTL_MS = int(os.environ.get("DURABLE_SNAPSHOT_TTL_MS", str(1_209_600_000)))  # 14 days
+DURABLE_TABLES = {
+    t.strip()
+    for t in os.environ.get("DURABLE_TABLES", "collector_events_connect").split(",")
+    if t.strip()
+}
 
 
 def _rewrite(spark: SparkSession, qualified: str = None) -> None:
@@ -108,9 +125,11 @@ def maintain(spark: SparkSession) -> None:
     failures = []
     for t in tables:
         q = f"{NAMESPACE}.{t}"
+        # AUD-OPS-015: durable (never-row-deleted) tables get the longer time-travel window.
+        ttl_ms = DURABLE_SNAPSHOT_TTL_MS if t in DURABLE_TABLES else SNAPSHOT_TTL_MS
         try:
             _rewrite(spark, qualified=q)
-            _expire(spark, qualified=q)
+            _expire(spark, ttl_ms=ttl_ms, qualified=q)
         except Exception as exc:  # noqa: BLE001 — one table must never abort the housekeeping sweep
             failures.append(t)
             print(f"[maintenance] WARN {CATALOG}.{q}: {exc}", flush=True)

@@ -17,6 +17,23 @@ spec:
         {{- include "brain.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "brain.fullname" . }}
+      # AUD-OPS-004: explicit, bounded drain window on eviction/rollout (everything
+      # stateless rides Spot) instead of relying on the kubelet default.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.topologySpread.enabled }}
+      # AUD-OPS-002: spread replicas across zones/nodes so a single node or AZ loss
+      # can't take the whole tier down. ScheduleAnyway = best-effort — never blocks
+      # scale-up on single-pool (Karpenter) or single-node (kind) topologies.
+      topologySpreadConstraints:
+        {{- range .Values.topologySpread.constraints }}
+        - maxSkew: {{ .maxSkew }}
+          topologyKey: {{ .topologyKey }}
+          whenUnsatisfiable: {{ .whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "brain.selectorLabels" $ | nindent 14 }}
+        {{- end }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
@@ -32,6 +49,23 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            {{- if .Values.readOnlyRootFilesystem }}
+            readOnlyRootFilesystem: true
+            {{- end }}
+          {{- if .Values.preStopSleepSeconds }}
+          # AUD-OPS-004: hold SIGTERM until the ALB (target-type=ip) has observed the
+          # Terminating pod and stopped routing to it — otherwise in-flight requests
+          # land on a replica that is already shutting down.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- end }}
+          {{- if .Values.readOnlyRootFilesystem }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
           {{- if .Values.service.enabled }}
           ports:
             - name: http
@@ -43,9 +77,18 @@ spec:
             - secretRef:
                 name: {{ .Values.envSecretName }}
           {{- end }}
-          {{- with .Values.env }}
+          {{- if or .Values.env .Values.otelExporterOtlpEndpoint }}
           env:
+            {{- if .Values.otelExporterOtlpEndpoint }}
+            # AUD-OBS-2: OTel export ON-switch — the app's initObservability() is a no-op
+            # unless OTEL_EXPORTER_OTLP_ENDPOINT is set (auth headers, if any, come from the
+            # envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS). Empty value ⇒ flag OFF.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otelExporterOtlpEndpoint | quote }}
+            {{- end }}
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- if .Values.probes.enabled }}
           startupProbe:
@@ -69,3 +112,8 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.readOnlyRootFilesystem }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- end }}

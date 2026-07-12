@@ -131,6 +131,14 @@ export interface TouchpointTimelineRow {
   referrerHost: string | null;
   landingPath: string | null;
   eventType: string;
+  /**
+   * SPEC: B.4 EXPLAINABILITY (AUD-JE-35) — the coarse stitch-provenance basis for this touch,
+   * mirroring the journey-events ledger derivation (journey-events.ts deriveMatchedVia):
+   * 'deterministic' when the touch row carries a stitched_brain_id (the journey deterministically
+   * resolved to a customer), else 'anonymous'. The behavioral timeline projection has no composite
+   * order rows, so 'order' never applies on this surface. NEVER null (honest explainability).
+   */
+  matchedVia: string;
 }
 
 export interface TouchpointTimelineResult {
@@ -420,6 +428,8 @@ export async function computeTouchpointTimeline(
     referrerHost: str(r.referrer_host),
     landingPath: str(r.landing_path),
     eventType: String(r.event_type),
+    // SPEC: B.4 (AUD-JE-35) — coarse stitch-provenance basis per touch (see the interface doc).
+    matchedVia: str(r.stitched_brain_id) !== null ? 'deterministic' : 'anonymous',
   }));
 
   const first = rows[0] as TimelineRow;

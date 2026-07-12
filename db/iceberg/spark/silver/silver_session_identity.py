@@ -193,14 +193,29 @@ def _load_salts(spark: SparkSession) -> DataFrame:
 
 def _session_map(spark: SparkSession, brands: "list[str]", wm) -> DataFrame:
     """Session universe from silver_touchpoint: distinct (brand_id, brain_anon_id, session_id_raw) →
-    session_key + per-session session_start + event_date. INCREMENTAL: only sessions with a touch at/after
-    the watermark (minus a 2h overlap; MERGE dedups). session_id_raw is the join key back to collector
-    events. Rows with no session_id_raw cannot be matched to an event payload → excluded (honest skip)."""
+    session_key + per-session session_start + event_date. INCREMENTAL: only sessions with a touch
+    FOLDED at/after the watermark (minus a 2h overlap; MERGE dedups). session_id_raw is the join key back
+    to collector events. Rows with no session_id_raw cannot be matched to an event payload → excluded
+    (honest skip).
+
+    AUD-IMPL-014 — the incremental axis is `updated_at` (silver_touchpoint's INGEST/fold axis — the job
+    stamps current_timestamp() on every re-folded touch), NOT `occurred_at` (event time). A late-arriving
+    or BACKFILLED touch (order.backfill.v1, a delayed connector webhook) lands with an occurred_at that
+    can predate the watermark by days-to-months but always carries a FRESH updated_at — the old
+    event-time filter skipped those sessions FOREVER (the restitch drain fires only on identity-map
+    mutations, not late arrival), so backfilled history was never stitched nor attributed. Selection is
+    at the SESSION grain: any session with ≥1 newly-folded touch is re-folded over its FULL touch set
+    (semi-join) so session_start = min(occurred_at) stays correct across the boundary."""
     tp = spark.table(TOUCHPOINT_TABLE).where(F.col("brand_id").isin(brands))
     tp = tp.where(F.col("session_id_raw").isNotNull() & (F.col("session_id_raw") != F.lit("")))
     if wm is not None:
         overlap_h = int(os.environ.get("SILVER_INCREMENTAL_OVERLAP_HOURS", "2"))
-        tp = tp.where(F.col("occurred_at") >= (F.lit(wm) - F.expr(f"INTERVAL {overlap_h} HOURS")))
+        new_keys = (
+            tp.where(F.col("updated_at") >= (F.lit(wm) - F.expr(f"INTERVAL {overlap_h} HOURS")))
+            .select("brand_id", "brain_anon_id", "session_id_raw")
+            .distinct()
+        )
+        tp = tp.join(new_keys, ["brand_id", "brain_anon_id", "session_id_raw"], "left_semi")
     return (
         tp.groupBy("brand_id", "brain_anon_id", "session_id_raw", "session_key")
         .agg(F.min("occurred_at").alias("session_start"))
@@ -686,12 +701,16 @@ def build(spark: SparkSession) -> "tuple[str, int]":
     # leaves the rows for the next run; the idempotent MERGE makes reprocessing harmless).
     counts["drained"] = _drain_dirty_set(spark, brands, dirty_rows) if dirty_rows else 0
 
-    # Advance the watermark to the max touch ingested_at we just processed (side-table; this target has no
-    # ingested_at column). Written last → a crash never advances past unprocessed data.
+    # Advance the watermark to the max touch updated_at we just processed (side-table; AUD-IMPL-014: the
+    # watermark axis is the touchpoint FOLD time `updated_at`, matching _session_map's filter, so a
+    # late-arriving/backfilled touch — old occurred_at, fresh updated_at — is picked up next run).
+    # Written last → a crash never advances past unprocessed data. NOTE on axis cutover: a watermark
+    # persisted by the old occurred_at code is an EVENT-time max, which trails the ingest axis → the
+    # first run after this change re-folds a wider slice (idempotent MERGE → harmless).
     try:
         new_wm = (
             spark.table(TOUCHPOINT_TABLE).where(F.col("brand_id").isin(brands))
-            .selectExpr("max(occurred_at) AS m").collect()[0]["m"]
+            .selectExpr("max(updated_at) AS m").collect()[0]["m"]
         )
         write_job_watermark(spark, JOB_NAME, new_wm)
     except Exception as exc:  # noqa: BLE001 — watermark advance failure → next run reprocesses (safe, MERGE)

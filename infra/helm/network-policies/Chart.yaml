@@ -1,0 +1,10 @@
+apiVersion: v2
+name: network-policies
+description: >-
+  Brain cluster segmentation (AUD-INFRA-021/022): default-deny-ingress
+  NetworkPolicies + explicit flow allows for every Brain workload namespace,
+  and Pod Security Admission labels on the app namespaces. Deployed as ONE
+  ArgoCD-managed policy set (infra/argocd/envs/prod/network-policies.yaml).
+type: application
+version: 0.1.0
+appVersion: "0.0.0"

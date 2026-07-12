@@ -286,11 +286,13 @@ function monthlyToTimeseries(
       realized_minor: e.realized.toString(),
       provisional_minor: '0',
     }));
-  if (buckets.length === 0) return { state: 'no_data', from: null, to: null, grain: 'month' };
+  const firstBucket = buckets[0];
+  const lastBucket = buckets[buckets.length - 1];
+  if (!firstBucket || !lastBucket) return { state: 'no_data', from: null, to: null, grain: 'month' };
   return {
     state: 'has_data',
-    from: buckets[0].bucket,
-    to: buckets[buckets.length - 1].bucket,
+    from: firstBucket.bucket,
+    to: lastBucket.bucket,
     grain: 'month',
     buckets,
   };

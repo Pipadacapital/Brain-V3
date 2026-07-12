@@ -125,7 +125,15 @@ DEFERRED_KEYSTONE_EVENTS = frozenset(
 
 # DORMANT alias — present in a builder's filter IN-list but emitted by NOTHING (the canonical refund event
 # is refund.recorded.v1). Accounted-for so the guard does not flap; not a gate requirement.
-DORMANT_ALIAS_EVENTS = frozenset({"refund.processed"})
+#   • refund.processed — dormant alias of refund.recorded.v1 (silver_refund).
+#   • gokwik.order.v1 / gokwik.order_placed.v1 — AUD-IMPL-009: defensive entries in
+#     silver_session_identity.ORDER_EVENT_TYPES (Stitch v2 order-grain dual-write). NO producer emits
+#     them: packages/gokwik-mapper maps EVERY GoKwik order webhook (created/paid/failed/cancelled/
+#     refunded/updated) to the canonical order.live.v1 (source='gokwik'), which IS in SERVER_TRUSTED —
+#     so GoKwik orders already reach the stitch via order.live.v1 and nothing is starved. If a producer
+#     ever starts emitting these standalone on the collector lane, PROMOTE them to
+#     REQUIRED_SERVER_TRUSTED (+ the gate set) instead of leaving them here.
+DORMANT_ALIAS_EVENTS = frozenset({"refund.processed", "gokwik.order.v1", "gokwik.order_placed.v1"})
 
 # RETIRED — appear ONLY in comments/docstrings (migration 0117). Accounted-for so doc references don't trip
 # the text-based discovery scan.

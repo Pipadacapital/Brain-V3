@@ -8,6 +8,11 @@ metadata:
   name: db-migrate-once
   namespace: stream-worker
 spec:
+  # AUD-INFRA-007: one-shot Jobs are unmanaged by any ArgoCD app — a finished
+  # Job lingering as Complete is imperative-deploy residue that pollutes the
+  # cluster inventory. Self-delete 24h after finishing (run-migrations.sh
+  # tails the logs synchronously; 24h leaves a generous inspection window).
+  ttlSecondsAfterFinished: 86400
   backoffLimit: 2
   template:
     spec:

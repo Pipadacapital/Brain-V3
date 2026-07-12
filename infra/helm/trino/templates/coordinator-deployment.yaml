@@ -35,6 +35,37 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      {{- if .Values.metrics.enabled }}
+      initContainers:
+        # AUD-INFRA-030: fetch the JMX-exporter agent jar (same one-shot download pattern as the
+        # local compose jmx-exporter-init and the kafka-connect chart). coordinator-jvm.config
+        # references the jar, so it must exist before the JVM starts. Runs as the pod's uid 1000
+        # into the shared emptyDir (fsGroup makes it writable).
+        - name: jmx-exporter-init
+          image: {{ .Values.metrics.initImage }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              JAR=/opt/jmx-exporter/jmx_prometheus_javaagent.jar
+              [ -f "$JAR" ] && { echo "jmx_exporter agent already present"; exit 0; }
+              curl -fsSL --retry 3 -o "$JAR" "{{ .Values.metrics.jmxExporterJarUrl }}"
+              echo "ok"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: jmx-agent
+              mountPath: /opt/jmx-exporter
+      {{- end }}
       containers:
         - name: trino-coordinator
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -47,6 +78,11 @@ spec:
             - name: http
               containerPort: {{ .Values.httpPort }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           {{- if .Values.iceberg.s3SecretName }}
           envFrom:
             - secretRef:
@@ -80,10 +116,20 @@ spec:
               subPath: coordinator-config.properties
             - name: server-config
               mountPath: /etc/trino/jvm.config
-              subPath: jvm.config
+              # AUD-INFRA-030: coordinator gets its own jvm.config key (base + optional javaagent);
+              # workers keep the shared plain `jvm.config`.
+              subPath: coordinator-jvm.config
             - name: server-config
               mountPath: /etc/trino/node.properties
               subPath: node.properties
+            {{- if .Values.metrics.enabled }}
+            - name: server-config
+              mountPath: /etc/trino/jmx-exporter.yml
+              subPath: jmx-exporter.yml
+            - name: jmx-agent
+              mountPath: /opt/jmx-exporter
+              readOnly: true
+            {{- end }}
             - name: catalog
               mountPath: /etc/trino/catalog/iceberg.properties
               subPath: iceberg.properties
@@ -98,3 +144,7 @@ spec:
             name: {{ include "trino.fullname" . }}-catalog
         - name: data
           emptyDir: {}
+        {{- if .Values.metrics.enabled }}
+        - name: jmx-agent
+          emptyDir: {}
+        {{- end }}

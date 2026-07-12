@@ -30,6 +30,18 @@ sparkV4:
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:
     brain.platform/pool: batch
+  # ── AUD-OPS-029 / AUD-IMPL-027: short-term sizing bump. Prod previously ran the
+  # local-mode DEFAULTS (3g driver in a 2CPU/4Gi pod) — the audit's first 10×
+  # data-plane bottleneck. 6g heap in an 8Gi pod keeps the same ~non-heap margin
+  # ratio as 3g/4Gi; a 3CPU/8Gi pod fits one batch-pool t4g.xlarge (4 vCPU/16Gi)
+  # with daemonset headroom, and the pool limits (12CPU/48Gi) absorb the
+  # silver/gold/maintenance overlap. This buys headroom ONLY — the real fix is
+  # executionMode: k8s per the DEFINED, alert-backed cutover trigger in
+  # docs/ops/spark-on-k8s-migration.md §1 (brain_spark_workflow_duration_seconds).
+  driverMemory: "6g"
+  resources:
+    requests: { cpu: "2", memory: 6Gi }
+    limits: { cpu: "3", memory: 8Gi }
 envSecretName: core-env
 serviceAccount:
   name: brain-jobs

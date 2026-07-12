@@ -1,0 +1,21 @@
+{{- /*
+AUD-OPS-001: PodDisruptionBudget for the tier. Node drains, Karpenter
+consolidation and Spot interruptions are VOLUNTARY disruptions — without a PDB
+they may evict every replica at once. minAvailable=1 (default) keeps at least
+one replica serving through any drain wave; the HPA minReplicas floor (>=2 in
+prod) means this never blocks a drain permanently (evict one, wait for the
+replacement to go Ready, continue).
+*/ -}}
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "brain.fullname" . }}
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "brain.selectorLabels" . | nindent 6 }}
+{{- end }}

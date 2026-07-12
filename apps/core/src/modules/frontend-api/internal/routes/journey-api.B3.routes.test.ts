@@ -1,6 +1,6 @@
 // SPEC: B.3
 /**
- * B3 — Wave-B Journey API routes (AMD-14): /api/v1/customers/:brainId/journey, /api/v1/journeys/{trace,compare}.
+ * B3 — Wave-B Journey API routes (AMD-14): /api/v1/customers/:brainId/journey, /api/v1/journeys/trace.
  *
  * Uses the REAL registerJourneyApiRoutes + REAL analytics use-cases + REAL metric-engine seams over
  * fake Trino/zset pools, with a stub session preHandler (the shape bffProtectedPreHandler produces).
@@ -8,8 +8,7 @@
  *   1. tenant from SESSION (auth.brandId) — no brand → honest empty (never a query-param brand),
  *   2. the A.4 cache hot path (source='cache') vs the Trino ledger fallback (source='trino'),
  *   3. X-Journey-Version header = derived journey_version (AMD-11) on the ledger path only,
- *   4. compare's t_minus_conversion_ms anchored on the latest composite touch,
- *   5. validation (bad brainId / missing order_id) → 400; no srPool → 503.
+ *   4. validation (bad brainId / missing order_id) → 400; no srPool → 503.
  */
 import { describe, it, expect } from 'vitest';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
@@ -19,7 +18,6 @@ import type { BffDeps } from './_shared.js';
 
 const BRAND = 'aaaa1111-0000-4000-8000-aaaaaaaaaaaa';
 const BRAIN = 'bbbb2222-0000-4000-8000-bbbbbbbbbbbb';
-const BRAIN2 = 'cccc3333-0000-4000-8000-cccccccccccc';
 
 /** Fake Trino serving pool: routes canned rows by SQL fragment. */
 function fakeSrPool(handler: (sql: string, params: unknown[]) => Array<Record<string, unknown>>): SilverPool {
@@ -98,7 +96,7 @@ describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
 
   it('falls back to the Trino ledger when the cache is cold (source=trino) + sets X-Journey-Version', async () => {
     const app = await buildApp({
-      srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(2, { data_version: 3 }), ledgerRow(1)] : [])),
+      srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(2, { data_version: 3, brain_id_asof: BRAIN }), ledgerRow(1)] : [])),
       touchpointCacheReader: fakeTpCache([]), // cold
     });
     const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey?limit=10` });
@@ -107,6 +105,23 @@ describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
     expect(data.source).toBe('trino');
     expect(data.journey_version).toBe(3); // max data_version (AMD-11)
     expect(res.headers['x-journey-version']).toBe('3');
+    // AUD-JE-34 — the ledger path serializes the B.4 coarse matched_via basis (never null):
+    // brain_id_asof present → 'deterministic'; absent (pre-identification) → 'anonymous'.
+    expect(data.items[0].matched_via).toBe('deterministic');
+    expect(data.items[1].matched_via).toBe('anonymous');
+    await app.close();
+  });
+
+  it('serializes matched_via="order" on composite transaction rows (AUD-JE-34)', async () => {
+    const app = await buildApp({
+      srPool: fakeSrPool((sql) =>
+        sql.includes('mv_journey_events_current')
+          ? [ledgerRow(1, { is_composite: true, event_type: 'order.placed', revenue_minor: '129900', currency_code: 'INR' })]
+          : [],
+      ),
+    });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey` });
+    expect(res.json().data.items[0].matched_via).toBe('order');
     await app.close();
   });
 
@@ -163,41 +178,39 @@ describe('B3 (2) GET /api/v1/journeys/trace', () => {
     expect(res.json().data).toEqual({ state: 'no_data' });
     await app.close();
   });
-});
 
-describe('B3 (3) GET /api/v1/journeys/compare', () => {
-  it('compares two journeys with t_minus_conversion_ms anchored on the latest composite touch', async () => {
-    // Both sides read the ledger; the order.placed row (is_composite) is the conversion anchor.
-    const app = await buildApp({
-      srPool: fakeSrPool((sql, params) => {
-        if (!sql.includes('mv_journey_events_current')) return [];
-        // params[0] is the brainId (bound first). Give the left brain a converting journey.
-        const brainId = params[0];
-        if (brainId === BRAIN) {
-          return [
-            ledgerRow(2, { is_composite: true, event_type: 'order.placed', occurred_at: '2026-07-01 12:00:00 UTC' }),
-            ledgerRow(1, { occurred_at: '2026-07-01 09:00:00 UTC' }),
-          ];
-        }
-        return []; // right brain: no journey
+  it('serializes per-touch matched_via on the trace touches (AUD-JE-35)', async () => {
+    // Fake PG pool for the order→anon stitch-map read (withBrandTxn: BEGIN/SET ROLE/GUC/COMMIT no-ops).
+    const rawPool = {
+      connect: async () => ({
+        query: async (sql: string) =>
+          typeof sql === 'string' && sql.includes('stitched_anon_id') && sql.includes('SELECT')
+            ? { rows: [{ stitched_anon_id: 'anon-x' }] }
+            : { rows: [] },
+        release: () => undefined,
       }),
+    };
+    const timelineRow = (seq: number, stitched: string | null) => ({
+      brain_anon_id: 'anon-x', touch_seq: seq, is_first_touch: seq === 1, is_last_touch: seq === 2,
+      occurred_at: `2026-07-01 0${seq}:00:00 UTC`, channel: 'referral',
+      utm_source: null, utm_medium: null, utm_campaign: null, utm_term: null, utm_content: null,
+      fbclid: null, gclid: null, ttclid: null, referrer_host: null, landing_path: '/',
+      stitched_brain_id: stitched, event_type: 'page.viewed',
     });
-    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/compare?left=${BRAIN}&right=${BRAIN2}` });
+    const app = await buildApp({
+      srPool: fakeSrPool((sql) =>
+        sql.includes('mv_gold_journey_timeline') ? [timelineRow(1, null), timelineRow(2, BRAIN)] : [],
+      ),
+      rawPool: rawPool as never,
+    });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/trace?order_id=ord-1` });
     expect(res.statusCode).toBe(200);
     const data = res.json().data;
-    expect(data.left.brain_id).toBe(BRAIN);
-    expect(data.left.conversion_at).toBe('2026-07-01 12:00:00 UTC');
-    // Chronological (oldest first): the 09:00 touch is 3h (10.8M ms) before the 12:00 conversion.
-    expect(data.left.touches[0].t_minus_conversion_ms).toBe(3 * 60 * 60 * 1000);
-    expect(data.left.touches[1].t_minus_conversion_ms).toBe(0); // the conversion touch itself
-    expect(data.right).toEqual({ brain_id: BRAIN2, conversion_at: null, touches: [] });
-    await app.close();
-  });
-
-  it('400 when left/right are not customer UUIDs', async () => {
-    const app = await buildApp({ srPool: fakeSrPool(() => []) });
-    const res = await app.inject({ method: 'GET', url: `/api/v1/journeys/compare?left=x&right=y` });
-    expect(res.statusCode).toBe(400);
+    expect(data.state).toBe('has_data');
+    expect(data.brain_id).toBe(BRAIN);
+    // Un-stitched touch → 'anonymous'; stitched touch → 'deterministic' (never null).
+    expect(data.touches[0].matched_via).toBe('anonymous');
+    expect(data.touches[1].matched_via).toBe('deterministic');
     await app.close();
   });
 });

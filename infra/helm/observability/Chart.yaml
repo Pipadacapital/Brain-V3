@@ -1,0 +1,11 @@
+apiVersion: v2
+name: brain-observability
+description: >-
+  Brain observability companions for the prod monitoring stack (AUD-INFRA-030/-032): the
+  data-freshness SLA exporter (tools/observability/freshness-exporter run on stock python — no
+  image build) + the three purpose-built Grafana dashboards (connector-health / ingest-health /
+  revenue-integrity) as sidecar-discovered ConfigMaps. Deployed into the `monitoring` namespace
+  next to kube-prometheus-stack (ArgoCD app infra/argocd/envs/prod/observability.yaml).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

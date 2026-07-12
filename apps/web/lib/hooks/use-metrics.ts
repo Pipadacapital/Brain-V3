@@ -9,7 +9,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { metricsApi } from '@/lib/api/client';
 
-export const METRICS_QUERY_KEY = ['analytics', 'metrics'] as const;
+const METRICS_QUERY_KEY = ['analytics', 'metrics'] as const;
 
 /** The certified, governed semantic metric catalog (Wave D). */
 export function useSemanticCatalog() {

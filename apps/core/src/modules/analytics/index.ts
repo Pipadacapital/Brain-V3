@@ -173,13 +173,12 @@ export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } f
 export { getJourneyEvents } from './internal/application/queries/get-journey-events.js';
 export type { JourneyEventsResult, JourneyEventDto, JourneyEventsQueryParams } from './internal/application/queries/get-journey-events.js';
 // SPEC: B.3 — Wave-B Journey APIs (AMD-14): per-customer timeline (cache→Trino fallback), per-order
-// trace (explainability), two-journey compare (t_minus_conversion_ms). Tenant from session (D-1).
+// trace (explainability). Tenant from session (D-1). (The two-journey compare surface was removed
+// in the Wave-3 cleanup — AUD-IMPL-020: zero consumers end-to-end.)
 export { getCustomerJourney } from './internal/application/queries/get-customer-journey.js';
 export type { CustomerJourneyParams } from './internal/application/queries/get-customer-journey.js';
-export { getJourneyTrace, DEFAULT_TRACE_LOOKBACK_DAYS } from './internal/application/queries/get-journey-trace.js';
+export { getJourneyTrace } from './internal/application/queries/get-journey-trace.js';
 export type { JourneyTraceParams } from './internal/application/queries/get-journey-trace.js';
-export { getJourneyCompare } from './internal/application/queries/get-journey-compare.js';
-export type { JourneyCompareParams } from './internal/application/queries/get-journey-compare.js';
 // SPEC: B.4 — Journey Replay (?as_of=) + Explainability: the same customer's journey AS KNOWN AT
 // as_of (retained version history, AMD-10) + identity_asof evidence. Batch-only, replayed:true.
 export { getJourneyReplay } from './internal/application/queries/get-journey-replay.js';

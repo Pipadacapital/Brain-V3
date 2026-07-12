@@ -26,6 +26,11 @@ icebergCatalog:
   iceberg.catalog.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
   iceberg.catalog.client.region: "ap-south-1"
 
+# AUD-INFRA-028: light up the Bronze-landing alerts (BronzeConnectTaskFailed /
+# BronzeConnectLagHigh / BrainIngestStale) — the sole Bronze writer was detection-dark.
+metrics:
+  enabled: true
+
 serviceAccount:
   create: true
   name: ""

@@ -1,0 +1,42 @@
+################################################################################
+# Brain – ArgoCD Application: observability (prod) — AUD-INFRA-030/-032
+# Deploys infra/helm/observability into ns `monitoring` (next to
+# kube-prometheus-stack): the data-freshness SLA exporter (lights up the four
+# freshness rules already loaded in kube-prometheus-stack values-prod — closes
+# AUD-OBS-1) + the three Brain Grafana dashboards (connector-health /
+# ingest-health / revenue-integrity) for the Grafana dashboard sidecar.
+#
+# NO automated sync — manual promotion gate (standard prod posture; this is
+# observability, not foundational plumbing like metrics-server/ESO). Sync AFTER
+# kube-prometheus-stack (ServiceMonitor CRD + Grafana sidecar must exist).
+################################################################################
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability-prod
+  namespace: argocd
+  annotations:
+    # Selective deploy: only syncs when the observability chart changes
+    argocd.argoproj.io/manifest-generate-paths: infra/helm/observability
+  labels:
+    project: brain
+    environment: prod
+    service: observability
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
+    targetRevision: master
+    path: infra/helm/observability
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

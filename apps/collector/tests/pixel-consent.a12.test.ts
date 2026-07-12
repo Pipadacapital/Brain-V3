@@ -27,6 +27,15 @@ import {
   type PixelIdentityBootstrap,
 } from '../src/interfaces/rest/pixel-identity-config.js';
 import { registerCollectRoute } from '../src/interfaces/rest/collect.route.js';
+
+// Hermetic unit tier (AUD-IMPL-016): the edge-guard (AUD-INFRA-025) lazily calls
+// loadCollectorConfig() inside the request path; its schema requires DATABASE_URL +
+// KAFKA_BROKERS. Nothing in this suite connects — the token->brand binding oracle
+// FAIL-OPENs on lookup failure — so dummies keep the suite runnable without a
+// provisioned env (config parse otherwise turns every request into a 500).
+process.env['DATABASE_URL'] ??= 'postgres://unit:unit@localhost:5432/unit_test_never_connected';
+process.env['KAFKA_BROKERS'] ??= 'localhost:9092';
+
 import type { AcceptEventUseCase } from '../src/application/accept-event.usecase.js';
 import type { FlagService } from '@brain/platform-flags';
 

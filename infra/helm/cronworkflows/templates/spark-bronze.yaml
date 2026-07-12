@@ -9,7 +9,8 @@ the Iceberg snapshots + its own topics.
 
 This template renders TWO CronWorkflows (Spark image, spark-submit), distinct from the generic
 node-image .Values.jobs loop:
-  - bronze-maintenance: small-file compaction + 24-month snapshot-expiry TTL (Slice 7) over the
+  - bronze-maintenance: small-file compaction + snapshot-expiry TTL (Slice 7; 7d default,
+    14d on the durable collector lane — AUD-OPS-015, see docs/runbooks/DR.md) over the
     Bronze tables — including the Connect-written collector_events_connect / <lane>_raw_connect.
   - bronze-raw-retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038): the 7-day raw-PII retention
     window on the <lane>_raw_connect tables — row-TTL DELETE + snapshot expiry
@@ -58,7 +59,8 @@ metadata:
     {{- include "brain.labels" . | nindent 4 }}
     brain.io/job: bronze-maintenance
 spec:
-  # Slice 7: compaction (small-file rewrite) + 24-month snapshot-expiry TTL. The ERASURE mode
+  # Slice 7: compaction (small-file rewrite) + snapshot-expiry TTL (7d; 14d durable collector
+  # lane — AUD-OPS-015). The ERASURE mode
   # (MODE=erase ERASE_BRAND_ID=…) is NOT a cron — it is invoked on-demand by the right-to-erasure
   # orchestrator after a brand's DEK is crypto-shredded (D13 / I-S05).
   schedule: {{ .Values.sparkBronze.maintenanceSchedule | quote }}

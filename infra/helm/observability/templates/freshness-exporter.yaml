@@ -1,0 +1,146 @@
+{{- /*
+Data-freshness SLA exporter (AUD-INFRA-030; closes AUD-OBS-1 for prod).
+
+Deploy-shape rationale: the exporter is deliberately stdlib-only ("no pip install, no Dockerfile
+required" — its own header contract), so it runs on the stock python image with the script
+mounted from a ConfigMap sourced via .Files.Get from files/freshness_exporter.py — a VERBATIM
+copy of tools/observability/freshness-exporter/freshness_exporter.py (KEEP IN LOCKSTEP; helm
+cannot read outside the chart dir). This follows the infra/observe/k8s/freshness-exporter.yaml
+dev stub's own "for a real deploy" guidance while keeping GitOps-managed content (no
+apply-time kubectl injection).
+
+Failure semantics are the exporter's own C2 anti-false-safety design: Trino unreachable ⇒
+brain_data_freshness_up=0; mart missing ⇒ brain_data_freshness_query_success=0; exporter
+dead/unscraped ⇒ absent() in BrainFreshnessExporterDown. Nothing here can fail silently-green.
+*/ -}}
+{{- if .Values.freshnessExporter.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: brain-freshness-exporter-code
+  labels:
+    app.kubernetes.io/name: brain-freshness-exporter
+    app.kubernetes.io/part-of: brain
+data:
+  freshness_exporter.py: |
+{{ .Files.Get "files/freshness_exporter.py" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain-freshness-exporter
+  labels:
+    app.kubernetes.io/name: brain-freshness-exporter
+    app.kubernetes.io/part-of: brain
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: brain-freshness-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: brain-freshness-exporter
+        app.kubernetes.io/part-of: brain
+      annotations:
+        # Roll the pod when the mounted script changes (it is read once at start).
+        checksum/code: {{ .Files.Get "files/freshness_exporter.py" | sha256sum }}
+    spec:
+      {{- with .Values.freshnessExporter.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: freshness-exporter
+          image: {{ .Values.freshnessExporter.image }}
+          command: ["python3", "/app/freshness_exporter.py"]
+          env:
+            - name: FRESHNESS_TRINO_URL
+              value: {{ .Values.freshnessExporter.trinoUrl | quote }}
+            - name: FRESHNESS_TRINO_USER
+              value: {{ .Values.freshnessExporter.trinoUser | quote }}
+            - name: FRESHNESS_TRINO_CATALOG
+              value: {{ .Values.freshnessExporter.trinoCatalog | quote }}
+            - name: FRESHNESS_GOLD_SCHEMA
+              value: {{ .Values.freshnessExporter.goldSchema | quote }}
+            - name: FRESHNESS_LISTEN_PORT
+              value: {{ .Values.freshnessExporter.listenPort | quote }}
+            - name: FRESHNESS_REFRESH_SEC
+              value: {{ .Values.freshnessExporter.refreshSeconds | quote }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.freshnessExporter.listenPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.freshnessExporter.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: code
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: code
+          configMap:
+            name: brain-freshness-exporter-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain-freshness-exporter
+  labels:
+    app.kubernetes.io/name: brain-freshness-exporter
+    app.kubernetes.io/part-of: brain
+spec:
+  selector:
+    app.kubernetes.io/name: brain-freshness-exporter
+  ports:
+    - name: metrics
+      port: {{ .Values.freshnessExporter.listenPort }}
+      targetPort: metrics
+---
+{{- /*
+ServiceMonitor: job relabel pins 'brain-freshness-exporter' — the exact job name
+freshness.rules.yml documents and BrainTargetDown's brain-.* regex covers. Selected by the
+monitoring Prometheus via serviceMonitorSelector {} (kube-prometheus-stack values-prod sets
+serviceMonitorSelectorNilUsesHelmValues: false).
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: brain-freshness-exporter
+  labels:
+    app.kubernetes.io/name: brain-freshness-exporter
+    app.kubernetes.io/part-of: brain
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: brain-freshness-exporter
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.freshnessExporter.serviceMonitor.interval }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: {{ .Values.freshnessExporter.serviceMonitor.jobLabel }}
+{{- end }}

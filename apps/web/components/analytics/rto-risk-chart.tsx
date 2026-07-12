@@ -66,7 +66,7 @@ export function RtoRiskChart({ high, medium, low, control, unknown, isLoading, c
     );
   }
 
-  const counts: Record<string, number> = {
+  const counts = {
     High: Number(BigInt(high)),
     Medium: Number(BigInt(medium)),
     Low: Number(BigInt(low)),
@@ -87,7 +87,7 @@ export function RtoRiskChart({ high, medium, low, control, unknown, isLoading, c
     );
   }
 
-  const chartData = RISK_ROWS.map((r) => ({ bucket: r.key, count: counts[r.key]!, color: r.color }));
+  const chartData = RISK_ROWS.map((r) => ({ bucket: r.key, count: counts[r.key], color: r.color }));
 
   const srTable = (
     <table className="sr-only" aria-label="RTO risk distribution data table">

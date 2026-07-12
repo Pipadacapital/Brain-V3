@@ -81,15 +81,13 @@ describe('computeEntitlements — connector categories (general, not per-app)', 
     expect(cat(after, 'logistics').eligible).toBe(true);
   });
 
-  it('ads need an established foundation (store + pixel + first event)', () => {
-    const storeOnly = computeEntitlements({ tier: 'building', signals: { ...blankSignals, commerceConnected: true } });
-    expect(cat(storeOnly, 'ads').eligible).toBe(false);
+  it('ads unlock on storefront-connected alone (owner decision 2026-07-12 — spend backfills during pixel bring-up)', () => {
+    const nothing = computeEntitlements({ tier: 'building', signals: blankSignals });
+    expect(cat(nothing, 'ads').eligible).toBe(false);
 
-    const established = computeEntitlements({
-      tier: 'building',
-      signals: { ...blankSignals, commerceConnected: true, pixelInstalled: true, firstEventReceived: true },
-    });
-    expect(cat(established, 'ads').eligible).toBe(true);
+    const storeOnly = computeEntitlements({ tier: 'building', signals: { ...blankSignals, commerceConnected: true } });
+    expect(cat(storeOnly, 'ads').eligible).toBe(true);
+    // No pixel / no events required — ROAS SURFACES stay gated by the attribution center, not the connector.
   });
 
   it('crm + analytics carry no readiness gate (always eligible — availability handles them)', () => {

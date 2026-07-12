@@ -48,24 +48,45 @@ tags:
 
 # ── Node pools (match the blueprint node groups) ────────────────────────────────────────────────
 # All pools are arm64 + Spot. Karpenter naturally scales a pool to ZERO when no pod requires it,
-# bounded above by `limits`. "no scale-to-zero" for streaming is achieved by consolidationPolicy:
-# WhenEmpty (only reclaim a node once it is fully empty — never bin-pack live consumers off it) PLUS
-# the streaming workload pinning a warm baseline of replicas (see README). batch/trino use
-# WhenEmptyOrUnderutilized so idle batch/serving capacity is reclaimed all the way to zero.
+# bounded above by `limits`. "no scale-to-zero" for streaming is achieved by the streaming workload
+# pinning a warm baseline of replicas (see README); all Spot pools use WhenEmptyOrUnderutilized so
+# idle capacity is reclaimed AND on-demand fallback nodes re-consolidate to Spot (AUD-INFRA-013) —
+# streaming just gets a much longer consolidateAfter so live consumers aren't thrashed.
+#
+# ── AUD-OPS-033: the INTENDED aggregate ceiling + spot instance diversity ──────────────────────
+# Aggregate pool limits = streaming 20 + batch 12 + trino 8 + ondemand 8 = 48 vCPU / 192Gi.
+# That ceiling is DELIBERATE — it is LESS than the sum of every HPA's max×request under a
+# fully-correlated burst (traffic spike scaling collector/core/stream-worker WHILE hourly crons
+# run and Trino scales out): overflow pods queue Pending until a pool frees, and per-workload
+# honest maxima (e.g. stream-worker maxReplicas == partition count, AUD-OPS-030) keep the
+# capacity math truthful. Raise a pool's `limits` + its workloads' maxima TOGETHER, as one
+# deliberate change. Spot diversity: every pool lists m7g.* (Graviton3, same 1:4 vCPU:GiB
+# shape) beside t4g.* so a t4g spot drought in ap-south-1 falls back to another family instead
+# of stalling the pool — all arm64, so the single AL2023 arm64 EC2NodeClass covers every type.
+# Karpenter provisions the cheapest available type first (t4g), so cost is unchanged outside
+# drought windows.
 nodePools:
   streaming:
     # Range so Karpenter right-sizes per workload: light consumers → t4g.large
     # (2/8), a Kafka broker (6Gi req / 4Gi heap) → t4g.xlarge (4/16). Pinning a
     # single t4g.large left the brokers permanently unschedulable.
-    instanceTypes: ["t4g.large", "t4g.xlarge"]
+    # m7g.* = t4g spot-drought fallback (AUD-OPS-033), identical vCPU:GiB shape.
+    instanceTypes: ["t4g.large", "t4g.xlarge", "m7g.large", "m7g.xlarge"]
     instanceType: t4g.large          # fallback (unused when instanceTypes is set)
     # Spot-first with on-demand FALLBACK: when the pinned Spot types have no
     # capacity (a reclaim left Kafka/collector/stream-worker unschedulable at
     # go-live), Karpenter provisions on-demand instead of leaving pods Pending;
     # it consolidates back to Spot once capacity returns.
     capacityType: ["spot", "on-demand"]
-    consolidationPolicy: WhenEmpty
-    consolidateAfter: 5m
+    # AUD-INFRA-013: WhenEmpty never re-consolidated an on-demand FALLBACK node
+    # back to Spot — one capacity blip became a permanent ~3× price increase
+    # (measured: an 11h-old on-demand t4g.xlarge sitting beside 2 Spot nodes).
+    # WhenEmptyOrUnderutilized lets Karpenter replace it once Spot returns;
+    # the GENEROUS 15m consolidateAfter keeps live consumers from thrashing
+    # (streaming pods restart cleanly per consumer-group semantics, but frequent
+    # rebalances cost lag). Rollback: WhenEmpty / 5m.
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 15m
     expireAfter: 720h                # 30d node rotation for patching
     weight: 30                       # prefer the smaller streaming node for general pods
     limits:                          # upper bound (no fixed minimum → Karpenter has no idle floor)
@@ -73,7 +94,9 @@ nodePools:
       memory: 80Gi
     taints: []                       # untainted: existing untainted workloads can land here today
   batch:
-    instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — Argo/Spark batch jobs, off-peak
+    # 4 vCPU / 16 GiB — Argo/Spark batch jobs, off-peak. m7g = spot-drought fallback (AUD-OPS-033).
+    instanceTypes: ["t4g.xlarge", "m7g.xlarge"]
+    instanceType: t4g.xlarge         # fallback (unused when instanceTypes is set)
     capacityType: ["spot", "on-demand"]   # Spot-first, on-demand fallback (see streaming)
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 30s            # reclaim batch capacity quickly after jobs finish (→ 0 nodes)
@@ -84,7 +107,9 @@ nodePools:
       memory: 48Gi
     taints: []
   trino:
-    instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — Trino workers (CPU-bound scans)
+    # 4 vCPU / 16 GiB — Trino workers (CPU-bound scans). m7g = spot-drought fallback (AUD-OPS-033).
+    instanceTypes: ["t4g.xlarge", "m7g.xlarge"]
+    instanceType: t4g.xlarge         # fallback (unused when instanceTypes is set)
     capacityType: ["spot", "on-demand"]   # Spot-first, on-demand fallback (see streaming)
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 1m             # gentler than batch — avoid query thrash; KEDA scales workers
@@ -102,7 +127,11 @@ nodePools:
   # expireAfter stays 720h: one PLANNED monthly bounce for node patching (PVC
   # reattaches via the EBS CSI driver) beats an unpatched pet node.
   ondemand:
-    instanceType: t4g.xlarge         # 4 vCPU / 16 GiB — fits the 2cpu/4Gi Neo4j pod + daemonsets
+    # 4 vCPU / 16 GiB — fits the 2cpu/4Gi Neo4j pod + daemonsets. m7g covers an
+    # on-demand t4g ICE (InsufficientCapacity) — rarer than spot droughts but the
+    # identity SoR must never sit Pending on it (AUD-OPS-033).
+    instanceTypes: ["t4g.xlarge", "m7g.xlarge"]
+    instanceType: t4g.xlarge         # fallback (unused when instanceTypes is set)
     capacityType: on-demand
     consolidationPolicy: WhenEmpty   # never bin-pack the stateful pod off a live node
     consolidateAfter: 5m

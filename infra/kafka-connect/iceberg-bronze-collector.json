@@ -24,6 +24,7 @@
     "iceberg.catalog.s3.secret-access-key": "brainbrain",
     "iceberg.catalog.client.region": "us-east-1",
     "iceberg.tables": "brain_bronze.collector_events_connect",
+    "iceberg.table.brain_bronze.collector_events_connect.partition-by": "day(kafka_timestamp)",
     "iceberg.tables.auto-create-enabled": "true",
     "iceberg.tables.evolve-schema-enabled": "true",
     "iceberg.tables.schema-force-optional": "true",

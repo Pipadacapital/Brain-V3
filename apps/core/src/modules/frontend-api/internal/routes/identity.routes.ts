@@ -32,6 +32,7 @@ import {
   getCustomerSegmentMembers,
   getCustomerAcquisitionSourceMembers,
   getCustomerOrders,
+  getCustomerOrdersPage,
   isLifecycleSegment,
 } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
@@ -217,6 +218,90 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
       }
 
       return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  // ── GET /api/v1/identity/customer/orders — keyset-paged order list (AUD-SL-11) ─
+  /**
+   * GET /api/v1/identity/customer/orders?brain_id=<uuid>&limit=&cursor=
+   *
+   * ONE keyset page of the resolved customer's orders (latest lifecycle state each,
+   * newest-first) — the paginated continuation of the Customer-360 "Orders" sub-tab,
+   * which embeds only the first page. Opaque cursor (never OFFSET): pass a page's
+   * `next_cursor` back to get the next (older) page; an invalid cursor degrades to the
+   * first page (honest, never a 400). Brand from session (D-1); reads the
+   * brain_serving.mv_silver_order_state Trino view through the ${BRAND_PREDICATE} seam.
+   * Money (I-S07): order_value_minor is a SIGNED bigint minor-unit string + currency_code.
+   */
+  fastify.get(
+    '/api/v1/identity/customer/orders',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            brain_id: {
+              type: 'string',
+              pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+            },
+            limit: { type: 'integer', minimum: 1, maximum: 200 },
+            cursor: { type: 'string', maxLength: 512 },
+          },
+          required: ['brain_id'],
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_BRAIN_ID', message: 'brain_id must be a UUID.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      const q = request.query as { brain_id: string; limit?: number; cursor?: string };
+
+      // Honest empty: no active brand / no serving pool → nothing to page (never a 500).
+      if (!auth.brandId || !deps.srPool) {
+        return reply.send({ request_id: requestId, data: { rows: [], next_cursor: null } });
+      }
+
+      try {
+        const page = await getCustomerOrdersPage(auth.brandId, q.brain_id, { srPool: deps.srPool }, {
+          limit: q.limit,
+          cursor: q.cursor ?? null,
+        });
+        return reply.send({
+          request_id: requestId,
+          data: {
+            rows: page.rows.map((o) => ({
+              order_id: o.orderId,
+              lifecycle_state: o.lifecycleState,
+              is_terminal: o.isTerminal,
+              order_value_minor: o.orderValueMinor,
+              currency_code: o.currencyCode,
+              first_event_at: o.firstEventAt,
+              state_effective_at: o.stateEffectiveAt,
+            })),
+            next_cursor: page.nextCursor,
+          },
+        });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
     },
   );
 

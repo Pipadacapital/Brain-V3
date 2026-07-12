@@ -597,6 +597,11 @@ module "irsa_spark_jobs" {
     # decrypt need as stream-worker. Without this the job fail-closed on
     # kms:Decrypt (D-2 refuses empty-salt hashing; first e2e run 2026-07-12).
     module.secrets.stream_worker_connector_secrets_read_policy_arn,
+    # audit-checkpoint (also runs as brain-jobs) writes WORM anchors to the
+    # audit bucket + audit CMK GenerateDataKey. Denied on the first post-#69
+    # run (s3:ListBucket on brain-audit-prod / kms:GenerateDataKey) — the
+    # policy previously existed only on core's role.
+    module.s3_audit.audit_writer_policy_arn,
   ]
 }
 

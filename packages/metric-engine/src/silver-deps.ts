@@ -91,8 +91,14 @@ function silverErrMessage(err: unknown): string {
  * "Table 'iceberg.brain_serving.mv_x' does not exist" / "Schema 'brain_serving'
  * does not exist"). The legacy StarRocks phrases ("unknown table/database") are
  * retained so any mixed-engine transition window still degrades gracefully.
+ *
+ * EXPORTED so job-level callers (e.g. apps/core jobs/attribution-reconcile) classify
+ * per-brand failures with the SAME phrase list this seam degrades on: errors that
+ * escape the seam via a DIRECT srPool.query (the @brain/attribution-writer read-backs
+ * bypass withSilverBrand) are still "serving tier not provisioned yet" — an honest
+ * empty state (exit 0), NOT a real error (exit 1). One definition, two consumers.
  */
-function isSilverUnavailable(err: unknown): boolean {
+export function isServingTierUnavailable(err: unknown): boolean {
   const msg = silverErrMessage(err).toLowerCase();
   return (
     msg.includes('does not exist') || // Trino: table/schema does not exist
@@ -134,7 +140,7 @@ export async function withSilverBrand<T>(
           try {
             return await trinoScope.runScoped<R>(sql, params);
           } catch (err) {
-            if (isSilverUnavailable(err)) {
+            if (isServingTierUnavailable(err)) {
               console.warn(
                 `[metric-engine] Silver/Gold read degraded to empty — serving tier unavailable: ${silverErrMessage(err)}`,
               );

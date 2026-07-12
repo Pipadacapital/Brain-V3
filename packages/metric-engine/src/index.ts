@@ -184,7 +184,7 @@ export type {
   TopProductRow,
   TopProductsRange,
 } from './top-products.js';
-export { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+export { withSilverBrand, BRAND_PREDICATE, isServingTierUnavailable } from './silver-deps.js';
 export type { SilverDeps, SilverPool, SilverScope } from './silver-deps.js';
 
 // Silver tier — journey seam (Phase 4: first-touch mix, stitch hit-rate, timeline; ADR-004)

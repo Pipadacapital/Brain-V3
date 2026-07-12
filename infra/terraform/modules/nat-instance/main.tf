@@ -92,6 +92,25 @@ variable "tags" {
   default     = {}
 }
 
+variable "enable_auto_recovery" {
+  description = <<-EOT
+    AUD-OPS-035: the single fck-nat instance is the sole egress path for ALL
+    connector traffic (Shopify/Meta/Google/Shiprocket polling, webhook
+    handshakes, token refreshes) — a host failure stops all connector
+    ingestion until someone notices. When true, two CloudWatch alarms give the
+    cheapest meaningful availability posture (~$0.20/mo, no instance replacement):
+      1. StatusCheckFailed_System   -> EC2 auto-RECOVER action (same instance,
+         same primary ENI + private IP, so the private route tables and the EIP
+         association keep working after recovery).
+      2. StatusCheckFailed_Instance -> EC2 REBOOT action (hung OS/network stack).
+    Both alarms are also visible signals in their own right (the audit found NO
+    alarm on this instance at all). Full fck-nat HA mode (warm standby + EIP
+    failover) stays a separate, larger decision — see README.md.
+  EOT
+  type        = bool
+  default     = true
+}
+
 ###############################################################################
 # Locals — naming + mandatory tags
 ###############################################################################
@@ -213,6 +232,66 @@ resource "aws_instance" "nat" {
 resource "aws_eip_association" "nat" {
   instance_id   = aws_instance.nat.id
   allocation_id = aws_eip.nat.id
+}
+
+###############################################################################
+# AUD-OPS-035 — auto-recovery + reboot alarms (see var.enable_auto_recovery).
+# EC2 recover preserves the instance id + primary ENI + private IP, so the
+# private-RT routes (network_interface_id) and the EIP association survive a
+# recovery without Terraform intervention. Additive + reversible: flip
+# enable_auto_recovery=false to drop both alarms; the instance is untouched.
+###############################################################################
+data "aws_region" "current" {}
+
+resource "aws_cloudwatch_metric_alarm" "nat_system_recover" {
+  count = var.enable_auto_recovery ? 1 : 0
+
+  alarm_name          = "${local.name_prefix}-nat-system-check-recover"
+  alarm_description   = "fck-nat underlying-host failure — auto-recovers the sole egress instance (AUD-OPS-035)"
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_System"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    InstanceId = aws_instance.nat.id
+  }
+
+  # EC2 built-in recover action — no SNS/Lambda required.
+  alarm_actions = ["arn:aws:automate:${data.aws_region.current.region}:ec2:recover"]
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-nat-system-check-recover"
+  })
+}
+
+resource "aws_cloudwatch_metric_alarm" "nat_instance_reboot" {
+  count = var.enable_auto_recovery ? 1 : 0
+
+  alarm_name          = "${local.name_prefix}-nat-instance-check-reboot"
+  alarm_description   = "fck-nat instance status check failing (hung OS/network stack) — auto-reboot (AUD-OPS-035)"
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_Instance"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 3
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    InstanceId = aws_instance.nat.id
+  }
+
+  alarm_actions = ["arn:aws:automate:${data.aws_region.current.region}:ec2:reboot"]
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-nat-instance-check-reboot"
+  })
 }
 
 ###############################################################################

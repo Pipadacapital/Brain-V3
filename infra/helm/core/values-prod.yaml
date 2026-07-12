@@ -53,10 +53,15 @@ migrations:
   appEnv: prod
   databaseUrlFromKey: DATABASE_URL_DIRECT
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 47m / max 60m, mem p95 ~278Mi / max 281Mi per pod. Was 500m/1Gi —
+# ~10x over p95 (HPA read 2%/70% → dead). New: cpu 150m (HPA fires at 105m ≈
+# 1.75x max seen), mem 384Mi (80% target = 307Mi > observed max 281Mi).
+# LIMITS UNCHANGED (burst/OOM budget untouched). Revert = restore old requests.
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 150m
+    memory: 384Mi
   limits:
     cpu: "2"
     memory: 2Gi

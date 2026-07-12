@@ -58,7 +58,6 @@ COPY packages/tenant-context/package.json packages/tenant-context/package.json
 COPY packages/woocommerce-mapper/package.json packages/woocommerce-mapper/package.json
 COPY tools/data-quality/package.json tools/data-quality/package.json
 COPY tools/isolation-fuzz/package.json tools/isolation-fuzz/package.json
-COPY tools/parity-oracle/package.json tools/parity-oracle/package.json
 COPY tools/pixel-fixture/package.json tools/pixel-fixture/package.json
 COPY tools/seed/package.json tools/seed/package.json
 RUN pnpm install --frozen-lockfile --prod=false

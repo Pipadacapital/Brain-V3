@@ -52,6 +52,18 @@ spec:
           # be scale-to-zero Spot; the cron controller must always be up).
           nodeSelector:
             role: system
+          # ── AUD-IMPL-027 / AUD-OPS-029: per-run Spark wall-time telemetry ──
+          # The spark-v4 CronWorkflows emit custom workflow metrics
+          # (brain_spark_workflow_duration_seconds / _failed_total) — the
+          # CONTROLLER serves them; this flips its /metrics endpoint on and
+          # ships a ServiceMonitor. kube-prometheus-stack selects ALL
+          # ServiceMonitors (serviceMonitorSelectorNilUsesHelmValues: false),
+          # so no release label is needed. The scale-tripwire alert rules
+          # (infra/observe/alerts/scale-tripwires.rules.yml) read these series.
+          metricsConfig:
+            enabled: true
+          serviceMonitor:
+            enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: argo

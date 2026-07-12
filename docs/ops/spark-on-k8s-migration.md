@@ -25,6 +25,29 @@ the **silver or gold cron runtime exceeds its window** (silver approaching the :
 > ~15 min, breaking the "Gold within 15 min of Bronze" SLO); or projected volume (orders/spend/pixel)
 is **>~5x** today. Until then, local mode + the #312 tuning + the env knobs are cheaper and simpler.
 
+### 1.1 The DEFINED, alert-backed cutover trigger (AUD-IMPL-027 / AUD-OPS-029)
+The trigger above is now **measured, not vibes** — per-run wall-time telemetry ships with the crons:
+
+- **Workflow-tier metric:** each v4-silver / v4-gold run emits the realtime gauge
+  `brain_spark_workflow_duration_seconds{tier=...}` + `brain_spark_workflow_failed_total{tier=...}`
+  from the Argo controller `/metrics` (custom `metrics.prometheus` blocks in
+  `infra/helm/cronworkflows/templates/spark-v4.yaml`; controller `metricsConfig` + ServiceMonitor
+  enabled in `infra/argocd/envs/prod/argo-workflows.yaml`).
+- **Per-mart drill-down:** every spark-submit prints one structured `{"evt":"spark_job",...,"duration_ms":N}`
+  line (`db/iceberg/spark/job_log.py`) — `kubectl -n argo logs <workflow-pod> | grep '"evt":"spark_job"'`
+  ranks which marts eat the window.
+- **The trigger, concretely:** `SparkTierCutoverTriggerBreached` fires (warning) when a tier sustains
+  **> 1200 s (20 min)** — Silver must clear the :25 Gold start; both must stay far from the 2400 s
+  `activeDeadlineSeconds` (`SparkTierNearDeadline`, critical, at 2100 s). Rules:
+  `infra/observe/alerts/scale-tripwires.rules.yml` (canonical) ↔ kube-prometheus-stack
+  `additionalPrometheusRulesMap.scale-tripwires` (prod evaluator).
+- **Response ladder:** (1) one firing = check job_log for a single hot mart, tune per §4.2 knobs;
+  (2) firing on **3+ runs in one week** (or any `SparkTierNearDeadline`) = rehearse `executionMode: k8s`
+  in staging (phases §6.1-6.2) and schedule the cutover (§6.3+) — raising the batch NodePool CPU limit
+  (12 → ≥24) alongside, per AUD-OPS-029.
+- The 2026-07 short-term sizing bump (values-prod: `driverMemory 6g`, pod `3CPU/8Gi` — was local-mode
+  defaults 3g/2CPU/4Gi) only buys headroom; it does NOT reset this trigger.
+
 ## 2. Scope & non-goals
 - **In scope:** Silver + Gold batch jobs → Spark-on-K8s **cluster mode** (1 driver + N executors per job).
 - **Out of scope (this phase):** Bronze streaming sinks (§7 — separate, lower priority); the Iceberg

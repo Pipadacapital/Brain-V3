@@ -70,6 +70,32 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}      # IRSA: S3 (Iceberg warehouse) + Glue/REST catalog access
     entrypoint: run
+    # ── AUD-IMPL-027 / AUD-OPS-029: per-run wall-time telemetry ─────────────────
+    # The Argo controller emits these on its /metrics endpoint (metricsConfig +
+    # ServiceMonitor enabled in infra/argocd/envs/prod/argo-workflows.yaml). The
+    # realtime duration gauge ticks WHILE the tier runs, so the scale-tripwire
+    # rules (infra/observe/alerts/scale-tripwires.rules.yml) can fire on the
+    # DEFINED k8s-executionMode cutover trigger (>20 min, spark-on-k8s-migration
+    # §1) and on approach to activeDeadlineSeconds. Per-MART drill-down stays in
+    # the job_log.py structured stdout lines (duration_ms per spark-submit).
+    metrics:
+      prometheus:
+        - name: brain_spark_workflow_duration_seconds
+          help: "Realtime wall-clock (s) of the running v4 Spark tier workflow"
+          labels:
+            - key: tier
+              value: v4-silver
+          gauge:
+            realtime: true
+            value: {{ `"{{workflow.duration}}"` }}
+        - name: brain_spark_workflow_failed_total
+          help: "v4 Spark tier workflow runs that ended Failed (deadline/OOM/retries exhausted)"
+          labels:
+            - key: tier
+              value: v4-silver
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
     {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
     {{- with .Values.sparkV4.nodeSelector }}
     nodeSelector:
@@ -156,6 +182,26 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}
     entrypoint: run
+    # AUD-IMPL-027 / AUD-OPS-029: per-run wall-time telemetry — see the v4-silver
+    # block above for the full rationale (same gauge/counter, tier=v4-gold).
+    metrics:
+      prometheus:
+        - name: brain_spark_workflow_duration_seconds
+          help: "Realtime wall-clock (s) of the running v4 Spark tier workflow"
+          labels:
+            - key: tier
+              value: v4-gold
+          gauge:
+            realtime: true
+            value: {{ `"{{workflow.duration}}"` }}
+        - name: brain_spark_workflow_failed_total
+          help: "v4 Spark tier workflow runs that ended Failed (deadline/OOM/retries exhausted)"
+          labels:
+            - key: tier
+              value: v4-gold
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
     {{- /* AUD-PROD-006: pin the Spark cron pods to the batch pool (values-prod). */}}
     {{- with .Values.sparkV4.nodeSelector }}
     nodeSelector:

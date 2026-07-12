@@ -158,7 +158,7 @@ async function readUncreditedRecognized(
   const inList = RECOGNITION_EVENT_TYPES.map((t) => `'${t}'`).join(',');
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<FinalizedOrderRow>(
-      `SELECT order_id, brain_id, CAST(amount_minor AS CHAR) AS amount_minor, currency_code, occurred_at
+      `SELECT order_id, brain_id, CAST(amount_minor AS VARCHAR) AS amount_minor, currency_code, occurred_at
          FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],
@@ -180,7 +180,7 @@ async function readReversalsOnCredited(
   const inList = REVERSAL_EVENT_TYPES.map((t) => `'${t}'`).join(',');
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<ReversalRow>(
-      `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS CHAR) AS amount_minor, occurred_at
+      `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS VARCHAR) AS amount_minor, occurred_at
          FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],

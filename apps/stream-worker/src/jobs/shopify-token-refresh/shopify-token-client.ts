@@ -113,6 +113,63 @@ export async function exchangeShopifyToken(
 }
 
 /**
+ * CLIENT-CREDENTIALS re-exchange (generic per-brand custom-app connect, 2026-07).
+ *
+ * Shopify admin-created custom apps expose Client ID + Client Secret; the grant
+ *   POST https://{shop}/admin/oauth/access_token
+ *   { grant_type: 'client_credentials', client_id, client_secret }
+ * returns an Admin API access token that EXPIRES IN 24 HOURS. There is NO refresh
+ * token — renewal is simply another exchange, so the refresh cron re-exchanges on
+ * every pass for these connectors (cron cadence ≪ 24h).
+ *
+ * Unlike exchangeShopifyToken (which uses Brain's app-level env creds), the
+ * client_id/client_secret here are PER-BRAND — resolved by the caller from the
+ * `brain/connector/shopify_app/<brandId>` Secrets Manager bundle. NEVER logged (I-S09).
+ */
+export async function exchangeShopifyClientCredentials(
+  shopDomain: string,
+  clientId: string,
+  clientSecret: string,   // NEVER logged (I-S09)
+  fetchImpl: typeof fetch = fetch,
+): Promise<ShopifyTokenExchangeResult & { expiresInSeconds: number | null }> {
+  if (!clientId || !clientSecret) {
+    throw new Error(`${SHOPIFY_APP_CREDS_MISSING}: brand app client_id / client_secret missing`);
+  }
+
+  const host = shopDomain.replace(/^https?:\/\//, '');
+  const url = `https://${host}/admin/oauth/access_token`;
+
+  return _shopifyTokenBreaker.fire(async () => {
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'client_credentials',
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+
+    if (!res.ok) {
+      throw new Error(`${SHOPIFY_TOKEN_EXCHANGE_FAILED}: HTTP ${res.status}`);
+    }
+
+    const body = (await res.json()) as { access_token?: string; scope?: string; expires_in?: number };
+    if (!body.access_token) {
+      throw new Error(`${SHOPIFY_TOKEN_EXCHANGE_FAILED}: no access_token in exchange response`);
+    }
+
+    return {
+      accessToken: body.access_token,
+      scope: body.scope ?? null,
+      expiresInSeconds:
+        typeof body.expires_in === 'number' && Number.isFinite(body.expires_in) ? body.expires_in : null,
+    };
+  });
+}
+
+/**
  * PURE due-decision: should this token be proactively refreshed now?
  *
  * Due when:

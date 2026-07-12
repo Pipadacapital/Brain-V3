@@ -133,11 +133,13 @@ describe('1. Catalog — all 7 categories, truthful availability', () => {
     }
   });
 
-  it('shopify is available and oauth', () => {
+  it('shopify is available and credential (generic per-brand connect, 2026-07-12)', () => {
     const shopify = getDefinition('shopify');
     expect(shopify).not.toBeNull();
     expect(shopify!.availability).toBe('available');
-    expect(shopify!.connectMethod).toBe('oauth');
+    // Owner requirement: every brand connects its OWN custom app's credentials; the
+    // authorization-code OAuth flow survives only as the env-gated fallback in writeRoutes.
+    expect(shopify!.connectMethod).toBe('credential');
     expect(isConnectable(shopify!)).toBe(true);
   });
 

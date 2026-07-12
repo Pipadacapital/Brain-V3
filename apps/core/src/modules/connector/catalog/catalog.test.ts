@@ -39,4 +39,36 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
     const ids = CONNECTOR_CATALOG.map((d) => d.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  // ── Shopify generic per-brand connect (owner requirement 2026-07-12) ──────────
+  // The catalog method is 'credential' (custom-app Client ID/Secret + store URL); the
+  // authorization-code OAuth flow survives only as the env-gated fallback in writeRoutes.
+  describe('shopify generic per-brand credential connect', () => {
+    const shopify = getDefinition('shopify')!;
+
+    it('connectMethod is credential', () => {
+      expect(shopify.connectMethod).toBe('credential');
+    });
+
+    it('requires shop_domain + client_id + client_secret (all non-optional)', () => {
+      const required = (shopify.authFields ?? []).filter((f) => !f.optional).map((f) => f.key);
+      expect(required).toEqual(['shop_domain', 'client_id', 'client_secret']);
+    });
+
+    it('client_secret is the ONLY secret field (NN-2: goes to the Secrets Manager bundle)', () => {
+      const secrets = (shopify.authFields ?? []).filter((f) => f.secret).map((f) => f.key);
+      expect(secrets).toEqual(['client_secret']);
+    });
+
+    it('carries the custom-app how-to hint incl. the Admin API scopes', () => {
+      const clientId = (shopify.authFields ?? []).find((f) => f.key === 'client_id');
+      expect(clientId?.hint).toContain('Develop apps');
+      expect(clientId?.hint).toContain('read_orders');
+      expect(clientId?.hint).toContain('read_customers');
+    });
+
+    it('has NO generic credentialConnect spec (bespoke command handles the connect)', () => {
+      expect(shopify.credentialConnect).toBeUndefined();
+    });
+  });
 });

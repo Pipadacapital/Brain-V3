@@ -37,7 +37,7 @@ WORKDIR /opt/brain
 # Bronze landing is the Kafka Connect Iceberg sink, deployed outside this image.)
 COPY bronze_maintenance.py bronze_raw_retention.py erasure_raw_delete.py \
      iceberg_base.py provision_silver_gold.py medallion_maintenance.py job_log.py \
-     _identity_normalization.py /opt/brain/
+     _identity_normalization.py bronze_collector_partition_migrate.py /opt/brain/
 
 # SPEC: A.1.3 (WA-06) — python dep for the shared identity-normalization twin
 # (_identity_normalization.py: phone E.164 via Google libphonenumber). PINNED to the exact

@@ -44,7 +44,7 @@ import {
   Ga4DataClient,
   GA4_QUOTA_EXHAUSTED,
   GA4_AUTH_ERROR,
-  type Ga4OAuthCredentials,
+  type Ga4Credentials,
 } from './ga4-data-client.js';
 import { setSyncState } from '../meta-spend-repull/run.js';
 import {
@@ -79,10 +79,20 @@ interface Ga4ConnectorRow {
 
 // ── Credential secret bundle shape ────────────────────────────────────────────
 
-/** Secret bundle stored via the OAuth callback (fields match Ga4OAuthCredentials for OAuth path). */
+/**
+ * Secret bundle shapes (NEVER logged — I-S09):
+ *   - SERVICE-ACCOUNT (the generic per-brand credential connect, HandleGa4ConnectCommand):
+ *     { auth_method:'service_account', client_email, private_key, property_id, currency_code? }.
+ *     Self-contained — needs NO shared Google app env pair.
+ *   - Legacy OAUTH (stored via the historic OAuth callback): { refresh_token, property_id? } —
+ *     still resolved against the shared GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET env app.
+ */
 interface Ga4SecretBundle {
-  refresh_token: string;     // NEVER logged (I-S09)
+  refresh_token?: string;    // legacy OAuth bundle — NEVER logged (I-S09)
+  client_email?: string;     // service-account bundle
+  private_key?: string;      // service-account bundle — NEVER logged (I-S09)
   property_id?: string;      // GA4 property id (may also come from ad_account_id column)
+  currency_code?: string;    // ISO-4217 property reporting currency (absent ⇒ USD)
 }
 
 // ── Main entrypoint ───────────────────────────────────────────────────────────
@@ -218,7 +228,9 @@ async function repullConnector(params: RepullParams): Promise<void> {
     rows: result.rows,
     sampling: result.sampling,
     propertyId: creds.propertyId,
-    currencyCode: 'USD', // GA4 property currency; TODO: store in connector config for non-USD
+    // Property reporting currency from the connect form (stored in the secret bundle);
+    // USD only as the last-resort default for legacy bundles that never captured it.
+    currencyCode: creds.currencyCode ?? 'USD',
     brandId,
     ciId,
     producer,
@@ -308,22 +320,18 @@ async function emitRows(
  * Resolve GA4 credentials from the secret bundle.
  * Returns null when no credentials are configured → the honest-empty guard surfaces this.
  * Tokens NEVER logged (I-S09).
+ *
+ * SERVICE-ACCOUNT FIRST (the generic per-brand connect path): a bundle carrying
+ * {client_email, private_key} is self-contained — it resolves WITHOUT the shared
+ * GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET env app. The legacy OAuth refresh_token bundle
+ * still falls back to the env pair.
  */
 export async function resolveGa4Credentials(
   secretRef: string,
   adAccountIdCol: string | null,
-): Promise<Ga4OAuthCredentials | null> {
-  const clientId = process.env['GOOGLE_CLIENT_ID'] ?? process.env['GOOGLE_ADS_CLIENT_ID'];
-  const clientSecret = process.env['GOOGLE_CLIENT_SECRET'] ?? process.env['GOOGLE_ADS_CLIENT_SECRET'];
-  if (!clientId || !clientSecret) {
-    log.warn(
-      '[ga4-repull] app-level OAuth creds missing (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET) — cannot resolve GA4 credentials',
-    );
-    return null;
-  }
-
+): Promise<Ga4Credentials | null> {
   const bundle = await readGa4SecretBundle(secretRef);
-  if (!bundle?.refresh_token) {
+  if (!bundle) {
     // Honest-empty guard: no stored credential → caller surfaces 'GA4 not connected'
     return null;
   }
@@ -334,12 +342,40 @@ export async function resolveGa4Credentials(
     return null;
   }
 
+  const currencyCode = (bundle.currency_code ?? '').trim().toUpperCase() || undefined;
+
+  // ── Service-account bundle (per-brand connect) — no shared env app needed ──
+  if (bundle.client_email && bundle.private_key) {
+    return {
+      kind: 'service_account',
+      clientEmail: bundle.client_email,
+      privateKeyPem: bundle.private_key,   // NEVER logged (I-S09)
+      propertyId,
+      ...(currencyCode ? { currencyCode } : {}),
+    };
+  }
+
+  // ── Legacy OAuth bundle — resolved against the shared Google app env pair ──
+  if (!bundle.refresh_token) {
+    // Honest-empty guard: bundle carries neither a SA key nor a refresh token.
+    return null;
+  }
+  const clientId = process.env['GOOGLE_CLIENT_ID'] ?? process.env['GOOGLE_ADS_CLIENT_ID'];
+  const clientSecret = process.env['GOOGLE_CLIENT_SECRET'] ?? process.env['GOOGLE_ADS_CLIENT_SECRET'];
+  if (!clientId || !clientSecret) {
+    log.warn(
+      '[ga4-repull] legacy OAuth bundle but app-level creds missing (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET) — reconnect with a service-account key instead',
+    );
+    return null;
+  }
+
   return {
     kind: 'oauth',
     refreshToken: bundle.refresh_token,    // NEVER logged (I-S09)
     clientId,
     clientSecret,
     propertyId,
+    ...(currencyCode ? { currencyCode } : {}),
   };
 }
 

@@ -27,12 +27,15 @@
  */
 
 import type { Ga4ReportRow, Ga4RunReportSampling } from '@brain/ga4-mapper';
+import { mintServiceAccountAccessToken, GOOGLE_SA_AUTH_ERROR } from '@brain/connector-core';
 import { log } from '../../log.js';
 
 // ── API constants ─────────────────────────────────────────────────────────────
 
 const GA4_DATA_API_BASE = 'https://analyticsdata.googleapis.com/v1beta';
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+/** Read-only Analytics scope — the only scope Brain requests for GA4 (least privilege). */
+const GA4_ANALYTICS_READONLY_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly';
 
 const OAUTH_TIMEOUT_MS = 15_000;
 const REPORT_TIMEOUT_MS = 60_000;
@@ -52,6 +55,8 @@ export interface Ga4OAuthCredentials {
   readonly clientId: string;        // OAuth client — NEVER logged
   readonly clientSecret: string;    // OAuth secret — NEVER logged
   readonly propertyId: string;      // GA4 property id (numeric string)
+  /** ISO-4217 reporting currency of the property (from the connect form). Absent ⇒ USD. */
+  readonly currencyCode?: string;
 }
 
 export interface Ga4ServiceAccountCredentials {
@@ -61,6 +66,8 @@ export interface Ga4ServiceAccountCredentials {
   /** The service account email (client_email from the key JSON). */
   readonly clientEmail: string;
   readonly propertyId: string;
+  /** ISO-4217 reporting currency of the property (from the connect form). Absent ⇒ USD. */
+  readonly currencyCode?: string;
 }
 
 export type Ga4Credentials = Ga4OAuthCredentials | Ga4ServiceAccountCredentials;
@@ -128,11 +135,9 @@ export class Ga4DataClient {
   constructor(private readonly creds: Ga4Credentials) {}
 
   /**
-   * Exchange the refresh_token (OAuth) or service-account key (JWT) for a short-lived
-   * access_token. NEVER logs the token or the raw response (I-S09).
-   *
-   * For the service-account path, a full JWT signing implementation is required (uses Node
-   * crypto to sign the RS256 JWT). In the mocked-client test environment this is bypassed.
+   * Exchange the refresh_token (OAuth) or service-account key (RS256 JWT-bearer grant, via the
+   * shared @brain/connector-core helper) for a short-lived access_token.
+   * NEVER logs the token or the raw response (I-S09).
    */
   async authenticate(): Promise<void> {
     if (this.creds.kind === 'oauth') {
@@ -173,24 +178,31 @@ export class Ga4DataClient {
   }
 
   private async authenticateServiceAccount(): Promise<void> {
-    // Service-account auth requires signing a JWT with the private key (RS256).
-    // This is a LIVE-CREDENTIAL-GATED path — the actual crypto.createSign + key import
-    // is an external dependency that cannot be tested without a real service account key.
-    //
-    // EXTERNAL BLOCKER: requires a live Google service-account JSON key to verify.
-    // The structure below is the correct flow; it is guarded at the boundary.
+    // Service-account JWT-bearer grant (RFC 7523): sign an RS256 assertion with the key's
+    // private_key and exchange it at Google's token endpoint for a short-lived access token.
+    // Implemented via the SHARED @brain/connector-core helper (the same one the core
+    // HandleGa4ConnectCommand uses to validate the pasted key at connect time), so the
+    // connect-time validation and the repull auth can never drift. NEVER logs the key/token.
     const creds = this.creds as Ga4ServiceAccountCredentials;
     if (!creds.privateKeyPem || !creds.clientEmail) {
       throw new Error(`${GA4_AUTH_ERROR}: service-account key missing privateKeyPem or clientEmail`);
     }
-    // In production this would sign a JWT and exchange for an access_token via
-    // https://oauth2.googleapis.com/token with grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer.
-    // Stubbed here — the repull job checks for a null accessToken and surfaces the error.
-    throw new Error(
-      `${GA4_AUTH_ERROR}: service-account JWT signing is not implemented in this build. ` +
-      `Use the OAuth2 refresh_token path or wire the JWT signing library (EXTERNAL BLOCKER — ` +
-      `requires a live Google service-account key).`,
-    );
+    try {
+      const { accessToken } = await mintServiceAccountAccessToken({
+        key: { clientEmail: creds.clientEmail, privateKeyPem: creds.privateKeyPem },
+        scope: GA4_ANALYTICS_READONLY_SCOPE,
+        tokenUrl: OAUTH_TOKEN_URL,
+        timeoutMs: OAUTH_TIMEOUT_MS,
+      });
+      this.accessToken = accessToken; // in memory only; never logged (I-S09)
+    } catch (err) {
+      // Non-retryable SA auth rejection (bad PEM / rejected assertion) → the GA4 auth sentinel
+      // so the caller marks token_expired / RECONNECT_REQUIRED, same as the OAuth path.
+      if ((err as { code?: string }).code === GOOGLE_SA_AUTH_ERROR) {
+        throw new Error(`${GA4_AUTH_ERROR}: ${(err as Error).message}`);
+      }
+      throw err; // transient (5xx/network) — retryable next run
+    }
   }
 
   /**

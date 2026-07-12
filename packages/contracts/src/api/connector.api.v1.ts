@@ -280,3 +280,12 @@ export type ConnectResponse = z.infer<typeof ConnectResponseSchema>;
 //   422 SHOPIFY_CREDENTIALS_INVALID    — Shopify rejected the client-credentials exchange /
 //                                        the issued token failed the shop.json verification
 //   409 STOREFRONT_ALREADY_CONNECTED   — the brand already has a different storefront connected
+//
+// GA4 generic per-brand connect error codes (POST /api/v1/connectors, type='ga4' — the brand
+// pastes a GCP service-account JSON key in credentials.service_account_json + the numeric
+// property id in credentials.property_id, optional credentials.currency_code):
+//   400 MISSING_GA4_CREDENTIALS          — property_id / service_account_json absent
+//   400 GA4_INVALID_PROPERTY_ID          — property id is not numeric (a "G-…" measurement id, etc.)
+//   400 GA4_SERVICE_ACCOUNT_KEY_INVALID  — the pasted JSON key is malformed / not a service account
+//   422 GA4_CREDENTIALS_INVALID          — Google rejected the key, or the SA email lacks Viewer
+//                                          access on the property (validated via a cheap runReport)

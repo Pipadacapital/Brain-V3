@@ -361,7 +361,9 @@ function ConnectorTile({
                     ? 'Data will appear here as it syncs. CoD/RTO shows sample data until live courier tracking is available.'
                     : tile.id === 'shiprocket'
                       ? 'Shipment data syncs automatically. Finish the webhook setup below to get real-time delivery & RTO updates.'
-                      : 'Settlement data will appear once Razorpay sends settlements.';
+                      : tile.id === 'ga4'
+                        ? 'Property connected — sessions, source/medium and revenue will sync from the GA4 Data API shortly.'
+                        : 'Settlement data will appear once Razorpay sends settlements.';
               toast({ title: `${tile.display_name} connected`, description });
             }
           },

@@ -15,6 +15,7 @@ import {
   mapMetaInsightToEvent,
   mapGoogleRowToEvent,
   uuidV5FromSpendRow,
+  googleBreakdownKey,
 } from '@brain/ad-spend-mapper';
 
 const SALT = 'a'.repeat(64); // fixed 64-hex salt (unused for ad-spend — schema parity only)
@@ -96,18 +97,56 @@ const googleRows: Array<{ row: any; account_currency: string; account_timezone: 
     },
     account_currency: 'aed', account_timezone: null,
   },
+  {
+    // FIREHOSE metrics on the base (unsegmented) spend grain — breakdownKey='' so the id is unchanged.
+    // cost_per_conversion/value_per_conversion/all_conversions_value/cost_per_all_conversions/average_cost
+    // + ratio metrics fold; base event_id must equal the 5-arg seed.
+    row: {
+      level: 'campaign', campaign_id: 'gc3', campaign_name: 'Firehose', cost_micros: '1230000',
+      impressions: '100', clicks: '5', conversions: '2', all_conversions: '3',
+      conversions_value: '45.60', segments_date: '2026-06-15', currency_code: 'usd',
+      cost_per_conversion: '615000', value_per_conversion: '2280000',
+      all_conversions_value: '60.00', cost_per_all_conversions: '410000', average_cost: '246000',
+      search_impression_share: '0.85', interactions: '5', interaction_rate: '0.05', video_views: '10',
+    },
+    account_currency: 'USD', account_timezone: 'America/New_York',
+  },
+  {
+    // device/network BREAKDOWN row → segment dims fold into a DISTINCT breakdownKey → distinct event_id.
+    row: {
+      level: 'campaign', campaign_id: 'gc3', campaign_name: 'Firehose', cost_micros: '500000',
+      impressions: '40', clicks: '3', segments_date: '2026-06-15', currency_code: 'usd',
+      segment_device: 'MOBILE', segment_ad_network_type: 'SEARCH',
+    },
+    account_currency: 'USD', account_timezone: 'America/New_York',
+  },
+  {
+    // keyword BREAKDOWN row → keyword_id folds into breakdownKey (name=value escaped/sorted).
+    row: {
+      level: 'campaign', campaign_id: 'gc3', cost_micros: '250000', impressions: '20', clicks: '2',
+      segments_date: '2026-06-15', currency_code: 'usd',
+      keyword_id: 'kw_9', keyword_text: 'blue|shoes', keyword_match_type: 'EXACT',
+    },
+    account_currency: 'USD', account_timezone: null,
+  },
 ];
 
 function expectedFrom(ev: ReturnType<typeof mapMetaInsightToEvent>) {
   const p = ev.properties;
-  // FIREHOSE: fold the row's breakdown_key ('' for base) into the event_id seed (§2.A). Base vectors
-  // keep breakdown_key='' → base event_ids are byte-unchanged; a breakdown vector proves distinctness.
-  const event_id = uuidV5FromSpendRow(
-    BRAND, p.platform, p.stat_date, p.level, p.level_id, p.breakdown_key ?? '',
-  );
+  // FIREHOSE breakdownKey folded into the event_id seed (§2.A). A vector that carries an explicit
+  // breakdown_key (Meta demographic/placement passes) uses it verbatim; a Google row folds its segment
+  // dims via googleBreakdownKey; a plain base row → '' (base event_ids stay byte-unchanged). The Python
+  // port MUST reproduce the same breakdownKey.
+  const breakdown_key =
+    p.breakdown_key != null && p.breakdown_key !== ''
+      ? p.breakdown_key
+      : p.platform === 'google_ads'
+        ? googleBreakdownKey(p)
+        : '';
+  const event_id = uuidV5FromSpendRow(BRAND, p.platform, p.stat_date, p.level, p.level_id, breakdown_key);
   return {
     event_id,
-    breakdown_key: p.breakdown_key,
+    breakdown_key,
     occurred_at: ev.occurred_at,
     platform: p.platform,
     level: p.level,
@@ -120,6 +159,16 @@ function expectedFrom(ev: ReturnType<typeof mapMetaInsightToEvent>) {
     currency_code: p.currency_code,
     impressions: p.impressions,
     clicks: p.clicks,
+    // ── FIREHOSE money + ratio fields (Python-port byte-parity across the new encodings). ──
+    cost_per_conversion_minor: p.cost_per_conversion_minor ?? null,
+    value_per_conversion_minor: p.value_per_conversion_minor ?? null,
+    all_conversions_value_minor: p.all_conversions_value_minor ?? null,
+    cost_per_all_conversions_minor: p.cost_per_all_conversions_minor ?? null,
+    average_cost_minor: p.average_cost_minor ?? null,
+    interactions: p.interactions ?? null,
+    video_views: p.video_views ?? null,
+    search_impression_share: p.search_impression_share ?? null,
+    interaction_rate: p.interaction_rate ?? null,
   };
 }
 

@@ -170,6 +170,18 @@ export class MetaEntityClient {
     return [...campaigns, ...adsets, ...ads, ...adcreatives, ...customAudiences, ...savedAudiences];
   }
 
+  /**
+   * The ad account's ISO currency code — the sibling required by every MINOR-unit money field on the
+   * entity envelope (daily_budget_minor / lifetime_budget_minor / bid_amount). Money is never carried
+   * without its currency (I-S07). Mirrors the insights lane's fetchAccountMeta(). Defaults to 'USD' if
+   * Meta omits it (best-effort; never blocks the entity sync).
+   */
+  async fetchAccountCurrency(): Promise<string> {
+    const url = `${GRAPH_API_BASE}/${this.actId}?fields=currency`;
+    const body = (await this.getJson(url)) as { currency?: string };
+    return (body.currency ?? 'USD').trim().toUpperCase();
+  }
+
   private async fetchEdge(
     edge:
       | 'campaigns'

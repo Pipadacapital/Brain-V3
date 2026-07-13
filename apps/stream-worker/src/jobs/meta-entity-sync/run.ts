@@ -124,7 +124,11 @@ async function syncConnector(params: SyncParams): Promise<void> {
     return;
   }
 
-  const emitted = await emitEntities({ entities, brandId, ciId, producer });
+  // Money on the entity envelope (daily_budget_minor / lifetime_budget_minor / bid_amount) is MINOR
+  // units — it MUST carry the account currency as its sibling (I-S07, never blended/float). Best-effort
+  // fetch; default 'USD' so a currency hiccup never blocks the entity sync.
+  const accountCurrency = await client.fetchAccountCurrency().catch(() => 'USD');
+  const emitted = await emitEntities({ entities, brandId, ciId, producer, accountCurrency });
   log.info(`[meta-entity-sync] connector=${ciId} COMPLETED entities=${entities.length} emitted=${emitted}`);
 }
 
@@ -133,6 +137,8 @@ interface EmitParams {
   brandId: string;
   ciId: string;
   producer: Producer;
+  /** Ad account ISO currency — the sibling for every MINOR-unit money field on the envelope (I-S07). */
+  accountCurrency: string;
 }
 
 /** ISO date (YYYY-MM-DD) version fallback when Meta omits updated_time. */
@@ -213,6 +219,7 @@ export async function emitEntities(p: EmitParams): Promise<number> {
         entity_updated_at: e.entity_updated_at,
         // ── FIREHOSE entity depth (all additive + nullable; grain-specific). Budgets/bid are MINOR-unit
         //    strings in the account currency (NEVER float). Audiences carry NO member PII. ────────────
+        currency_code: p.accountCurrency, // I-S07 sibling for daily_budget_minor/lifetime_budget_minor/bid_amount
         buying_type: e.buying_type,
         daily_budget_minor: e.daily_budget_minor,
         lifetime_budget_minor: e.lifetime_budget_minor,

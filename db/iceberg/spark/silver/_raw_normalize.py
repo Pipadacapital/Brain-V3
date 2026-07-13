@@ -172,28 +172,27 @@ def uuid_shaped(inp):
     return f"{hx[0:8]}-{hx[8:12]}-{hx[12:16]}-{hx[16:20]}-{hx[20:32]}"
 
 
-def canonical_breakdown_key(dims):
-    """@brain/ad-spend-mapper canonicalBreakdownKey — order-stable, delimiter-safe join of the breakdown/
-    segment dimension name=value pairs PRESENT on a row (the SIXTH seed arg to uuidV5FromSpendRow). MUST
-    stay BYTE-IDENTICAL to the TS port (packages/ad-spend-mapper/src/index.ts). Rule:
-      1. take pairs whose value is not None and not '' (as strings),
-      2. escape '\\', '|', '=' in BOTH name and value with a backslash,
-      3. sort by ESCAPED name ascending (code-point order — matches TS default string sort on ASCII),
-      4. join with '|'; empty set -> ''.
-    Base pass -> '' so base-grain event_ids are byte-unchanged (zero re-dedup churn)."""
-    def esc(s):
-        return s.replace("\\", "\\\\").replace("|", "\\|").replace("=", "\\=")
+# ── COMMON (ad-spend breakdown/entity depth spec §2.B): canonical breakdown-key for the extended
+# spend event_id seed. BYTE-IDENTICAL to the TS canonicalBreakdownKey (@brain/ad-spend-mapper):
+#   1. name=value pairs for PRESENT dims (None/empty dropped),
+#   2. escape `\`, `|`, `=` in name AND value with a backslash,
+#   3. sort ascending by name (byte order),
+#   4. join with `|`; empty set → "" (base pass → base event_id byte-unchanged).
+def _escape_breakdown_token(s):
+    return str(s).replace("\\", "\\\\").replace("|", "\\|").replace("=", "\\=")
 
+
+def canonical_breakdown_key(dims):
     pairs = []
-    for name, raw_val in (dims or {}).items():
-        if raw_val is None:
+    for name in sorted(dims.keys()):
+        raw = dims[name]
+        if raw is None:
             continue
-        val = str(raw_val)
-        if val == "":
+        value = str(raw)
+        if value == "":
             continue
-        pairs.append((esc(str(name)), esc(val)))
-    pairs.sort(key=lambda p: p[0])
-    return "|".join(f"{n}={v}" for n, v in pairs)
+        pairs.append(f"{_escape_breakdown_token(name)}={_escape_breakdown_token(value)}")
+    return "|".join(pairs)
 
 
 def event_id_order_live(brand_id, order_id, updated_at_ms):

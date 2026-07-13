@@ -123,6 +123,7 @@ describe('emitEntities (ad.entity.updated)', () => {
     const n = await emitEntities({
       brandId: BRAND,
       ciId: 'ci-1',
+      accountCurrency: 'INR',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       producer: producer as any,
       entities: [
@@ -141,17 +142,19 @@ describe('emitEntities (ad.entity.updated)', () => {
     expect(env.properties.objective).toBe('OUTCOME_SALES');
     expect(env.properties.advertising_channel_type).toBeNull(); // Meta has no channel type
     expect(env.properties.entity_updated_at).toBe('2026-06-20T00:00:00.000Z');
+    // I-S07: every MINOR-unit money field on the envelope carries its account currency sibling.
+    expect(env.properties.currency_code).toBe('INR');
   });
 
   it('event_id is VERSION-deterministic: unchanged state → same id; updated_time change → new id', async () => {
     const base = mkEntity({ level: 'campaign', entity_id: 'c1', campaign_id: 'c1', parent_id: null, name: 'Camp', status: 'ACTIVE', objective: 'X' });
 
     const p1 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', producer: p1 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p1 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     const p2 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', producer: p2 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p2 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     const p3 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', producer: p3 as any, entities: [{ ...base, entity_updated_at: '2026-06-25T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p3 as any, entities: [{ ...base, entity_updated_at: '2026-06-25T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
 
     const id1 = JSON.parse(p1.sent[0]!.messages[0]!.value.toString()).event_id;
     const id2 = JSON.parse(p2.sent[0]!.messages[0]!.value.toString()).event_id;
@@ -163,7 +166,7 @@ describe('emitEntities (ad.entity.updated)', () => {
 
   it('returns 0 and sends nothing for an empty entity list', async () => {
     const producer = fakeProducer();
-    const n = await emitEntities({ brandId: BRAND, ciId: 'ci-1', producer: producer as any, entities: [] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    const n = await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: producer as any, entities: [] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(n).toBe(0);
     expect(producer.sent).toHaveLength(0);
   });

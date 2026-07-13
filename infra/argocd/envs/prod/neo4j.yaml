@@ -49,13 +49,11 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: neo4j
-  # AUD-INFRA-003 (Wave-1 root cause): StatefulSet.spec.volumeClaimTemplates is
-  # IMMUTABLE after creation, and the API server injects defaults into the live
-  # entries (apiVersion/kind: PersistentVolumeClaim, volumeMode: Filesystem,
+  # AUD-INFRA-003: StatefulSet.spec.volumeClaimTemplates is IMMUTABLE after
+  # creation, and the API server injects defaults into the live entries
+  # (apiVersion/kind: PersistentVolumeClaim, volumeMode: Filesystem,
   # status.phase: Pending) that the rendered chart never carries — an
-  # un-actionable, permanent diff. Ignore it for COMPARISON ONLY (deliberately
-  # NO RespectIgnoreDifferences: syncs still apply the full manifest, and the
-  # API server itself rejects any real vct mutation, which is the correct guard).
+  # un-actionable, permanent diff.
   ignoreDifferences:
     - group: apps
       kind: StatefulSet
@@ -67,6 +65,16 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      # AUD-COST/PERF (2026-07-13): RespectIgnoreDifferences so the ignored vct is
+      # EXCLUDED from the SSA apply. The prior "let the API server reject vct
+      # mutations" guard also BLOCKED legitimate spec.template changes: with
+      # ServerSideApply, ArgoCD's apply/dry-run includes the whole StatefulSet, so
+      # even a mutable-field change (e.g. resources cpu 2→3) is rejected because the
+      # desired vct lacks the API-injected defaults → "updates to statefulset spec
+      # for fields other than [template,...] are forbidden" ComparisonError, no sync.
+      # Respecting ignoreDifferences omits vct from the apply → template changes sync
+      # cleanly; vct stays immutable (the API server is still the guard for it).
+      - RespectIgnoreDifferences=true
     retry:
       limit: 2
       backoff:

@@ -13,7 +13,8 @@
     "test:live": "vitest run .live"
   },
   "dependencies": {
-    "@brain/money": "workspace:*"
+    "@brain/money": "workspace:*",
+    "@brain/observability": "workspace:*"
   },
   "devDependencies": {
     "@types/pg": "^8.11.0",

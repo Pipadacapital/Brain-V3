@@ -10,7 +10,8 @@
  *   6. a real compute (Trino) error PROPAGATES (never swallowed, never retried).
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { setCounterSink } from '@brain/observability';
 import { createServingCacheReader, hashParams } from './serving-cache.js';
 import type { AnalyticsCachePort } from './analytics-cache.js';
 
@@ -92,6 +93,65 @@ describe('ServingCacheReader — flag ON caching', () => {
     expect(new Set(cache.keys).size).toBe(3);
     // params order does not matter (canonicalized): same key regardless of key order.
     expect(hashParams({ from: 'a', to: 'b' })).toBe(hashParams({ to: 'b', from: 'a' }));
+  });
+});
+
+describe('ServingCacheReader — hit-rate metric (serving_cache_requests_total)', () => {
+  /** Record every counter increment via the observability sink seam. */
+  function recordCounters(): { calls: Array<{ name: string; labels: Record<string, string> }>; restore: () => void } {
+    const calls: Array<{ name: string; labels: Record<string, string> }> = [];
+    const restore = setCounterSink({ add: (name, _value, labels) => calls.push({ name, labels }) });
+    return { calls, restore };
+  }
+
+  afterEach(() => {
+    // Each test restores its own sink; this is a belt-and-braces reset for the default sink.
+  });
+
+  it('miss then hit emit result=miss then result=hit with the metric_id label', async () => {
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({ cache, servingVersion: 'v1', ttlMs: 1000, enabled: true });
+    const { calls, restore } = recordCounters();
+    try {
+      await reader.read(BRAND_A, 'kpi_summary', { asOf: '2026-01-01' }, async () => ({ value: 1 })); // miss
+      await reader.read(BRAND_A, 'kpi_summary', { asOf: '2026-01-01' }, async () => ({ value: 1 })); // hit
+    } finally {
+      restore();
+    }
+    const cacheCalls = calls.filter((c) => c.name === 'serving_cache_requests_total');
+    expect(cacheCalls.map((c) => c.labels.result)).toEqual(['miss', 'hit']);
+    expect(cacheCalls.every((c) => c.labels.metric_id === 'kpi_summary')).toBe(true);
+  });
+
+  it('flag OFF emits result=bypass', async () => {
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({ cache, servingVersion: 'v1', ttlMs: 1000, enabled: false });
+    const { calls, restore } = recordCounters();
+    try {
+      await reader.read(BRAND_A, 'm', { p: 1 }, async () => 1);
+    } finally {
+      restore();
+    }
+    expect(calls.filter((c) => c.name === 'serving_cache_requests_total').map((c) => c.labels.result)).toEqual([
+      'bypass',
+    ]);
+  });
+
+  it('cache-layer error emits result=error (not counted as hit/miss)', async () => {
+    const cache = makeFakeCache();
+    cache.getOrSet = vi.fn(async () => {
+      throw new Error('redis ECONNREFUSED');
+    });
+    const reader = createServingCacheReader({ cache, servingVersion: 'v1', ttlMs: 1000, enabled: true });
+    const { calls, restore } = recordCounters();
+    try {
+      await reader.read(BRAND_A, 'm', { p: 1 }, async () => 1);
+    } finally {
+      restore();
+    }
+    expect(calls.filter((c) => c.name === 'serving_cache_requests_total').map((c) => c.labels.result)).toEqual([
+      'error',
+    ]);
   });
 });
 

@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:312aa6f0bff048351a0b68636e381bdcc4e6fd98b12a68d4e602fc4de2e0e9dc"
+  digest: "sha256:01f9573540538429d2c558e66c1229abbf8bf682240b25285833bdb8b6bd75eb"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:b62a7ae1a1197efd8999f17009cccf04c2debb560c42162309ae3428dcb9d26b"
+  digest: "sha256:ca7f67ea913c00a9b1c441dab34104a1722b17b23957bd33ee9cd41848ec6d15"
 # spark image — bronze-maintenance cron + reused by the V4 Spark silver/gold/mv-refresh crons
 # (.sparkV4.image — CI promotes both digests build-once from staging). Bronze LANDING is the
 # kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
@@ -13,7 +13,7 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
-    digest: "sha256:9ca750c470d3870e42a3e0bb7f34ce77bc7e5930d8e61c7bf3cb2901ff9f2036"
+    digest: "sha256:da16849d45362d672bb8f5d02ced0040e32317e96b743841737820cc3eae74f3"
   # AUD-PROD-006: Spark cron pods → the batch Karpenter pool (t4g.xlarge Spot).
   # A Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry +
   # idempotent maintenance (compaction/snapshot-expiry re-runs are no-ops).
@@ -25,7 +25,7 @@ sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
-    digest: "sha256:9ca750c470d3870e42a3e0bb7f34ce77bc7e5930d8e61c7bf3cb2901ff9f2036"
+    digest: "sha256:da16849d45362d672bb8f5d02ced0040e32317e96b743841737820cc3eae74f3"
   # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the batch pool.
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:

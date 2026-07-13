@@ -70,6 +70,16 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}      # IRSA: S3 (Iceberg warehouse) + Glue/REST catalog access
     entrypoint: run
+    {{- /* AUD-OPS: keep Karpenter from VOLUNTARILY disrupting (consolidating/draining) the batch-pool
+           node while this idempotent Spark tier is mid-run. Observed on real data: the run pod was
+           evicted (karpenter.sh/disrupted taint) at 14-37 min — well under activeDeadlineSeconds — then
+           node churn delayed reschedule until retries exhausted ("No more retries left"). This does NOT
+           stop an involuntary AWS spot reclaim; it stops the dominant, self-inflicted churn at $0. */}}
+    {{- with .Values.sparkV4.podAnnotations }}
+    podMetadata:
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
     # ── AUD-IMPL-027 / AUD-OPS-029: per-run wall-time telemetry ─────────────────
     # The Argo controller emits these on its /metrics endpoint (metricsConfig +
     # ServiceMonitor enabled in infra/argocd/envs/prod/argo-workflows.yaml). The
@@ -168,6 +178,13 @@ spec:
   workflowSpec:
     serviceAccountName: {{ $sa }}
     entrypoint: run
+    {{- /* Same do-not-disrupt guard as v4-silver — gold is the tier that most often ate the mid-run
+           eviction (exit 143 at ~14 min). See the v4-silver block for the full rationale. */}}
+    {{- with .Values.sparkV4.podAnnotations }}
+    podMetadata:
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
     # AUD-IMPL-027 / AUD-OPS-029: per-run wall-time telemetry — see the v4-silver
     # block above for the full rationale (same gauge/counter, tier=v4-gold).
     metrics:

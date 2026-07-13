@@ -114,6 +114,44 @@ export interface MetaInsightsRawRow {
   ctr?: string | null;         // click-through ratio (string)
   cpc?: string | null;         // MAJOR-unit decimal cost-per-click (account currency)
   cpm?: string | null;         // MAJOR-unit decimal cost-per-mille (account currency)
+  // ── FIREHOSE: full base-grain insight set (all optional; absent → mapper leaves the prop null). ──
+  reach?: string | null;
+  frequency?: string | null;                 // decimal ratio (avg impressions/person)
+  cpp?: string | null;                        // MAJOR-unit decimal cost-per-1000-reached
+  unique_clicks?: string | null;
+  unique_ctr?: string | null;
+  inline_link_clicks?: string | null;
+  inline_link_click_ctr?: string | null;
+  outbound_clicks?: unknown;                  // array
+  unique_outbound_clicks?: unknown;           // array
+  cost_per_unique_click?: string | null;      // MAJOR-unit decimal
+  cost_per_inline_link_click?: string | null; // MAJOR-unit decimal
+  purchase_roas?: unknown;                    // array { action_type, value }
+  website_purchase_roas?: unknown;            // array
+  mobile_app_purchase_roas?: unknown;         // array
+  video_play_actions?: unknown;               // array → video_views
+  video_p25_watched_actions?: unknown;
+  video_p50_watched_actions?: unknown;
+  video_p75_watched_actions?: unknown;
+  video_p100_watched_actions?: unknown;
+  video_thruplay_watched_actions?: unknown;
+  video_30_sec_watched_actions?: unknown;
+  video_avg_time_watched_actions?: unknown;
+  inline_post_engagement?: string | null;
+  quality_ranking?: string | null;           // enum — ad-level only
+  engagement_rate_ranking?: string | null;    // enum — ad-level only
+  conversion_rate_ranking?: string | null;    // enum — ad-level only
+  // Breakdown dimension keys — surfaced only on the corresponding breakdown pass:
+  age?: string | null;
+  gender?: string | null;
+  country?: string | null;
+  region?: string | null;
+  dma?: string | null;
+  publisher_platform?: string | null;
+  platform_position?: string | null;
+  device_platform?: string | null;
+  impression_device?: string | null;
+  hourly_stats_aggregated_by_advertiser_time_zone?: string | null;
   [key: string]: unknown;
 }
 
@@ -141,21 +179,121 @@ export interface MetaUsageThrottleSignal {
   callCountPct: number | null;
 }
 
-const INSIGHTS_FIELDS = [
+/**
+ * FIREHOSE base-grain field set — the FULL Meta Insights metric surface at campaign/adset/ad. Split
+ * into tiers so a breakdown pass can request a REDUCED subset when Meta forbids a field with a
+ * breakdown (compatibility rules — see BREAKDOWN_FIELD_COMPAT + fieldSetForBreakdown below).
+ */
+const IDENTITY_FIELDS = [
   'campaign_id',
   'campaign_name',
   'adset_id',
   'ad_id',
+];
+
+/** Core spend/delivery metrics — always requested (compatible with every breakdown). */
+const CORE_METRIC_FIELDS = [
   'spend',
   'impressions',
   'clicks',
-  'ctr',                  // A2: click-through ratio (spec-listed)
-  'cpc',                  // A2: MAJOR-unit cost-per-click  → cpc_minor (mapper)
-  'cpm',                  // A2: MAJOR-unit cost-per-mille   → cpm_minor (mapper)
-  'actions',              // conversion COUNT array (ADR-AD-8)
-  'action_values',        // A2: conversion REVENUE array → conv_value_minor (mapper) → platform ROAS
-  'cost_per_action_type', // A2: per-action CPA (passthrough; spec-listed, derivable downstream)
+  'ctr',
+  'cpc',
+  'cpm',
+  'reach',
+  'frequency',
+  'cpp',
+  'unique_clicks',
+  'unique_ctr',
+  'inline_link_clicks',
+  'inline_link_click_ctr',
+  'outbound_clicks',
+  'unique_outbound_clicks',
+  'cost_per_unique_click',
+  'cost_per_inline_link_click',
+];
+
+/** Conversion/action metrics — arrays keyed by action_type. Incompatible with SOME breakdowns. */
+const ACTION_METRIC_FIELDS = [
+  'actions',
+  'action_values',
+  'cost_per_action_type',
+  'purchase_roas',
+  'website_purchase_roas',
+  'mobile_app_purchase_roas',
+];
+
+/** Video engagement metrics — arrays. Incompatible with the hourly breakdown (Meta rule). */
+const VIDEO_METRIC_FIELDS = [
+  'video_play_actions',
+  'video_p25_watched_actions',
+  'video_p50_watched_actions',
+  'video_p75_watched_actions',
+  'video_p100_watched_actions',
+  'video_thruplay_watched_actions',
+  'video_30_sec_watched_actions',
+  'video_avg_time_watched_actions',
+];
+
+/** Engagement + quality-ranking metrics. Rankings are ad-level-only (null elsewhere). */
+const ENGAGEMENT_RANKING_FIELDS = [
+  'inline_post_engagement',
+  'quality_ranking',
+  'engagement_rate_ranking',
+  'conversion_rate_ranking',
+];
+
+/** The FULL base-grain (no-breakdown) field set. */
+const INSIGHTS_FIELDS = [
+  ...IDENTITY_FIELDS,
+  ...CORE_METRIC_FIELDS,
+  ...ACTION_METRIC_FIELDS,
+  ...VIDEO_METRIC_FIELDS,
+  ...ENGAGEMENT_RANKING_FIELDS,
 ].join(',');
+
+/**
+ * Meta breakdown-compatibility (documented, enforced): when a field group is incompatible with a
+ * breakdown, DROP that group for that pass rather than failing the whole pull.
+ *   - hourly (`hourly_stats_aggregated_by_advertiser_time_zone`): Meta rejects VIDEO metrics with it.
+ *   - demographic/geo/placement action-breakdowns: `action_values` / ROAS arrays combine only under
+ *     restricted attribution — we KEEP action counts but DROP the ROAS + action_value arrays on those
+ *     passes to stay within Meta's action-breakdown compatibility envelope.
+ *   - rankings are ad-level-only regardless of breakdown → requested only at ad level (handled by the
+ *     caller passing the level; harmless if returned null).
+ */
+export type MetaBreakdownName =
+  | 'demographic'
+  | 'geo'
+  | 'placement'
+  | 'hourly';
+
+/** The breakdown `breakdowns=` param dimensions per family (comma-joined into the URL). */
+export const META_BREAKDOWN_DIMS: Record<MetaBreakdownName, string[]> = {
+  demographic: ['age', 'gender'],
+  geo: ['country', 'region', 'dma'],
+  placement: ['publisher_platform', 'platform_position', 'device_platform', 'impression_device'],
+  hourly: ['hourly_stats_aggregated_by_advertiser_time_zone'],
+};
+
+/**
+ * The reduced field set for a breakdown pass (null = base/no-breakdown → the FULL set). Drops the
+ * field groups Meta forbids with that breakdown (documented above). The base pass always requests the
+ * full set. Deduped + comma-joined.
+ */
+export function fieldSetForBreakdown(breakdown: MetaBreakdownName | null): string {
+  if (breakdown === null) return INSIGHTS_FIELDS;
+  const groups: string[][] = [IDENTITY_FIELDS, CORE_METRIC_FIELDS];
+  if (breakdown === 'hourly') {
+    // hourly ∩ video is incompatible → drop VIDEO; keep action COUNTS but drop ROAS/action_values arrays.
+    groups.push(['actions', 'cost_per_action_type']);
+  } else {
+    // demographic/geo/placement: keep action counts + video; drop ROAS + action_values (action-breakdown
+    // compatibility). ROAS/action_values only reliably return at the base grain.
+    groups.push(['actions', 'cost_per_action_type']);
+    groups.push(VIDEO_METRIC_FIELDS);
+  }
+  return Array.from(new Set(groups.flat())).join(',');
+}
 
 /**
  * A2: request Meta-attributed action counts/values under EXPLICIT attribution windows
@@ -303,13 +441,14 @@ export class MetaInsightsClient {
     level: 'campaign' | 'adset' | 'ad',
     since: string,
     until: string,
-    opts: { asyncMode?: boolean } = {},
+    opts: { asyncMode?: boolean; breakdown?: MetaBreakdownName | null } = {},
   ): Promise<MetaInsightsPage> {
     const useAsync = opts.asyncMode ?? this.defaultAsyncMode;
+    const breakdown = opts.breakdown ?? null;
     if (useAsync) {
-      return this.fetchInsightsAsync(level, since, until);
+      return this.fetchInsightsAsync(level, since, until, breakdown);
     }
-    return this.fetchInsightsSync(level, since, until);
+    return this.fetchInsightsSync(level, since, until, breakdown);
   }
 
   // ── Synchronous path (small pulls) ─────────────────────────────────────────
@@ -318,12 +457,19 @@ export class MetaInsightsClient {
     level: 'campaign' | 'adset' | 'ad',
     since: string,
     until: string,
+    breakdown: MetaBreakdownName | null = null,
   ): Promise<MetaInsightsPage> {
     const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+    const fields = fieldSetForBreakdown(breakdown);
+    // FIREHOSE: a breakdown pass appends `&breakdowns=<comma-joined dims>`; the base pass omits it, so
+    // base rows are byte-identical to the pre-firehose pull (no breakdown param → base grain unchanged).
+    const breakdownParam = breakdown
+      ? `&breakdowns=${encodeURIComponent(META_BREAKDOWN_DIMS[breakdown].join(','))}`
+      : '';
     const url =
       `${GRAPH_API_BASE}/${this.actId}/insights` +
       `?level=${level}&time_increment=1&time_range=${timeRange}` +
-      `&fields=${INSIGHTS_FIELDS}&action_attribution_windows=${ACTION_ATTRIBUTION_WINDOWS}&limit=500`;
+      `&fields=${fields}${breakdownParam}&action_attribution_windows=${ACTION_ATTRIBUTION_WINDOWS}&limit=500`;
     return this.fetchInsightsByUrl(url, level);
   }
 
@@ -339,12 +485,17 @@ export class MetaInsightsClient {
     level: 'campaign' | 'adset' | 'ad',
     since: string,
     until: string,
+    breakdown: MetaBreakdownName | null = null,
   ): Promise<MetaInsightsPage> {
     const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+    const fields = fieldSetForBreakdown(breakdown);
+    const breakdownParam = breakdown
+      ? `&breakdowns=${encodeURIComponent(META_BREAKDOWN_DIMS[breakdown].join(','))}`
+      : '';
     const postUrl =
       `${GRAPH_API_BASE}/${this.actId}/insights` +
       `?level=${level}&time_increment=1&time_range=${timeRange}` +
-      `&fields=${INSIGHTS_FIELDS}&action_attribution_windows=${ACTION_ATTRIBUTION_WINDOWS}&limit=500`;
+      `&fields=${fields}${breakdownParam}&action_attribution_windows=${ACTION_ATTRIBUTION_WINDOWS}&limit=500`;
 
     // Step 1: create the async job
     const jobBody = (await this.postJson(postUrl)) as { report_run_id?: string | number };
@@ -443,11 +594,12 @@ export class MetaInsightsClient {
     level: 'campaign' | 'adset' | 'ad',
     since: string,
     until: string,
+    breakdown: MetaBreakdownName | null = null,
   ): Promise<MetaInsightsRawRow[]> {
     try {
       const rows: MetaInsightsRawRow[] = [];
       // Sync GET + cursor paging (client default) — the proven-working path; see MODE note above.
-      let page = await this.fetchInsightsFirstPage(level, since, until);
+      let page = await this.fetchInsightsFirstPage(level, since, until, { breakdown });
       rows.push(...page.rows);
       while (page.nextUrl) {
         page = await this.fetchInsightsByUrl(page.nextUrl, level);
@@ -466,8 +618,8 @@ export class MetaInsightsClient {
         `[meta-insights-client] window ${since}..${until} too large (code ${META_REDUCE_DATA_CODE}) ` +
         `— splitting at ${mid} and retrying each half (level=${level})`,
       );
-      const left = await this.fetchInsightsForWindow(level, since, mid);
-      const right = await this.fetchInsightsForWindow(level, isoNextDay(mid), until);
+      const left = await this.fetchInsightsForWindow(level, since, mid, breakdown);
+      const right = await this.fetchInsightsForWindow(level, isoNextDay(mid), until, breakdown);
       return [...left, ...right];
     }
   }

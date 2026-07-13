@@ -30,7 +30,7 @@ function recordingPool() {
 }
 
 describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
-  it('runs BEGIN → SET LOCAL ROLE brain_app → set_config → fn → COMMIT in order', async () => {
+  it('opens BEGIN + SET LOCAL ROLE + brand GUC in ONE round-trip, then fn → COMMIT', async () => {
     const { pool, client, calls } = recordingPool();
     let sawClientInFn: PoolClient | null = null;
 
@@ -40,11 +40,10 @@ describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
       return 'ok';
     });
 
-    expect(calls[0]).toBe('BEGIN');
-    expect(calls[1]).toBe('SET LOCAL ROLE brain_app');
-    expect(calls[2]).toBe(`SET LOCAL app.current_brand_id = '${BRAND}'`);
-    expect(calls[3]).toBe('SELECT 1 AS probe');
-    expect(calls[4]).toBe('COMMIT');
+    // BEGIN/role/GUC batched (pgbouncer pinning — see withBrandTxn); then the business query; then COMMIT.
+    expect(calls[0]).toBe(`BEGIN; SET LOCAL ROLE brain_app; SET LOCAL app.current_brand_id = '${BRAND}'`);
+    expect(calls[1]).toBe('SELECT 1 AS probe');
+    expect(calls[2]).toBe('COMMIT');
     expect(sawClientInFn).toBe(client);
   });
 
@@ -53,18 +52,19 @@ describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
     await withBrandTxn(pool, BRAND, async (c) => {
       await c.query('SELECT 1');
     });
-    const roleIdx = calls.indexOf('SET LOCAL ROLE brain_app');
-    const gucIdx = calls.findIndex((c) => c.includes('app.current_brand_id'));
+    const setupIdx = calls.findIndex((c) => c.includes('SET LOCAL ROLE brain_app'));
+    const setup = calls[setupIdx] ?? '';
     const queryIdx = calls.indexOf('SELECT 1');
-    expect(roleIdx).toBeGreaterThanOrEqual(0);
-    expect(roleIdx).toBeLessThan(gucIdx);
-    expect(roleIdx).toBeLessThan(queryIdx);
+    // role + GUC live in the same batched setup statement, role before the GUC, all before the query.
+    expect(setupIdx).toBeGreaterThanOrEqual(0);
+    expect(setup.indexOf('SET LOCAL ROLE brain_app')).toBeLessThan(setup.indexOf('app.current_brand_id'));
+    expect(setupIdx).toBeLessThan(queryIdx);
   });
 
   it('honours a custom appRole', async () => {
     const { pool, calls } = recordingPool();
     await withBrandTxn(pool, BRAND, async () => undefined, 'brain_readonly');
-    expect(calls).toContain('SET LOCAL ROLE brain_readonly');
+    expect(calls.some((c) => c.includes('SET LOCAL ROLE brain_readonly'))).toBe(true);
   });
 
   it('ROLLBACKs and rethrows when fn throws', async () => {
@@ -93,8 +93,8 @@ describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
     await withBrandTxn(pool, '', async (c) => {
       await c.query('SELECT 1');
     });
-    expect(calls).toContain(`SET LOCAL app.current_brand_id = '00000000-0000-0000-0000-000000000000'`);
-    expect(calls.some((c) => c === `SET LOCAL app.current_brand_id = ''`)).toBe(false);
+    expect(calls.some((c) => c.includes(`SET LOCAL app.current_brand_id = '00000000-0000-0000-0000-000000000000'`))).toBe(true);
+    expect(calls.some((c) => c.includes(`SET LOCAL app.current_brand_id = ''`))).toBe(false);
   });
 
   it('rejects a brandId with SQL-literal breakout characters (injection guard)', async () => {
@@ -112,6 +112,6 @@ describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
     await withBrandTxn(pool, 'brand-a', async (c) => {
       await c.query('SELECT 1');
     });
-    expect(calls).toContain(`SET LOCAL app.current_brand_id = 'brand-a'`);
+    expect(calls.some((c) => c.includes(`SET LOCAL app.current_brand_id = 'brand-a'`))).toBe(true);
   });
 });

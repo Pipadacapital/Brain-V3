@@ -41,8 +41,23 @@ serviceAccount:
 # AUD-PROD-006: the live Kafka consumers ride the streaming pool (t4g.large Spot,
 # WhenEmpty consolidation — never bin-packs live consumers off a node; the HPA
 # replica floor keeps the warm baseline the karpenter README relies on).
+#
+# AUD-COST (2026-07-13): ALSO require capacity-type=spot. The streaming pool is
+# spot-first ["spot","on-demand"], but the Kafka BROKERS pin required
+# on-demand nodes into this pool, and stream-worker (no capacity-type
+# constraint) was bin-packing onto those broker on-demand nodes → the whole
+# consumer tier ran on the priciest capacity for no reason. Pinning spot forces
+# Karpenter to provision cheap spot nodes for the consumers instead. SAFE: these
+# consumers are interruption-tolerant by design (idempotent writes,
+# commit-after-write, DLQ, durable Redis retry counters) — a spot reclaim just
+# triggers a rebalance+resume, no loss. Tradeoff: during a genuine spot drought
+# across ALL streaming instance types (t4g.large/xlarge + m7g.large/xlarge —
+# rare) these pods sit Pending instead of falling back to on-demand; lag builds
+# harmlessly (Kafka retains, KEDA/DLQ) and self-heals when spot returns.
+# Rollback: delete the capacity-type line (falls back to spot-or-on-demand).
 nodeSelector:
   brain.platform/pool: streaming
+  karpenter.sh/capacity-type: spot
 
 # AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
 # CPU p95 138m / max 156m, mem p95 ~242Mi / max 479Mi (replay burst) per pod.
@@ -73,7 +88,14 @@ resources:
 # suppresses the plain CPU HPA. Rollback = keda.enabled: false (plain CPU HPA returns).
 autoscaling:
   enabled: true
-  minReplicas: 3
+  # AUD-COST (2026-07-13): warm baseline 3 → 2 — right-sized for current low
+  # traffic. KEDA still bursts to maxReplicas=12 on real consumer lag (replay /
+  # backfill / traffic spike), so throughput headroom is unchanged; this only
+  # trims the IDLE floor. Kept at 2 (not 1) deliberately: the consumers now run
+  # on SPOT, so 2 replicas keep one consumer alive through a single-node reclaim
+  # and allow safe rolling updates (PDB). Raise back toward maxReplicas as
+  # sustained traffic grows. Rollback: minReplicas 3.
+  minReplicas: 2
   maxReplicas: 12
   keda:
     enabled: true

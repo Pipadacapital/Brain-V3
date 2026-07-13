@@ -65,7 +65,7 @@ IAM policy) so Spark can `CREATE` and `MERGE` Iceberg tables in the
 `brain_silver` / `brain_gold` namespaces. It is the cloud mirror of the
 Bronze module (`modules/s3-iceberg`) and is the Terraform half of
 `14-implementation-plan.md` PHASE 0 / PR-0.1 (the provisioning blocker called
-out in `08-spark-ownership-report.md §4` and `09-starrocks-report.md §6`).
+out in `08-spark-ownership-report.md §4`).
 
 The local-prod equivalent (Iceberg REST namespaces `brain_silver` / `brain_gold`
 over MinIO) is wired separately in the docker-compose / `db/iceberg` toolchain —

@@ -4,12 +4,12 @@
 #
 # Brain V4 invariants this guard enforces (see CLAUDE.md + docs/architecture/v4/):
 #   • Compute is Spark-on-Iceberg. dbt is REMOVED — the dbt-internal StarRocks DBs
-#     `brain_gold` / `brain_silver` are RETIRED (db/starrocks/teardown/drop_dbt_internal_dbs.sql).
+#     `brain_gold` / `brain_silver` are RETIRED (dropped).
 #   • Medallion lives in the Iceberg catalogs brain_{bronze,silver,gold}_local; Gold/Silver are
 #     SERVED to the app ONLY by the StarRocks async MVs brain_serving.mv_* (or read directly from
 #     the rest-Iceberg catalogs by Spark). No reader queries a bare brain_gold./brain_silver. DB.
 #   • Features are RUNTIME — there is NO permanent feature-precompute table (no feature_customer_daily,
-#     no brain_feature write). brain_feature is dead (db/starrocks/teardown/drop_dead_feature_db.sql).
+#     no brain_feature write). brain_feature is dead (dropped).
 #   • Trino is the SERVING engine (Brain V4 removes StarRocks ENTIRELY — wire AND serving). The app /
 #     BFF / metric-engine read brain_serving.mv_* over TRINO (the iceberg.brain_serving.* VIEWS over the
 #     Iceberg Gold/Silver marts), fronted by a Redis analytics cache. A Trino client
@@ -35,7 +35,6 @@
 #
 # EXCLUDED from scanning (by design):
 #   • test fixtures: *.test.ts, *.spec.ts, *.live.test.ts, tools/isolation-fuzz/**, **/test/**
-#   • the teardown SQL that retires these DBs (db/starrocks/teardown/**) — it names them on purpose.
 #   • this guard itself + its self-test corpus.
 #   • node_modules, .git, build output (dist/.next/coverage), and the .engineering-os/ audit trail
 #     (historical run artifacts are data, not live code).
@@ -78,7 +77,6 @@ is_excluded() {
     .git/*) return 0 ;;
     */dist/*|*/.next/*|*/coverage/*|dist/*|.next/*|coverage/*) return 0 ;;
     .engineering-os/*|.eos-workflows/*) return 0 ;;
-    db/starrocks/teardown/*) return 0 ;;            # names the retired DBs on purpose
     tools/lint/v4-naming-guard.sh) return 0 ;;      # this guard + its self-test corpus
     tools/lint/v4-naming-guard.selftest.*) return 0 ;;
     tools/lint/identity-view-guard.sh) return 0 ;;  # sibling guard: names silver_identity_map in its docstring/self-test fixtures on purpose (A.2.2)
@@ -166,7 +164,7 @@ scan_dead_db_refs() {
       # USE brain_silver. brain_gold_local / brain_silver_local were masked to __CAT__ above so they
       # cannot trigger here.
       elif printf '%s' "$masked" | grep -qiE '((CREATE|DROP|IN|USE)[[:space:]]+DATABASE[[:space:]]+|USE[[:space:]]+)brain_(gold|silver)([^_a-zA-Z]|$)'; then
-        flag R1 "$f:$l" "names the RETIRED dbt StarRocks DB brain_gold/brain_silver (V4 dropped both — db/starrocks/teardown/) — V4 serving is brain_serving, operational state is brain_ops: ${content#"${content%%[![:space:]]*}"}"
+        flag R1 "$f:$l" "names the RETIRED dbt StarRocks DB brain_gold/brain_silver (V4 dropped both) — V4 serving is brain_serving, operational state is brain_ops: ${content#"${content%%[![:space:]]*}"}"
       fi
     done < <(noncomment_lines "$f")
   done < <({ candidate_files 'brain_(gold|silver)\.'; candidate_files '(DATABASE|USE)[[:space:]]+brain_(gold|silver)([^_a-zA-Z]|$)'; } | sort -u)

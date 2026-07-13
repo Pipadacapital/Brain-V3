@@ -2,7 +2,7 @@
 
 **Status: DECISION RECORD (Wave-3 scale-infra, 2026-07-12).** Prod's data tier is deliberately
 cost-first today (~$81/mo for Aurora + Redis combined). The audit's 10×-target review
-(`audit/04-operational-gaps.md`, AUD-OPS-032) found the ceilings are real but the *correct* posture is
+(AUD-OPS-032) found the ceilings are real but the *correct* posture is
 to pre-agree the knobs and wire tripwires — NOT to upsize now. This file is that agreement: when a
 tripwire fires, the response below is already decided; pull the knob, don't re-litigate.
 

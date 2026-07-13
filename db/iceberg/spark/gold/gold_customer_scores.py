@@ -11,7 +11,7 @@ THE TRANSFORM (Brain V4 — features are RUNTIME, not a precompute table):
   In V4 there is NO permanent feature-precompute table. The retired dbt graph used to read the LATEST
   per-customer snapshot from feature_customer_daily (the StarRocks brain_feature DB), which was itself a
   daily point-in-time snapshot DERIVED from silver_customer. dbt is GONE and brain_feature is retired
-  (db/starrocks/teardown/drop_dead_feature_db.sql), so this job FOLDS that feature snapshot INLINE from
+  (dropped), so this job FOLDS that feature snapshot INLINE from
   the Iceberg silver_customer spine at runtime (identical formulae), then applies the scoring:
         snapshot_date         = current_date()
         days_since_last_order = datediff(current_date(), cast(last_seen_at as date))
@@ -55,7 +55,7 @@ TABLE_NAME = "gold_customer_scores"
 # Brain V4: features are RUNTIME. The "latest customer snapshot" is folded inline from the Iceberg
 # silver_customer spine (see module docstring). The retired dbt-era alternative — reading the StarRocks
 # brain_feature.feature_customer_daily precompute table over JDBC — is GONE (brain_feature is dead;
-# db/starrocks/teardown/drop_dead_feature_db.sql). There is exactly one feature source now: silver.
+# dropped). There is exactly one feature source now: silver.
 
 _COLUMNS = """
           brand_id              string    NOT NULL,

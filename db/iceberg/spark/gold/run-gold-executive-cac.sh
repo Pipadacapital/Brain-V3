@@ -12,7 +12,7 @@
 #   V4 makes features RUNTIME, so this group does NOT port the dbt feature_customer_daily into a Spark
 #   Iceberg job and does NOT register it in the parity mart_registry. The dbt brain_feature table is left
 #   untouched on the legacy side (we change no dbt); it simply has no Phase-2 Spark successor → it is
-#   dropped from the V4 Gold build. See db/iceberg/spark/gold/RETIRED_feature_customer_daily.md.
+#   dropped from the V4 Gold build.
 #
 # ADDITIVE + idempotent + re-runnable; touches NO existing read path, dbt model, or app code (Phase 2 is
 # dual-run / non-breaking). Mirrors run-silver-orders.sh / run-silver-marketing-spend.sh.

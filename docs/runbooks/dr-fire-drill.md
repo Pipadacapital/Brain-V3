@@ -1,7 +1,7 @@
 # DR fire drill — coordinated Aurora-PITR + S3-version restore
 
 > **STATUS: PENDING EXECUTION — this drill has NOT been run.** It is the verification step for
-> the two AUD-OPS-013 HYPOTHESES (audit/05-audit-report.md §"Open verification items"):
+> the two AUD-OPS-013 HYPOTHESES:
 > (H1) a coordinated Aurora-catalog + S3-warehouse restore is viable within the 90-day
 > noncurrent-version window; (H2) is deliberately descoped here (Neo4j rebuild from
 > `silver_identity_map` — no rebuild job exists; see DR.md §6.3).

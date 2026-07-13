@@ -1,7 +1,7 @@
 # Deployment-Spec Ratifications — Stage-B Deploy Audit (Wave 4)
 
-Status: **RATIFIED** (user decision, 2026-07-02). Source:
-`audit/DEPLOY-AUDIT-REPORT.md` §Wave-4 — the 20 CONFLICT-ESCALATION findings
+Status: **RATIFIED** (user decision, 2026-07-02). Source: the Stage-B
+deploy audit (Wave 4) — the 20 CONFLICT-ESCALATION findings
 where the repo deliberately deviates from the deployment spec with in-repo,
 evidence-backed justification. **The repo state stands; the spec/doc text is
 updated to match.** None of these items is queued for code change — a future

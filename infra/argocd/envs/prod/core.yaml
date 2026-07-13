@@ -4,7 +4,7 @@ metadata:
   name: core-prod
   namespace: argocd
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/core
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/core
   labels:
     project: brain
     environment: prod

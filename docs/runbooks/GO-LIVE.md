@@ -2,7 +2,7 @@
 
 The complete ordered path from an empty AWS account to Brain serving real
 traffic. This is the execution script for the AUD-COST go-live chain
-(AUD-COST-001..013 — see `audit/BRAIN-AUDIT-REPORT.md` §4.5); each step names
+(AUD-COST-001..013); each step names
 the finding(s) it closes and its rollback. Companion docs:
 `infra/terraform/README.md` ("Prod go-live"), `docs/runbooks/prod-m4-turn-on.md`
 (module-level detail), `infra/helm/PLACEHOLDERS.md` (canonical fill list),

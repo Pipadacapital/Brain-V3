@@ -17,7 +17,7 @@ metadata:
   namespace: argocd
   annotations:
     # Selective deploy: only syncs when the observability chart changes
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/observability
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/observability
   labels:
     project: brain
     environment: prod

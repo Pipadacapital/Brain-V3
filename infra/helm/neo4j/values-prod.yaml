@@ -34,8 +34,16 @@ neo4j:
   # keyed brand_id-first and every query binds brand_id (ADR-0004); the DB is
   # never exposed outside the cluster (ClusterIP only, see services below).
   passwordFromSecret: neo4j-auth
+  # AUD-COST/PERF (2026-07-13): cpu 2 → 3. Neo4j (identity SoR) was pinned at its
+  # 2-core limit (Prometheus: 3h avg 1.94 cores) while working the identity-bridge
+  # backlog drain — CPU-THROTTLED on a t4g.xlarge (4 cores) with ~2 idle. Giving it
+  # 3 guaranteed cores uses the headroom it ALREADY pays for ($0 extra — same node)
+  # so the backlog drains faster. Still fits the t4g.xlarge (3 + ~0.5 daemonsets <
+  # 3.86 allocatable), so no node/pool change. Memory unchanged (usage ~2.5Gi/4Gi).
+  # Once the drain completes, recheck steady-state — if it settles low, revisit
+  # both this AND the t4g.large downsize that's currently blocked by the saturation.
   resources:
-    cpu: "2"
+    cpu: "3"
     memory: 4Gi
 
 # AUD-COST-018: pin the identity SoR to the ON-DEMAND Karpenter pool. The upstream

@@ -19,7 +19,7 @@ vpc_cidr = "10.0.0.0/16"
 # re-applied — the refresh procedure AND the SSM port-forward fallback (which
 # works with [] private-only) are in docs/runbooks/eks-api-access.md.
 # Flip to [] once the SSM path is verified end-to-end.
-eks_public_access_cidrs = ["94.201.196.57/32"]
+eks_public_access_cidrs = ["217.165.25.171/32"]
 
 # EKS system node group (platform add-ons only; workloads run on Karpenter Spot).
 system_node_desired = 3

@@ -348,3 +348,16 @@ jobs:
     # ${BRAND_PREDICATE}-guarded mv_metric_* views. Idempotent (re-run = replace again); exits
     # non-zero if ANY table failed so a partial failure surfaces. Needs TRINO_HOST/TRINO_PORT in the
     # pod env (core-env secret) — absent → every table errors and the run fails loudly (honest).
+  - name: ingest-dedup-prune
+    schedule: "20 4 * * 0"         # weekly Sun 04:20 IST — bound the ADR-0012 global dedup index
+    command: ["pnpm", "exec", "tsx", "src/jobs/ingest-dedup-prune.ts"]
+    useStreamWorkerImage: true
+    env:
+      # Retention window (Postgres interval literal). MUST stay >= the longest backfill window so a
+      # re-ingest never re-presents a forgotten (brand_id, event_id); Silver per-lane dedup backstops
+      # a very-old re-ingest regardless (ADR-0012). Change here to retune — it is the SELECT's argument.
+      - { name: INGEST_DEDUP_RETAIN, value: "180 days" }
+    # Calls the SECURITY-DEFINER data_plane.prune_ingest_dedup('180 days'::interval, batch) (migration
+    # 0131) as brain_app in batched DELETEs — no brand GUC needed (definer bypasses ingest_dedup RLS,
+    # brain_app has no DELETE grant on the table). Idempotent (re-run = prune again); Forbid +
+    # startingDeadline make a missed/retried run safe. Needs BRAIN_APP_DATABASE_URL (envSecretName).

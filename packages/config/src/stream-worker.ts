@@ -186,6 +186,16 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   /** Optional — no default (job branches on undefined). */
   PARTITION_RETENTION_MONTHS: z.string().optional(),
 
+  // ── ingest-dedup-prune job (ADR-0012) ────────────────────────────────────────
+  /**
+   * Retention window for data_plane.ingest_dedup, as a Postgres interval literal (e.g. '180 days').
+   * Rows whose ingested_at is older than now() - this are pruned. Must stay >= the longest backfill
+   * window so a re-ingest never re-presents a forgotten (brand_id, event_id). Default 180 days.
+   */
+  INGEST_DEDUP_RETAIN: z.string().default('180 days'),
+  /** Batch size for the batched prune DELETE (bounds the lock per statement). */
+  INGEST_DEDUP_PRUNE_BATCH: z.coerce.number().int().positive().default(50000),
+
   // ── Repull / backfill paging knobs ───────────────────────────────────────────
   /** shopify-backfill page sleep (ms). */
   BACKFILL_PAGE_SLEEP_MS: z.coerce.number().int().default(0),

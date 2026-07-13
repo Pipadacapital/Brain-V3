@@ -249,12 +249,11 @@ export type ConnectRequest = z.infer<typeof ConnectRequestSchema>;
  *  - Shopify registers its webhooks automatically via the Admin API, so it returns the
  *    delivery URL with api_key: null (informational — nothing to paste).
  */
-export const ConnectWebhookSetupSchema = z.object({
+const ConnectWebhookSetupSchema = z.object({
   url: z.string().url(),
   api_key: z.string().nullable(),
   routing_header: z.object({ name: z.string(), value: z.string() }).nullable(),
 });
-export type ConnectWebhookSetup = z.infer<typeof ConnectWebhookSetupSchema>;
 
 export const ConnectResponseSchema = z.object({
   request_id: z.string(),

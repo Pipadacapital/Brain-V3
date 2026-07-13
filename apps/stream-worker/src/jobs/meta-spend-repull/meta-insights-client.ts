@@ -268,7 +268,7 @@ export type MetaBreakdownName =
   | 'hourly';
 
 /** The breakdown `breakdowns=` param dimensions per family (comma-joined into the URL). */
-export const META_BREAKDOWN_DIMS: Record<MetaBreakdownName, string[]> = {
+const META_BREAKDOWN_DIMS: Record<MetaBreakdownName, string[]> = {
   demographic: ['age', 'gender'],
   geo: ['country', 'region', 'dma'],
   placement: ['publisher_platform', 'platform_position', 'device_platform', 'impression_device'],
@@ -280,7 +280,7 @@ export const META_BREAKDOWN_DIMS: Record<MetaBreakdownName, string[]> = {
  * field groups Meta forbids with that breakdown (documented above). The base pass always requests the
  * full set. Deduped + comma-joined.
  */
-export function fieldSetForBreakdown(breakdown: MetaBreakdownName | null): string {
+function fieldSetForBreakdown(breakdown: MetaBreakdownName | null): string {
   if (breakdown === null) return INSIGHTS_FIELDS;
   const groups: string[][] = [IDENTITY_FIELDS, CORE_METRIC_FIELDS];
   if (breakdown === 'hourly') {

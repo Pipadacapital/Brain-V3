@@ -203,7 +203,7 @@ Two blockers stand between this repo and a working prod deploy: (1) the CD trigg
 | `docs/adr/0005-entity-mart-partitioning.md` | Add SUPERSEDED banner (StarRocks removed → ADR-0007/Trino), match 0002/0003/0006. |
 | `docs/architecture/v4/{00-INDEX,03-*}.md` | Add note: serving target later changed StarRocks→Trino (ADR-0007). Keep as history. |
 | `docs/architecture/*-connector-verification.md`, `*-refined.md` | Keep as dated history or relocate to `docs/history/`; repoint kafka-connect→Spark-SS, brain_silver/gold→Iceberg if updating. |
-| `docs/{trino-replaces-starrocks-plan,kafka-kraft-spark-landing-plan,db-audit-*,eos-reconciliation-2026-06}.md` | Move completed plans under `docs/history/`; keep. |
+| `docs/{kafka-kraft-spark-landing-plan,db-audit-*,eos-reconciliation-2026-06}.md` | Move completed plans under `docs/history/`; keep. |
 | `docs/architecture/README.md`, `docs/adr/0001-modular-monolith.md`, `docs/runbooks/README.md` | Standardize "Brain-docs repo" pointer vs local `docs/requirements/*` canon. |
 | `docs/audit/` (two pre-V4 generations) | Optionally consolidate under one dated folder; do NOT delete (provenance). |
 | `apps/core/src/modules/data-quality/tests/get-data-quality-summary.test.ts` | Fix stale mysql2 `srPool` fake → Trino seam (2/8 failing; product code is correct). |

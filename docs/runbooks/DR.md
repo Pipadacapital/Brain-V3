@@ -1,6 +1,6 @@
 # DR.md — Disaster Recovery: objectives, backup inventory, restore paths
 
-> **AUD-OPS-013** (audit/04-operational-gaps.md): no DR runbook existed anywhere; RPO/RTO were
+> **AUD-OPS-013**: no DR runbook existed anywhere; RPO/RTO were
 > never defined; the coordinated Aurora-catalog + S3-warehouse restore was undesigned. This file
 > is the in-repo source of truth. Restore procedures: [RB-1](RB-1-aurora-pitr.md) (Aurora PITR),
 > [RB-2](RB-2-eks-recovery.md) (EKS/GitOps rebuild), `tools/dr/s3-version-restore.sh`

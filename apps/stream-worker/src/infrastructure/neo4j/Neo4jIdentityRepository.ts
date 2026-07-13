@@ -41,6 +41,36 @@ import { RULE_VERSION, DEFAULT_IDENTITY_PRIORITY } from '../../domain/identity/I
 /** The identity-priority classes that may appear in a stored order (validated on read). */
 const KNOWN_PRIORITY_CLASSES: ReadonlySet<string> = new Set<string>(DEFAULT_IDENTITY_PRIORITY);
 
+/**
+ * All-zero UUID — the fail-closed sentinel for the workspace/user GUCs on this SYSTEM (brand-scoped)
+ * write path. These identity txns only ever scope by brand, but tables like `brand` carry a SECOND
+ * permissive RLS policy (`brand_self_read`) whose predicate casts `app.current_user_id::uuid`.
+ * Postgres evaluates EVERY permissive policy, so on a pgbouncer connection whose session GUCs were
+ * RESET to '' at checkout, that unset user GUC cast `''::uuid` → 22P02 (`invalid input syntax for
+ * type uuid: ""`) — crashing the identity-bridge consumer and wedging the partition in a rebalance
+ * loop, EVEN THOUGH app.current_brand_id was set correctly. Defaulting workspace + user to NIL_UUID
+ * (a valid, matches-nothing uuid) keeps every policy's cast legal; brand_isolation still governs
+ * access. Mirrors @brain/db buildContextGucSql / the metric-engine withBrandTxn fix.
+ */
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Set the RLS GUC context for a SYSTEM brand-scoped identity txn: the real brand id, plus
+ * workspace/user pinned to NIL_UUID so no other permissive policy casts an empty GUC (see NIL_UUID).
+ * txn-local (set_config is_local=true) — resets on COMMIT/ROLLBACK, cannot leak across pool conns.
+ */
+async function setBrandRlsContext(
+  client: { query: (sql: string, params?: unknown[]) => Promise<unknown> },
+  brandId: string,
+): Promise<void> {
+  await client.query(
+    `SELECT set_config('app.current_brand_id', $1, true),
+            set_config('app.current_workspace_id', $2, true),
+            set_config('app.current_user_id', $2, true)`,
+    [brandId, NIL_UUID],
+  );
+}
+
 const STRONG_TIERS = ['strong', 'strong_on_link'];
 // SPEC: A.2.3.4 — the identity_link identifier_TYPES that carry strong (person-defining) authority. A
 // brain owning any active edge of these types is "strong-owned"; the resolver's shared-device guard uses
@@ -475,7 +505,7 @@ export class Neo4jIdentityRepository {
     const client = await this.pgPool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await setBrandRlsContext(client, brandId);
       const rows = await client.query<{ phone_guard_threshold: number; suppression_window_days: number }>(
         'SELECT phone_guard_threshold, suppression_window_days FROM brand WHERE id = $1',
         [brandId],
@@ -502,7 +532,7 @@ export class Neo4jIdentityRepository {
     const client = await this.pgPool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await setBrandRlsContext(client, brandId);
       const rows = await client.query<{ version: number; priority_order: unknown }>(
         `SELECT version, priority_order
            FROM ops.brand_identity_priority
@@ -536,7 +566,7 @@ export class Neo4jIdentityRepository {
     const client = await this.pgPool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await setBrandRlsContext(client, brandId);
 
       await client.query(
         `INSERT INTO identity_audit (brand_id, brain_id, action, merge_id, detail)

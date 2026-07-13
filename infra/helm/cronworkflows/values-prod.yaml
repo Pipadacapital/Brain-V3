@@ -30,6 +30,13 @@ sparkV4:
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:
     brain.platform/pool: batch
+  # AUD-OPS (2026-07-13): the batch pool is Karpenter spot; Karpenter was VOLUNTARILY draining the node
+  # under a running v4-silver/v4-gold pod (karpenter.sh/disrupted taint → Evicted → exit 143 → retries
+  # exhausted at 14-37 min, well under the 4500s deadline). do-not-disrupt tells Karpenter not to
+  # consolidate/drift-disrupt a node hosting these pods while they run. Idempotent MERGE jobs, so an
+  # involuntary AWS spot reclaim is still safe (bounded retry); this only removes the self-inflicted churn.
+  podAnnotations:
+    karpenter.sh/do-not-disrupt: "true"
   # ── AUD-OPS-029 / AUD-IMPL-027: short-term sizing bump. Prod previously ran the
   # local-mode DEFAULTS (3g driver in a 2CPU/4Gi pod) — the audit's first 10×
   # data-plane bottleneck. 6g heap in an 8Gi pod keeps the same ~non-heap margin

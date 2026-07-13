@@ -40,8 +40,13 @@ describe('withBrandTxn — RLS transaction (audit R-01 hardening)', () => {
       return 'ok';
     });
 
-    // BEGIN/role/GUC batched (pgbouncer pinning — see withBrandTxn); then the business query; then COMMIT.
-    expect(calls[0]).toBe(`BEGIN; SET LOCAL ROLE brain_app; SET LOCAL app.current_brand_id = '${BRAND}'`);
+    // BEGIN/role/ALL-THREE-GUCs batched (brand + workspace/user → NIL_UUID, so no permissive policy
+    // casts an empty GUC — see withBrandTxn); then the business query; then COMMIT.
+    const NIL = '00000000-0000-0000-0000-000000000000';
+    expect(calls[0]).toBe(
+      `BEGIN; SET LOCAL ROLE brain_app; SET LOCAL app.current_brand_id = '${BRAND}';` +
+        ` SET LOCAL app.current_workspace_id = '${NIL}'; SET LOCAL app.current_user_id = '${NIL}'`,
+    );
     expect(calls[1]).toBe('SELECT 1 AS probe');
     expect(calls[2]).toBe('COMMIT');
     expect(sawClientInFn).toBe(client);

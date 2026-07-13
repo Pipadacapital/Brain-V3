@@ -29,43 +29,65 @@ next apply reverts it):
 
 ## B. SSM port-forward path (works private-only — the fallback and the future default)
 
-**Preconditions (one-time):**
+**VERIFIED WORKING end-to-end 2026-07-13** (kubectl get nodes via the tunnel).
+This path does NOT depend on the operator's public IP, so an ISP rotation
+never blocks it. **This is the permanent answer to the recurring IP-allowlist
+pain — prefer it over Path A.**
+
+**Preconditions (all satisfied on brain-prod):**
 
 - The node role has `AmazonSSMManagedInstanceCore`
-  (`modules/eks` `node_AmazonSSMManagedInstanceCore` — AUD-INFRA-008a; needs
-  one envs/prod apply). The EKS-optimized AL2 AMIs already ship the SSM agent,
-  and agent egress rides the fck-nat instance — no extra VPC endpoints needed.
-- Your IAM principal can `ssm:StartSession` (and the Session Manager plugin is
-  installed locally: `session-manager-plugin --version`).
+  (`modules/eks` `node_AmazonSSMManagedInstanceCore` — AUD-INFRA-008a; already
+  applied). The EKS-optimized AMIs ship the SSM agent, and agent egress rides
+  the fck-nat instance — no extra VPC endpoints needed. Confirm with
+  `aws ssm describe-instance-information` (nodes show `Online`).
+- Your IAM principal can `ssm:StartSession`.
+- `session-manager-plugin` on PATH. If missing, install WITHOUT sudo:
+  ```sh
+  curl -sL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac_arm64/sessionmanager-bundle.zip" -o /tmp/smp.zip
+  ( cd /tmp && unzip -o -q smp.zip )
+  mkdir -p ~/.local/bin && cp /tmp/sessionmanager-bundle/bin/session-manager-plugin ~/.local/bin/
+  # then ensure ~/.local/bin (or a symlink into an on-PATH dir) resolves it.
+  ```
 
-**Session:**
+**One command (preferred):**
 
 ```sh
-# 1. The private API endpoint host (no scheme) + a system node instance id:
-EP=$(aws eks describe-cluster --region ap-south-1 --name brain-prod \
-      --query 'cluster.endpoint' --output text | sed 's#https://##')
-IID=$(aws ec2 describe-instances --region ap-south-1 \
-      --filters "Name=tag:eks:nodegroup-name,Values=brain-prod-system" \
-                "Name=instance-state-name,Values=running" \
-      --query 'Reservations[0].Instances[0].InstanceId' --output text)
-
-# 2. Port-forward localhost:8443 → the private endpoint through the node:
-aws ssm start-session --region ap-south-1 --target "$IID" \
-  --document-name AWS-StartPortForwardingSessionToRemoteSocket \
-  --parameters host="$EP",portNumber="443",localPortNumber="8443"
-
-# 3. In another shell — kubectl must present the endpoint HOSTNAME for TLS
-#    (the API server cert's SANs include it, not localhost):
-sudo sh -c "echo '127.0.0.1 $EP' >> /etc/hosts"      # remove when done
-aws eks update-kubeconfig --region ap-south-1 --name brain-prod
-kubectl config set-cluster "arn:aws:eks:ap-south-1:380254378136:cluster/brain-prod" \
-  --server "https://$EP:8443"
-kubectl get nodes    # verify
+tools/ops/eks-ssm-tunnel.sh      # installs the plugin if needed, opens the
+                                 # tunnel, configures the kubeconfig context,
+                                 # holds foreground (Ctrl-C to stop)
+# in another shell:
+kubectl --context brain-prod-ssm get nodes
 ```
 
-Cleanup: kill the session, remove the `/etc/hosts` line, and
-`kubectl config set-cluster … --server "https://$EP"` (default 443) if you
-keep the kubeconfig.
+**Manual equivalent (what the script does):**
+
+```sh
+EP=$(aws eks describe-cluster --region ap-south-1 --name brain-prod \
+      --query 'cluster.endpoint' --output text | sed 's#https://##')
+IID=$(aws ssm describe-instance-information --region ap-south-1 \
+      --query 'InstanceInformationList[?PingStatus==`Online`]|[0].InstanceId' --output text)
+
+# Tunnel localhost:8443 → the private endpoint through the node:
+aws ssm start-session --region ap-south-1 --target "$IID" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters host="$EP",portNumber="443",localPortNumber="8443" &
+
+# Dedicated context — --tls-server-name presents the cert's real hostname for
+# TLS (SANs include $EP, not localhost) so NO /etc/hosts + sudo edit is needed:
+kubectl config view --raw \
+  -o jsonpath='{.clusters[?(@.name=="arn:aws:eks:ap-south-1:380254378136:cluster/brain-prod")].cluster.certificate-authority-data}' \
+  | base64 -d > /tmp/eks_ca.crt
+kubectl config set-cluster brain-prod-ssm --server="https://127.0.0.1:8443" \
+  --tls-server-name="$EP" --certificate-authority=/tmp/eks_ca.crt --embed-certs=true
+kubectl config set-context brain-prod-ssm --cluster=brain-prod-ssm \
+  --user="arn:aws:eks:ap-south-1:380254378136:cluster/brain-prod"
+kubectl --context brain-prod-ssm get nodes    # verify
+```
+
+Cleanup: kill the SSM session (Ctrl-C / kill the `aws ssm start-session` PID).
+The `brain-prod-ssm` context is harmless to keep — it only works while a tunnel
+is open. The default (public-endpoint) context is untouched.
 
 ## C. Private-only close-out (APPLY DECISION — do not rush)
 

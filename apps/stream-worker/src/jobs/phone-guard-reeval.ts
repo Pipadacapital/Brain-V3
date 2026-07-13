@@ -51,7 +51,16 @@ async function run(): Promise<void> {
       for (const brand of brandsRes.rows) {
         try {
           await cfgClient.query('BEGIN');
-          await cfgClient.query("SELECT set_config('app.current_brand_id', $1, true)", [brand.id]);
+          // Set ALL THREE RLS GUCs (workspace/user → NIL_UUID). The `brand` table carries a SECOND
+          // permissive policy (brand_self_read) casting app.current_user_id::uuid; Postgres evaluates
+          // every permissive policy, so a brand-only GUC leaves the unset user GUC as ''  → ''::uuid
+          // 22P02 on a pooled connection. NIL_UUID keeps the cast legal (matches nothing).
+          await cfgClient.query(
+            `SELECT set_config('app.current_brand_id', $1, true),
+                    set_config('app.current_workspace_id', $2, true),
+                    set_config('app.current_user_id', $2, true)`,
+            [brand.id, '00000000-0000-0000-0000-000000000000'],
+          );
           const cfg = await cfgClient.query<{ phone_guard_threshold: number; suppression_window_days: number }>(
             `SELECT phone_guard_threshold, suppression_window_days FROM brand WHERE id = $1`,
             [brand.id],

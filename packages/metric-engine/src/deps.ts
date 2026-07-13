@@ -103,14 +103,20 @@ export async function withBrandTxn<T>(
   const brandGuc = brandGucLiteral(brandId);
   const client = await pool.connect();
   try {
-    // Open the txn, drop to the NOBYPASSRLS app role (audit R-01), and set the brand GUC in ONE
-    // round-trip — exactly like @brain/db's executeInRlsTxn. This matters under pgbouncer transaction
-    // pooling: sending BEGIN/SET LOCAL ROLE/SET LOCAL guc as SEPARATE queries let the GUC land on a
-    // different server backend than the business query (RLS then reads an empty app.current_brand_id
-    // → `''::uuid` → 22P02, 500-ing contribution-margin / orders-FX). Batching them guarantees the
-    // GUC and the query share the pinned backend. SET LOCAL is UUID-validated literal (injection-safe).
+    // Open the txn, drop to the NOBYPASSRLS app role (audit R-01), and set ALL THREE RLS GUCs in ONE
+    // round-trip — exactly like @brain/db's buildContextGucSql. Setting ONLY app.current_brand_id was
+    // the real bug behind the contribution-margin / orders-FX 500s: the `brand` table carries a SECOND
+    // permissive policy (`brand_self_read`) whose predicate casts app.current_user_id::uuid. Postgres
+    // evaluates EVERY permissive policy, and on a pgbouncer connection whose session GUCs were RESET to
+    // '' at checkout, that unset user GUC cast `''::uuid` → 22P02 — even though app.current_brand_id was
+    // set correctly (verified live). Defaulting the workspace + user GUCs to NIL_UUID (a valid,
+    // matches-nothing uuid, fail-closed) keeps every policy's cast legal; access still flows through
+    // brand_isolation. UUID-validated literal (injection-safe).
     await client.query(
-      `BEGIN; SET LOCAL ROLE ${appRole}; SET LOCAL app.current_brand_id = '${brandGuc}'`,
+      `BEGIN; SET LOCAL ROLE ${appRole};` +
+        ` SET LOCAL app.current_brand_id = '${brandGuc}';` +
+        ` SET LOCAL app.current_workspace_id = '${NIL_UUID}';` +
+        ` SET LOCAL app.current_user_id = '${NIL_UUID}'`,
     );
     const result = await fn(client);
     await client.query('COMMIT');

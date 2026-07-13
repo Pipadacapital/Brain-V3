@@ -31,6 +31,7 @@ import { PgSpoolRepository } from './infrastructure/pg-spool.repository.js';
 import { CollectorKafkaProducer } from './infrastructure/kafka-producer.js';
 import { AcceptEventUseCase } from './application/accept-event.usecase.js';
 import { DrainEventsUseCase } from './application/drain-events.usecase.js';
+import { filterUnseenEventIds, markEventsSeen } from './infrastructure/ingest-dedup.repository.js';
 import { Drainer } from './interfaces/jobs/drainer.js';
 import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
@@ -215,7 +216,12 @@ export async function main(): Promise<void> {
   // ── 2. Use-cases ─────────────────────────────────────────────────────────────
   const acceptUseCase = new AcceptEventUseCase(spoolRepo);
   const DRAIN_BATCH_SIZE = cfg.DRAIN_BATCH_SIZE;
-  const drainUseCase = new DrainEventsUseCase(spoolRepo, kafkaProducer, DRAIN_BATCH_SIZE);
+  // ADR-0012 ingest dedup gate (cross-brand SECURITY DEFINER helpers, 0130) — the drainer runs
+  // filter/mark on the claim's own client so mark-seen commits atomically with mark-drained.
+  const drainUseCase = new DrainEventsUseCase(spoolRepo, kafkaProducer, DRAIN_BATCH_SIZE, {
+    filterUnseenEventIds,
+    markEventsSeen,
+  });
   const DRAIN_POLL_MS = cfg.DRAIN_POLL_INTERVAL_MS;
 
   const drainer = new Drainer(drainUseCase, kafkaProducer, {

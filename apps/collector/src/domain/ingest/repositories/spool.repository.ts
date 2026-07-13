@@ -2,6 +2,7 @@
  * SpoolRepository interface — domain boundary for spool persistence.
  * Concrete implementation lives in infrastructure/.
  */
+import type { ClientBase } from 'pg';
 import type { IngestEnvelope } from '../value-objects/envelope.js';
 import type { PendingSpoolEntry } from '../entities/spool-entry.js';
 
@@ -17,6 +18,14 @@ import type { PendingSpoolEntry } from '../entities/spool-entry.js';
 export interface SpoolClaim {
   /** Rows claimed by this drain pass, ordered by id (oldest first). */
   readonly entries: PendingSpoolEntry[];
+
+  /**
+   * The pooled PG client that owns the claim transaction (ADR-0012). The drainer runs the ingest
+   * dedup write (data_plane.mark_events_seen) on THIS client so mark-seen commits atomically with
+   * markDrained — a separate connection/txn would break that atomicity. Read-only handle; settle
+   * the claim via commit()/rollback(), never a raw COMMIT on this client.
+   */
+  readonly client: ClientBase;
 
   /**
    * Mark claimed rows as drained (status='drained', drained_at=now()) INSIDE the claim

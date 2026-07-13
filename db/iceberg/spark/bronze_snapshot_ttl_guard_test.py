@@ -3,7 +3,7 @@ bronze_snapshot_ttl_guard_test.py — Brain V4 CI guard: the AUD-OPS-015 recover
 Bronze snapshot expiry can never silently regress.
 
 WHY THIS EXISTS
-  AUD-OPS-015 (audit/04-operational-gaps.md): the Iceberg time-travel recovery window on the whole
+  AUD-OPS-015: the Iceberg time-travel recovery window on the whole
   Bronze namespace was ~7 days — a bad Silver/Gold job or erroneous delete discovered later could
   only be recovered via untooled S3 noncurrent-version restoration. The fix gives the DURABLE
   collector lane (brain_bronze.collector_events_connect — the append-only system-of-record whose

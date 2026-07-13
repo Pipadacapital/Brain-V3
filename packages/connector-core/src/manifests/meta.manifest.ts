@@ -99,7 +99,7 @@ const AD_ENTITY_UPDATED_EVENT_NAME = 'ad.entity.updated' as const;
  * declares NO cursorStrategy and backfillSupported=false. maxBackfillWindowMs is a positive placeholder
  * required by validation but INERT (backfillSupported=false → the SCD IS the current state).
  */
-export const META_ENTITY_RESOURCE: ResourceDescriptor = {
+const META_ENTITY_RESOURCE: ResourceDescriptor = {
   name: 'entities',
   kind: 'rest',
   emits: [AD_ENTITY_UPDATED_EVENT_NAME],

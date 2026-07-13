@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tools/dr/s3-version-restore.sh — point-in-time restore of an S3 prefix from noncurrent versions.
 #
-# AUD-OPS-015 (audit/04-operational-gaps.md): beyond the Iceberg snapshot window (7d marts / 14d
+# AUD-OPS-015: beyond the Iceberg snapshot window (7d marts / 14d
 # collector lane) the ONLY recovery path for the medallion warehouse is the bucket's S3 versioning
 # (90-day NoncurrentVersionExpiration lifecycle). This is the missing tooling: it rolls every object
 # under a prefix back to its state AS OF a UTC timestamp, using only server-side operations:

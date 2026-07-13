@@ -44,10 +44,10 @@ Safety tiers: **safe** = delete/edit now in one pass, verified unreferenced. **r
 ### Keep
 - `.github/workflows/parity-oracle.yml` — intentional retired tombstone (echo + exit 0, manual-dispatch only). Deliberate documented retention; if ever removed, preserve rationale in an ADR.
 - `db/migrations/0085_drop_pg_bronze_events.sql` (`SELECT 1;` placeholder) and all 116 migrations — append-only ledger applied in filename order by `scripts/migrate.mjs`; mid-ledger deletion breaks fresh deploys for zero benefit. The 0102 gap is documented; drop migrations (0098/0099/0101/0103/0105) CASCADE their dependent functions/views — hygienic.
-- `db/starrocks/teardown/*` — CLAUDE.md explicitly retains the two teardown DDLs + provenance md.
+- (the retired dbt/StarRocks/feature DBs were dropped via teardown DDL that has since been removed.)
 
 ### Safe
-- `db/starrocks/.gitkeep` — directory now holds the populated `teardown/` subtree, so the placeholder is redundant. Verified zero references.
+- `db/starrocks/.gitkeep` — placeholder for a now-removed subtree; redundant. Verified zero references.
 
 ---
 
@@ -206,6 +206,6 @@ For RISKY items: open a tracked issue per cluster (CI branch fix, prod gitops db
 | 2 | `packages/ui/` | remove `@brain/ui` from `apps/web/package.json:18` AND `apps/web/next.config.js:8` transpilePackages | empty `export {};` stub, superseded by `apps/web/components/ui/` |
 | 3 | `apps/core/package.json` → `@brain/feature-flags` dep entry | none | zero imports under `apps/core/src` (verified) |
 | 4 | `packages/metric-engine/src/silver-deps.ts` → `SilverConnection` interface | remove its re-export at `packages/metric-engine/src/index.ts:150` | `@deprecated`, zero consumers (verified) |
-| 5 | `db/starrocks/.gitkeep` | none | dir now populated by `teardown/`; placeholder redundant |
+| 5 | `db/starrocks/.gitkeep` | none | placeholder for a now-removed subtree; redundant |
 
 Counts: 5 safe-removal targets, 13 risky items, ~15 keeps, 6 top simplifications.

@@ -29,8 +29,9 @@ import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext } from '@brain/observability';
+import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import {
@@ -234,6 +235,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
     brandId,
     ciId,
     producer,
+    pool,
   });
 
   if (maxDate) {
@@ -256,6 +258,7 @@ interface EmitParams {
   brandId: string;
   ciId: string;
   producer: Producer;
+  pool: Pool;
 }
 
 async function emitRows(
@@ -263,7 +266,7 @@ async function emitRows(
 ): Promise<{ emitted: number; maxDate: string | null }> {
   if (p.rows.length === 0) return { emitted: 0, maxDate: null };
 
-  const messages = [];
+  const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
   let maxDate: string | null = null;
 
   for (const raw of p.rows) {
@@ -295,6 +298,7 @@ async function emitRows(
     });
 
     messages.push({
+      eventId,
       key: buildPartitionKey(p.brandId, eventId),
       value: Buffer.from(JSON.stringify(envelope)),
     });
@@ -302,16 +306,43 @@ async function emitRows(
     if (maxDate === null || props.date > maxDate) maxDate = props.date;
   }
 
+  let emitted = 0;
   if (messages.length > 0) {
-    // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-    // message so the bronze-bridge consumer resumes this repull's trace.
-    const traceHeaders: Record<string, Buffer | string> = {};
-    injectKafkaTraceContext(traceHeaders);
-    await p.producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
-    log.info(`[ga4-repull] connector=${p.ciId} emitted=${messages.length}`);
+    // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
+    // so a re-pull/backfill overlap never re-floods Bronze. brand GUC set on a short pooled client,
+    // then filter+mark. ORDER IS CRITICAL: produce FIRST, mark AFTER (a crash between at worst
+    // re-produces a dup on retry, which Silver backstops — never loses an event).
+    const dedupClient = await p.pool.connect();
+    try {
+      await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+      const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
+
+      const toSend = messages.filter((m) => unseen.has(m.eventId));
+      const dropped = messages.length - toSend.length;
+      if (dropped > 0) {
+        incrementCounter('ingest_dedup_dropped_total', { provider: 'ga4' });
+        log.info(`[ga4-repull] connector=${p.ciId} dedup: dropped ${dropped} already-ingested events`);
+      }
+
+      if (toSend.length > 0) {
+        // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+        // message so the bronze-bridge consumer resumes this repull's trace.
+        const traceHeaders: Record<string, Buffer | string> = {};
+        injectKafkaTraceContext(traceHeaders);
+        await p.producer.send({
+          topic: LIVE_TOPIC,
+          messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+        });
+        await markEventIdsSeen(dedupClient, p.brandId, toSend.map((m) => m.eventId));
+        emitted = toSend.length;
+      }
+    } finally {
+      dedupClient.release();
+    }
+    log.info(`[ga4-repull] connector=${p.ciId} emitted=${emitted}`);
   }
 
-  return { emitted: messages.length, maxDate };
+  return { emitted, maxDate };
 }
 
 // ── Credentials resolver ──────────────────────────────────────────────────────

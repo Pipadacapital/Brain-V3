@@ -659,6 +659,46 @@ resource "aws_budgets_budget" "usage_real" {
 }
 
 ###############################################################################
+# Credit-depletion tripwire (2026-07-13) — the EARLIEST automated signal that
+# promotional credits have stopped covering the bill and REAL CASH charges have
+# begun. Both monthly-cap ($500 net) and this budget include credits, so while
+# credits cover everything the net reads ~$0 and neither fires. The difference:
+# monthly-cap only trips at $400-500 of net CASH (a month-plus into paying),
+# whereas this $20-limit budget trips the moment net cash crosses $20 —
+# i.e. within days of credits running out. FORECASTED at 100% gives an even
+# earlier heads-up (projected net > $20 before it's actually spent). Alerts-only.
+# NOTE: AWS Budgets cannot read the credit BALANCE directly, so a true
+# "credits will run out in N days" alert isn't possible via the API — check the
+# remaining balance in Billing console → Credits and divide by the ~gross
+# run-rate (the usage-real budget above). This tripwire is the automated backstop.
+###############################################################################
+resource "aws_budgets_budget" "credit_depletion" {
+  name         = "${local.project}-${local.environment}-credit-depletion"
+  budget_type  = "COST"
+  limit_amount = "20"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_types {
+    include_credit = true # NET (post-credit) spend — reads ~$0 until credits deplete
+    include_refund = false
+  }
+
+  # ACTUAL > 100% ($20 net cash) = credits have depleted, you're paying cash now.
+  # FORECASTED > 100% = projected to start paying cash this month (earlier warning).
+  dynamic "notification" {
+    for_each = ["ACTUAL", "FORECASTED"]
+    content {
+      comparison_operator        = "GREATER_THAN"
+      notification_type          = notification.value
+      threshold                  = 100
+      threshold_type             = "PERCENTAGE"
+      subscriber_email_addresses = ["rishabhporwal95@gmail.com"]
+    }
+  }
+}
+
+###############################################################################
 # Neo4j backups (AUD-OPS-012) — the identity SoR had ZERO backups. Two layers:
 # DLM daily EBS snapshots (7 retained, targeted by the CSI's
 # kubernetes.io/created-for/pvc/namespace=neo4j tag) + a backups bucket for the

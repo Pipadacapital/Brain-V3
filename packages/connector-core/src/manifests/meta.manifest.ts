@@ -84,10 +84,38 @@ export const META_INSIGHTS_RESOURCE: ResourceDescriptor = {
 };
 
 /**
+ * Canonical entity event_name — the metadata feed (campaigns/adsets/ads + creatives/audiences).
+ * INLINED (no cycle into the stream-worker) — kept equal to
+ * meta-entity-sync/run.ts AD_ENTITY_UPDATED_EVENT_NAME.
+ */
+const AD_ENTITY_UPDATED_EVENT_NAME = 'ad.entity.updated' as const;
+
+/**
+ * FIREHOSE entity-depth resources (campaigns/adsets/ads hierarchy + adcreatives + audiences). These are
+ * SCD dimensions — `entity_id` is already unique per grain, so dedup is provider-id (no breakdownKey,
+ * no date window). The live meta-entity-sync job emits ad.entity.updated for all of them; these
+ * descriptors let the manifest + dedup layer recognize the grains. It is a full-refresh SCD (the entity
+ * feed re-reads every edge each tick; the version-deterministic id dedups unchanged rows), so it
+ * declares NO cursorStrategy and backfillSupported=false. maxBackfillWindowMs is a positive placeholder
+ * required by validation but INERT (backfillSupported=false → the SCD IS the current state).
+ */
+export const META_ENTITY_RESOURCE: ResourceDescriptor = {
+  name: 'entities',
+  kind: 'rest',
+  emits: [AD_ENTITY_UPDATED_EVENT_NAME],
+  backfillSupported: false, // SCD dimension — the live sync full-refreshes; no historical date walk.
+  maxBackfillWindowMs: THIRTY_SEVEN_MONTHS_MS, // inert (backfillSupported=false); positive for validation.
+  dedupKeyStrategy: 'provider_id', // version-deterministic ad.entity.updated event_id (unique per grain).
+  pageSize: 200,
+  description:
+    'Meta Ads entity metadata (campaigns/adsets/ads hierarchy + adcreatives + custom/saved audiences) — SCD dimension, version-deterministic dedup. Audiences carry NO member PII.',
+};
+
+/**
  * The complete Meta ingestion manifest. Declared once; consumed by the generic backfill driver +
  * the dedup layer. Validate with assertManifestValid() at startup.
  */
 export const META_INGESTION_MANIFEST: IngestionManifest = {
   provider: META_PROVIDER,
-  resources: [META_INSIGHTS_RESOURCE],
+  resources: [META_INSIGHTS_RESOURCE, META_ENTITY_RESOURCE],
 };

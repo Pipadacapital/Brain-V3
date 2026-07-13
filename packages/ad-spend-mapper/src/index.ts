@@ -156,15 +156,57 @@ export const AD_SPEND_FIELD_ALLOWLIST = new Set([
   'advertising_channel_type',    // Google channel type (SEARCH/DISPLAY/…); null for Meta
   'conversions_raw',
   'account_timezone',
-  // ── COMMON (breakdown/entity depth spec §1.A) — base-grain metrics with a genuine analog on BOTH
-  //    providers. Each mapper populates only where the platform has the field; the other passes null.
-  //    money = *_minor bigint-string; count = bigint-string; ratio = string passthrough.
+  // ── COMMON (Impl-M + Impl-G) — base-grain metrics with a genuine analog on BOTH providers. Each
+  //    mapper populates only where the platform has the field; the other passes null. money =
+  //    *_minor bigint-string; count = bigint-string; ratio = string passthrough. ──
   'video_views',                 // count — Meta video_view action-lift / Google metrics.video_views
   'video_view_rate',             // ratio — Google metrics.video_view_rate (null on Meta)
   'engagements',                 // count — Google metrics.engagements (null on Meta; Meta keeps post/page separate)
   'engagement_rate',             // ratio — Google metrics.engagement_rate (null on Meta)
   'cost_per_conversion_minor',   // money — Google metrics.cost_per_conversion (micros) (null on Meta)
   'value_per_conversion_minor',  // money — Google metrics.value_per_conversion (micros) (null on Meta)
+  // ── COMMON — the canonical breakdownKey string ('' for base) folded into the dedup key. ──
+  'breakdown_key',
+  // ── META-ONLY (Impl-M) ────────────────────────────────────────────────────────────────────────
+  'reach',                       // count
+  'frequency',                   // ratio (string) — avg impressions/person (NOT minor units)
+  'cpp_minor',                   // money — cost-per-1000-people-reached
+  'unique_clicks',               // count
+  'unique_ctr',                  // ratio (string)
+  'inline_link_clicks',          // count
+  'inline_link_click_ctr',       // ratio (string)
+  'outbound_clicks',             // count (array-lift)
+  'unique_outbound_clicks',      // count (array-lift)
+  'cost_per_unique_click_minor', // money
+  'cost_per_inline_link_click_minor', // money
+  'landing_page_views',          // count (array-lift)
+  'purchase_roas_ratio',         // ratio (string, array-lift)
+  'website_purchase_roas_ratio', // ratio (string, array-lift)
+  'mobile_app_purchase_roas_ratio', // ratio (string, array-lift)
+  'post_engagement',             // count
+  'page_engagement',             // count
+  'inline_post_engagement',      // count
+  'video_p25_watched',           // count (array-lift)
+  'video_p50_watched',           // count (array-lift)
+  'video_p75_watched',           // count (array-lift)
+  'video_p100_watched',          // count (array-lift)
+  'video_thruplay_watched',      // count (array-lift)
+  'video_30_sec_watched',        // count (array-lift)
+  'video_avg_time_watched_secs', // count (integer seconds)
+  'quality_ranking',             // enum string — ad-level only
+  'engagement_rate_ranking',     // enum string — ad-level only
+  'conversion_rate_ranking',     // enum string — ad-level only
+  // Meta breakdown dims (nullable; folded into breakdown_key on breakdown passes):
+  'age',
+  'gender',
+  'country',
+  'region',
+  'dma',
+  'publisher_platform',
+  'platform_position',
+  'device_platform',
+  'impression_device',
+  'hourly_stats_aggregated_by_advertiser_time_zone',
   // ── GOOGLE-ONLY (Impl-G) — Google firehose metrics. money=*_minor; count=bigint-string; ratio=string.
   'all_conversions_value_minor',           // money — all_conversions_value (major double → minor)
   'cost_per_all_conversions_minor',        // money — cost_per_all_conversions (micros → minor)
@@ -223,6 +265,35 @@ export const META_PURCHASE_ACTION_TYPES = [
   'omni_purchase',
   'offsite_conversion.fb_pixel_purchase',
 ] as const;
+
+// ── META-ONLY (Impl-M) — action-type priority lists for array-lifting the enriched Meta metrics.
+//    Meta returns several metrics as arrays of { action_type, value } (or { action_type, 1d_view,
+//    7d_click, ... }); these lists resolve the canonical scalar (first-match by priority). The FULL
+//    raw arrays are still preserved verbatim in conversions_raw (ADR-AD-8). ──────────────────────
+
+/** landing_page_views action-type tokens (omni + web), highest priority first. */
+export const META_LANDING_PAGE_VIEW_TYPES = [
+  'landing_page_view',
+  'omni_landing_page_view',
+] as const;
+
+/** outbound_clicks action-type tokens. */
+export const META_OUTBOUND_CLICK_TYPES = ['outbound_click'] as const;
+
+/** ROAS array action-type tokens (each *_roas array carries a single {action_type,value}). */
+export const META_PURCHASE_ROAS_TYPES = ['omni_purchase', 'purchase'] as const;
+export const META_WEBSITE_PURCHASE_ROAS_TYPES = [
+  'offsite_conversion.fb_pixel_purchase',
+  'purchase',
+] as const;
+export const META_MOBILE_APP_PURCHASE_ROAS_TYPES = [
+  'app_custom_event.fb_mobile_purchase',
+  'omni_purchase',
+] as const;
+
+/** Engagement action-type tokens carried inside actions[] (Meta emits these as action rows). */
+export const META_POST_ENGAGEMENT_TYPES = ['post_engagement'] as const;
+export const META_PAGE_ENGAGEMENT_TYPES = ['page_engagement'] as const;
 
 // ── Output types ─────────────────────────────────────────────────────────────
 
@@ -310,6 +381,51 @@ export interface SpendEventProperties {
   ad_headlines?: string | null;                 // JSON array string
   ad_descriptions?: string | null;              // JSON array string
   occurred_at: string;              // ISO-8601 — economic_effective_at
+  // ── COMMON — the canonical breakdownKey string for this row ('' for the base pass). Audit/debug
+  //    surfacing of the dim set folded into the dedup event_id (§2.B). ──────────────────────────────
+  breakdown_key: string | null;
+  // ── META-ONLY (Impl-M) — enriched Meta insight metrics + breakdown dims (all nullable). Money is
+  //    BIGINT-as-string MINOR in `currency_code`; counts BIGINT-as-string; ratios string passthrough;
+  //    rankings enum-string (ad-level only). ────────────────────────────────────────────────────────
+  reach: string | null;                          // count
+  frequency: string | null;                      // ratio (string) — avg impressions/person (NOT money)
+  cpp_minor: string | null;                      // MINOR money
+  unique_clicks: string | null;                  // count
+  unique_ctr: string | null;                     // ratio (string)
+  inline_link_clicks: string | null;             // count
+  inline_link_click_ctr: string | null;          // ratio (string)
+  outbound_clicks: string | null;                // count (array-lift)
+  unique_outbound_clicks: string | null;         // count (array-lift)
+  cost_per_unique_click_minor: string | null;    // MINOR money
+  cost_per_inline_link_click_minor: string | null; // MINOR money
+  landing_page_views: string | null;            // count (array-lift)
+  purchase_roas_ratio: string | null;            // ratio (string, array-lift)
+  website_purchase_roas_ratio: string | null;    // ratio (string, array-lift)
+  mobile_app_purchase_roas_ratio: string | null; // ratio (string, array-lift)
+  post_engagement: string | null;               // count
+  page_engagement: string | null;               // count
+  inline_post_engagement: string | null;        // count
+  video_p25_watched: string | null;             // count (array-lift)
+  video_p50_watched: string | null;             // count (array-lift)
+  video_p75_watched: string | null;             // count (array-lift)
+  video_p100_watched: string | null;            // count (array-lift)
+  video_thruplay_watched: string | null;        // count (array-lift)
+  video_30_sec_watched: string | null;          // count (array-lift)
+  video_avg_time_watched_secs: string | null;   // count (integer seconds)
+  quality_ranking: string | null;               // enum string — ad-level only
+  engagement_rate_ranking: string | null;       // enum string — ad-level only
+  conversion_rate_ranking: string | null;       // enum string — ad-level only
+  // Meta breakdown dimension values (base pass = all null; a breakdown pass populates its dims):
+  age: string | null;
+  gender: string | null;
+  country: string | null;
+  region: string | null;
+  dma: string | null;
+  publisher_platform: string | null;
+  platform_position: string | null;
+  device_platform: string | null;
+  impression_device: string | null;
+  hourly_stats_aggregated_by_advertiser_time_zone: string | null;
 }
 
 export interface MappedSpendEvent {
@@ -340,6 +456,45 @@ export interface MetaInsightRow {
   ctr?: string | number | null;     // click-through ratio (percentage), Meta returns as a string
   cpc?: string | number | null;     // MAJOR-unit decimal cost-per-click (account currency)
   cpm?: string | number | null;     // MAJOR-unit decimal cost-per-mille (account currency)
+  // ── META-ONLY (Impl-M) — enriched Meta Insights raw fields (all optional; absent → null). ──────
+  reach?: string | number | null;
+  frequency?: string | number | null;             // decimal ratio (avg impressions/person)
+  cpp?: string | number | null;                    // MAJOR-unit decimal cost-per-1000-reached
+  unique_clicks?: string | number | null;
+  unique_ctr?: string | number | null;
+  inline_link_clicks?: string | number | null;
+  inline_link_click_ctr?: string | number | null;
+  outbound_clicks?: unknown;                       // array { action_type, value } → array-lift
+  unique_outbound_clicks?: unknown;                // array → array-lift
+  cost_per_unique_click?: string | number | null;  // MAJOR-unit decimal
+  cost_per_inline_link_click?: string | number | null; // MAJOR-unit decimal
+  landing_page_views?: unknown;                    // arrives inside actions[] (fallback field)
+  purchase_roas?: unknown;                         // array { action_type, value } → array-lift
+  website_purchase_roas?: unknown;                 // array → array-lift
+  mobile_app_purchase_roas?: unknown;              // array → array-lift
+  video_play_actions?: unknown;                    // array → video_views (array-lift)
+  video_p25_watched_actions?: unknown;             // array → array-lift
+  video_p50_watched_actions?: unknown;             // array → array-lift
+  video_p75_watched_actions?: unknown;             // array → array-lift
+  video_p100_watched_actions?: unknown;            // array → array-lift
+  video_thruplay_watched_actions?: unknown;        // array → array-lift
+  video_30_sec_watched_actions?: unknown;          // array → array-lift
+  video_avg_time_watched_actions?: unknown;        // array (seconds) → array-lift
+  // post/page engagement arrive inside actions[]; also accept flat fields when present.
+  quality_ranking?: string | null;                 // enum — ad-level only
+  engagement_rate_ranking?: string | null;         // enum — ad-level only
+  conversion_rate_ranking?: string | null;         // enum — ad-level only
+  // Breakdown dimension keys (present only on the corresponding breakdown pass):
+  age?: string | null;
+  gender?: string | null;
+  country?: string | null;
+  region?: string | null;
+  dma?: string | null;
+  publisher_platform?: string | null;
+  platform_position?: string | null;
+  device_platform?: string | null;
+  impression_device?: string | null;
+  hourly_stats_aggregated_by_advertiser_time_zone?: string | null;
   [key: string]: unknown;
 }
 
@@ -454,7 +609,7 @@ export function uuidV5FromSpendRow(
   statDate: string,
   level: AdSpendLevel,
   levelId: string,
-  breakdownKey = '',
+  breakdownKey: string = '',
 ): string {
   // breakdownKey='' → seed is byte-identical to the original 5-arg seed (backward-compat guarantee).
   const bkSeg = breakdownKey === '' ? '' : `:${breakdownKey}`;
@@ -462,6 +617,28 @@ export function uuidV5FromSpendRow(
     `${brandId}:${platform}:${statDate}:${level}:${levelId}${bkSeg}:spend.live.v1`,
   );
 }
+
+// ── COMMON (shared TS+Py, reviewed by both Meta+Google) — breakdown dedup-key ──────────────────
+//
+// canonicalBreakdownKey — order-stable, delimiter-safe join of the breakdown/segment dimension
+// name=value pairs PRESENT on a row. The SIXTH seed arg to uuidV5FromSpendRow (§2 of the spec):
+//   - base pass → '' (empty) → base-grain event_ids are BYTE-UNCHANGED (zero re-dedup churn).
+//   - each breakdown pass folds its dimension values here so a base row and every breakdown row
+//     (and every breakdown vs each other) mint DISTINCT event_ids → never collide; an idempotent
+//     re-pull of the SAME breakdown row re-mints the SAME id → Silver MERGE dedups.
+//
+// Canonicalization rule (MUST be byte-identical in TS + Python — see canonical_breakdown_key in
+// db/iceberg/spark/silver/_raw_normalize.py):
+//   1. Take the dimensions PRESENT (value != null/undefined and != '') as name=value pairs.
+//   2. Escape backslash, '|', '=' in BOTH name and value with a backslash (delimiter-safety).
+//   3. Sort pairs ascending by dimension NAME (byte/code-unit order).
+//   4. Join with '|'.
+//   5. Empty set → ''.
+// Example: { age: '25-34', gender: 'female', publisher_platform: 'instagram' }
+//        → 'age=25-34|gender=female|publisher_platform=instagram'.
+
+// canonicalBreakdownKey / escapeBreakdownToken are defined once near the top of this module (COMMON,
+// shared by the Meta breakdown passes and the Google segment resources).
 
 // ── Money utils — to BIGINT-as-string minor units (I-S07, integer-only) ──────
 
@@ -670,17 +847,77 @@ export function mapMetaInsightToEvent(
 
   // RAW conversion arrays (ADR-AD-8): keep actions[] (counts) AND action_values[] (revenue) verbatim,
   // each only when present (so a no-action row stays { actions } — unchanged shape).
+  // ── META-ONLY (Impl-M): also preserve the NEW array-valued raw fields verbatim (ADR-AD-8) so the
+  //    lifted scalars above are auditable and nothing is lost. Each is added only when present, so a
+  //    base row with only actions stays { actions } byte-for-byte (no golden churn on existing rows). ──
   let conversionsRaw: Record<string, unknown> | null = null;
-  if (row.actions != null || row.action_values != null) {
-    conversionsRaw = {};
-    if (row.actions != null) conversionsRaw.actions = row.actions;
-    if (row.action_values != null) conversionsRaw.action_values = row.action_values;
+  const rawArrayFields: Array<[string, unknown]> = [
+    ['actions', row.actions],
+    ['action_values', row.action_values],
+    ['outbound_clicks', row.outbound_clicks],
+    ['unique_outbound_clicks', row.unique_outbound_clicks],
+    ['purchase_roas', row.purchase_roas],
+    ['website_purchase_roas', row.website_purchase_roas],
+    ['mobile_app_purchase_roas', row.mobile_app_purchase_roas],
+    ['video_play_actions', row.video_play_actions],
+    ['video_p25_watched_actions', row.video_p25_watched_actions],
+    ['video_p50_watched_actions', row.video_p50_watched_actions],
+    ['video_p75_watched_actions', row.video_p75_watched_actions],
+    ['video_p100_watched_actions', row.video_p100_watched_actions],
+    ['video_thruplay_watched_actions', row.video_thruplay_watched_actions],
+    ['video_30_sec_watched_actions', row.video_30_sec_watched_actions],
+    ['video_avg_time_watched_actions', row.video_avg_time_watched_actions],
+  ];
+  for (const [k, v] of rawArrayFields) {
+    if (v != null) {
+      conversionsRaw ??= {};
+      conversionsRaw[k] = v;
+    }
   }
 
   // Canonical purchase COUNT (actions[]) and purchase REVENUE (action_values[], MAJOR-unit decimal in
   // the account currency → MINOR units, no float). conv_value_minor shares currency_code (never blended).
   const purchaseCount = metaActionValue(row.actions, META_PURCHASE_ACTION_TYPES);
   const purchaseValue = metaActionValue(row.action_values, META_PURCHASE_ACTION_TYPES);
+
+  // ── META-ONLY (Impl-M) — array-lifts for the enriched metrics. Each *_watched_actions / *_roas /
+  //    outbound array is [{ action_type, value }, ...]; metaActionValue lifts the first-match value.
+  //    Engagement + landing_page_views arrive inside actions[]. The FULL raw arrays are preserved
+  //    verbatim in conversions_raw below (ADR-AD-8) — nothing is lost. ────────────────────────────
+  const videoViewsRaw = metaActionValue(row.video_play_actions, ['video_view']);
+  const landingPageViews = metaActionValue(row.actions, META_LANDING_PAGE_VIEW_TYPES);
+  const outboundClicks = metaActionValue(row.outbound_clicks, META_OUTBOUND_CLICK_TYPES);
+  const uniqueOutboundClicks = metaActionValue(row.unique_outbound_clicks, META_OUTBOUND_CLICK_TYPES);
+  const postEngagement = metaActionValue(row.actions, META_POST_ENGAGEMENT_TYPES);
+  const pageEngagement = metaActionValue(row.actions, META_PAGE_ENGAGEMENT_TYPES);
+  const videoP25 = metaActionValue(row.video_p25_watched_actions, ['video_view']);
+  const videoP50 = metaActionValue(row.video_p50_watched_actions, ['video_view']);
+  const videoP75 = metaActionValue(row.video_p75_watched_actions, ['video_view']);
+  const videoP100 = metaActionValue(row.video_p100_watched_actions, ['video_view']);
+  const videoThruplay = metaActionValue(row.video_thruplay_watched_actions, ['video_view']);
+  const video30Sec = metaActionValue(row.video_30_sec_watched_actions, ['video_view']);
+  const videoAvgTime = metaActionValue(row.video_avg_time_watched_actions, ['video_view']);
+  const purchaseRoas = metaActionValue(row.purchase_roas, META_PURCHASE_ROAS_TYPES);
+  const websitePurchaseRoas = metaActionValue(row.website_purchase_roas, META_WEBSITE_PURCHASE_ROAS_TYPES);
+  const mobileAppPurchaseRoas = metaActionValue(
+    row.mobile_app_purchase_roas,
+    META_MOBILE_APP_PURCHASE_ROAS_TYPES,
+  );
+
+  // Breakdown dims present on this row → the canonical breakdownKey folded into the dedup event_id.
+  const breakdownKey = canonicalBreakdownKey({
+    age: row.age ?? undefined,
+    gender: row.gender ?? undefined,
+    country: row.country ?? undefined,
+    region: row.region ?? undefined,
+    dma: row.dma ?? undefined,
+    publisher_platform: row.publisher_platform ?? undefined,
+    platform_position: row.platform_position ?? undefined,
+    device_platform: row.device_platform ?? undefined,
+    impression_device: row.impression_device ?? undefined,
+    hourly_stats_aggregated_by_advertiser_time_zone:
+      row.hourly_stats_aggregated_by_advertiser_time_zone ?? undefined,
+  });
 
   const props: SpendEventProperties = {
     source: 'meta',
@@ -706,6 +943,66 @@ export function mapMetaInsightToEvent(
     conversions_raw: conversionsRaw,
     account_timezone: accountTz,
     occurred_at: occurredAt,
+    // ── COMMON columns — Meta populates video_views (from video_play_actions); the rest are Google-only. ──
+    video_views: toCountString(videoViewsRaw),
+    video_view_rate: null,                 // Meta has no direct analog → null
+    engagements: null,                     // Meta keeps post/page engagement separate (below) → null
+    engagement_rate: null,
+    cost_per_conversion_minor: null,       // Google-only
+    value_per_conversion_minor: null,      // Google-only
+    breakdown_key: breakdownKey,
+    // ── META-ONLY (Impl-M) — enriched insight metrics. Money via majorDecimalToMinorString; counts via
+    //    toCountString; ratios/rankings string passthrough; frequency is a decimal ratio (NOT money). ──
+    reach: toCountString(row.reach),
+    frequency: row.frequency != null ? String(row.frequency) : null,
+    cpp_minor: row.cpp != null ? majorDecimalToMinorString(row.cpp) : null,
+    unique_clicks: toCountString(row.unique_clicks),
+    unique_ctr: row.unique_ctr != null ? String(row.unique_ctr) : null,
+    inline_link_clicks: toCountString(row.inline_link_clicks),
+    inline_link_click_ctr: row.inline_link_click_ctr != null ? String(row.inline_link_click_ctr) : null,
+    outbound_clicks: toCountString(outboundClicks),
+    unique_outbound_clicks: toCountString(uniqueOutboundClicks),
+    cost_per_unique_click_minor:
+      row.cost_per_unique_click != null ? majorDecimalToMinorString(row.cost_per_unique_click) : null,
+    cost_per_inline_link_click_minor:
+      row.cost_per_inline_link_click != null
+        ? majorDecimalToMinorString(row.cost_per_inline_link_click)
+        : null,
+    landing_page_views: toCountString(landingPageViews),
+    purchase_roas_ratio: purchaseRoas,                         // raw ratio string passthrough
+    website_purchase_roas_ratio: websitePurchaseRoas,
+    mobile_app_purchase_roas_ratio: mobileAppPurchaseRoas,
+    post_engagement: toCountString(postEngagement),
+    page_engagement: toCountString(pageEngagement),
+    inline_post_engagement: toCountString(
+      row['inline_post_engagement'] as string | number | null | undefined,
+    ),
+    video_p25_watched: toCountString(videoP25),
+    video_p50_watched: toCountString(videoP50),
+    video_p75_watched: toCountString(videoP75),
+    video_p100_watched: toCountString(videoP100),
+    video_thruplay_watched: toCountString(videoThruplay),
+    video_30_sec_watched: toCountString(video30Sec),
+    video_avg_time_watched_secs: toCountString(videoAvgTime),
+    quality_ranking: row.quality_ranking != null ? String(row.quality_ranking) : null,
+    engagement_rate_ranking:
+      row.engagement_rate_ranking != null ? String(row.engagement_rate_ranking) : null,
+    conversion_rate_ranking:
+      row.conversion_rate_ranking != null ? String(row.conversion_rate_ranking) : null,
+    // Meta breakdown dims (base pass → all null; a breakdown pass populates only its dims):
+    age: row.age != null ? String(row.age) : null,
+    gender: row.gender != null ? String(row.gender) : null,
+    country: row.country != null ? String(row.country) : null,
+    region: row.region != null ? String(row.region) : null,
+    dma: row.dma != null ? String(row.dma) : null,
+    publisher_platform: row.publisher_platform != null ? String(row.publisher_platform) : null,
+    platform_position: row.platform_position != null ? String(row.platform_position) : null,
+    device_platform: row.device_platform != null ? String(row.device_platform) : null,
+    impression_device: row.impression_device != null ? String(row.impression_device) : null,
+    hourly_stats_aggregated_by_advertiser_time_zone:
+      row.hourly_stats_aggregated_by_advertiser_time_zone != null
+        ? String(row.hourly_stats_aggregated_by_advertiser_time_zone)
+        : null,
   };
 
   // Final allowlist boundary (I-S02): drop anything not canonical, then re-assert shape.
@@ -854,6 +1151,49 @@ export function mapGoogleRowToEvent(
     ad_headlines: toJsonArrayString(row.ad_headlines),
     ad_descriptions: toJsonArrayString(row.ad_descriptions),
     occurred_at: occurredAt,
+    // COMMON metrics are populated above (Google fills video_views…value_per_conversion_minor). The
+    // Google segment breakdown_key is folded at Silver (build_google → u_gbk over the segment_* cols),
+    // so the mapper emits base breakdown_key='' here and carries the segment_* dims for that fold.
+    breakdown_key: '',
+    // ── META-ONLY fields — never populated on the Google lane (null). ──────────────────────────────
+    reach: null,
+    frequency: null,
+    cpp_minor: null,
+    unique_clicks: null,
+    unique_ctr: null,
+    inline_link_clicks: null,
+    inline_link_click_ctr: null,
+    outbound_clicks: null,
+    unique_outbound_clicks: null,
+    cost_per_unique_click_minor: null,
+    cost_per_inline_link_click_minor: null,
+    landing_page_views: null,
+    purchase_roas_ratio: null,
+    website_purchase_roas_ratio: null,
+    mobile_app_purchase_roas_ratio: null,
+    post_engagement: null,
+    page_engagement: null,
+    inline_post_engagement: null,
+    video_p25_watched: null,
+    video_p50_watched: null,
+    video_p75_watched: null,
+    video_p100_watched: null,
+    video_thruplay_watched: null,
+    video_30_sec_watched: null,
+    video_avg_time_watched_secs: null,
+    quality_ranking: null,
+    engagement_rate_ranking: null,
+    conversion_rate_ranking: null,
+    age: null,
+    gender: null,
+    country: null,
+    region: null,
+    dma: null,
+    publisher_platform: null,
+    platform_position: null,
+    device_platform: null,
+    impression_device: null,
+    hourly_stats_aggregated_by_advertiser_time_zone: null,
   };
 
   applyFieldAllowlist(props as unknown as Record<string, unknown>);

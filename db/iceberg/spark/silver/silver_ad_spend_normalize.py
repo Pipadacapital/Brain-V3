@@ -209,11 +209,23 @@ def google_breakdown_key(
 # of Meta's nested actions[] (counts) / action_values[] (revenue) arrays. Full arrays stay in conversions_raw.
 _META_PURCHASE_TYPES = ("purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase")
 
+# ── META-ONLY (Impl-M) FIREHOSE — action-type priority lists (byte-mirror of @brain/ad-spend-mapper). ──
+_META_LANDING_PAGE_VIEW_TYPES = ("landing_page_view", "omni_landing_page_view")
+_META_OUTBOUND_CLICK_TYPES = ("outbound_click",)
+_META_PURCHASE_ROAS_TYPES = ("omni_purchase", "purchase")
+_META_WEBSITE_PURCHASE_ROAS_TYPES = ("offsite_conversion.fb_pixel_purchase", "purchase")
+_META_MOBILE_APP_PURCHASE_ROAS_TYPES = ("app_custom_event.fb_mobile_purchase", "omni_purchase")
+_META_POST_ENGAGEMENT_TYPES = ("post_engagement",)
+_META_PAGE_ENGAGEMENT_TYPES = ("page_engagement",)
+_META_VIDEO_VIEW_TYPES = ("video_view",)
 
-def meta_action_value(arr):
+
+def _meta_action_value_by(arr, action_types):
+    """metaActionValue(raw, actionTypes) — first-match by priority action_type; else None. The generic
+    array-lift the firehose reuses for every Meta array metric (byte-port of the TS helper)."""
     if not arr:
         return None
-    for t in _META_PURCHASE_TYPES:
+    for t in action_types:
         for a in arr:
             at = a["action_type"] if isinstance(a, dict) else getattr(a, "action_type", None)
             if at == t:
@@ -221,6 +233,10 @@ def meta_action_value(arr):
                 if v is not None:
                     return str(v)
     return None
+
+
+def meta_action_value(arr):
+    return _meta_action_value_by(arr, _META_PURCHASE_TYPES)
 
 
 # ── UDFs over the verified ports (Spark output == verified python == TS) ───────────────────────────────
@@ -238,7 +254,7 @@ u_level_id = udf(lambda lvl, c, a, ad: resolve_level_id(lvl, c, a, ad), StringTy
 u_parent = udf(lambda lvl, c, a, ad: resolve_parent_id(lvl, c, a, ad), StringType())
 u_stat_iso = udf(lambda d: stat_date_to_iso(d), StringType())
 u_eid = udf(
-    lambda b, p, d, lvl, lid: event_id_spend_live(b, p, d, lvl, lid)
+    lambda b, p, d, lvl, lid, bk: event_id_spend_live(b, p, d, lvl, lid, bk)
     if (b and p and d and lvl and lid is not None)
     else None,
     StringType(),
@@ -254,6 +270,25 @@ u_eid_gbk = udf(
 u_gbk = udf(
     lambda dev, net, dow, hr, ct, ca, geo, age, gen, kid, st, pid: google_breakdown_key(
         dev, net, dow, hr, ct, ca, geo, age, gen, kid, st, pid
+    ),
+    StringType(),
+)
+
+# ── META-ONLY (Impl-M) FIREHOSE array-lift UDFs (each folds a fixed action_type priority list) ─────────
+u_meta_landing = udf(lambda a: _meta_action_value_by(a, _META_LANDING_PAGE_VIEW_TYPES), StringType())
+u_meta_outbound = udf(lambda a: _meta_action_value_by(a, _META_OUTBOUND_CLICK_TYPES), StringType())
+u_meta_purchase_roas = udf(lambda a: _meta_action_value_by(a, _META_PURCHASE_ROAS_TYPES), StringType())
+u_meta_website_roas = udf(lambda a: _meta_action_value_by(a, _META_WEBSITE_PURCHASE_ROAS_TYPES), StringType())
+u_meta_mobile_roas = udf(lambda a: _meta_action_value_by(a, _META_MOBILE_APP_PURCHASE_ROAS_TYPES), StringType())
+u_meta_post_eng = udf(lambda a: _meta_action_value_by(a, _META_POST_ENGAGEMENT_TYPES), StringType())
+u_meta_page_eng = udf(lambda a: _meta_action_value_by(a, _META_PAGE_ENGAGEMENT_TYPES), StringType())
+u_meta_video = udf(lambda a: _meta_action_value_by(a, _META_VIDEO_VIEW_TYPES), StringType())
+
+# ── COMMON (Impl-M + Impl-G) breakdown_key UDF — canonical, byte-identical to the TS mapper. Dims are
+#    passed as a fixed-order map { name: value }; absent/empty dims omitted; sorted+escaped+joined. ─────
+u_breakdown_key = udf(
+    lambda names, vals: rn.canonical_breakdown_key(
+        {n: v for n, v in zip(names or [], vals or [])}
     ),
     StringType(),
 )
@@ -337,10 +372,68 @@ def build_meta(spark: SparkSession):
         col(f"{r}.ctr").cast("string").alias("ctr_raw"),
         col(f"{r}.cpc").cast("string").alias("cpc_raw"),  # MAJOR-unit decimal cost-per-click
         col(f"{r}.cpm").cast("string").alias("cpm_raw"),  # MAJOR-unit decimal cost-per-mille
+        # ── META-ONLY (Impl-M) FIREHOSE base-grain raw fields (absent → null → mapper leaves prop null). ──
+        col(f"{r}.reach").cast("string").alias("reach_raw"),
+        col(f"{r}.frequency").cast("string").alias("frequency_raw"),
+        col(f"{r}.cpp").cast("string").alias("cpp_raw"),  # MAJOR-unit decimal
+        col(f"{r}.unique_clicks").cast("string").alias("unique_clicks_raw"),
+        col(f"{r}.unique_ctr").cast("string").alias("unique_ctr_raw"),
+        col(f"{r}.inline_link_clicks").cast("string").alias("inline_link_clicks_raw"),
+        col(f"{r}.inline_link_click_ctr").cast("string").alias("inline_link_click_ctr_raw"),
+        col(f"{r}.outbound_clicks").alias("outbound_clicks_arr"),
+        col(f"{r}.unique_outbound_clicks").alias("unique_outbound_clicks_arr"),
+        col(f"{r}.cost_per_unique_click").cast("string").alias("cost_per_unique_click_raw"),  # MAJOR decimal
+        col(f"{r}.cost_per_inline_link_click").cast("string").alias("cost_per_inline_link_click_raw"),
+        col(f"{r}.purchase_roas").alias("purchase_roas_arr"),
+        col(f"{r}.website_purchase_roas").alias("website_purchase_roas_arr"),
+        col(f"{r}.mobile_app_purchase_roas").alias("mobile_app_purchase_roas_arr"),
+        col(f"{r}.video_play_actions").alias("video_play_arr"),
+        col(f"{r}.video_p25_watched_actions").alias("video_p25_arr"),
+        col(f"{r}.video_p50_watched_actions").alias("video_p50_arr"),
+        col(f"{r}.video_p75_watched_actions").alias("video_p75_arr"),
+        col(f"{r}.video_p100_watched_actions").alias("video_p100_arr"),
+        col(f"{r}.video_thruplay_watched_actions").alias("video_thruplay_arr"),
+        col(f"{r}.video_30_sec_watched_actions").alias("video_30_sec_arr"),
+        col(f"{r}.video_avg_time_watched_actions").alias("video_avg_time_arr"),
+        col(f"{r}.inline_post_engagement").cast("string").alias("inline_post_engagement_raw"),
+        col(f"{r}.quality_ranking").cast("string").alias("quality_ranking_raw"),
+        col(f"{r}.engagement_rate_ranking").cast("string").alias("engagement_rate_ranking_raw"),
+        col(f"{r}.conversion_rate_ranking").cast("string").alias("conversion_rate_ranking_raw"),
+        # ── Breakdown dimension values (present only on the corresponding breakdown pass; else null). ──
+        col(f"{r}.age").cast("string").alias("bd_age"),
+        col(f"{r}.gender").cast("string").alias("bd_gender"),
+        col(f"{r}.country").cast("string").alias("bd_country"),
+        col(f"{r}.region").cast("string").alias("bd_region"),
+        col(f"{r}.dma").cast("string").alias("bd_dma"),
+        col(f"{r}.publisher_platform").cast("string").alias("bd_publisher_platform"),
+        col(f"{r}.platform_position").cast("string").alias("bd_platform_position"),
+        col(f"{r}.device_platform").cast("string").alias("bd_device_platform"),
+        col(f"{r}.impression_device").cast("string").alias("bd_impression_device"),
+        col(f"{r}.hourly_stats_aggregated_by_advertiser_time_zone").cast("string").alias("bd_hourly"),
     )
+
+    from pyspark.sql.functions import array
 
     canon = (
         df.withColumn("platform", lit("meta"))
+        # FIREHOSE: canonical breakdown_key over the dims present (base pass → '' → base ids unchanged).
+        # Dim NAME order here fixes the map iteration; canonical_breakdown_key sorts+escapes them.
+        .withColumn(
+            "breakdown_key",
+            u_breakdown_key(
+                array(
+                    lit("age"), lit("gender"), lit("country"), lit("region"), lit("dma"),
+                    lit("publisher_platform"), lit("platform_position"), lit("device_platform"),
+                    lit("impression_device"),
+                    lit("hourly_stats_aggregated_by_advertiser_time_zone"),
+                ),
+                array(
+                    col("bd_age"), col("bd_gender"), col("bd_country"), col("bd_region"), col("bd_dma"),
+                    col("bd_publisher_platform"), col("bd_platform_position"), col("bd_device_platform"),
+                    col("bd_impression_device"), col("bd_hourly"),
+                ),
+            ),
+        )
         .withColumn("level", u_level(col("raw_level")))
         .withColumn("level_id", u_level_id(col("level"), col("campaign_id"), col("adset_id"), col("ad_id")))
         .withColumn("parent_id", u_parent(col("level"), col("campaign_id"), col("adset_id"), col("ad_id")))
@@ -358,19 +451,77 @@ def build_meta(spark: SparkSession):
         .withColumn("cpc_minor", u_minor_major_opt(col("cpc_raw")))
         .withColumn("cpm_minor", u_minor_major_opt(col("cpm_raw")))
         .withColumn("advertising_channel_type", lit(None).cast("string"))  # Google-only
+        # ── META-ONLY (Impl-M) FIREHOSE enriched insight set. Money via major-decimal→minor; counts via
+        #    to_count_string; ratios/rankings passthrough; frequency is a decimal ratio (NOT money). Array
+        #    metrics lifted via the fixed action-type lists; full raw arrays preserved in conversions_raw. ──
+        .withColumn("video_views", u_count(u_meta_video(col("video_play_arr"))))
+        .withColumn("reach", u_count(col("reach_raw")))
+        .withColumn("frequency", col("frequency_raw"))
+        .withColumn("cpp_minor", u_minor_major_opt(col("cpp_raw")))
+        .withColumn("unique_clicks", u_count(col("unique_clicks_raw")))
+        .withColumn("unique_ctr", col("unique_ctr_raw"))
+        .withColumn("inline_link_clicks", u_count(col("inline_link_clicks_raw")))
+        .withColumn("inline_link_click_ctr", col("inline_link_click_ctr_raw"))
+        .withColumn("outbound_clicks", u_count(u_meta_outbound(col("outbound_clicks_arr"))))
+        .withColumn("unique_outbound_clicks", u_count(u_meta_outbound(col("unique_outbound_clicks_arr"))))
+        .withColumn("cost_per_unique_click_minor", u_minor_major_opt(col("cost_per_unique_click_raw")))
+        .withColumn("cost_per_inline_link_click_minor", u_minor_major_opt(col("cost_per_inline_link_click_raw")))
+        .withColumn("landing_page_views", u_count(u_meta_landing(col("actions"))))
+        .withColumn("purchase_roas_ratio", u_meta_purchase_roas(col("purchase_roas_arr")))
+        .withColumn("website_purchase_roas_ratio", u_meta_website_roas(col("website_purchase_roas_arr")))
+        .withColumn("mobile_app_purchase_roas_ratio", u_meta_mobile_roas(col("mobile_app_purchase_roas_arr")))
+        .withColumn("post_engagement", u_count(u_meta_post_eng(col("actions"))))
+        .withColumn("page_engagement", u_count(u_meta_page_eng(col("actions"))))
+        .withColumn("inline_post_engagement", u_count(col("inline_post_engagement_raw")))
+        .withColumn("video_p25_watched", u_count(u_meta_video(col("video_p25_arr"))))
+        .withColumn("video_p50_watched", u_count(u_meta_video(col("video_p50_arr"))))
+        .withColumn("video_p75_watched", u_count(u_meta_video(col("video_p75_arr"))))
+        .withColumn("video_p100_watched", u_count(u_meta_video(col("video_p100_arr"))))
+        .withColumn("video_thruplay_watched", u_count(u_meta_video(col("video_thruplay_arr"))))
+        .withColumn("video_30_sec_watched", u_count(u_meta_video(col("video_30_sec_arr"))))
+        .withColumn("video_avg_time_watched_secs", u_count(u_meta_video(col("video_avg_time_arr"))))
+        .withColumn("quality_ranking", col("quality_ranking_raw"))
+        .withColumn("engagement_rate_ranking", col("engagement_rate_ranking_raw"))
+        .withColumn("conversion_rate_ranking", col("conversion_rate_ranking_raw"))
         .withColumn("occurred_at_iso", u_stat_iso(col("stat_date")))
         .withColumn(
             "event_id",
-            u_eid(col("brand_id"), col("platform"), col("stat_date"), col("level"), col("level_id")),
+            u_eid(
+                col("brand_id"), col("platform"), col("stat_date"), col("level"), col("level_id"),
+                col("breakdown_key"),
+            ),
         )
     )
 
-    # conversions_raw (ADR-AD-8): Meta → { actions, action_values } when EITHER present, else null. Native
-    # nested struct so the single to_json on the envelope emits proper nested JSON (raw passthrough).
-    conversions_raw = when(
-        col("actions").isNotNull() | col("action_values").isNotNull(),
-        struct(col("actions").alias("actions"), col("action_values").alias("action_values")),
-    )
+    # conversions_raw (ADR-AD-8): Meta → { actions, action_values, + FIREHOSE array metrics } when ANY
+    # present, else null. Native nested struct so the single to_json on the envelope emits proper nested
+    # JSON. Every new array-valued raw field is preserved verbatim (mirrors the TS conversions_raw).
+    _raw_arr_cols = [
+        col("actions").alias("actions"),
+        col("action_values").alias("action_values"),
+        col("outbound_clicks_arr").alias("outbound_clicks"),
+        col("unique_outbound_clicks_arr").alias("unique_outbound_clicks"),
+        col("purchase_roas_arr").alias("purchase_roas"),
+        col("website_purchase_roas_arr").alias("website_purchase_roas"),
+        col("mobile_app_purchase_roas_arr").alias("mobile_app_purchase_roas"),
+        col("video_play_arr").alias("video_play_actions"),
+        col("video_p25_arr").alias("video_p25_watched_actions"),
+        col("video_p50_arr").alias("video_p50_watched_actions"),
+        col("video_p75_arr").alias("video_p75_watched_actions"),
+        col("video_p100_arr").alias("video_p100_watched_actions"),
+        col("video_thruplay_arr").alias("video_thruplay_watched_actions"),
+        col("video_30_sec_arr").alias("video_30_sec_watched_actions"),
+        col("video_avg_time_arr").alias("video_avg_time_watched_actions"),
+    ]
+    _any_arr = col("actions").isNotNull() | col("action_values").isNotNull()
+    for _c in (
+        "outbound_clicks_arr", "unique_outbound_clicks_arr", "purchase_roas_arr",
+        "website_purchase_roas_arr", "mobile_app_purchase_roas_arr", "video_play_arr",
+        "video_p25_arr", "video_p50_arr", "video_p75_arr", "video_p100_arr",
+        "video_thruplay_arr", "video_30_sec_arr", "video_avg_time_arr",
+    ):
+        _any_arr = _any_arr | col(_c).isNotNull()
+    conversions_raw = when(_any_arr, struct(*_raw_arr_cols))
 
     props = struct(
         lit("meta").alias("source"),
@@ -397,6 +548,54 @@ def build_meta(spark: SparkSession):
         conversions_raw.alias("conversions_raw"),
         col("account_timezone").alias("account_timezone"),
         col("occurred_at_iso").alias("occurred_at"),
+        # ── COMMON — Meta populates video_views; rest Google-only (null here). breakdown_key audit surface. ──
+        col("video_views").alias("video_views"),
+        lit(None).cast("string").alias("video_view_rate"),
+        lit(None).cast("string").alias("engagements"),
+        lit(None).cast("string").alias("engagement_rate"),
+        lit(None).cast("string").alias("cost_per_conversion_minor"),
+        lit(None).cast("string").alias("value_per_conversion_minor"),
+        col("breakdown_key").alias("breakdown_key"),
+        # ── META-ONLY (Impl-M) enriched insight metrics ────────────────────────────────────────────────
+        col("reach").alias("reach"),
+        col("frequency").alias("frequency"),
+        col("cpp_minor").alias("cpp_minor"),
+        col("unique_clicks").alias("unique_clicks"),
+        col("unique_ctr").alias("unique_ctr"),
+        col("inline_link_clicks").alias("inline_link_clicks"),
+        col("inline_link_click_ctr").alias("inline_link_click_ctr"),
+        col("outbound_clicks").alias("outbound_clicks"),
+        col("unique_outbound_clicks").alias("unique_outbound_clicks"),
+        col("cost_per_unique_click_minor").alias("cost_per_unique_click_minor"),
+        col("cost_per_inline_link_click_minor").alias("cost_per_inline_link_click_minor"),
+        col("landing_page_views").alias("landing_page_views"),
+        col("purchase_roas_ratio").alias("purchase_roas_ratio"),
+        col("website_purchase_roas_ratio").alias("website_purchase_roas_ratio"),
+        col("mobile_app_purchase_roas_ratio").alias("mobile_app_purchase_roas_ratio"),
+        col("post_engagement").alias("post_engagement"),
+        col("page_engagement").alias("page_engagement"),
+        col("inline_post_engagement").alias("inline_post_engagement"),
+        col("video_p25_watched").alias("video_p25_watched"),
+        col("video_p50_watched").alias("video_p50_watched"),
+        col("video_p75_watched").alias("video_p75_watched"),
+        col("video_p100_watched").alias("video_p100_watched"),
+        col("video_thruplay_watched").alias("video_thruplay_watched"),
+        col("video_30_sec_watched").alias("video_30_sec_watched"),
+        col("video_avg_time_watched_secs").alias("video_avg_time_watched_secs"),
+        col("quality_ranking").alias("quality_ranking"),
+        col("engagement_rate_ranking").alias("engagement_rate_ranking"),
+        col("conversion_rate_ranking").alias("conversion_rate_ranking"),
+        # ── Breakdown dims (base pass → all null; a breakdown pass populates its dims) ──────────────────
+        col("bd_age").alias("age"),
+        col("bd_gender").alias("gender"),
+        col("bd_country").alias("country"),
+        col("bd_region").alias("region"),
+        col("bd_dma").alias("dma"),
+        col("bd_publisher_platform").alias("publisher_platform"),
+        col("bd_platform_position").alias("platform_position"),
+        col("bd_device_platform").alias("device_platform"),
+        col("bd_impression_device").alias("impression_device"),
+        col("bd_hourly").alias("hourly_stats_aggregated_by_advertiser_time_zone"),
     )
     payload = to_json(
         struct(
@@ -607,6 +806,54 @@ def build_google(spark: SparkSession):
         col("product_title").alias("product_title"),
         col("product_brand").alias("product_brand"),
         col("occurred_at_iso").alias("occurred_at"),
+        # ── COMMON — Impl-G owns the Google population (this PR = Impl-M → null-defaulted; the Google
+        #    lane PR fills video_views/…/value_per_conversion_minor + its own breakdown_key). ────────────
+        lit(None).cast("string").alias("video_views"),
+        lit(None).cast("string").alias("video_view_rate"),
+        lit(None).cast("string").alias("engagements"),
+        lit(None).cast("string").alias("engagement_rate"),
+        lit(None).cast("string").alias("cost_per_conversion_minor"),
+        lit(None).cast("string").alias("value_per_conversion_minor"),
+        col("breakdown_key").alias("breakdown_key"),
+        # ── META-ONLY fields — never populated on the Google lane (null). ──────────────────────────────
+        lit(None).cast("string").alias("reach"),
+        lit(None).cast("string").alias("frequency"),
+        lit(None).cast("string").alias("cpp_minor"),
+        lit(None).cast("string").alias("unique_clicks"),
+        lit(None).cast("string").alias("unique_ctr"),
+        lit(None).cast("string").alias("inline_link_clicks"),
+        lit(None).cast("string").alias("inline_link_click_ctr"),
+        lit(None).cast("string").alias("outbound_clicks"),
+        lit(None).cast("string").alias("unique_outbound_clicks"),
+        lit(None).cast("string").alias("cost_per_unique_click_minor"),
+        lit(None).cast("string").alias("cost_per_inline_link_click_minor"),
+        lit(None).cast("string").alias("landing_page_views"),
+        lit(None).cast("string").alias("purchase_roas_ratio"),
+        lit(None).cast("string").alias("website_purchase_roas_ratio"),
+        lit(None).cast("string").alias("mobile_app_purchase_roas_ratio"),
+        lit(None).cast("string").alias("post_engagement"),
+        lit(None).cast("string").alias("page_engagement"),
+        lit(None).cast("string").alias("inline_post_engagement"),
+        lit(None).cast("string").alias("video_p25_watched"),
+        lit(None).cast("string").alias("video_p50_watched"),
+        lit(None).cast("string").alias("video_p75_watched"),
+        lit(None).cast("string").alias("video_p100_watched"),
+        lit(None).cast("string").alias("video_thruplay_watched"),
+        lit(None).cast("string").alias("video_30_sec_watched"),
+        lit(None).cast("string").alias("video_avg_time_watched_secs"),
+        lit(None).cast("string").alias("quality_ranking"),
+        lit(None).cast("string").alias("engagement_rate_ranking"),
+        lit(None).cast("string").alias("conversion_rate_ranking"),
+        lit(None).cast("string").alias("age"),
+        lit(None).cast("string").alias("gender"),
+        lit(None).cast("string").alias("country"),
+        lit(None).cast("string").alias("region"),
+        lit(None).cast("string").alias("dma"),
+        lit(None).cast("string").alias("publisher_platform"),
+        lit(None).cast("string").alias("platform_position"),
+        lit(None).cast("string").alias("device_platform"),
+        lit(None).cast("string").alias("impression_device"),
+        lit(None).cast("string").alias("hourly_stats_aggregated_by_advertiser_time_zone"),
     )
     payload = to_json(
         struct(

@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:3846f049cb7cf182f623c3fc7dbddc2333801554b2679314c34774f6ee3d5d3f"
+  digest: "sha256:01f9573540538429d2c558e66c1229abbf8bf682240b25285833bdb8b6bd75eb"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:bb25b6c6666b6ce7bc6893d2085bf71fbeff0ac4d4437de4ebdabfa592e546ae"
+  digest: "sha256:ca7f67ea913c00a9b1c441dab34104a1722b17b23957bd33ee9cd41848ec6d15"
 # spark image — runs the bronze-maintenance cron (db/iceberg/spark/Dockerfile). Also reused by the
 # V4 Spark silver/gold/mv-refresh crons (.sparkV4.image — CI digest-pins both). Bronze LANDING is
 # the kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
@@ -13,14 +13,14 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
-    digest: "sha256:47f9f5b9381bb178c1d16300514e1172011e06252ac041211006c6bd7afa4974"
+    digest: "sha256:da16849d45362d672bb8f5d02ced0040e32317e96b743841737820cc3eae74f3"
 # spark V4 Silver/Gold transform + mv refresh crons — same image as sparkBronze (the Dockerfile now
 # COPYs the V4 marts). GATED OFF by default; flip sparkV4.enabled once the V4 cluster + digest are ready.
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
     tag: ""
-    digest: "sha256:47f9f5b9381bb178c1d16300514e1172011e06252ac041211006c6bd7afa4974"
+    digest: "sha256:da16849d45362d672bb8f5d02ced0040e32317e96b743841737820cc3eae74f3"
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
 # BRAIN_APP_DATABASE_URL, STARROCKS_*). External Secrets ← AWS Secrets Manager.
 envSecretName: core-env

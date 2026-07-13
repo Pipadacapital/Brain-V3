@@ -102,7 +102,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "0"
     # Only reconcile when the NodePool intent changes.
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/karpenter
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/karpenter
   labels:
     project: brain
     environment: prod

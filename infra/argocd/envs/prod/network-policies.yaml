@@ -4,7 +4,7 @@ metadata:
   name: network-policies-prod
   namespace: argocd
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/network-policies
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/network-policies
     # sync-wave -4: this app is the SOLE owner of the workload namespaces (core/web/collector/
     # stream-worker/pgbouncer/trino/iceberg-rest/neo4j) + their PSA `restricted` labels. It must
     # create them BEFORE external-secrets-config-prod (-2) lands ExternalSecrets into them, and

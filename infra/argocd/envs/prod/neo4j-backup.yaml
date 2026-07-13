@@ -18,7 +18,7 @@ metadata:
   name: neo4j-backup-prod
   namespace: argocd
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/neo4j-backup
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/neo4j-backup
   labels:
     project: brain
     environment: prod

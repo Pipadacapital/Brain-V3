@@ -5,7 +5,7 @@ metadata:
   namespace: argocd
   annotations:
     # Selective deploy: only syncs when trino manifests change
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/trino
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/trino
   labels:
     project: brain
     environment: prod

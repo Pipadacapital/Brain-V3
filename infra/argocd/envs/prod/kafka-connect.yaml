@@ -4,7 +4,7 @@ metadata:
   name: kafka-connect-prod
   namespace: argocd
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/kafka-connect
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/kafka-connect
   labels:
     project: brain
     environment: prod

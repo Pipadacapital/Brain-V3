@@ -148,7 +148,15 @@ resource "aws_eks_cluster" "main" {
     resources = ["secrets"]
   }
 
-  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+  # AUD-COST (2026-07-13): trimmed from all 5 types → audit only. The 5-way set
+  # vended ~$78/mo of CloudWatch logs (100% of the CloudWatch bill was
+  # VendedLog-Bytes; api+audit log every API call and Karpenter/ArgoCD/KEDA
+  # generate a firehose). `audit` is kept as the security-forensics trail
+  # ("who did what") — the one you'd want after an incident; api /
+  # authenticator / controllerManager / scheduler are control-plane DEBUG logs
+  # that nothing monitors today (alerting not yet wired) and can be re-enabled
+  # instantly when debugging. In-place cluster update, non-disruptive.
+  enabled_cluster_log_types = ["audit"]
 
   # AUD-OPS-028: omitted while null (no-op on the live cluster); set STANDARD
   # after the 1.33 upgrade so a future lapse into extended support fails the

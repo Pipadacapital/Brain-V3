@@ -554,16 +554,23 @@ module "irsa_external_dns" {
 }
 
 ###############################################################################
-# Redis serving cache (ADR-0009 sizing: cache.t4g.micro starter)
+# Valkey serving cache (ADR-0009 sizing: cache.t4g.micro starter)
+# Engine swapped Redis OSS 7.1 -> Valkey 8.0 (2026-07): ~20% cheaper per
+# node-hour, drop-in Redis-7 compatible (no app change), same endpoint DNS.
+# The in-place cross-engine upgrade is driven by the AWS CLI (the TF provider's
+# engine flip is unreliable) then reconciled here — runbook:
+# docs/ops/valkey-migration.md.
 ###############################################################################
 module "elasticache" {
-  source      = "../../modules/elasticache"
-  environment = local.environment
-  project     = local.project
-  subnet_ids  = module.network.private_subnet_ids
-  redis_sg_id = module.network.elasticache_sg_id
-  kms_key_arn = module.kms.root_kms_key_arn
-  node_type   = "cache.t4g.micro"
+  source         = "../../modules/elasticache"
+  environment    = local.environment
+  project        = local.project
+  subnet_ids     = module.network.private_subnet_ids
+  redis_sg_id    = module.network.elasticache_sg_id
+  kms_key_arn    = module.kms.root_kms_key_arn
+  node_type      = "cache.t4g.micro"
+  engine         = "valkey"
+  engine_version = "8.0"
   # AUD-PROD-008: single node per the ADR-0009 starter sizing — the module
   # default (2) silently provisioned a 2-node multi-AZ auto-failover group
   # (double cache spend). The module degrades automatic_failover/multi_az to

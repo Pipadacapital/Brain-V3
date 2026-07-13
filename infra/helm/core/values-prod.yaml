@@ -1,4 +1,4 @@
-replicaCount: 3
+replicaCount: 2
 
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
@@ -66,10 +66,13 @@ resources:
     cpu: "2"
     memory: 2Gi
 
-# P2.5: HPA on in prod. minReplicas matches replicaCount (3) so enabling never scales below baseline.
+# P2.5: HPA on in prod. minReplicas matches replicaCount (2) so enabling never scales below baseline.
+# AUD-COST (2026-07-13): warm baseline 3 → 2 (matches replicaCount above) — right-sized for current
+# low traffic. 2 keeps HA + safe rolling updates; the HPA still bursts to maxReplicas=12 on real load.
+# Raise back toward max as sustained traffic grows. Rollback: minReplicas/replicaCount 3.
 autoscaling:
   enabled: true
-  minReplicas: 3
+  minReplicas: 2
   maxReplicas: 12
 
 # AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend

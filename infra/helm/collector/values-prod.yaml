@@ -1,4 +1,4 @@
-replicaCount: 3
+replicaCount: 2
 
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-collector-prod
@@ -52,7 +52,10 @@ resources:
     memory: 1Gi
 
 # P2.5: HPA on in prod — collector is the spike-prone ingest front (widest band).
+# AUD-COST (2026-07-13): warm baseline 3 → 2 (matches replicaCount above) — right-sized for current
+# low traffic. 2 keeps the ingest front HA (survives one pod/node loss) behind the ALB + client
+# retries; the HPA still bursts to maxReplicas=24 on real spikes. Rollback: minReplicas/replicaCount 3.
 autoscaling:
   enabled: true
-  minReplicas: 3
+  minReplicas: 2
   maxReplicas: 24

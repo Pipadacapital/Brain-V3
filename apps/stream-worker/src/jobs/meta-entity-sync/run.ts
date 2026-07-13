@@ -16,11 +16,20 @@
  *      adds 'ad.entity.updated' to SERVER_TRUSTED, the events quarantine as tenant_unresolved
  *      (expected — this job is correct ahead of admission; see the handoff).
  *
- * Idempotency / versioning: event_id = uuidV5(brand_id, 'meta', level, entity_id, version) where
- * version = Meta `updated_time` (its change-clock), falling back to the sync DATE when absent. An
- * UNCHANGED re-sync mints the SAME event_id → Bronze MERGE dedups; a real metadata change advances
- * updated_time → a NEW event whose occurred_at lets Silver pick the latest. Logical grain remains
- * (brand_id, platform, level, entity_id).
+ * Idempotency / versioning (ADR-0012 CONTENT-deterministic): event_id = uuidV5(brand_id, 'meta',
+ * level, entity_id, version) where
+ *   version = Meta `updated_time` (its real change-clock, when present)
+ *             else contentHashVersion(e)  — a hash over EVERY meaningful payload field.
+ * There is NO wall-clock / sync-DATE fallback. A version that changed only because the day rolled
+ * over would let a real metadata change WITHIN the same day re-mint the same event_id, and the
+ * ADR-0012 dedup gate would then DROP that change = event loss. Because the fallback is a content
+ * hash, an UNCHANGED re-sync mints the SAME event_id (gate drops it, no churn) while ANY real change
+ * to a hashed field advances the version, minting a NEW event Silver keeps as latest (keep-latest via
+ * a safe drop). Logical grain remains (brand_id, platform, level, entity_id).
+ *
+ * Dedup gate (ADR-0012): at the produce site we filter event_ids already ingested for the brand
+ * (data_plane.ingest_dedup), produce ONLY the unseen ones, then mark-after-produce (produce-first,
+ * mark-after — a crash never loses an event). Mirrors meta-spend-repull / shiprocket-shipment-repull.
  *
  * Tokens are NEVER logged (I-S09). Cadence: ~6h (scheduled by the verify/admission slice — see handoff).
  */
@@ -43,6 +52,7 @@ import {
 } from '../meta-spend-repull/meta-insights-client.js';
 import { MetaEntityClient, type MetaAdEntity } from './meta-entity-client.js';
 import { acquireCursorLock } from '../../infrastructure/pg/CursorRepository.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { log } from '../../log.js';
 
 const cfg = loadStreamWorkerConfig();
@@ -128,7 +138,7 @@ async function syncConnector(params: SyncParams): Promise<void> {
   // units — it MUST carry the account currency as its sibling (I-S07, never blended/float). Best-effort
   // fetch; default 'USD' so a currency hiccup never blocks the entity sync.
   const accountCurrency = await client.fetchAccountCurrency().catch(() => 'USD');
-  const emitted = await emitEntities({ entities, brandId, ciId, producer, accountCurrency });
+  const emitted = await emitEntities({ entities, brandId, ciId, producer, pool, accountCurrency });
   log.info(`[meta-entity-sync] connector=${ciId} COMPLETED entities=${entities.length} emitted=${emitted}`);
 }
 
@@ -137,36 +147,74 @@ interface EmitParams {
   brandId: string;
   ciId: string;
   producer: Producer;
+  pool: Pool;
   /** Ad account ISO currency — the sibling for every MINOR-unit money field on the envelope (I-S07). */
   accountCurrency: string;
 }
 
-/** ISO date (YYYY-MM-DD) version fallback when Meta omits updated_time. */
-function syncDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 /**
- * FIREHOSE (§2.D): a STABLE content-hash version for grains Meta returns WITHOUT updated_time
- * (adcreatives / custom_audiences / saved_audiences). Hashing the projected content fields means an
- * UNCHANGED entity re-mints the SAME event_id (dedup — no re-sync churn), while a real content change
- * advances the version → a new event Silver picks as latest. Never random, never a day-bucket.
+ * CONTENT-hash version fallback (ADR-0012) for the event_id — used for EVERY grain that Meta returns
+ * WITHOUT `updated_time`. It hashes EVERY meaningful field that lands in the emitted `properties` and
+ * that Silver reads for the SCD, so:
+ *   - an UNCHANGED entity re-mints the SAME event_id (the dedup gate drops it — no re-sync churn),
+ *   - ANY real change to ANY hashed field advances the version, minting a NEW event Silver picks as
+ *     latest (keep-latest via a safe drop — NEVER an event loss).
+ * It is NEVER random and NEVER a day-bucket, so it does not depend on the wall clock.
+ *
+ * CORRECTNESS: the field list below is the COMPLETE meaningful set of the emitted properties. It
+ * mirrors the envelope's `properties` object 1:1 (minus platform/currency_code/entity_updated_at,
+ * which are constant per pass / derived — see the notes at each). If a field can change but is not
+ * hashed, its change would be silently dropped by the gate = EVENT LOSS — so when in doubt, INCLUDE.
+ * Order is fixed and each part is JSON-encoded so adjacent values can never smear into a collision.
  */
-function contentHashVersion(e: MetaAdEntity): string {
+function contentHashVersion(e: MetaAdEntity, accountCurrency: string): string {
+  // The full meaningful field set (cross-checked field-by-field against the emitted `properties`):
+  //  - identity/hierarchy: level, entity_id, campaign_id, parent_id (all part of the payload)
+  //  - core SCD: name, status, objective, effective_status
+  //  - money (MINOR-unit strings + the currency sibling, never float): daily_budget_minor,
+  //    lifetime_budget_minor, bid_amount, currency_code
+  //  - config: buying_type, bid_strategy, start_time, stop_time, optimization_goal, billing_event,
+  //    targeting_json, creative_id
+  //  - creative depth: object_story_spec_json, title, body, image_url, video_id,
+  //    call_to_action_type, link_url
+  //  - audience depth (no PII members): subtype, approximate_count
+  // OMITTED (and WHY it is safe): platform (constant 'meta'), advertising_channel_type /
+  //  bidding_strategy (always null for Meta — Google-only), entity_updated_at (this fallback ONLY
+  //  runs when it is null, so it carries no signal here).
   const parts = [
+    e.level,
+    e.entity_id,
+    e.campaign_id,
+    e.parent_id,
     e.name,
     e.status,
-    e.subtype,
-    e.approximate_count,
+    e.objective,
+    e.effective_status,
+    e.buying_type,
+    e.daily_budget_minor,
+    e.lifetime_budget_minor,
+    accountCurrency, // I-S07: money's currency sibling is part of the meaningful state
+    e.bid_strategy,
+    e.start_time,
+    e.stop_time,
+    e.optimization_goal,
+    e.billing_event,
+    e.bid_amount,
+    e.targeting_json,
+    e.creative_id,
+    e.object_story_spec_json,
     e.title,
     e.body,
     e.image_url,
     e.video_id,
     e.call_to_action_type,
     e.link_url,
-    e.object_story_spec_json,
-  ].map((v) => v ?? '');
-  return hashToUuidShaped(`meta:entity-content:${e.level}:${e.entity_id}:${parts.join('')}`);
+    e.subtype,
+    e.approximate_count,
+  ];
+  // JSON.stringify(part ?? null) makes '' vs null vs 'null' unambiguous and delimits fields.
+  const canonical = parts.map((v) => JSON.stringify(v ?? null)).join('|');
+  return hashToUuidShaped(`meta:entity-content:${e.level}:${e.entity_id}:${canonical}`);
 }
 
 /** Normalize Meta's updated_time to a valid UTC ISO (offset:false) for occurred_at, or null. */
@@ -176,25 +224,25 @@ function toUtcIso(s: string | null): string | null {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
+/**
+ * The CONTENT-deterministic event_id for one entity (exported for tests).
+ * version = Meta updated_time (real change-clock) when present, else the full content hash. NEVER a
+ * date/wall-clock value — so a same-day metadata change always mints a NEW id (no ADR-0012 event loss).
+ */
+export function entityEventId(brandId: string, e: MetaAdEntity, accountCurrency: string): string {
+  const version = e.entity_updated_at ?? contentHashVersion(e, accountCurrency);
+  return hashToUuidShaped(`${brandId}:meta:${e.level}:${e.entity_id}:${version}:ad.entity.updated`);
+}
+
 export async function emitEntities(p: EmitParams): Promise<number> {
   if (p.entities.length === 0) return 0;
 
-  const messages = [];
+  const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
   for (const e of p.entities) {
-    // version-deterministic event_id: same metadata state → same id (dedup); a real change advances
-    // Meta's updated_time → a new version → a new event Silver can pick as latest.
-    // FIREHOSE (§2.D): adcreatives/audiences lack updated_time → derive a STABLE content-hash version
-    // from the projected fields (NOT random / NOT syncDate churn), so an unchanged creative/audience
-    // re-mints the SAME id (dedup) and a real content change advances it. Hierarchy grains keep
-    // updated_time (falling back to syncDate only when Meta omits it).
-    const version =
-      e.entity_updated_at ??
-      (e.level === 'adcreative' || e.level === 'custom_audience' || e.level === 'saved_audience'
-        ? contentHashVersion(e)
-        : syncDate());
-    const eventId = hashToUuidShaped(
-      `${p.brandId}:meta:${e.level}:${e.entity_id}:${version}:ad.entity.updated`,
-    );
+    // CONTENT-deterministic event_id (ADR-0012): version = Meta updated_time (real change-clock) when
+    // present, else a hash over EVERY meaningful payload field (contentHashVersion). NEVER a sync-DATE:
+    // a same-day metadata change must mint a NEW id, or the dedup gate would drop it (event loss).
+    const eventId = entityEventId(p.brandId, e, p.accountCurrency);
     const occurredAt = toUtcIso(e.entity_updated_at) ?? new Date().toISOString();
 
     const envelope = CollectorEventV1Schema.parse({
@@ -245,21 +293,48 @@ export async function emitEntities(p: EmitParams): Promise<number> {
     });
 
     messages.push({
+      eventId,
       key: buildPartitionKey(p.brandId, eventId),
       value: Buffer.from(JSON.stringify(envelope)),
     });
     incrementCounter('meta_entity_sync_total', { level: e.level });
   }
 
-  // OTel trace-context propagation (OBS-1/OBS-2) — same as the spend repull.
-  const traceHeaders: Record<string, Buffer | string> = {};
-  injectKafkaTraceContext(traceHeaders);
-  await p.producer.send({
-    topic: LIVE_TOPIC,
-    messages: messages.map((m) => ({ ...m, headers: traceHeaders })),
-  });
-  log.info(`[meta-entity-sync] connector=${p.ciId} emitted=${messages.length}`);
-  return messages.length;
+  // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing, so an
+  // unchanged re-pull never re-floods Bronze (Silver dedup is now only a backstop). Because the version
+  // is content-deterministic, a real change mints a NEW id and is NEVER dropped here (no event loss).
+  // brand GUC set on a short pooled client, then filter+mark. ORDER IS CRITICAL: produce FIRST, mark
+  // AFTER (a crash between at worst re-produces a dup on retry, which Silver backstops).
+  const dedupClient = await p.pool.connect();
+  let emitted = 0;
+  try {
+    await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+    const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
+
+    const toSend = messages.filter((m) => unseen.has(m.eventId));
+    const dropped = messages.length - toSend.length;
+    if (dropped > 0) {
+      incrementCounter('ingest_dedup_dropped_total', { provider: 'meta' });
+      log.info(`[meta-entity-sync] connector=${p.ciId} dedup: dropped ${dropped} already-ingested events`);
+    }
+
+    if (toSend.length > 0) {
+      // OTel trace-context propagation (OBS-1/OBS-2) — same as the spend repull.
+      const traceHeaders: Record<string, Buffer | string> = {};
+      injectKafkaTraceContext(traceHeaders);
+      await p.producer.send({
+        topic: LIVE_TOPIC,
+        messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+      });
+      await markEventIdsSeen(dedupClient, p.brandId, toSend.map((m) => m.eventId));
+      emitted = toSend.length;
+    }
+  } finally {
+    dedupClient.release();
+  }
+
+  log.info(`[meta-entity-sync] connector=${p.ciId} emitted=${emitted}`);
+  return emitted;
 }
 
 // Path-specific entrypoint guard (mirrors meta-spend-repull): match the full directory-qualified

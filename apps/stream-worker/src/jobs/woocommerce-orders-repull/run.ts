@@ -27,8 +27,9 @@ import { Pool } from 'pg';
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext } from '@brain/observability';
+import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import {
@@ -278,7 +279,7 @@ async function repullOrdersCursor(params: CursorRepullParams): Promise<number> {
     const pageResult = await apiClient.fetchOrdersPage(modifiedAfterIso, page);
     if (pageResult.orders.length === 0) break;
 
-    const messages = [];
+    const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
     for (const rawOrder of pageResult.orders) {
       const order = rawOrder as WooOrderShape;
       const orderId = order.id != null ? String(order.id) : '';
@@ -303,6 +304,7 @@ async function repullOrdersCursor(params: CursorRepullParams): Promise<number> {
       });
 
       messages.push({
+        eventId,
         key: buildPartitionKey(brandId, eventId),
         value: Buffer.from(JSON.stringify(envelope)),
       });
@@ -313,14 +315,41 @@ async function repullOrdersCursor(params: CursorRepullParams): Promise<number> {
       recordsProcessed++;
     }
 
+    // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
+    // so a re-pull/backfill overlap never re-floods Bronze. brand GUC set on a short pooled client,
+    // then filter+mark. ORDER IS CRITICAL: produce FIRST, mark AFTER (a crash between at worst
+    // re-produces a dup on retry, which Silver backstops — never loses an event).
+    let emittedThisPage = 0;
     if (messages.length > 0) {
-      // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-      // message so the bronze-bridge consumer resumes this repull's trace.
-      const traceHeaders: Record<string, Buffer | string> = {};
-      injectKafkaTraceContext(traceHeaders);
-      await producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
+      const dedupClient = await pool.connect();
+      try {
+        await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+        const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
+
+        const toSend = messages.filter((m) => unseen.has(m.eventId));
+        const dropped = messages.length - toSend.length;
+        if (dropped > 0) {
+          incrementCounter('ingest_dedup_dropped_total', { provider: 'woocommerce' });
+          log.info(`[woocommerce-orders-repull] connector=${ciId} page=${page} dedup: dropped ${dropped} already-ingested events`);
+        }
+
+        if (toSend.length > 0) {
+          // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+          // message so the bronze-bridge consumer resumes this repull's trace.
+          const traceHeaders: Record<string, Buffer | string> = {};
+          injectKafkaTraceContext(traceHeaders);
+          await producer.send({
+            topic: LIVE_TOPIC,
+            messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+          });
+          await markEventIdsSeen(dedupClient, brandId, toSend.map((m) => m.eventId));
+          emittedThisPage = toSend.length;
+        }
+      } finally {
+        dedupClient.release();
+      }
     }
-    log.info(`[woocommerce-orders-repull] connector=${ciId} page=${page} emitted=${messages.length} total=${recordsProcessed}`);
+    log.info(`[woocommerce-orders-repull] connector=${ciId} page=${page} emitted=${emittedThisPage} total=${recordsProcessed}`);
 
     if (maxModifiedMs !== null) {
       await upsertCursorValue(pool, brandId, ciId, ORDERS_CURSOR_RESOURCE, String(maxModifiedMs));

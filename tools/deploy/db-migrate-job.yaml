@@ -27,6 +27,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: migrate
+          # PLACEHOLDER DIGEST — run-migrations.sh substitutes the LIVE core Deployment's
+          # digest at apply time (the image + db/migrations ship together, so migrations
+          # must run on the currently-deployed image). Do NOT rely on this pinned value;
+          # applying this file directly (without the sed in run-migrations.sh) risks
+          # migrating from a stale image that silently skips new migrations.
           image: "380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod@sha256:955cbeda468e3fbb6175748ce2d6bcfff2e42195eec9760f57fcb245a9aa044d"
           # NOTE: readOnlyRootFilesystem is deliberately NOT set — `pnpm migrate:up`
           # writes to the workdir. Everything else is restricted-compliant.

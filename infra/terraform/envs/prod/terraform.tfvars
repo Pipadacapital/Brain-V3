@@ -13,13 +13,18 @@
 
 vpc_cidr = "10.0.0.0/16"
 
-# GO-LIVE bootstrap access (AUD-COST-009 / AUD-INFRA-008a): operator IP(s).
-# The EKS API endpoint opens publicly ONLY to these CIDRs; [] = private-only.
-# If your ISP rotates the IP, kubectl access dies until this list is
-# re-applied — the refresh procedure AND the SSM port-forward fallback (which
-# works with [] private-only) are in docs/runbooks/eks-api-access.md.
-# Flip to [] once the SSM path is verified end-to-end.
-eks_public_access_cidrs = ["217.165.25.171/32"]
+# EKS API endpoint access (AUD-COST-009 / AUD-INFRA-008a).
+# [] = PRIVATE-ONLY — no public endpoint at all. ACTIVE since 2026-07-13: the
+# recurring ISP-IP-rotation lockout is eliminated because access no longer
+# depends on the operator's public IP. kubectl now goes through the SSM
+# port-forward path (IAM-authenticated, IP-independent):
+#   tools/ops/eks-ssm-tunnel.sh  →  kubectl --context brain-prod-ssm ...
+# The SSM path was verified end-to-end before this flip (see
+# docs/runbooks/eks-api-access.md §B). Break-glass if SSM ever breaks: AWS
+# console / CLI `aws eks update-cluster-config ... publicAccessCidrs=<ip>/32`
+# (then bring this file back in line, or the next apply reverts it).
+# To re-open a public pin instead, put an operator "<ip>/32" back in the list.
+eks_public_access_cidrs = []
 
 # EKS system node group (platform add-ons only; workloads run on Karpenter Spot).
 system_node_desired = 3

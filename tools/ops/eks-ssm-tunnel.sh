@@ -52,8 +52,10 @@ fi
 
 # ── 1. resolve the private API endpoint host + an Online SSM node as the jump ───
 EP="$(aws eks describe-cluster --region "$REGION" --name "$CLUSTER" --query 'cluster.endpoint' --output text | sed 's#https://##')"
+# Project InstanceId FIRST then take [0]; `| head -1` is a belt-and-suspenders guard so IID is
+# ALWAYS a single token (a multi-line value fails SSM's --target regex, which forbids newlines).
 IID="$(aws ssm describe-instance-information --region "$REGION" \
-        --query 'InstanceInformationList[?PingStatus==`Online`]|[0].InstanceId' --output text)"
+        --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId | [0]' --output text | head -1)"
 [ -n "$EP" ] && [ "$IID" != "None" ] && [ -n "$IID" ] || { log "no endpoint or no Online SSM node"; exit 1; }
 log "endpoint=$EP  jump-node=$IID  local=127.0.0.1:${LOCAL_PORT}"
 

@@ -680,6 +680,9 @@ importers:
       '@brain/money':
         specifier: workspace:*
         version: link:../money
+      '@brain/observability':
+        specifier: workspace:*
+        version: link:../observability
     devDependencies:
       '@types/pg':
         specifier: ^8.11.0

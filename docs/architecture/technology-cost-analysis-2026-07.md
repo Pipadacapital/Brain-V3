@@ -107,10 +107,14 @@ point later).
 
 ### 3.3 Object storage — S3
 
-- **✅ Recommendation: KEEP.** Add **S3 lifecycle → Intelligent-Tiering** on the
-  Bronze warehouse prefix (Bronze is append-only and rarely re-read after Silver
-  folds it). At T2's billions of rows this is a real cumulative saving; at T0 it's
-  pennies but free to set now. Low effort, set-and-forget.
+- **✅ Recommendation: KEEP — Intelligent-Tiering ALREADY DONE (AUD-PROD-019, live).**
+  The warehouse bucket (`brain-bronze-prod-…`) has a day-0 transition to
+  `INTELLIGENT_TIERING` on the whole medallion (verified live on the bucket), with
+  `TransitionDefaultMinimumObjectSize=all_storage_classes_128K` so small Iceberg
+  metadata files don't incur the monitoring fee. It deliberately does NOT use the
+  ARCHIVE/DEEP_ARCHIVE tiers (their async restore would fail Iceberg reads with
+  `InvalidObjectState`). This grows into a real cumulative saving at T2 with zero
+  further action. Nothing to do.
 
 ---
 
@@ -315,11 +319,11 @@ point later).
 | — | ✅ **EKS 1.32 → 1.33 + AL2023** (dropped extended support) | Done 07-12 | **~$360/mo — already realized** | — | — |
 | 1 | **DuckDB pilot → migrate transform tier** (Spark is already local-mode) | Pilot/Swap | Big: cost + kills Spark OOM + faster crons | Med–High | Med (parity re-validate) |
 | 2 | **Predictions runtime = in-cluster Python/DuckDB crons** (not SageMaker) | Build-in-slot | avoids managed-ML $$; unlocks the goal | Med | Low |
-| 3 | **S3 Intelligent-Tiering on Bronze prefix** | Right-size | grows with T2 volume | Low | None |
-| 4 | ✅ **Valkey swap** (done #144/#145; run CLI migration) | Swap | ~20% of cache (~$3/mo) + licensing | Done | Low |
-| 5 | **AI gateway: Haiku-first + prompt-cache stable prefixes + refresh model tiers** | Tune | LLM spend down | Low | Low |
-| 6 | **Trino `maxReplicas` cut — DATA-DRIVEN ONLY** (after hit-rate metric proves near-idle burst) | Hold→Right-size | small burst-only | Low | Med (OOM on sole serving engine if cut blind) |
-| 7 | **Neo4j: identity write-batching + lag tripwire** (Enterprise decision at T2) | Right-size/Hold | headroom to T1 | Low–Med | Med at T2 |
+| — | ✅ **S3 Intelligent-Tiering on the warehouse** (AUD-PROD-019) | Done, live | grows with T2 volume | — | — |
+| — | ✅ **Valkey swap** (done #144/#145; run CLI migration) | Swap | ~20% of cache (~$3/mo) + licensing | Done | Low |
+| 3 | **AI gateway: Haiku-first + prompt-cache stable prefixes + refresh model tiers** | Tune | LLM spend down | Low | Low |
+| 4 | **Trino `maxReplicas` cut — DATA-DRIVEN ONLY** (after hit-rate metric proves near-idle burst) | Hold→Right-size | small burst-only | Low | Med (OOM on sole serving engine if cut blind) |
+| 5 | **Neo4j: identity write-batching + lag tripwire** (Enterprise decision at T2) | Right-size/Hold | headroom to T1 | Low–Med | Med at T2 |
 | — | **Cadence: schedule EKS 1.33 → 1.34+** before 1.33 standard-support ends (~late-2026) | Maintenance | avoids re-incurring extended-support fee | Low | Low |
 
 > **Config right-sizing is exhausted, safely.** The two config levers an earlier
@@ -329,10 +333,12 @@ point later).
 > burst ceiling only *raises* OOM risk on the sole serving engine. Kafka and Trino are
 > each already at their safe cost floor.
 
-**The biggest EKS lever is already banked** (−$360/mo, 07-12), and Kafka/Trino are
-already at their safe floors. So the top remaining moves are **structural, not config**:
-**#1 the DuckDB transform pilot** (cost + reliability) and **#2 the predictions
-runtime**, plus the zero-risk **#3 S3 Intelligent-Tiering**.
+**Nearly every config-level lever is already banked** — EKS 1.33 (−$360/mo), Valkey,
+S3 Intelligent-Tiering, and Kafka/Trino sitting at their safe floors. So the top
+remaining moves are **structural, not config**: **#1 the DuckDB transform pilot**
+(cost + reliability) and **#2 the predictions runtime**. The platform is already
+well cost-optimized; the real gains now come from the transform-tier engine swap, not
+from more tuning.
 
 ---
 

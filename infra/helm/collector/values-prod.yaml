@@ -3,7 +3,7 @@ replicaCount: 2
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-collector-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:cd88aa14e65314448bbfbce2c73a8234adb478407abf653dcfd6a578923000c0"
+  digest: "sha256:9a11cd418d4a005e1e4cdd257e33abe6063cd8e3144c9814f27ff1436cfd9d66"
 
 envSecretName: collector-env
 

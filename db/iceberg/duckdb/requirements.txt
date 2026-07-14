@@ -1,0 +1,6 @@
+# Spark→DuckDB migration — Python deps for the DuckDB transform tier.
+# Kept separate from the Spark image; the DuckDB cron pods install only these.
+duckdb>=1.5.3          # MERGE INTO + REST-catalog Iceberg writes (2026-05); the migration floor
+numpy>=1.26            # Markov attribution solve (Phase 2) — same algorithm as the Spark job
+splink>=4.0            # probabilistic stitch via the DuckDB backend (Phase 4c), NOT PySpark
+pyiceberg>=0.7         # table maintenance (snapshot expiry / orphan cleanup) where Trino isn't used (Phase 5)

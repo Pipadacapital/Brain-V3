@@ -28,6 +28,7 @@
  */
 
 import { Pool } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 import { incrementCounter } from '@brain/observability';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
@@ -175,7 +176,7 @@ async function setSyncStateError(pool: Pool, brandId: string, connectorInstanceI
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+    await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
     await client.query(
       `UPDATE connector_sync_status
        SET state = 'error', error_message = $3, updated_at = NOW()

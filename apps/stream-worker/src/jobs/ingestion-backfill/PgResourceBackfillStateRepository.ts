@@ -15,6 +15,7 @@
  */
 
 import type { Pool } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 import {
   ResourceBackfillState,
   type ResourceBackfillStateProps,
@@ -66,7 +67,7 @@ export class PgResourceBackfillStateRepository implements IResourceBackfillState
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       const res = await client.query<BackfillStateRow>(
         `SELECT id, brand_id, connector_instance_id, resource, status, anchor_at, floor_at,
                 cursor_value, reached_at, records_processed, failure_reason, updated_at
@@ -92,7 +93,7 @@ export class PgResourceBackfillStateRepository implements IResourceBackfillState
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       const res = await client.query<BackfillStateRow>(
         `SELECT id, brand_id, connector_instance_id, resource, status, anchor_at, floor_at,
                 cursor_value, reached_at, records_processed, failure_reason, updated_at
@@ -119,7 +120,7 @@ export class PgResourceBackfillStateRepository implements IResourceBackfillState
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       const res = await client.query<BackfillStateRow>(
         `SELECT id, brand_id, connector_instance_id, resource, status, anchor_at, floor_at,
                 cursor_value, reached_at, records_processed, failure_reason, updated_at
@@ -148,7 +149,7 @@ export class PgResourceBackfillStateRepository implements IResourceBackfillState
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [p.brandId]);
+      await client.query(buildContextGucSql({ brandId: p.brandId, correlationId: '' }));
       await client.query(
         `INSERT INTO jobs.resource_backfill_state
            (id, brand_id, connector_instance_id, resource, status, anchor_at, floor_at,

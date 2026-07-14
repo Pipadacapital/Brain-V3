@@ -32,6 +32,7 @@ import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import {
   mapWooOrderToEvent,
   uuidV5FromOrderLive,
@@ -323,7 +324,7 @@ async function repullOrdersCursor(params: CursorRepullParams): Promise<number> {
     if (messages.length > 0) {
       const dedupClient = await pool.connect();
       try {
-        await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+        await dedupClient.query(buildContextGucSql({ brandId, correlationId: '' }));
         const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
 
         const toSend = messages.filter((m) => unseen.has(m.eventId));
@@ -374,7 +375,7 @@ async function setSyncState(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+    await client.query(buildContextGucSql({ brandId, correlationId: '' }));
     // UPSERT, not UPDATE (matches the shared connector re-pull pattern): if the connect-time connector_sync_status row
     // is missing for any reason, an UPDATE-only write is a silent no-op and the marketplace tile +
     // dashboard Connection Status widget are stuck on "Not synced yet" forever even though data is

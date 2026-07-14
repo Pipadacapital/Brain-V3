@@ -17,6 +17,7 @@
  *   SET LOCAL for transaction-block scope).
  */
 import { Pool, PoolClient } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 import { BronzeRow } from '../../domain/bronze/BronzeRow.js';
 
 export interface WriteResult {
@@ -137,10 +138,7 @@ export class BronzeRepository {
       // This is mandatory before any RLS-filtered query — the policy reads this GUC.
       // Architecture note: SET LOCAL app.current_brand_id = $1 is invalid SQL;
       // set_config('name', value, is_local) is the correct parametric form.
-      await client.query(
-        "SELECT set_config('app.current_brand_id', $1, true)",
-        [row.brand_id],
-      );
+      await client.query(buildContextGucSql({ brandId: row.brand_id, correlationId: '' }));
 
       const result = await client.query(
         `INSERT INTO bronze_events (

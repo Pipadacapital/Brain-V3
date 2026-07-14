@@ -42,6 +42,7 @@ import { buildPartitionKey } from '@brain/events';
 import { hashToUuidShaped } from '@brain/connector-core';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import {
   enumerateConnectors,
   resolveMetaCredentials,
@@ -308,7 +309,7 @@ export async function emitEntities(p: EmitParams): Promise<number> {
   const dedupClient = await p.pool.connect();
   let emitted = 0;
   try {
-    await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+    await dedupClient.query(buildContextGucSql({ brandId: p.brandId, correlationId: '' }));
     const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
 
     const toSend = messages.filter((m) => unseen.has(m.eventId));

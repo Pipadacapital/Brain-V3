@@ -32,6 +32,7 @@
 
 import { Pool } from 'pg';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
@@ -317,7 +318,7 @@ async function repullShipmentCursor(params: CursorRepullParams): Promise<number>
       const dedupClient = await pool.connect();
       let unseen: Set<string>;
       try {
-        await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+        await dedupClient.query(buildContextGucSql({ brandId, correlationId: '' }));
         unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
 
         const toSend = messages.filter((m) => unseen.has(m.eventId));
@@ -373,7 +374,7 @@ async function setSyncState(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+    await client.query(buildContextGucSql({ brandId, correlationId: '' }));
     // UPSERT, not UPDATE (connector re-pull pattern): a missing connect-time row would make an
     // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {

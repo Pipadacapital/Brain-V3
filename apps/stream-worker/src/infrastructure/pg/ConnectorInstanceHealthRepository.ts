@@ -25,6 +25,7 @@
  */
 
 import type { Pool } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 import type { HealthState, SafetyRating } from '@brain/connector-core';
 import { log } from '../../log.js';
 
@@ -69,10 +70,7 @@ export async function updateConnectorInstanceHealth(
   try {
     await client.query('BEGIN');
     // NN-1 / ADR-LV-7: GUC BEFORE brand-scoped write — connector_instance has FORCE RLS.
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true)`,
-      [brandId],
-    );
+    await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
     const result = await client.query(
       `UPDATE connector_instance
           SET health_state  = $3,
@@ -158,10 +156,7 @@ export async function recoverConnectorInstanceHealth(
   try {
     await client.query('BEGIN');
     // NN-1 / ADR-LV-7: GUC BEFORE brand-scoped write — connector_instance has FORCE RLS.
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true)`,
-      [brandId],
-    );
+    await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
     const result = await client.query(
       `UPDATE connector_instance
           SET health_state  = $3,

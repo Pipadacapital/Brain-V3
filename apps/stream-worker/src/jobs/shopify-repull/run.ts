@@ -39,6 +39,7 @@ import { injectKafkaTraceContext, incrementCounter } from '@brain/observability'
 import { createSaltProvider, type SaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import { ShopifyLiveClient } from './shopify-live-client.js';
 import {
   mapOrderToEvent,
@@ -314,7 +315,7 @@ async function repullConnector(params: RepullParams): Promise<void> {
       if (messages.length > 0) {
         const dedupClient = await pool.connect();
         try {
-          await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+          await dedupClient.query(buildContextGucSql({ brandId, correlationId: '' }));
           const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
 
           const toSend = messages.filter((m) => unseen.has(m.eventId));
@@ -444,10 +445,7 @@ async function setSyncState(
   try {
     await client.query('BEGIN');
     // GUC BEFORE brand-scoped write (NN-1 / ADR-LV-7)
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true)`,
-      [brandId],
-    );
+    await client.query(buildContextGucSql({ brandId, correlationId: '' }));
     // UPSERT, not UPDATE (matches the shared connector re-pull pattern): a missing connect-time row would make an
     // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {
@@ -510,7 +508,7 @@ async function claimSyncingState(
   try {
     await client.query('BEGIN');
     // GUC BEFORE brand-scoped write (NN-1 / ADR-LV-7) — RLS FORCE on connector_sync_status.
-    await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+    await client.query(buildContextGucSql({ brandId, correlationId: '' }));
     const res = await client.query(
       `INSERT INTO connector_sync_status (brand_id, connector_instance_id, state, last_error, updated_at)
        VALUES ($1, $2, 'syncing', NULL, NOW())

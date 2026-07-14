@@ -46,6 +46,7 @@ import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
@@ -271,7 +272,7 @@ async function emitEntities(p: EmitEntityParams): Promise<number> {
   const dedupClient = await p.pool.connect();
   let emitted = 0;
   try {
-    await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+    await dedupClient.query(buildContextGucSql({ brandId: p.brandId, correlationId: '' }));
     const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
 
     const toSend = messages.filter((m) => unseen.has(m.eventId));

@@ -21,6 +21,7 @@
 
 import { Pool, PoolClient } from 'pg';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 
 const DB_URL = loadStreamWorkerConfig().BRAIN_APP_DATABASE_URL;
 
@@ -109,10 +110,7 @@ export class PgBackfillJobRepository {
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        "SELECT set_config('app.current_brand_id', $1, true)",
-        [params.brandId],
-      );
+      await client.query(buildContextGucSql({ brandId: params.brandId, correlationId: '' }));
       const result = await client.query<{ id: string }>(
         `INSERT INTO backfill_job
            (brand_id, connector_instance_id, status, records_processed, requested_window_ms)
@@ -144,10 +142,7 @@ export class PgBackfillJobRepository {
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        "SELECT set_config('app.current_brand_id', $1, true)",
-        [brandId],
-      );
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
 
       // Lock the queued row for this connector (SKIP LOCKED = no wait if another worker racing)
       const lockResult = await client.query<{ id: string }>(
@@ -202,7 +197,7 @@ export class PgBackfillJobRepository {
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       const res = await client.query(
         `UPDATE backfill_job
             SET status = 'queued', started_at = NULL, updated_at = NOW()
@@ -239,7 +234,7 @@ export class PgBackfillJobRepository {
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       const res = await client.query(
         `UPDATE backfill_job
             SET status            = 'queued',
@@ -269,10 +264,7 @@ export class PgBackfillJobRepository {
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        "SELECT set_config('app.current_brand_id', $1, true)",
-        [params.brandId],
-      );
+      await client.query(buildContextGucSql({ brandId: params.brandId, correlationId: '' }));
       await client.query(
         `UPDATE backfill_job
          SET records_processed = $2,
@@ -307,10 +299,7 @@ export class PgBackfillJobRepository {
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        "SELECT set_config('app.current_brand_id', $1, true)",
-        [params.brandId],
-      );
+      await client.query(buildContextGucSql({ brandId: params.brandId, correlationId: '' }));
       await client.query(
         `UPDATE backfill_job
          SET status                = $2,
@@ -346,7 +335,7 @@ export class PgBackfillJobRepository {
   async findById(jobId: string, brandId: string): Promise<BackfillJobRow | null> {
     const client: PoolClient = await this.pool.connect();
     try {
-      await client.query("SELECT set_config('app.current_brand_id', $1, false)", [brandId]);
+      await client.query("SELECT set_config('app.current_brand_id',$1,false), set_config('app.current_workspace_id',$1,false), set_config('app.current_user_id',$1,false)", [brandId]); // set all 3 GUCs session-scoped (reuse brandId as non-throwing placeholder for user/workspace; preserves is_local=false)
       const result = await client.query<BackfillJobRow>(
         'SELECT * FROM backfill_job WHERE id = $1',
         [jobId],
@@ -366,7 +355,7 @@ export class PgBackfillJobRepository {
   ): Promise<BackfillJobRow | null> {
     const client: PoolClient = await this.pool.connect();
     try {
-      await client.query("SELECT set_config('app.current_brand_id', $1, false)", [brandId]);
+      await client.query("SELECT set_config('app.current_brand_id',$1,false), set_config('app.current_workspace_id',$1,false), set_config('app.current_user_id',$1,false)", [brandId]); // set all 3 GUCs session-scoped (reuse brandId as non-throwing placeholder for user/workspace; preserves is_local=false)
       const result = await client.query<BackfillJobRow>(
         `SELECT * FROM backfill_job
          WHERE connector_instance_id = $1

@@ -34,6 +34,7 @@ import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import {
   mapGa4RowToEvent,
   uuidV5FromGa4Row,
@@ -314,7 +315,7 @@ async function emitRows(
     // re-produces a dup on retry, which Silver backstops — never loses an event).
     const dedupClient = await p.pool.connect();
     try {
-      await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+      await dedupClient.query(buildContextGucSql({ brandId: p.brandId, correlationId: '' }));
       const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
 
       const toSend = messages.filter((m) => unseen.has(m.eventId));

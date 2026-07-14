@@ -22,6 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 
 /** UUID v5 namespace (DNS-like, arbitrary fixed value for DLQ address dedup). */
 const DLQ_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // UUID v5 DNS namespace
@@ -105,10 +106,7 @@ export class DlqRecordRepository {
 
       // NN-1 / I-S01: GUC scoped to this transaction so the FORCE RLS policy
       // can verify brand_id on the new row.
-      await client.query(
-        "SELECT set_config('app.current_brand_id', $1, true)",
-        [input.brandId],
-      );
+      await client.query(buildContextGucSql({ brandId: input.brandId, correlationId: '' }));
 
       const result = await client.query<{ dlq_id: string }>(
         `INSERT INTO connectors.connector_dlq_record
@@ -162,10 +160,7 @@ export class DlqRecordRepository {
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        "SELECT set_config('app.current_brand_id', $1, true)",
-        [brandId],
-      );
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       // Update all rows for this Kafka address (may be >1 if cross-day duplicates exist).
       await client.query(
         `UPDATE connectors.connector_dlq_record

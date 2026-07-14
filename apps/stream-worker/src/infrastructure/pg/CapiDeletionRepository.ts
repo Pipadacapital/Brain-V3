@@ -26,6 +26,7 @@
  * No raw PII: subject_hash is a 64-hex identity-core hash; nothing raw is written.
  */
 import { Pool } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 
 export type CapiDeletionStatus =
   | 'requested'
@@ -74,7 +75,7 @@ export class CapiDeletionRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [row.brandId]);
+      await client.query(buildContextGucSql({ brandId: row.brandId, correlationId: '' }));
 
       // Count this subject's prior passback events (the deletion scope). RLS-enforced
       // under the same brand GUC → cross-brand rows are invisible (return 0).

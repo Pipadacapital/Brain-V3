@@ -20,6 +20,7 @@
  * No raw PII: subject_hash is a 64-hex identity-core hash; nothing raw is written.
  */
 import { Pool } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 
 export type ConsentCategory =
   | 'analytics'
@@ -74,7 +75,7 @@ export class ConsentRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
 
       for (const r of records) {
         // Dedup target: the partial unique index on (brand_id, subject_hash, category,

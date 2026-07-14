@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:2b714e5194f4aa6fcdd03ac96a22770da90320881c7ab6e29d4d2371219a9c3a"
+  digest: "sha256:5360302eace91f234b7070571bc5a4973e3729b41376ef7d877e1722e6db2f5e"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:ee60f8c31ca5632671dc841ef0e07f0ce33f13221d8d70abaae453de74ac6b55"
+  digest: "sha256:f711d309b50742f5acba211ebcba646fc1dbc00b410e124892804ac0d639a9c9"
 # duckdb image (db/iceberg/duckdb/Dockerfile) — runs the bronze/medallion maintenance + erasure (via the
 # Trino client it carries) AND the V4 Silver/Gold transform crons (.sparkV4.image — CI digest-pins both,
 # one image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover replaces
@@ -16,13 +16,13 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:6ed1a42ad5dfea67562162a6af5e1f62992cd8791c1ddf40bd2ef725ec54ca9b"
+    digest: "sha256:0b71920c07ffa5437550f91c3a458e4511be3a305180630795e0399819325f84"
 # duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image).
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:6ed1a42ad5dfea67562162a6af5e1f62992cd8791c1ddf40bd2ef725ec54ca9b"
+    digest: "sha256:0b71920c07ffa5437550f91c3a458e4511be3a305180630795e0399819325f84"
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
 # BRAIN_APP_DATABASE_URL, TRINO_HOST/TRINO_PORT, ICEBERG_*). External Secrets ← AWS Secrets Manager.
 envSecretName: core-env

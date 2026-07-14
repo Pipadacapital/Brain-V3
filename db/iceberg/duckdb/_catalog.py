@@ -67,6 +67,11 @@ def connect():
     _assert_version(duckdb)
 
     con = duckdb.connect(database=":memory:", read_only=False)
+    # Operate in UTC to match Spark's UTC-instant convention: the medallion stores timestamps as
+    # Iceberg timestamptz (UTC instants), so a fixed UTC session makes reads/writes and rendering
+    # deterministic and TZ-artifact-free (otherwise a session-local TZ shifts wall-clocks + breaks
+    # cross-engine checksum comparison). Every ported job inherits this.
+    con.execute("SET TimeZone='UTC';")
     con.execute("INSTALL iceberg; LOAD iceberg;")
     con.execute("INSTALL httpfs; LOAD httpfs;")
 

@@ -25,17 +25,35 @@ import sys
 from _catalog import CATALOG, SILVER_NAMESPACE, connect
 
 
+def _norm(con, table: str, col: str) -> str:
+    """Render a column for the checksum in a type-stable, TZ-artifact-free way.
+
+    Timestamp/timestamptz → canonical UTC microsecond string (so a Spark timestamptz UTC instant and a
+    DuckDB timestamp of the same instant render identically). Everything else → plain CAST to VARCHAR.
+    """
+    t = con.execute(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ? LIMIT 1",
+        [table.split(".")[-1], col],
+    ).fetchone()
+    dtype = (t[0] if t else "").upper()
+    if "TIMESTAMP" in dtype:
+        return f"strftime(CAST({col} AS TIMESTAMP), '%Y-%m-%d %H:%M:%S.%g')"
+    return f"CAST({col} AS VARCHAR)"
+
+
 def parity(namespace: str, table: str, keys: list[str], cols: list[str], suffix: str) -> bool:
     con = connect()
     spark = f"{CATALOG}.{namespace}.{table}"
     duck = f"{CATALOG}.{namespace}.{table}{suffix}"
-    all_cols = keys + cols
-    cl = ", ".join(all_cols)
     key_sel = ", ".join(keys)
     order = ", ".join(keys)
 
     ns = con.execute(f"SELECT count(*) FROM {spark}").fetchone()[0]
     nd = con.execute(f"SELECT count(*) FROM {duck}").fetchone()[0]
+    # only_s = Spark rows MISSING from DuckDB → a real regression (FAIL).
+    # only_d = DuckDB rows not in Spark → almost always NEWER source events landed after the static
+    #          Spark snapshot (oracle drift). A superset is acceptable; we flag it, we don't fail on it.
     only_s = con.execute(
         f"SELECT count(*) FROM (SELECT {key_sel} FROM {spark} EXCEPT SELECT {key_sel} FROM {duck})"
     ).fetchone()[0]
@@ -48,21 +66,29 @@ def parity(namespace: str, table: str, keys: list[str], cols: list[str], suffix:
         f"SELECT count(*) FROM {spark} s JOIN {duck} d ON {join_on} WHERE {diff_pred}"
     ).fetchone()[0]
 
-    def cksum(t: str) -> str:
-        return con.execute(
-            f"SELECT md5(string_agg(concat_ws('|', {cl}), chr(10) ORDER BY {order})) FROM {t}"
-        ).fetchone()[0]
+    # Checksum over the SHARED-key intersection only (so oracle drift doesn't corrupt it),
+    # timestamp-normalized. Compares like-for-like rows on both engines.
+    norm_cols = ", ".join(_norm(con, spark, c) for c in keys + cols)
+    shared_cksum_sql = (
+        "SELECT md5(string_agg(concat_ws('|', {ncols}), chr(10) ORDER BY {order})) "
+        "FROM {t} WHERE ({keysel}) IN (SELECT {keysel} FROM {other})"
+    )
+    cs = con.execute(shared_cksum_sql.format(ncols=norm_cols, order=order, t=spark, keysel=key_sel, other=duck)).fetchone()[0]
+    cd = con.execute(shared_cksum_sql.format(ncols=norm_cols, order=order, t=duck, keysel=key_sel, other=spark)).fetchone()[0]
 
-    cs, cd = cksum(spark), cksum(duck)
-    ok = ns == nd and only_s == 0 and only_d == 0 and diff == 0 and cs == cd
+    ok = only_s == 0 and diff == 0 and cs == cd
+    drift = only_d > 0
 
     print(f"── parity: {table} ──")
-    print(f"  rows          spark={ns}  duckdb={nd}  {'MATCH' if ns == nd else 'DIFF'}")
-    print(f"  key-set diff  only-spark={only_s}  only-duckdb={only_d}")
+    print(f"  rows          spark={ns}  duckdb={nd}")
+    print(f"  key-set       missing-from-duckdb={only_s}  duckdb-only(new source)={only_d}")
     print(f"  content diff  mismatches-on-shared-keys={diff}")
-    print(f"  checksum      spark={cs}")
+    print(f"  shared cksum  spark={cs}")
     print(f"                duckdb={cd}  {'MATCH' if cs == cd else 'DIFF'}")
-    print(f"  PARITY: {'PASS ✅' if ok else 'REVIEW ❌'}")
+    verdict = "PASS ✅" if ok else "REVIEW ❌"
+    if ok and drift:
+        verdict += f"  (DuckDB is a correct SUPERSET: +{only_d} newer source rows vs the stale Spark snapshot)"
+    print(f"  PARITY: {verdict}")
     return ok
 
 

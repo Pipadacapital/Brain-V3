@@ -15,6 +15,23 @@ brain-<environment>-trino (e.g. brain-prod-trino) so the BFF can target a stable
 {{- printf "%s-worker" (include "trino.fullname" .) -}}
 {{- end -}}
 
+{{/*
+BATCH cluster names (ADR-0002 — additive FTE cluster). brain-<env>-trino-batch is a SEPARATE logical
+Trino cluster (own coordinator/discovery/Service) rendered only when batchCluster.enabled. Distinct
+selector via app.kubernetes.io/component=batch-* keeps it from ever joining the interactive cluster.
+*/}}
+{{- define "trino.batch.fullname" -}}
+{{- printf "%s-batch" (include "trino.fullname" .) -}}
+{{- end -}}
+
+{{- define "trino.batch.coordinator.fullname" -}}
+{{- printf "%s-coordinator" (include "trino.batch.fullname" .) -}}
+{{- end -}}
+
+{{- define "trino.batch.worker.fullname" -}}
+{{- printf "%s-worker" (include "trino.batch.fullname" .) -}}
+{{- end -}}
+
 {{/* Common labels applied to every object. */}}
 {{- define "trino.labels" -}}
 app.kubernetes.io/name: {{ .Chart.Name }}

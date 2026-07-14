@@ -96,6 +96,20 @@ nodePools:
       cpu: "20"
       memory: 80Gi
     taints: []                       # untainted: existing untainted workloads can land here today
+    # ADR-0003: integer disruption budget. The streaming pool hosts the live ingest
+    # front (collector), the Kafka consumers (stream-worker) AND the on-demand-pinned
+    # Kafka brokers — never disrupt more than ONE node at a time so a quorum member +
+    # a consumer partition are never bounced together. The business-hours FREEZE
+    # (`Underutilized`/`Drifted` only, weekdays 09:00–18:00 IST = 03:30 UTC for 9h)
+    # holds voluntary consolidation off the hot path during the day; `Empty` reclaim
+    # (a fully-drained node) is intentionally NOT frozen so idle Spot still returns.
+    # PDBs (each workload's pdb.minAvailable:1) are the second guard. Revert: drop this.
+    disruptionBudgets:
+      - nodes: "1"
+      - nodes: "0"
+        reasons: ["Underutilized", "Drifted"]
+        schedule: "30 3 * * mon-fri"   # 09:00 IST (UTC+5:30)
+        duration: "9h"                  # through 18:00 IST
   # NOTE: the `batch` pool was REMOVED in the Spark→DuckDB cutover (feat/spark-to-duckdb-cutover). It
   # existed for the Spark Silver/Gold transforms (a dedicated 4vCPU/16Gi off-peak node); those are gone.
   # The DuckDB transform + Trino-maintenance crons are lightweight python (no JVM) and run on the
@@ -113,6 +127,12 @@ nodePools:
       cpu: "8"
       memory: 32Gi
     taints: []
+    # ADR-0003: integer budget — cap voluntary disruption at 1 node so Trino serving
+    # workers keep a scan node during consolidation (the Trino coordinator is on the
+    # ondemand pool; KEDA scales these workers). No business-hours freeze: this pool
+    # already scales to ~0 off-peak and consolidateAfter is a gentle 1m. Revert: drop.
+    disruptionBudgets:
+      - nodes: "1"
   # AUD-COST-018: ON-DEMAND home for single-instance stateful SoRs. Neo4j (the
   # identity SYSTEM OF RECORD, ADR-0004, Community = no HA) must not ride Spot —
   # a reclaim bounces the only replica. TAINTED so nothing lands on paid
@@ -134,6 +154,15 @@ nodePools:
     limits:                          # ~0-2 nodes; scales to zero when nothing tolerates the taint
       cpu: "8"
       memory: 32Gi
+    # ADR-0003: NEVER voluntarily disrupt this pool. It homes the Neo4j identity SoR
+    # (Community = single replica, no HA — AUD-COST-018); any voluntary disruption
+    # bounces the only writer. `WhenEmpty` already blocks bin-packing a live node;
+    # a 0-node budget on the voluntary reasons blocks Drift/expiry churn too. The
+    # ONE planned monthly bounce for patching is `expireAfter: 720h` (involuntary,
+    # not budget-governed). Revert: drop disruptionBudgets.
+    disruptionBudgets:
+      - nodes: "0"
+        reasons: ["Underutilized", "Drifted"]
     taints:
       - key: brain.platform/pool
         value: ondemand

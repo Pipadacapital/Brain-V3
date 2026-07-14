@@ -1,9 +1,13 @@
 name: knip
 
-# Dead-code report: flags unused files, exports, and dependencies across the pnpm
-# monorepo so cruft is caught automatically going forward. NON-BLOCKING by design
-# (continue-on-error + a job summary) — it reports, it does not gate merges. Promote
-# to a blocking gate later once the baseline is clean.
+# Dead-code gate: flags unused files, exports, and dependencies across the pnpm
+# monorepo so cruft is caught automatically going forward. BLOCKING (per the
+# platform-reset engineering standards 09 §3.4 / 08 backlog #5 — "promote knip
+# from report-only to a blocking gate"). knip runs with its normal exit code so
+# a NEW unused file/export/dep FAILS the release→master promotion PR; the full
+# report is still published to the job summary for triage. Baseline exceptions
+# live in knip.jsonc (ignore/ignoreDependencies) — add a documented ignore there
+# rather than reverting this gate.
 
 on:
   pull_request:
@@ -16,7 +20,7 @@ permissions:
 
 jobs:
   knip:
-    name: Dead-code report (knip, non-blocking)
+    name: Dead-code gate (knip, blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -27,23 +31,25 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Run knip (report-only)
+      - name: Run knip (blocking; report captured to summary)
         id: knip
-        continue-on-error: true
         run: |
           set -o pipefail
           # Pinned, no-install-side-effect run via pnpm dlx; reads ./knip.jsonc.
-          pnpm dlx knip@5 --no-exit-code --reporter markdown | tee knip-report.md
+          # NO --no-exit-code: knip exits non-zero on any unused file/export/dep →
+          # this step (and the job) FAILS the PR. The report is still tee'd for the
+          # summary step below (which runs on failure via `if: always()`).
+          pnpm dlx knip@5 --reporter markdown | tee knip-report.md
 
       - name: Publish report to job summary
         if: always()
         run: |
           {
-            echo "## knip — dead-code report (non-blocking)"
+            echo "## knip — dead-code gate (blocking)"
             echo ""
             if [ -s knip-report.md ]; then
               cat knip-report.md
             else
-              echo "_No knip output captured._"
+              echo "_No knip findings — clean._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

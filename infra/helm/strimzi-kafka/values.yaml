@@ -51,6 +51,12 @@ kafka:
     # to the streaming node pool.
     affinity: {}
     tolerations: []
+    # REL-6: broker AZ-spread. Empty by default (single-AZ local/kind unchanged);
+    # values-prod adds a ScheduleAnyway zone spread so the 3 brokers prefer distinct
+    # AZs. SOFT by design — it must never block the on-demand broker roll (the hard
+    # constraints remain the required hostname anti-affinity + streaming/on-demand
+    # nodeAffinity). Reversible: clear this list to revert to hostname-only spread.
+    topologySpreadConstraints: []
 
   # ── Listeners (INTERNAL only — no external/LoadBalancer exposure) ────────────────────────────
   # plain :9092 and tls :9093, both type=internal. The app/BFF/collector/stream-worker + Spark all

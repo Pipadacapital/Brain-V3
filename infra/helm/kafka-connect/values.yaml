@@ -24,7 +24,12 @@ image:
 icebergConnectVersion: "1.9.2"
 pluginZipUrl: "https://hub-downloads.confluent.io/api/plugins/iceberg/iceberg-kafka-connect/versions/1.9.2/iceberg-iceberg-kafka-connect-1.9.2.zip"
 
-replicas: 1                # single worker is correct at current scale; the commit coordinator is singular anyway
+replicas: 1                # base/local default: single worker. values-prod runs 2 (REL-4 HA).
+# REL-4: broker/worker pod placement. Empty by default (single-replica local/kind
+# rendering unchanged); values-prod adds anti-affinity + AZ spread so the 2 HA workers
+# never co-locate. Reversible: clear these to revert to unconstrained placement.
+affinity: {}
+topologySpreadConstraints: []
 heapOpts: "-Xms256M -Xmx1G"
 resources:
   requests:
@@ -61,6 +66,12 @@ sinkDefaults:
   "iceberg.control.topic": "control-iceberg"
   "iceberg.control.commit.interval-ms": "30000"
   "iceberg.control.commit.timeout-ms": "60000"
+
+service:
+  # Cross-AZ topology-aware routing for the REST Service (REL-4). Empty by default
+  # (single-replica local/kind unchanged — no cross-AZ concept there); values-prod
+  # sets "PreferClose" (k8s ≥1.31 GA). Reversible: clear to remove.
+  trafficDistribution: ""
 
 serviceAccount:
   create: true

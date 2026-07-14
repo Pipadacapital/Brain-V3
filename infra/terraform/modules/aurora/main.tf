@@ -81,6 +81,21 @@ variable "instance_count" {
   default     = 1
 }
 
+# ADR-0005 (REL-3, T1 DR): add a SECOND db.serverless instance as a reader so
+# the single-writer SPOF gains an in-region auto-failover target. Default false
+# = single-writer (unchanged cost/topology). When true the effective instance
+# count is max(instance_count, 2). Serverless v2 readers scale to the min ACU
+# floor when idle, so the added cost is ~the 0.5-ACU floor, not a full node.
+variable "enable_t1_reader" {
+  type        = bool
+  description = "Add a second db.serverless reader instance for in-region failover (ADR-0005 T1)."
+  default     = false
+}
+
+locals {
+  effective_instance_count = var.enable_t1_reader ? max(var.instance_count, 2) : var.instance_count
+}
+
 variable "enable_tripwire_alarms" {
   description = <<-EOT
     AUD-OPS-032: ACU-saturation tripwire. The prod cluster is deliberately
@@ -95,6 +110,15 @@ variable "enable_tripwire_alarms" {
   EOT
   type        = bool
   default     = true
+}
+
+# ADR-0004 (OE-1): SNS topic ARN the ACU-saturation tripwire pages. Empty
+# default = today's alerts-only (un-paged) posture — additive. The prod root
+# passes module.alerting.sns_topic_arn.
+variable "alarm_sns_topic_arn" {
+  type        = string
+  description = "SNS topic ARN for the ACU tripwire alarm_actions/ok_actions. Empty = un-paged (unchanged)."
+  default     = ""
 }
 
 ###############################################################################
@@ -229,7 +253,7 @@ resource "aws_rds_cluster" "postgres" {
 # Cluster Instance(s) — db.serverless (Serverless v2)
 ###############################################################################
 resource "aws_rds_cluster_instance" "postgres" {
-  count = var.create ? var.instance_count : 0
+  count = var.create ? local.effective_instance_count : 0
 
   identifier         = "${var.project}-${var.environment}-postgres-${count.index + 1}"
   cluster_identifier = aws_rds_cluster.postgres[0].id
@@ -273,6 +297,10 @@ resource "aws_cloudwatch_metric_alarm" "acu_utilization_tripwire" {
   dimensions = {
     DBClusterIdentifier = aws_rds_cluster.postgres[0].cluster_identifier
   }
+
+  # ADR-0004: page the SNS topic when the ACU ceiling saturates (empty = none).
+  alarm_actions = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
+  ok_actions    = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-${var.environment}-aurora-acu-saturation"

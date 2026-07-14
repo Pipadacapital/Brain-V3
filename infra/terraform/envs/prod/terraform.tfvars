@@ -63,3 +63,32 @@ external_dns_zone_ids = ["Z00011362R9ERGL7EC2J9"]
 system_ami_type  = "AL2023_ARM_64_STANDARD" # step 1 DONE 2026-07-12 — prereq (AL2 AMIs end at 1.32)
 cluster_version  = "1.33"                   # step 2 DONE 2026-07-12 — control plane + MNG roll
 eks_support_type = "STANDARD"               # step 3 DONE 2026-07-12 — fail-fast on future extended-support drift
+
+# ── ADR-0004 detective baseline + actionable alerting (Phase-0 guardrails) ────
+# Highest-ROI, lowest-cost fixes in the whole program (single-digit $/mo): a
+# tamper-evident CloudTrail into the WORM audit bucket, GuardDuty threat
+# detection, and ONE SNS topic that finally PAGES on the 5 existing alarms
+# (Aurora ACU, Redis eviction+memory, fck-nat recover+reboot, composite
+# EKS-unhealthy). Recommended: ON. Rollback = flip false / git revert.
+enable_cloudtrail        = true         # account multi-region trail -> WORM audit bucket
+enable_guardduty         = true         # GuardDuty detector in ap-south-1 (~single-digit $/mo)
+enable_aws_config        = false        # OPTIONAL — per-item + per-rule cost; enable as a deliberate fast-follow
+cloudtrail_s3_key_prefix = "cloudtrail" # must match the audit-bucket-policy grant
+isolate_audit_cmk_policy = true         # SEC-4: audit CMK gets its own non-blanket policy (pair with enable_cloudtrail)
+
+# Actionable alerting sink. The email is confirmed ONCE via the AWS email AWS
+# sends after apply (subscription is pending_confirmation until clicked).
+alert_email                      = "rishabhporwal95@gmail.com"
+guardduty_finding_severity_floor = 4 # 4 = MEDIUM+ findings page; raise to 7 for HIGH-only
+# Slack via AWS Chatbot is OFF until the one-time console workspace auth is done;
+# then flip enable_slack_chatbot=true and fill the two ids below.
+enable_slack_chatbot = false
+slack_workspace_id   = ""
+slack_channel_id     = ""
+
+# ── ADR-0005 DR (T1) ─────────────────────────────────────────────────────────
+# Second Aurora db.serverless reader for in-region single-writer failover.
+# HELD at false (matches enable_cross_region_replication posture): it ADDS cost
+# (~the 0.5-ACU floor while idle) and is a deliberate T1 DR apply-decision, not
+# a rider on a guardrails apply. Flip true when the owner ratifies T1 DR.
+aurora_enable_t1_reader = false

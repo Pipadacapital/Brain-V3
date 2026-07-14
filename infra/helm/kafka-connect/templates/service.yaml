@@ -7,6 +7,17 @@ metadata:
     app.kubernetes.io/name: kafka-connect
     app.kubernetes.io/part-of: brain
 spec:
+  {{- /* Cross-AZ PreferClose: with replicas=2 (REL-4 HA), route REST traffic
+         (the register Job + any in-cluster REST callers) to a SAME-AZ worker when
+         one is Ready, falling back cluster-wide otherwise. GA in k8s ≥1.31 (cluster
+         is 1.33). SAFE here — the REST API is stateless/idempotent (PUT connector
+         config = create-or-update) so a fallback to another AZ changes nothing but
+         the network hop; it does NOT affect the Iceberg commit-coordinator election
+         (that runs over the Kafka control topic, not this Service). Reversible: set
+         service.trafficDistribution to "" to remove. */}}
+  {{- with .Values.service.trafficDistribution }}
+  trafficDistribution: {{ . }}
+  {{- end }}
   selector:
     app.kubernetes.io/name: kafka-connect
   ports:

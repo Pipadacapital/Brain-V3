@@ -3,14 +3,18 @@
 # v4-naming-guard.sh — Brain V4 architecture naming lint (BLOCKING CI gate).
 #
 # Brain V4 invariants this guard enforces (see CLAUDE.md + docs/architecture/v4/):
-#   • Compute is Spark-on-Iceberg. dbt is REMOVED — the dbt-internal StarRocks DBs
-#     `brain_gold` / `brain_silver` are RETIRED (dropped).
+#   • Compute is DuckDB-on-Iceberg — DuckDB is the sole TRANSFORM compute (Silver/Gold, run as
+#     `python db/iceberg/duckdb/<layer>/<job>.py`); Bronze maintenance/retention/RTBF is the Trino
+#     maintenance client (db/iceberg/trino/**). The Spark transform tree (db/iceberg/spark/**) is
+#     DELETED (Spark→DuckDB cutover) — R6 forbids `spark-submit` / a `db/iceberg/spark` path creeping
+#     back. dbt is REMOVED — the dbt-internal DBs `brain_gold` / `brain_silver` are RETIRED (dropped).
 #   • Medallion lives in the Iceberg catalogs brain_{bronze,silver,gold}_local; Gold/Silver are
-#     SERVED to the app ONLY by the StarRocks async MVs brain_serving.mv_* (or read directly from
-#     the rest-Iceberg catalogs by Spark). No reader queries a bare brain_gold./brain_silver. DB.
+#     SERVED to the app ONLY by the Trino views brain_serving.mv_* (iceberg.brain_serving.*), or read
+#     directly from the rest-Iceberg catalogs by the DuckDB/Trino transform jobs. No reader queries a
+#     bare brain_gold./brain_silver. DB.
 #   • Features are RUNTIME — there is NO permanent feature-precompute table (no feature_customer_daily,
 #     no brain_feature write). brain_feature is dead (dropped).
-#   • Trino is the SERVING engine (Brain V4 removes StarRocks ENTIRELY — wire AND serving). The app /
+#   • Trino is the SERVING engine (Brain V4 removed StarRocks ENTIRELY — wire AND serving). The app /
 #     BFF / metric-engine read brain_serving.mv_* over TRINO (the iceberg.brain_serving.* VIEWS over the
 #     Iceberg Gold/Silver marts), fronted by a Redis analytics cache. A Trino client
 #     (withTrinoBrand/createTrinoPool/TrinoPool) in core serving code is ALLOWED; NEW StarRocks coupling
@@ -132,11 +136,17 @@ noncomment_lines() { # $1 = file
       ' "$f"
       ;;
     *)
-      # generic: drop whole-line comments for //, #, --, and * (jsdoc/sql block bodies)
+      # generic: drop whole-line comments (//, #, --, *, /*) AND the BODIES of multi-line block
+      # comments — C/JSDoc/SQL `/* … */` and Helm template `{{- /* … */ -}}`. Prose inside a Helm
+      # banner (e.g. "No spark-submit, no JVM" in a cronworkflow template) is documentation, not live
+      # code, and must not be scanned (R6 false-positive fix). The two block-openers below cannot
+      # collide with a bash glob like /opt/dir/*.py — that has neither a leading /* nor a {{ … /*.
       awk '
-        { stripped=$0; sub(/^[ \t]*/,"",stripped) }
-        stripped ~ /^(\/\/|#|--|\*|\/\*)/ { next }
-        { printf "%d:%s\n", NR, $0 }
+        { line=$0; stripped=line; sub(/^[ \t]*/,"",stripped) }
+        inblock { if (line ~ /\*\//) inblock=0; next }          # skip block body incl. its closing */ line
+        (stripped ~ /^\/\*/ || line ~ /\{\{-?[ \t]*\/\*/) && line !~ /\*\// { inblock=1; next }  # open a multi-line block
+        stripped ~ /^(\/\/|#|--|\*|\/\*)/ { next }              # whole-line / self-closed comment
+        { printf "%d:%s\n", NR, line }
       ' "$f"
       ;;
   esac
@@ -335,6 +345,18 @@ gold_cac.py (DuckDB) — faithful port of db/iceberg/spark/gold/gold_cac.py (doc
 """
 con.execute("MERGE INTO rest.brain_gold.gold_cac ...")
 EOF
+  # Helm-template banner mentioning the ported-from Spark tokens ONLY inside a `{{- /* … */ -}}` block
+  # comment (provenance prose) — the executable args run DuckDB/Trino. Regression guard for the real
+  # cronworkflows FP: block-comment bodies must be stripped by noncomment_lines(), so R6 sees nothing.
+  cat > "$d/good.spark.yaml" <<'EOF'
+{{- /*
+Bronze maintenance (was spark-bronze.yaml — Spark→DuckDB cutover). No spark-submit, no JVM; the
+executionMode/driverMemory knobs were spark-submit-only and were removed. Faithful of the deleted
+db/iceberg/spark/gold path — provenance only.
+*/ -}}
+args:
+  - exec python /opt/brain/trino/bronze_maintenance.py
+EOF
 
   local fail_bad=0 fail_good=0
 
@@ -397,7 +419,7 @@ EOF
 
   # ── Check good.spark.{sh,py} (DuckDB/Trino invocation + provenance comments) produce NO R6 FPs ──
   local r6_fp; r6_fp=0
-  for f in "$d/good.spark.sh" "$d/good.spark.py"; do
+  for f in "$d/good.spark.sh" "$d/good.spark.py" "$d/good.spark.yaml"; do
     while IFS= read -r line; do
       local content="${line#*:}"
       printf '%s' "$content" | grep -qE 'spark-submit' && r6_fp=$((r6_fp+1))
@@ -429,8 +451,10 @@ scan_spark_coupling
 if [ "$violations" -gt 0 ]; then
   echo ""
   echo "${RED}v4-naming-guard FAILED: ${violations} violation(s).${RST}"
-  echo "Brain V4: Spark is sole compute; medallion lives in the brain_*_local Iceberg catalogs;"
-  echo "Gold/Silver are SERVED via Trino views brain_serving.mv_* over Iceberg (fronted by Redis);"
+  echo "Brain V4: DuckDB-on-Iceberg is the sole TRANSFORM compute (db/iceberg/duckdb/**), maintenance is"
+  echo "the Trino client (db/iceberg/trino/**); the Spark transform tree is DELETED (R6 blocks spark-submit"
+  echo "/ db/iceberg/spark). The medallion lives in the brain_*_local Iceberg catalogs; Gold/Silver are"
+  echo "SERVED via Trino views brain_serving.mv_* over Iceberg (fronted by Redis);"
   echo "dbt and the dbt-internal brain_gold/brain_silver DBs are REMOVED; features are RUNTIME."
   echo "StarRocks is REMOVED entirely — NEW StarRocks coupling (mysql2 / :9030 / STARROCKS_*) in serving"
   echo "app code is FORBIDDEN (R5); use the Trino client (createTrinoPool / withTrinoBrand)."

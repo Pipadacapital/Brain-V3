@@ -42,6 +42,25 @@ kafka:
     # stay on spot — only the 3 broker nodes pay on-demand (~+$100/mo vs the
     # repeated-outage alternative). Karpenter provisions on-demand nodes for
     # pods that REQUIRE karpenter.sh/capacity-type=on-demand.
+    # REL-6 (04-architecture-review Reliability + 06-redesign §2.7): spread the 3
+    # brokers across AZs so an AZ loss can't take 2 of 3 and break the KRaft quorum
+    # (minInsyncReplicas=2 tolerates ONE broker loss — an AZ carrying 2 brokers would
+    # exceed that). topologyKey is the AZ label (same key rack-awareness resolves from).
+    # whenUnsatisfiable=ScheduleAnyway makes this a SOFT preference: it steers the
+    # scheduler toward 3 distinct AZs but NEVER blocks the on-demand broker roll if
+    # Karpenter can only place them in fewer AZs (quorum availability > perfect spread;
+    # 'no event loss' core rule). The required hostname anti-affinity (distinct nodes)
+    # and the streaming/on-demand nodeAffinity below remain the HARD contract, and
+    # rack-awareness (kafka.rack) is untouched — this is purely additive placement.
+    # maxSkew=1 with 3 brokers over (up to) 3 AZs targets a 1/1/1 layout. Reversible:
+    # remove this block to revert to hostname-only spread.
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            strimzi.io/name: brain-prod-kafka-kafka
     affinity:
       # 2026-07-12 post-roll finding: two brokers landed on ONE node (quorum =
       # one node loss away). REQUIRED anti-affinity spreads the 3 brokers across
@@ -79,6 +98,12 @@ kafka:
 
   config:
     autoCreateTopics: false
+    # REL-6 AZ-fault tolerance: RF=3 / minISR=2 is UNCHANGED (do not touch blindly).
+    # With the 1/1/1 AZ spread above, a single-AZ loss = a single-broker loss: 2 of 3
+    # replicas + 2 of 3 KRaft controllers survive, so minISR=2 is still met and the
+    # quorum holds (writes continue). Losing an AZ that carried 2 brokers would drop
+    # below minISR — which is exactly what the ScheduleAnyway spread now works to
+    # prevent. RF=3 already tolerates one AZ loss; no replication change required.
     defaultReplicationFactor: 3
     minInsyncReplicas: 2
     offsetsTopicReplicationFactor: 3

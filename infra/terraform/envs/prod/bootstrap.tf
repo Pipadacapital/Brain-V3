@@ -80,6 +80,10 @@ module "kms" {
   source      = "../../modules/kms"
   environment = local.environment
   project     = local.project
+  # AUD-SEC-BASE (ADR-0004 SEC-4): give the audit CMK its own non-blanket policy
+  # (root gets admin, not kms:*; CloudTrail gets encrypt-only) so an everyday
+  # IAM grant can't reach the tamper-evidence key. Var-gated; see variables.tf.
+  isolate_audit_cmk_policy = var.isolate_audit_cmk_policy
 }
 
 ###############################################################################
@@ -127,6 +131,10 @@ module "nat_instance" {
   public_subnet_id        = module.network.public_subnet_ids[0]
   vpc_cidr                = var.vpc_cidr
   private_route_table_ids = module.network.private_route_table_ids
+
+  # AUD-SEC-BASE (ADR-0004 OE-1): append an SNS page to the EC2-automate
+  # recover/reboot actions so a sole-egress host failure is also LOUD.
+  alarm_sns_topic_arn = module.alerting.sns_topic_arn
 }
 
 module "vpc_endpoints" {
@@ -213,6 +221,13 @@ module "aurora" {
   kms_key_arn                = module.kms.root_kms_key_arn
   min_capacity               = var.aurora_min_capacity
   max_capacity               = var.aurora_max_capacity
+
+  # AUD-SEC-BASE (ADR-0005 T1 DR): var-gated second db.serverless reader for
+  # in-region failover of the single-writer SPOF (default false = unchanged).
+  enable_t1_reader = var.aurora_enable_t1_reader
+
+  # AUD-SEC-BASE (ADR-0004 OE-1): page the ACU-saturation tripwire to SNS.
+  alarm_sns_topic_arn = module.alerting.sns_topic_arn
 }
 
 # ElastiCache Redis: same fix — allow 6379 from the EKS-managed cluster SG. The
@@ -328,6 +343,12 @@ module "s3_audit" {
   environment = local.environment
   project     = local.project
   kms_key_arn = module.kms.audit_kms_key_arn
+
+  # AUD-SEC-BASE (ADR-0004 SEC-1): append CloudTrail delivery grants to the
+  # audit bucket policy so modules/security-baseline's account trail can land
+  # its log files here. Prefix MUST match var.cloudtrail_s3_key_prefix.
+  enable_cloudtrail_delivery = var.enable_cloudtrail
+  cloudtrail_s3_key_prefix   = var.cloudtrail_s3_key_prefix
 }
 
 ###############################################################################
@@ -578,6 +599,9 @@ module "elasticache" {
   # is the SoT), so single-AZ is acceptable at this stage.
   num_cache_nodes = 1
   create          = true
+
+  # AUD-SEC-BASE (ADR-0004 OE-1): page the eviction/memory tripwires to SNS.
+  alarm_sns_topic_arn = module.alerting.sns_topic_arn
 }
 
 ###############################################################################

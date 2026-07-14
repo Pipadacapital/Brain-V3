@@ -1,0 +1,28 @@
+{{- if and .Values.batchCluster.enabled .Values.batchCluster.workers.autoscaling.enabled }}
+# KEDA scale-to-zero for BATCH workers (ADR-0002/-0003; requires KEDA in-cluster). SAFE at
+# minReplicaCount 0 — unlike the interactive workers (which keep a warm floor so serving never waits
+# on a node claim) — because Fault-Tolerant Execution retries TASKs on worker loss/absence, so a
+# cold batch cluster costs nothing between maintenance windows and can't fail in-flight batch SQL.
+# CPU-triggered here; a maintenance-driven trigger (queue depth / Argo-Workflow-set count) can
+# replace/augment this later without a template change.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "trino.batch.worker.fullname" . }}
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+    app.kubernetes.io/component: batch-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "trino.batch.worker.fullname" . }}
+  minReplicaCount: {{ .Values.batchCluster.workers.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.batchCluster.workers.autoscaling.maxReplicas }}
+  cooldownPeriod: {{ .Values.batchCluster.workers.autoscaling.cooldownPeriod | default 120 }}
+  triggers:
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ .Values.batchCluster.workers.autoscaling.cpuTargetUtilization | default 60 | quote }}
+{{- end }}

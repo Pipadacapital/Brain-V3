@@ -109,6 +109,15 @@ variable "enable_tripwire_alarms" {
   default     = true
 }
 
+# ADR-0004 (OE-1): SNS topic ARN the eviction/memory tripwires page. Empty
+# default = today's alerts-only posture (additive). The prod root passes
+# module.alerting.sns_topic_arn.
+variable "alarm_sns_topic_arn" {
+  type        = string
+  description = "SNS topic ARN for the cache tripwire alarm_actions/ok_actions. Empty = un-paged (unchanged)."
+  default     = ""
+}
+
 ###############################################################################
 # Subnet Group
 ###############################################################################
@@ -181,6 +190,10 @@ resource "aws_cloudwatch_metric_alarm" "evictions_tripwire" {
     CacheClusterId = format("%s-%03d", aws_elasticache_replication_group.redis[0].replication_group_id, count.index + 1)
   }
 
+  # ADR-0004: page the SNS topic on sustained evictions (empty = un-paged).
+  alarm_actions = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
+  ok_actions    = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
+
   tags = {
     project     = var.project
     environment = var.environment
@@ -205,6 +218,10 @@ resource "aws_cloudwatch_metric_alarm" "memory_tripwire" {
   dimensions = {
     CacheClusterId = format("%s-%03d", aws_elasticache_replication_group.redis[0].replication_group_id, count.index + 1)
   }
+
+  # ADR-0004: page the SNS topic on memory pressure (empty = un-paged).
+  alarm_actions = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
+  ok_actions    = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
 
   tags = {
     project     = var.project

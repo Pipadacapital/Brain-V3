@@ -70,6 +70,81 @@ query:
   maxMemory: "4GB"          # whole-cluster ceiling for a single distributed query
   maxMemoryPerNode: "2GB"   # per-node ceiling; must be < the JVM heap (~4.9Gi)
 
+# ── BATCH cluster — Fault-Tolerant Execution (ADR-0002, research-data-platform §3) ───────────────
+# ADDITIVE, OFF BY DEFAULT. The everything-above defines the INTERACTIVE cluster: the always-warm,
+# low-latency serving path (QUERY-retry implicitly) the BFF/metric-engine read via the
+# brain-<env>-trino Service. It is UNCHANGED and stays the default so nothing regresses on ArgoCD
+# auto-sync.
+#
+# When batchCluster.enabled=true, the SAME Helm release also renders a SECOND logical cluster — a
+# `brain-<env>-trino-batch` coordinator + worker Deployment with its OWN Service/discovery, tuned
+# for heavy compaction / RTBF / Iceberg-maintenance batch SQL. It runs retry-policy=TASK with a
+# Fault-Tolerant Execution exchange manager spooling intermediate data to S3, so a Spot worker loss
+# retries tasks (not whole queries) — the enabler for safe scale-to-zero (ADR-0003). The batch
+# cluster NEVER serves the BFF; maintenance/RTBF jobs point at its Service explicitly. It is opt-in
+# and deletable with zero serving impact (rollback = flip this flag / git revert).
+#
+# Both clusters keep the bounded-heap + ExitOnOutOfMemoryError jvm.config and mem limits (the OOM
+# outage fix) — the base jvm.config is shared.
+batchCluster:
+  enabled: false
+  coordinator:
+    replicaCount: 1
+    nodeSelector: {}
+    tolerations: []
+    resources:
+      # Same 7Gi mem_limit / 70% bounded heap posture as the interactive coordinator. Batch runs
+      # infrequently, so this footprint only exists during a maintenance window (scaled from zero).
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 7Gi
+  workers:
+    # Static floor when KEDA is off. With FTE the batch cluster can genuinely scale to ZERO between
+    # maintenance runs (ADR-0003) — a lost/absent worker retries tasks, it doesn't fail the query.
+    replicaCount: 0
+    nodeSelector: {}
+    tolerations: []
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 7Gi
+    # KEDA scale-to-zero for the batch workers (ADR-0003: "Trino batch/FTE cluster → scale to ZERO").
+    # minReplicas 0 is SAFE here (unlike interactive, which keeps a warm floor) precisely because FTE
+    # makes worker loss/absence recoverable. Off by default (mirrors the interactive KEDA stub);
+    # values-prod flips it once a maintenance-driven scaler (e.g. Argo-Workflow-set count) is wired.
+    autoscaling:
+      enabled: false
+      minReplicas: 0
+      maxReplicas: 4
+      # cpuTargetUtilization: 60
+      # cooldownPeriod: 120        # tighter than interactive — reclaim idle batch capacity fast
+  # Cluster-wide query memory for BATCH: larger ceilings than interactive (big compaction scans),
+  # still bounded under the per-node heap. maxMemoryPerNode must stay < the worker JVM heap (~4.9Gi).
+  query:
+    maxMemory: "8GB"
+    maxMemoryPerNode: "3GB"
+  # Fault-Tolerant Execution — the batch-only knobs. exchange.baseDirectories spools intermediate
+  # exchange data to S3 so worker loss retries tasks. The prefix lives under the Iceberg medallion
+  # (Bronze) bucket reached by the SAME pod IRSA role — no new bucket, no static keys. Research §3
+  # notes multiple buckets only matter for S3-request-throttling at high concurrency; Brain's batch
+  # concurrency is low, so one prefix is sufficient (the value is a LIST, so add buckets later with
+  # no template change). Point elsewhere / at MinIO via s3.endpoint (inherited from iceberg.s3).
+  fte:
+    retryPolicy: TASK
+    exchange:
+      # s3://<bucket>/<prefix> spool root(s). Overridden per-env in values-<env>.yaml with the real
+      # medallion bucket. Left blank in the default so a stray batchCluster.enable in dev fails loud
+      # rather than silently spooling to the wrong store.
+      baseDirectories: []
+      # Sink/source buffer + parallelism tuning (Trino defaults are conservative for K8s S3).
+      encryptionEnabled: true
+
 # Iceberg connector → the SAME Iceberg REST catalog + S3 object store Spark writes. In prod this is
 # the in-cluster iceberg-rest Service and real AWS S3 buckets (Bronze/Silver/Gold), reached via the
 # pod IRSA role (serviceAccount.annotations) — NO static S3 keys. For non-AWS/MinIO, set s3.endpoint

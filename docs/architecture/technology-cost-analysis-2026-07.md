@@ -39,14 +39,14 @@ technology, and swap only where a lighter engine fills the same slot better.**
 | Ingest bus | Kafka (Strimzi) 3 brokers, 1 vCPU/5Gi, **on-demand** + 3×50Gi gp3 | ~$160–200 | on-demand pin = +~$100 vs spot (post 07-12 quorum-loss incident) |
 | Bronze sink | Kafka Connect ×1 (250m/1.8Gi) | bin-packs | sole Bronze landing writer |
 | Transform | Spark crons, **local[*]** 6g driver, Spot batch pool | ~$20–40 | ephemeral (only during cron runs) |
-| Serving query | Trino: 1 coord (on-demand, co-packed) + 3 workers (Spot t4g.xlarge, KEDA 1–3) | ~$110–150 | workers are the line |
+| Serving query | Trino: 1 coord (on-demand, co-packed) + workers KEDA **min 1 / max 3** (Spot t4g.xlarge) | ~$40–110 | baseline 1 warm worker; bursts to 3 under load |
 | Serving cache | ElastiCache **Valkey 8.0** 1× t4g.micro | ~$11 | just swapped from Redis (−20%) |
 | Operational DB | Aurora PostgreSQL **Serverless v2**, 0.5–2 ACU, 1 writer | ~$67 | pay-per-use, bursty-fit |
 | Identity | Neo4j **Community** 1 node, 3 CPU/4Gi/2g heap, 50Gi | co-packed on-demand | ADR-0004 SoR |
 | Egress | fck-nat (~$4) + 2 VPC interface endpoints (~$14) | ~$18 | NAT-GW deferred |
 | Observability | OTel → Grafana Cloud | usage | free-tier-ish at T0 |
 | Agentic | LiteLLM gateway → Anthropic Haiku/Sonnet 4.5 (+OpenAI fallback), Opus for NLQ | usage, $20/brand cap | per-tenant budget caps |
-| **Total infra** | | **~$450–550/mo** | dominated by **EKS extended support + Kafka + Trino** |
+| **Total infra** | | **~$450–550/mo** | EKS extended-support fee already removed; the remaining big lines (Kafka on-demand, Trino) are each already at their safe floor |
 
 ---
 
@@ -76,12 +76,20 @@ point later).
   on-demand pin (+~$100/mo); ops burden grows with scale.
 - **Scale fit:** self-managed on Graviton spot scales cleanly to T2 (10–50M/day is
   well under one broker's capacity; 3 brokers is for HA, not throughput).
-- **✅ Recommendation: KEEP (self-managed Strimzi).** MSK Serverless is decisively
-  more expensive here. Two right-sizing options: (a) **regain Spot** for 2 of 3
-  brokers behind a strict PodDisruptionBudget + `do-not-disrupt`, keeping 1 broker
-  on-demand for quorum anchor — recovers most of the +$100 pin; or (b) shrink broker
-  node instance class (brokers request only 1 vCPU/5Gi — they're over-homed on
-  xlarge nodes). **Net available saving: ~$60–100/mo.**
+- **✅ Recommendation: KEEP (self-managed Strimzi) — already cost-optimal within its
+  safety envelope. Do NOT re-spot the brokers.** MSK Serverless is decisively more
+  expensive here. Two levers were considered; **both are already resolved**:
+  - **Spot for brokers — REJECTED with cause.** Tried on 2026-07-12; it **broke KRaft
+    quorum 3× in ~40 min** (ap-south-1a t4g spot is volatile). A PDB `minAvailable=2`
+    was in place and did **not** prevent it — spot reclaims are *involuntary* and
+    bypass PDBs. Brokers are deliberately pinned to on-demand (~+$100/mo) because "no
+    event loss" is a core rule. Re-spotting re-introduces a known, thrice-repeated
+    outage — not worth ~$100/mo. (An earlier draft wrongly proposed a PDB-guarded
+    re-spot; the PDB approach had already been tried and failed.)
+  - **Broker node right-size — ALREADY DONE.** Broker resources (1 vCPU / 5Gi req,
+    3Gi heap) are already sized so Karpenter picks the *cheaper* t4g.large, not xlarge.
+  - **Net safe saving available: ~$0** — Kafka is already at its cost floor given the
+    reliability contract.
 
 ---
 
@@ -144,9 +152,11 @@ point later).
 
 - **Role:** the multi-tenant serving engine behind `brain_serving.mv_*`, fronted by
   the Valkey cache, with the `${BRAND_PREDICATE}` isolation seam.
-- **Current sizing:** 1 coordinator (on-demand, co-packed w/ Neo4j) + **3 static
-  Spot workers** (KEDA 1–3). At T0 QPS with a cache in front, 3 always-on workers is
-  over-provisioned.
+- **Current sizing (corrected):** 1 coordinator (on-demand, co-packed w/ Neo4j) +
+  workers **scaled by KEDA `min 1 / max 3`**. NOTE: `replicaCount: 3` in the values
+  is **inert** — when KEDA is enabled the worker Deployment omits static replicas, so
+  the **baseline is 1 warm worker**, not 3. There is no "3 always-on" to cut; the only
+  knob is `maxReplicas` (the burst ceiling).
 - **Alternatives:** StarRocks (benchmarks: **5.5× faster on Iceberg, ~66% less
   compute**), ClickHouse, DuckDB-as-server.
 - **Why not swap despite StarRocks being faster:** StarRocks was **deliberately
@@ -154,13 +164,17 @@ point later).
   re-introducing it reopens a closed decision and re-adds a MySQL-protocol serving
   DB the naming-guard now forbids. At Brain's QPS the cache absorbs the hot path
   anyway — the speed delta rarely materializes.
-- **✅ Recommendation: KEEP Trino, RIGHT-SIZE workers.** You now have the
-  `serving_cache_requests_total` hit-rate metric (shipped this session) — use it:
-  if hit-rate is high (expected, given per-dataset TTL tiers), **drop static workers
-  3 → 2** and let KEDA burst to 3 only under load. **Saving ~$35–50/mo**, reversible,
-  config-only. Revisit StarRocks *only* if a genuine high-concurrency, low-latency,
-  cache-miss-heavy workload appears at T2 (and even then, as an additive lane, not a
-  Trino rip-out).
+- **✅ Recommendation: KEEP Trino as-is; DO NOT blindly cut `maxReplicas`.** The
+  baseline is already 1 warm worker (KEDA), so there is no easy static saving. Cutting
+  `maxReplicas 3 → 2` would cap the **sole serving engine** (which has an OOM history)
+  under burst load → *fewer* workers absorb the same queries → *higher* per-worker
+  memory pressure → *more* OOM risk. That is the wrong direction to cut blind. The
+  correct path: let the new `serving_cache_requests_total` hit-rate metric collect a
+  few days; **if** hit-rate is high AND worker utilization sits near-idle even during
+  refresh, *then* lower `maxReplicas` on evidence. **Safe immediate saving: ~$0**
+  (baseline is already minimal). Revisit StarRocks *only* if a genuine
+  high-concurrency, cache-miss-heavy workload appears at T2 (additive lane, not a
+  rip-out).
 
 ---
 
@@ -300,18 +314,25 @@ point later).
 |---|---|---|---|---|---|
 | — | ✅ **EKS 1.32 → 1.33 + AL2023** (dropped extended support) | Done 07-12 | **~$360/mo — already realized** | — | — |
 | 1 | **DuckDB pilot → migrate transform tier** (Spark is already local-mode) | Pilot/Swap | Big: cost + kills Spark OOM + faster crons | Med–High | Med (parity re-validate) |
-| 2 | **Kafka: reclaim Spot for 2/3 brokers + shrink broker nodes** | Right-size | ~$60–100/mo | Low–Med | Low–Med |
-| 3 | **Trino static workers 3 → 2** (cache absorbs hot path; hit-rate metric now proves it) | Right-size | ~$35–50/mo | Low | Low (KEDA bursts back) |
+| 2 | **Predictions runtime = in-cluster Python/DuckDB crons** (not SageMaker) | Build-in-slot | avoids managed-ML $$; unlocks the goal | Med | Low |
+| 3 | **S3 Intelligent-Tiering on Bronze prefix** | Right-size | grows with T2 volume | Low | None |
 | 4 | ✅ **Valkey swap** (done #144/#145; run CLI migration) | Swap | ~20% of cache (~$3/mo) + licensing | Done | Low |
-| 5 | **Predictions runtime = in-cluster Python/DuckDB crons** (not SageMaker) | Build-in-slot | avoids managed-ML $$; unlocks the goal | Med | Low |
-| 6 | **S3 Intelligent-Tiering on Bronze prefix** | Right-size | grows with T2 volume | Low | None |
-| 7 | **AI gateway: Haiku-first + prompt-cache stable prefixes + refresh model tiers** | Tune | LLM spend down | Low | Low |
-| 8 | **Neo4j: identity write-batching + lag tripwire** (Enterprise decision at T2) | Right-size/Hold | headroom to T1 | Low–Med | Med at T2 |
+| 5 | **AI gateway: Haiku-first + prompt-cache stable prefixes + refresh model tiers** | Tune | LLM spend down | Low | Low |
+| 6 | **Trino `maxReplicas` cut — DATA-DRIVEN ONLY** (after hit-rate metric proves near-idle burst) | Hold→Right-size | small burst-only | Low | Med (OOM on sole serving engine if cut blind) |
+| 7 | **Neo4j: identity write-batching + lag tripwire** (Enterprise decision at T2) | Right-size/Hold | headroom to T1 | Low–Med | Med at T2 |
 | — | **Cadence: schedule EKS 1.33 → 1.34+** before 1.33 standard-support ends (~late-2026) | Maintenance | avoids re-incurring extended-support fee | Low | Low |
 
-**The biggest EKS lever is already banked** (−$360/mo, 07-12). So the top remaining
-moves are **#1 (the DuckDB pilot** — structural cost + reliability) and **#2/#3
-(Kafka spot + Trino right-size** — ~$100–150/mo of quick, reversible config wins).
+> **Config right-sizing is exhausted, safely.** The two config levers an earlier
+> draft listed (Kafka spot; Trino static 3→2) are **NOT safe**: re-spotting Kafka
+> re-creates the 2026-07-12 triple quorum-loss outage (a PDB does not stop involuntary
+> spot reclaims), and Trino's baseline is already 1 warm worker (KEDA) so cutting the
+> burst ceiling only *raises* OOM risk on the sole serving engine. Kafka and Trino are
+> each already at their safe cost floor.
+
+**The biggest EKS lever is already banked** (−$360/mo, 07-12), and Kafka/Trino are
+already at their safe floors. So the top remaining moves are **structural, not config**:
+**#1 the DuckDB transform pilot** (cost + reliability) and **#2 the predictions
+runtime**, plus the zero-risk **#3 S3 Intelligent-Tiering**.
 
 ---
 
@@ -319,6 +340,12 @@ moves are **#1 (the DuckDB pilot** — structural cost + reliability) and **#2/#
 
 - **Kafka → SQS/Kinesis:** already evaluated and rejected (loses replay/ordering/
   ecosystem; breaks the Bronze-landing contract).
+- **Kafka brokers → Spot:** re-creates the 2026-07-12 triple quorum-loss outage
+  (spot reclaims are involuntary and bypass PDBs). Brokers stay on-demand; "no event
+  loss" outranks the ~$100/mo.
+- **Trino `maxReplicas` cut without data:** baseline is already 1 warm worker (KEDA);
+  capping the burst ceiling of the sole serving engine only raises OOM risk. Cut only
+  on hit-rate + utilization evidence.
 - **Trino → StarRocks:** faster on paper, but StarRocks was deliberately removed;
   Trino+cache is the ratified serving path and the cache absorbs Brain's QPS.
 - **Neo4j → Postgres/Neptune:** identity was moved to Neo4j on purpose (ADR-0004);

@@ -171,28 +171,31 @@ jobs:
           cosign sign --yes "${REPO}@${DIGEST}"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # 1b. Build + push the DATA-PLANE job images (spark-bronze — the Spark image for the
-  #     bronze-maintenance cron + the V4 Silver/Gold mart crons; Bronze LANDING is the
-  #     kafka-connect chart, ADR-0010 — no Spark landing job anymore)
+  # 1b. Build + push the DATA-PLANE job image (duckdb — the DuckDB transform tier for the
+  #     V4 Silver/Gold mart crons + the Trino client for Bronze/medallion maintenance + erasure;
+  #     Bronze LANDING is the kafka-connect chart, ADR-0010 — no Spark landing job anymore)
   # ─────────────────────────────────────────────────────────────────────────
   # These are NOT pnpm packages, so the turbo --affected check can't see them. They change rarely,
   # so we use PATH-BASED change detection (git diff of the push range). Same OIDC/ECR/cosign posture
   # as build-and-push; each leg uploads imgref-<image> for the gitops job to digest-pin into the
   # cronworkflows chart. Additive — does not touch the 4-app build above.
-  # NOTE: the dbt-runner image was retired in Brain V4 (Phase 6b) — dbt is removed; the transform is
-  # Spark-on-Iceberg + brain_serving mv_* (the spark-bronze image + the Spark Silver/Gold jobs).
+  # CUTOVER (feat/spark-to-duckdb-cutover): the Spark image (brain-spark-bronze, db/iceberg/spark) is
+  # REPLACED by the DuckDB image (brain-duckdb, db/iceberg/duckdb/Dockerfile). It carries db/iceberg/
+  # duckdb/** (the ~96 Silver/Gold jobs) + db/iceberg/trino/** (the 4 maintenance/erasure scripts); the
+  # cronworkflows chart's sparkV4 / sparkBronze image blocks now point at brain-duckdb. dbt was already
+  # removed in Brain V4 (Phase 6b); Spark is now removed too.
   build-data-images:
-    name: Build, Sign, Push data images (spark-bronze)
-    # NATIVE arm64 runner — see build-and-push note (QEMU spark builds never finished).
+    name: Build, Sign, Push data images (duckdb)
+    # NATIVE arm64 runner — the image targets the arm64 Karpenter pools (no QEMU).
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
         include:
-          - image: spark-bronze
-            dockerfile: db/iceberg/spark/Dockerfile
-            context: db/iceberg/spark
-            paths: '^db/iceberg/spark/'
+          - image: duckdb
+            dockerfile: db/iceberg/duckdb/Dockerfile
+            context: db/iceberg
+            paths: '^db/iceberg/(duckdb|trino)/'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -324,7 +327,7 @@ jobs:
             echo "bumped ${app}: ${REPO}@${DIGEST}"
           done
 
-      - name: Bump cronworkflows chart image digests (core/stream-worker/spark-bronze)
+      - name: Bump cronworkflows chart image digests (core/stream-worker/duckdb)
         run: |
           set -euo pipefail
           # The cronworkflows chart has distinct image blocks at distinct yaml paths, so a blanket sed
@@ -340,13 +343,13 @@ jobs:
           }
           bump core          .image
           bump stream-worker .streamWorkerImage
-          # .sparkBronze.image survives ADR-0010 — it now serves ONLY the bronze-maintenance
-          # cron (Bronze landing is the kafka-connect chart; the Spark landing cron is gone).
-          bump spark-bronze  .sparkBronze.image
-          # sparkV4 (silver/gold/mv-refresh CronWorkflows) reuses the SAME brain-spark-bronze image
-          # (its Dockerfile carries the V4 marts) — pin .sparkV4.image with the spark-bronze digest so
-          # the now-enabled V4 crons deploy (an empty .sparkV4.image.digest fail-closes the template).
-          bump spark-bronze  .sparkV4.image
+          # CUTOVER: the single brain-duckdb image now backs BOTH cron image blocks — .sparkBronze.image
+          # (bronze/medallion maintenance + erasure, run via the Trino client the image carries) and
+          # .sparkV4.image (the DuckDB Silver/Gold transform crons). One image, two blocks (the block
+          # names are retained to keep the chart values diff minimal; an empty digest fail-closes each
+          # template). Both are pinned from the same `duckdb` imgref.
+          bump duckdb .sparkBronze.image
+          bump duckdb .sparkV4.image
 
       - name: Commit + push staging values bump
         run: |

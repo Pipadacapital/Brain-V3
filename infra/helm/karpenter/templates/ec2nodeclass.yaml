@@ -22,10 +22,15 @@ spec:
     - tags:
         karpenter.sh/discovery: {{ .Values.discoveryTag }}
   # IMDSv2-only (httpTokens required) — restricted Pod Security baseline.
+  # hop limit 2 (was 1): pods need one extra hop to reach IMDS for KIP-392 client.rack self-resolution
+  # (Kafka same-AZ follower fetching — cuts cross-AZ DataTransfer $; see stream-worker resolveRackId +
+  # kafka-connect entrypoint). Matches the managed system node group (modules/eks = 2). IMDSv2 is still
+  # required (mitigates SSRF); apps use IRSA for their own AWS access, so the exposed surface is the
+  # node role only (ECR pull / CNI / SSM). Revert to 1 to re-harden (rack then falls back to no-op).
   metadataOptions:
     httpEndpoint: enabled
     httpProtocolIPv6: disabled
-    httpPutResponseHopLimit: 1
+    httpPutResponseHopLimit: 2
     httpTokens: required
   blockDeviceMappings:
     - deviceName: {{ .Values.ec2NodeClass.rootVolume.deviceName }}

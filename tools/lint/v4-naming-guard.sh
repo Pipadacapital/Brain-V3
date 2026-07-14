@@ -136,11 +136,17 @@ noncomment_lines() { # $1 = file
       ' "$f"
       ;;
     *)
-      # generic: drop whole-line comments for //, #, --, and * (jsdoc/sql block bodies)
+      # generic: drop whole-line comments (//, #, --, *, /*) AND the BODIES of multi-line block
+      # comments — C/JSDoc/SQL `/* … */` and Helm template `{{- /* … */ -}}`. Prose inside a Helm
+      # banner (e.g. "No spark-submit, no JVM" in a cronworkflow template) is documentation, not live
+      # code, and must not be scanned (R6 false-positive fix). The two block-openers below cannot
+      # collide with a bash glob like /opt/dir/*.py — that has neither a leading /* nor a {{ … /*.
       awk '
-        { stripped=$0; sub(/^[ \t]*/,"",stripped) }
-        stripped ~ /^(\/\/|#|--|\*|\/\*)/ { next }
-        { printf "%d:%s\n", NR, $0 }
+        { line=$0; stripped=line; sub(/^[ \t]*/,"",stripped) }
+        inblock { if (line ~ /\*\//) inblock=0; next }          # skip block body incl. its closing */ line
+        (stripped ~ /^\/\*/ || line ~ /\{\{-?[ \t]*\/\*/) && line !~ /\*\// { inblock=1; next }  # open a multi-line block
+        stripped ~ /^(\/\/|#|--|\*|\/\*)/ { next }              # whole-line / self-closed comment
+        { printf "%d:%s\n", NR, line }
       ' "$f"
       ;;
   esac
@@ -339,6 +345,18 @@ gold_cac.py (DuckDB) — faithful port of db/iceberg/spark/gold/gold_cac.py (doc
 """
 con.execute("MERGE INTO rest.brain_gold.gold_cac ...")
 EOF
+  # Helm-template banner mentioning the ported-from Spark tokens ONLY inside a `{{- /* … */ -}}` block
+  # comment (provenance prose) — the executable args run DuckDB/Trino. Regression guard for the real
+  # cronworkflows FP: block-comment bodies must be stripped by noncomment_lines(), so R6 sees nothing.
+  cat > "$d/good.spark.yaml" <<'EOF'
+{{- /*
+Bronze maintenance (was spark-bronze.yaml — Spark→DuckDB cutover). No spark-submit, no JVM; the
+executionMode/driverMemory knobs were spark-submit-only and were removed. Faithful of the deleted
+db/iceberg/spark/gold path — provenance only.
+*/ -}}
+args:
+  - exec python /opt/brain/trino/bronze_maintenance.py
+EOF
 
   local fail_bad=0 fail_good=0
 
@@ -401,7 +419,7 @@ EOF
 
   # ── Check good.spark.{sh,py} (DuckDB/Trino invocation + provenance comments) produce NO R6 FPs ──
   local r6_fp; r6_fp=0
-  for f in "$d/good.spark.sh" "$d/good.spark.py"; do
+  for f in "$d/good.spark.sh" "$d/good.spark.py" "$d/good.spark.yaml"; do
     while IFS= read -r line; do
       local content="${line#*:}"
       printf '%s' "$content" | grep -qE 'spark-submit' && r6_fp=$((r6_fp+1))

@@ -53,16 +53,55 @@ def read_gated_events_sql(event_types: list[str], *, lo=None, hi=None, source: s
     )
 
 
+def _parse_columns_sql(columns_sql: str) -> list[tuple[str, str]]:
+    """Parse a COLUMNS_SQL block into [(name, type_without_constraints), ...].
+
+    Handles trailing commas, blank lines, and `NOT NULL` on each column line.
+    Type = everything after the name up to (and excluding) NOT/DEFAULT/comment.
+    """
+    out: list[tuple[str, str]] = []
+    for raw in columns_sql.split(","):
+        line = raw.strip()
+        if not line or line.startswith("--") or line.startswith(")"):
+            continue
+        toks = line.split()
+        if len(toks) < 2:
+            continue
+        name = toks[0]
+        # type is toks[1:] until a constraint keyword
+        typ_parts = []
+        for t in toks[1:]:
+            if t.upper() in ("NOT", "NULL", "DEFAULT", "PRIMARY", "--"):
+                break
+            typ_parts.append(t)
+        out.append((name, " ".join(typ_parts)))
+    return out
+
+
 def ensure_table(con, fq: str, columns_sql: str, *, partitioned_by: str | None = None) -> None:
     """
-    CREATE TABLE IF NOT EXISTS in the attached Iceberg catalog. Column DDL uses Iceberg/Spark type
-    names (string/bigint/timestamp) — DuckDB maps them. partitioned_by mirrors the Spark hidden
+    CREATE TABLE IF NOT EXISTS in the attached Iceberg catalog, then ADDITIVELY EVOLVE it — any
+    column declared in columns_sql that is absent from an existing table is ALTER-ADDed (data
+    preserving; new column is NULL on old rows). This mirrors the Spark jobs' _add_missing_columns/
+    _evolve_schema behavior so a DuckDB port carrying a wider (firehose) schema can widen a narrower
+    pre-existing Spark-produced table instead of binder-erroring on the MERGE. Column DDL uses
+    Iceberg/Spark type names (string/bigint/timestamp); partitioned_by mirrors the Spark hidden
     partitioning (e.g. 'bucket(256, brand_id), day(occurred_at)').
     """
     ddl = f"CREATE TABLE IF NOT EXISTS {fq} (\n{columns_sql}\n)"
     if partitioned_by:
         ddl += f" PARTITIONED BY ({partitioned_by})"
     con.execute(ddl + ";")
+
+    # Additive schema evolution: ADD COLUMN for any declared column the live table lacks.
+    try:
+        existing = {d[0].lower() for d in con.execute(f"SELECT * FROM {fq} LIMIT 0").description}
+    except Exception:  # noqa: BLE001 — table just created / unreadable → nothing to evolve
+        return
+    for name, typ in _parse_columns_sql(columns_sql):
+        if name.lower() not in existing and typ:
+            # NOT NULL is intentionally dropped on ADD (old rows would violate it).
+            con.execute(f"ALTER TABLE {fq} ADD COLUMN {name} {typ};")
 
 
 def merge_on_pk(con, target: str, staged_sql: str, columns: list[str], pk: list[str],

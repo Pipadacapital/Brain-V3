@@ -53,6 +53,17 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- /* REL-6: spread the 3 brokers across AZs so an AZ loss can't take 2 of 3
+             and break quorum. Rendered ONLY when values set it (empty default keeps
+             local/kind rendering unchanged). ScheduleAnyway is deliberate — it is a
+             SOFT preference that NEVER blocks the on-demand broker roll (required
+             hostname anti-affinity + the streaming/on-demand nodeAffinity above stay
+             the hard contract; rack-awareness is unchanged). Strimzi PodTemplate
+             carries spec.template.pod.topologySpreadConstraints verbatim. */}}
+      {{- with $np.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with $np.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}

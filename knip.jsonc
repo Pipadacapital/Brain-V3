@@ -50,6 +50,11 @@
     // Workflow-tool scripts launched by path (PR_BODY.md documents the reproducible
     // blueprint workflow; v4-naming-guard carves the dir out for the same reason).
     ".eos-workflows/**",
+    // Claude Code harness/workflow scripts (skills, saved workflows) are launched by
+    // path by the agent runtime, never imported by app code — out-of-graph like
+    // .eos-workflows above. Required so the now-BLOCKING knip gate (knip.yml) stays
+    // green on baseline instead of tripping on e.g. wave1-parallel-prep.js.
+    ".claude/**",
     // Boundary-seam barrel: eslint.config.mjs bans cross-module reach-around past index.ts,
     // so this file is the connector module's only legal cross-module import point. The
     // composition root (main.ts/bootstrap) is the sanctioned deep-import exception, hence

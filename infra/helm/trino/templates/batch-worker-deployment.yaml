@@ -1,0 +1,113 @@
+{{- if .Values.batchCluster.enabled }}
+{{/*
+BATCH workers (ADR-0002 — additive FTE cluster; OFF by default). Stateless executors for the batch
+cluster. With Fault-Tolerant Execution a worker loss/absence retries TASKs, not whole queries — so
+KEDA may scale these to ZERO between maintenance runs (ADR-0003) without failing in-flight batch SQL.
+When batch autoscaling is on, static replicas are omitted so KEDA solely owns scaling (mirrors the
+interactive worker pattern). Same bounded-heap jvm.config + mem limits as interactive (OOM fix).
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "trino.batch.worker.fullname" . }}
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+    app.kubernetes.io/component: batch-worker
+spec:
+  {{- if not .Values.batchCluster.workers.autoscaling.enabled }}
+  replicas: {{ .Values.batchCluster.workers.replicaCount }}   # ignored when KEDA owns scaling (scale-to-zero)
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "trino.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: batch-worker
+  template:
+    metadata:
+      labels:
+        {{- include "trino.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: batch-worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmaps.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "trino.fullname" . }}
+      {{- with .Values.batchCluster.workers.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.batchCluster.workers.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: trino-batch-worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.httpPort }}
+              protocol: TCP
+          {{- if .Values.iceberg.s3SecretName }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.iceberg.s3SecretName }}
+          {{- end }}
+          {{- if .Values.probes.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          {{- end }}
+          resources:
+            {{- toYaml .Values.batchCluster.workers.resources | nindent 12 }}
+          volumeMounts:
+            - name: server-config
+              mountPath: /etc/trino/config.properties
+              subPath: worker-config.properties
+            - name: server-config
+              mountPath: /etc/trino/jvm.config
+              subPath: jvm.config
+            - name: server-config
+              mountPath: /etc/trino/node.properties
+              subPath: node.properties
+            - name: server-config
+              mountPath: /etc/trino/exchange-manager.properties
+              subPath: exchange-manager.properties
+            - name: catalog
+              mountPath: /etc/trino/catalog/iceberg.properties
+              subPath: iceberg.properties
+            - name: data
+              mountPath: /data/trino
+      volumes:
+        - name: server-config
+          configMap:
+            name: {{ include "trino.batch.fullname" . }}-config
+        - name: catalog
+          configMap:
+            name: {{ include "trino.batch.fullname" . }}-catalog
+        - name: data
+          emptyDir: {}
+{{- end }}

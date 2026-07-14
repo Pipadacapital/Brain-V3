@@ -24,7 +24,21 @@ variable "project" {
   default = "brain"
 }
 
+# ADR-0004 (SEC-4): give the AUDIT CMK its own key policy that does NOT
+# blanket-delegate kms:* to account root — so an everyday IAM mistake cannot
+# reach the tamper-evidence key — while still granting CloudTrail the
+# GenerateDataKey/DescribeKey it needs to encrypt log files. Default false keeps
+# the current shared root_kms_policy (no-op), so this is fully additive; the
+# prod root flips it on. The root + connector CMKs keep the common
+# AllowAccountRoot pattern (ADR-0004 explicitly scopes the tightening to audit).
+variable "isolate_audit_cmk_policy" {
+  type        = bool
+  description = "Apply a dedicated non-blanket key policy to the audit CMK (ADR-0004 SEC-4)."
+  default     = false
+}
+
 data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 
 ###############################################################################
 # Root CMK — general-purpose encryption for S3, Secrets Manager, RDS, etc.
@@ -54,7 +68,8 @@ resource "aws_kms_key" "audit" {
   description             = "Brain audit CMK (${var.environment}) — audit-log + WORM bucket"
   deletion_window_in_days = 30
   enable_key_rotation     = true
-  policy                  = data.aws_iam_policy_document.root_kms_policy.json
+  # SEC-4: dedicated isolated policy when enabled, else the shared root policy.
+  policy = var.isolate_audit_cmk_policy ? data.aws_iam_policy_document.audit_kms_policy.json : data.aws_iam_policy_document.root_kms_policy.json
 
   tags = {
     project     = var.project
@@ -111,6 +126,81 @@ data "aws_iam_policy_document" "root_kms_policy" {
     principals {
       type        = "AWS"
       identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+  }
+}
+
+###############################################################################
+# Audit CMK isolated policy (SEC-4) — used only when isolate_audit_cmk_policy.
+# Root gets KMS ADMINISTRATION (key lifecycle/policy) but NOT the blanket kms:*
+# that includes cryptographic + grant operations; CloudTrail gets exactly the
+# encrypt-side operations it needs. This keeps the tamper-evidence key out of
+# reach of an everyday IAM data-plane grant while remaining self-administrable.
+###############################################################################
+data "aws_iam_policy_document" "audit_kms_policy" {
+  # Key administration (lifecycle/policy) — NOT Encrypt/Decrypt/GrantCreate.
+  statement {
+    sid    = "AllowKeyAdministration"
+    effect = "Allow"
+    actions = [
+      "kms:Create*",
+      "kms:Describe*",
+      "kms:Enable*",
+      "kms:List*",
+      "kms:Put*",
+      "kms:Update*",
+      "kms:Revoke*",
+      "kms:Disable*",
+      "kms:Get*",
+      "kms:Delete*",
+      "kms:TagResource",
+      "kms:UntagResource",
+      "kms:ScheduleKeyDeletion",
+      "kms:CancelKeyDeletion",
+    ]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+  }
+
+  # CloudTrail: encrypt log files (GenerateDataKey) + describe the key.
+  statement {
+    sid       = "AllowCloudTrailEncrypt"
+    effect    = "Allow"
+    actions   = ["kms:GenerateDataKey*", "kms:DescribeKey"]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+
+  # S3 SSE-KMS: the audit bucket re-encrypts objects (checkpoints + CloudTrail
+  # logs) with this CMK on write; readers (audit-writer role) Decrypt.
+  statement {
+    sid    = "AllowS3AndAuditWriters"
+    effect = "Allow"
+    actions = [
+      "kms:GenerateDataKey*",
+      "kms:Decrypt",
+      "kms:DescribeKey",
+    ]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${data.aws_region.current.region}.amazonaws.com"]
     }
   }
 }

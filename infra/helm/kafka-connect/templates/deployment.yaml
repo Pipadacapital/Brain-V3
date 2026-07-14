@@ -22,6 +22,18 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ if .Values.serviceAccount.create }}{{ .Values.serviceAccount.name | default (printf "%s-kafka-connect" .Release.Name) }}{{ else }}{{ .Values.serviceAccount.name | default "default" }}{{ end }}
+      {{- /* REL-4: with replicas=2 (values-prod HA) the two Bronze-landing workers
+             must not co-locate — else a single node loss stalls landing again.
+             Rendered only when values set them (empty defaults keep single-replica
+             local/kind rendering unchanged). */}}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: connect
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

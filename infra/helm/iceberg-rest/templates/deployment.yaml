@@ -38,9 +38,12 @@ spec:
             - name: rest
               containerPort: 8181
           env:
-            # JdbcCatalog over Aurora Postgres (durable, multi-writer — unlike the local SQLite).
+            # ADR-0002: FLAG-GATED catalog backend. `catalog.backend` selects sqlite (durable
+            # PVC-backed JdbcCatalog — the rollback path) or postgres (Aurora JdbcCatalog).
             - name: CATALOG_CATALOG__IMPL
               value: org.apache.iceberg.jdbc.JdbcCatalog
+            {{- if eq .Values.catalog.backend "postgres" }}
+            # --- backend: postgres — JdbcCatalog over Aurora PG (durable, multi-writer, no SQLite lock) ---
             - name: CATALOG_URI
               value: "jdbc:postgresql://{{ .Values.catalog.jdbcHost }}:{{ .Values.catalog.jdbcPort }}/{{ .Values.catalog.jdbcDatabase }}"
             - name: CATALOG_JDBC_USER
@@ -53,6 +56,21 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secret.name }}
                   key: {{ .Values.secret.jdbcPasswordKey }}
+            {{- else if eq .Values.catalog.backend "sqlite" }}
+            # --- backend: sqlite — file-backed JdbcCatalog on a PVC (ROLLBACK path) ---
+            # WAL + busy_timeout: a contending writer WAITS for the file lock instead of erroring.
+            - name: CATALOG_URI
+              value: "jdbc:sqlite:file:{{ .Values.catalog.sqlite.persistence.mountPath }}/{{ .Values.catalog.sqlite.persistence.dbFile }}?journal_mode=WAL&busy_timeout=30000&synchronous=NORMAL"
+            # Pin JdbcClientPool to ONE connection so every catalog op serializes (SQLite = single writer).
+            - name: CATALOG_CLIENTS
+              value: {{ .Values.catalog.sqlite.clients | quote }}
+            - name: CATALOG_JDBC_USER
+              value: {{ .Values.catalog.sqlite.jdbcUser | quote }}
+            - name: CATALOG_JDBC_PASSWORD
+              value: {{ .Values.catalog.sqlite.jdbcPassword | quote }}
+            {{- else }}
+            {{- fail (printf "catalog.backend must be 'sqlite' or 'postgres', got %q" .Values.catalog.backend) }}
+            {{- end }}
             # DATA files in S3 via S3FileIO; credentials from the pod IRSA role (NO static keys).
             - name: CATALOG_WAREHOUSE
               value: "{{ .Values.catalog.warehouse }}"
@@ -80,3 +98,15 @@ spec:
             periodSeconds: 20
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if and (eq .Values.catalog.backend "sqlite") .Values.catalog.sqlite.persistence.enabled }}
+          volumeMounts:
+            # Durable SQLite catalog file (rollback backend). PVC is ReadWriteOnce → keep replicaCount 1.
+            - name: catalog
+              mountPath: {{ .Values.catalog.sqlite.persistence.mountPath }}
+          {{- end }}
+      {{- if and (eq .Values.catalog.backend "sqlite") .Values.catalog.sqlite.persistence.enabled }}
+      volumes:
+        - name: catalog
+          persistentVolumeClaim:
+            claimName: {{ include "iceberg-rest.name" . }}-catalog
+      {{- end }}

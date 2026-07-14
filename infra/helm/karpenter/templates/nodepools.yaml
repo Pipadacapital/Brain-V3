@@ -59,6 +59,31 @@ spec:
   disruption:
     consolidationPolicy: {{ $pool.consolidationPolicy }}
     consolidateAfter: {{ $pool.consolidateAfter }}
+    {{- /*
+      ADR-0003: INTEGER disruption budgets (never a %). On a ≤4-node Spot pool a
+      percentage budget rounds up to "disrupt anytime" (Karpenter rounds nodes×% up),
+      which defeats the guard entirely. Each entry caps how many nodes Karpenter may
+      voluntarily disrupt (consolidate/drift/expire) at once; an optional `schedule`
+      + `duration` freezes voluntary disruption during business hours. Omitting
+      `budgets` on a pool falls back to Karpenter's built-in default (10%), so this
+      is purely additive/reversible — delete a pool's `disruptionBudgets` to revert.
+    */}}
+    {{- with $pool.disruptionBudgets }}
+    budgets:
+      {{- range . }}
+      - nodes: {{ .nodes | quote }}
+        {{- with .reasons }}
+        reasons:
+          {{- range . }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .schedule }}
+        schedule: {{ .schedule | quote }}
+        duration: {{ .duration | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
   limits:
     cpu: {{ $pool.limits.cpu | quote }}
     memory: {{ $pool.limits.memory }}

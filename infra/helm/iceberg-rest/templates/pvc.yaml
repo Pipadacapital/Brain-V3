@@ -1,0 +1,24 @@
+{{- /*
+ADR-0002: durable catalog store for the SQLite (rollback) backend ONLY. The file-backed
+JdbcCatalog writes namespace→table pointers here; losing it orphans every Iceberg table.
+ReadWriteOnce — SQLite has a single writer, so this backend must run replicaCount: 1.
+The postgres backend has NO PVC (state lives in Aurora). This template renders nothing
+when catalog.backend != sqlite, so a postgres deploy carries no dangling PVC.
+*/ -}}
+{{- if and (eq .Values.catalog.backend "sqlite") .Values.catalog.sqlite.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "iceberg-rest.name" . }}-catalog
+  labels:
+    {{- include "iceberg-rest.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.catalog.sqlite.persistence.size }}
+  {{- if .Values.catalog.sqlite.persistence.storageClass }}
+  storageClassName: {{ .Values.catalog.sqlite.persistence.storageClass }}
+  {{- end }}
+{{- end }}

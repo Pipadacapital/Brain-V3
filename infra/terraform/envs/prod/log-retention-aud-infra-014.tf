@@ -17,9 +17,15 @@
 ################################################################################
 
 
+# ADR-0004 / 07 cost trim: EKS control-plane logs are OPERATIONAL (api/audit/
+# authenticator/controllerManager/scheduler), not a compliance store — the
+# tamper-evident audit-of-record is CloudTrail -> the WORM bucket (7yr,
+# immutable). At ~5.5 GB/mo ingest, dropping 30d -> 14d roughly halves the
+# retained volume with no compliance impact. Bump back to 30 for a deep incident
+# forensics window if needed.
 resource "aws_cloudwatch_log_group" "eks_cluster" {
   name              = "/aws/eks/${module.eks.cluster_name}/cluster"
-  retention_in_days = 30
+  retention_in_days = 14
 
   tags = {
     purpose = "eks-control-plane-logs"

@@ -75,6 +75,14 @@ jobs:
           # `core` is the whole engine set; the old `ingest`/`lakehouse` profiles no longer exist.
           bash tools/dev/compose-up-healthy.sh --profile core
 
+      - name: Map Kafka EXTERNAL advertised host to localhost
+        # Kafka advertises EXTERNAL://brain-kafka-ext:19092 (docker-compose.yml) — a docker-network
+        # alias. Host-side Kafka clients (the Bronze seeder below + the stream-worker e2e) bootstrap
+        # localhost:19092 but then RECONNECT to the advertised `brain-kafka-ext`, which doesn't resolve
+        # on the runner (EAI_AGAIN). The broker's :19092 is published to the host, so aliasing
+        # brain-kafka-ext → 127.0.0.1 makes the advertised address reachable.
+        run: echo "127.0.0.1 brain-kafka-ext" | sudo tee -a /etc/hosts
+
       - name: Provision brain_app login role + apply migrations
         run: |
           PGPASSWORD=brain psql -U brain -h localhost -d brain -c "

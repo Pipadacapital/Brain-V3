@@ -67,7 +67,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Bring up real engines (Postgres + Trino + Kafka + Redis + MinIO + Iceberg REST + Spark)
+      - name: Bring up real engines (Postgres + Trino + Kafka + Redis + MinIO + Iceberg REST)
         run: |
           # NOT `up --wait`: it exits 1 when a one-shot init container (minio-init, kafka-init,
           # iceberg-catalog-init) exits 0 DURING the wait window — the exact cold-start behavior
@@ -90,25 +90,46 @@ jobs:
           "
           pnpm migrate:up
 
-      # ── V4 transform: Spark Silver → Spark Gold → Iceberg, served by Trino views (REPLACES dbt+StarRocks) ──
-      # Brain V4 removed dbt (Phase 6b) AND StarRocks (serving → Trino). The analytics transform is
-      # Spark-on-Iceberg: the Spark Silver/Gold jobs materialize the EXTERNAL Iceberg catalogs from raw
-      # Bronze. This step runs the V4 oneshot refresh (so the Iceberg Gold/Silver marts exist), then
-      # provisions the brain_serving Trino VIEWS over them — thin projections, no async refresh. The
-      # *.live suites below read the same Trino serving tier the dashboards read.
-      - name: V4 refresh — Spark Silver/Gold materialize Iceberg (oneshot)
+      # ── V4 transform: DuckDB Silver → DuckDB Gold → Iceberg, served by Trino views (REPLACES dbt+StarRocks+Spark) ──
+      # Brain V4 removed dbt (Phase 6b), StarRocks (serving → Trino), AND Spark (transform → DuckDB, PR
+      # #148). The analytics transform is DuckDB-on-Iceberg: db/iceberg/duckdb/{silver,gold}/*.py
+      # materialize the EXTERNAL Iceberg Gold/Silver marts from Bronze. This step runs the DuckDB oneshot
+      # refresh (so the marts exist), then the next step provisions the brain_serving Trino VIEWS over
+      # them. The *.live suites below read the same Trino serving tier the dashboards read.
+      #
+      # Runs on the HOST against the published compose ports (minio :9000, iceberg-rest :8181, neo4j
+      # :7687) — exactly as `pnpm dev:v4-refresh` does in dev, and the same localhost path the other
+      # steps use for Trino :8090. No Spark, no kafka-netns join, no StarRocks MV SYNC.
+      - name: V4 refresh — DuckDB Silver/Gold materialize Iceberg (oneshot)
+        env:
+          # DuckDB job connection contract (db/iceberg/duckdb/_catalog.py) → the compose services on
+          # localhost. Creds/warehouse mirror the iceberg-rest + minio config in docker-compose.yml.
+          S3_ENDPOINT: http://localhost:9000
+          ICEBERG_REST_URI: http://localhost:8181
+          ICEBERG_WAREHOUSE: s3://brain-bronze/
+          AWS_ACCESS_KEY_ID: brain
+          AWS_SECRET_ACCESS_KEY: brainbrain
+          AWS_REGION: us-east-1
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: brain_neo4j
         run: |
-          # ONESHOT runs every Spark Silver job, then every Spark Gold job → deterministic Iceberg
-          # Gold/Silver for the live suites. The Spark run scripts join kafka's netns for service DNS
-          # (iceberg-rest/minio/trino), same as the parity oracle. No StarRocks MV SYNC — Trino views are live.
-          ONESHOT=1 bash tools/dev/v4-refresh-loop.sh
+          # Provision the DuckDB transform venv — the SAME deps the brain-duckdb cron image carries
+          # (db/iceberg/duckdb/requirements.txt: duckdb + numpy + splink + pyiceberg + neo4j).
+          python3 -m venv /tmp/duckvenv
+          /tmp/duckvenv/bin/pip install --quiet --upgrade pip
+          /tmp/duckvenv/bin/pip install --quiet -r db/iceberg/duckdb/requirements.txt
+          # duckdb-refresh.sh runs keystone → silver ×2 → gold in dependency order (best-effort per job).
+          # PYTHON points it at the venv; ONESHOT is a no-op (kept for call-site compatibility with the
+          # retired v4-refresh-loop.sh).
+          PYTHON=/tmp/duckvenv/bin/python ONESHOT=1 bash tools/dev/duckdb-refresh.sh
 
       - name: Provision Trino serving views (iceberg.brain_serving.mv_*)
         env:
           TRINO_URL: http://localhost:8090
         run: |
           # Create iceberg.brain_serving + every brain_serving.mv_* Trino VIEW over the Iceberg Gold/Silver
-          # marts Spark just materialized. CREATE OR REPLACE VIEW — idempotent; no async refresh to wait on.
+          # marts DuckDB just materialized. CREATE OR REPLACE VIEW — idempotent; no async refresh to wait on.
           bash db/trino/views/run-trino-views.sh
 
       # Isolation fuzz + parity oracle — now against the REAL Trino serving tier (the PR run has no Silver
@@ -126,10 +147,10 @@ jobs:
 
       - name: Dump engine logs on failure
         if: failure()
-        run: docker compose --profile core --profile ingest --profile lakehouse logs --tail 200
+        run: docker compose --profile core logs --tail 200
       - name: Tear down
         if: always()
-        run: docker compose --profile core --profile ingest --profile lakehouse down -v
+        run: docker compose --profile core down -v
 
   # ───────────────────────────────────────────────────────────────────────────
   # Playwright e2e against the full running stack.
@@ -217,4 +238,4 @@ jobs:
 
       - name: Tear down
         if: always()
-        run: docker compose --profile core --profile ingest down -v
+        run: docker compose --profile core down -v

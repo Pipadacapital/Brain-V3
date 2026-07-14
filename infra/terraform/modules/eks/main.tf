@@ -437,9 +437,10 @@ locals {
   # maintenance client — the Spark→DuckDB cutover replaced brain-spark-bronze). All get an IMMUTABLE,
   # KMS-encrypted, scan-on-push ECR repo + lifecycle policy. The cronworkflows chart (sparkBronze.image /
   # sparkV4.image) pulls it; CI builds + digest-pins it (see .github/workflows/deploy.yml build-data-images).
-  # `spark-bronze` is RETAINED (not built anymore) so its old images survive for cutover rollback; drop it
-  # in a later cleanup once DuckDB is proven in prod. dbt-runner is RETIRED (Brain V4).
-  services = ["collector", "stream-worker", "core", "web", "spark-bronze", "duckdb"]
+  # `spark-bronze` was DROPPED (repo + 11 images deleted 2026-07-14) after the DuckDB cutover — the fast
+  # image-repull rollback is gone; a Spark rollback now needs a git-revert of the cutover + an image
+  # rebuild. dbt-runner is RETIRED (Brain V4).
+  services = ["collector", "stream-worker", "core", "web", "duckdb"]
 }
 
 resource "aws_ecr_repository" "services" {

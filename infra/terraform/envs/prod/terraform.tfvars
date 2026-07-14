@@ -71,7 +71,7 @@ eks_support_type = "STANDARD"               # step 3 DONE 2026-07-12 — fail-fa
 # (Aurora ACU, Redis eviction+memory, fck-nat recover+reboot, composite
 # EKS-unhealthy). Recommended: ON. Rollback = flip false / git revert.
 enable_cloudtrail        = true         # account multi-region trail -> WORM audit bucket
-enable_guardduty         = true         # GuardDuty detector in ap-south-1 (~single-digit $/mo)
+enable_guardduty         = false        # HELD (cost) — owner: no GuardDuty spend now; re-enable when wanted
 enable_aws_config        = false        # OPTIONAL — per-item + per-rule cost; enable as a deliberate fast-follow
 cloudtrail_s3_key_prefix = "cloudtrail" # must match the audit-bucket-policy grant
 isolate_audit_cmk_policy = true         # SEC-4: audit CMK gets its own non-blanket policy (pair with enable_cloudtrail)

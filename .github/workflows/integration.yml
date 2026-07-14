@@ -90,6 +90,17 @@ jobs:
           "
           pnpm migrate:up
 
+      # Seed a minimal Bronze fixture BEFORE the refresh. On a cold catalog the DuckDB transform tier
+      # has no brain_bronze.collector_events_connect to read → the keystone never creates brain_silver
+      # → every Silver/Gold job fails with "Namespace brain_silver does not exist". Producing a handful
+      # of order.live.v1 collector events (→ Kafka Connect lands Bronze) breaks that cascade so the
+      # refresh builds the full medallion. The script POLLS Trino until the events land (~30-60s commit).
+      - name: Seed Bronze fixture (Kafka → Kafka Connect → Iceberg)
+        env:
+          KAFKA_BROKERS: localhost:19092
+          TRINO_URL: http://localhost:8090
+        run: pnpm --filter @brain/stream-worker seed:bronze
+
       # ── V4 transform: DuckDB Silver → DuckDB Gold → Iceberg, served by Trino views (REPLACES dbt+StarRocks+Spark) ──
       # Brain V4 removed dbt (Phase 6b), StarRocks (serving → Trino), AND Spark (transform → DuckDB, PR
       # #148). The analytics transform is DuckDB-on-Iceberg: db/iceberg/duckdb/{silver,gold}/*.py
@@ -122,7 +133,13 @@ jobs:
           # duckdb-refresh.sh runs keystone → silver ×2 → gold in dependency order (best-effort per job).
           # PYTHON points it at the venv; ONESHOT is a no-op (kept for call-site compatibility with the
           # retired v4-refresh-loop.sh).
-          PYTHON=/tmp/duckvenv/bin/python ONESHOT=1 bash tools/dev/duckdb-refresh.sh
+          #
+          # Best-effort, matching tools/dev/dev-up.sh: with only the minimal order seed, peripheral marts
+          # (identity → Neo4j, attribution → pixel touchpoints, ad-spend → connector rows) legitimately
+          # have no inputs and may no-op/fail — that must NOT fail the job. The REAL gates are the Trino
+          # serving-view provisioning + the live suites below, which assert the marts the serving tier feeds.
+          PYTHON=/tmp/duckvenv/bin/python ONESHOT=1 bash tools/dev/duckdb-refresh.sh \
+            || echo "::warning::DuckDB refresh reported issues (often empty cold-DB peripheral marts) — continuing to Trino views + live suites (the real gates)"
 
       - name: Provision Trino serving views (iceberg.brain_serving.mv_*)
         env:

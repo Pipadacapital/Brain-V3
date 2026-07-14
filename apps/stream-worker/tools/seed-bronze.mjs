@@ -26,7 +26,10 @@ const COLLECTOR_TOPIC = process.env.COLLECTOR_TOPIC ?? 'prod.collector.event.v1'
 const TRINO_URL =
   process.env.TRINO_URL ?? `http://${process.env.TRINO_HOST ?? 'localhost'}:${process.env.TRINO_PORT ?? '8090'}`;
 const TRINO_USER = process.env.TRINO_USER ?? 'brain';
-const BRONZE_VIEW = 'iceberg.brain_bronze.collector_events_connect_lifted';
+// Poll the RAW Connect-landed table (auto-created by the iceberg-bronze-collector connector), NOT the
+// `_lifted` serving view — that view is created LATER by db/trino/views/run-trino-views.sh, so it does
+// not exist yet at seed time (polling it silently returns 0 forever).
+const BRONZE_TABLE = 'iceberg.brain_bronze.collector_events_connect';
 const POLL_TIMEOUT_MS = Number(process.env.POLL_TIMEOUT_MS ?? 180_000);
 
 // Two stable test brands (deterministic UUIDs). The live suites seed their OWN brands; these just
@@ -81,43 +84,53 @@ async function produce() {
   return n;
 }
 
-/** Minimal Trino REST client: POST the query, then follow nextUri until rows or FINISHED. */
+/**
+ * Minimal Trino REST client: POST the query, follow nextUri to completion. Returns the COUNT, or
+ * null if the table does not exist yet (the connector auto-creates it on its first commit) — so the
+ * poller can distinguish "table not created yet" from "table exists, 0 rows".
+ */
 async function trinoCount() {
   let uri = `${TRINO_URL}/v1/statement`;
   let init = {
     method: 'POST',
     headers: { 'X-Trino-User': TRINO_USER, 'Content-Type': 'text/plain' },
-    body: `SELECT COUNT(*) FROM ${BRONZE_VIEW}`,
+    body: `SELECT COUNT(*) FROM ${BRONZE_TABLE}`,
   };
   let count = null;
   for (let hops = 0; hops < 50; hops++) {
     const resp = await fetch(uri, init);
     if (!resp.ok) throw new Error(`trino HTTP ${resp.status}`);
     const body = await resp.json();
+    if (body.error) {
+      // TABLE_NOT_FOUND / NoSuchTable while the connector hasn't committed yet → not-ready, poll on.
+      const name = body.error.errorName ?? '';
+      if (/NOT_FOUND|NoSuch|TABLE_NOT_FOUND/i.test(name) || /does not exist/i.test(body.error.message ?? '')) return null;
+      throw new Error(`trino error: ${body.error.message ?? name}`);
+    }
     if (Array.isArray(body.data) && body.data.length) count = Number(body.data[0][0]);
     if (!body.nextUri) break;
     uri = body.nextUri;
     init = { method: 'GET', headers: { 'X-Trino-User': TRINO_USER } };
   }
-  if (count == null) throw new Error('no count returned');
   return count;
 }
 
 async function pollUntilLanded(minRows) {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
-  console.log(`polling ${BRONZE_VIEW} over Trino until >= ${minRows} rows (Connect commit ~30-60s)…`);
+  console.log(`polling ${BRONZE_TABLE} over Trino until >= ${minRows} rows (Connect commit ~30-60s)…`);
   while (Date.now() < deadline) {
-    let count = 0;
+    let count = null;
     try {
       count = await trinoCount();
     } catch (e) {
-      // table/namespace not created until the first Connect commit, or Trino still warming — tolerate
+      console.log(`  … trino not ready (${e.message})`);
     }
-    if (count >= minRows) {
-      console.log(`✓ Bronze landed: ${count} rows visible over Trino`);
+    if (count != null && count >= minRows) {
+      console.log(`✓ Bronze landed: ${count} rows in ${BRONZE_TABLE}`);
       return;
     }
-    console.log(`  … ${count} rows (${Math.ceil((deadline - Date.now()) / 1000)}s left)`);
+    const shown = count == null ? 'table not created yet' : `${count} rows`;
+    console.log(`  … ${shown} (${Math.ceil((deadline - Date.now()) / 1000)}s left)`);
     await new Promise((r) => setTimeout(r, 4000));
   }
   throw new Error(`Bronze did not reach ${minRows} rows within ${POLL_TIMEOUT_MS / 1000}s`);

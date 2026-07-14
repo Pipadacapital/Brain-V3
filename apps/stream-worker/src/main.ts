@@ -15,7 +15,7 @@
  * Dev DB connects as superuser 'brain' which BYPASSES RLS — NEVER use
  * DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
-import { Kafka } from 'kafkajs';
+import { Kafka, type ConsumerConfig } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
 import { assertRoleEnforcesRls } from '@brain/db';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
@@ -27,6 +27,7 @@ import {
   IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
   IDENTITY_UNMERGED_TOPIC_SUFFIX,
 } from '@brain/contracts';
+import { resolveRackId } from './infrastructure/kafka/resolveRackId.js';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
@@ -204,6 +205,18 @@ export async function main(): Promise<void> {
     brokers,
     retry: { retries: 5 },
   });
+
+  // KIP-392: inject this pod's AZ as the consumer rackId so EVERY consumer fetches from a same-AZ
+  // replica (RackAwareReplicaSelector on the brokers) instead of the cross-AZ leader — cutting
+  // DataTransfer-Regional-Bytes $. One wrap covers all consumer sites; an empty rackId (IMDS
+  // unreachable / override unset) leaves today's leader-fetch behaviour untouched (no regression).
+  const rackId = await resolveRackId();
+  if (rackId) {
+    // Monkeypatch the shared client so every consumer created downstream inherits the rackId (KIP-392).
+    const base = kafka.consumer.bind(kafka);
+    kafka.consumer = (config: ConsumerConfig) => base({ ...config, rackId });
+    log.info('kafka rack-awareness enabled (KIP-392 follower fetching)', { rackId });
+  }
 
   // ── Audit writer (R3/REC-1: pixel.brand_mismatch) ───────────────────────────
   // audit_log has RLS DISABLED (cross-brand SoR); isolation is the mandatory

@@ -6,6 +6,13 @@
 # See docs/runbooks/adr-0010-kafka-connect-bronze.md.
 enabled: true
 
+# KIP-392: at pod start, resolve this pod's AZ from IMDSv2 and export CONNECT_CONSUMER_CLIENT_RACK so
+# the Iceberg sink consumers read a SAME-AZ replica (brokers must run RackAwareReplicaSelector — see
+# infra/helm/strimzi-kafka kafka.rack) instead of the cross-AZ leader → cuts DataTransfer-Regional
+# spend. Best-effort + reversible: unresolved AZ (or disabled) = today's leader-fetch behaviour.
+rackAwareness:
+  enabled: true
+
 image:
   repository: confluentinc/cp-kafka-connect
   tag: "7.6.1"

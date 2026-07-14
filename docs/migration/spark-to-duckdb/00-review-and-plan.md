@@ -1,5 +1,47 @@
 # Spark → DuckDB migration — review & plan (Phase 0 gate)
 
+---
+
+## PROGRESS LOG (live)
+
+**Transform tier: ~all jobs ported + parity-validated on branch feat/spark-to-duckdb-phase0.**
+- Framework: `db/iceberg/duckdb/{_catalog,_base,parity_check}.py` (REST-catalog attach,
+  read/MERGE/watermark, timestamp-normalized superset-tolerant parity gate).
+- Silver: keystone `silver_collector_event` (admission gate + PG install-token +
+  consent, byte-identical on shared keys) + ~30 entity/identity/normalize jobs.
+- Gold: ~40 marts incl. `gold_revenue_ledger` (money byte-exact), `journey_events`
+  (56854 byte-identical versioned ledger), `gold_attribution_credit` (Markov math
+  vendored byte-identical), all measurement/attribution/AI marts.
+- Every money column verified exact to the minor unit; idempotent; live tables
+  untouched (parallel-run via `MIGRATION_TABLE_SUFFIX`). Real bugs the parity gate
+  caught: NULLS-ordering, truncate-vs-round bps, an uncapped Spark oracle.
+- Maintenance/RTBF → **Trino** (`db/iceberg/trino/`, per amendment #3): DuckDB can't
+  run Iceberg `EXECUTE optimize/expire_snapshots/remove_orphan_files`.
+
+## REMAINING — the operational cutover (final phase)
+
+1. **DuckDB runtime image** — a lightweight image carrying `db/iceberg/duckdb/**` +
+   `pip install -r db/iceberg/duckdb/requirements.txt` (no JVM). Replaces the Spark
+   image for the transform crons.
+2. **Cronworkflow cutover** (`infra/helm/cronworkflows/templates/`):
+   - `spark-v4.yaml` (v4-silver :05 / v4-gold :25): `spark-submit --master local[*]
+     /opt/brain/silver|gold/X.py` → `python /opt/brain/duckdb/silver|gold/X.py` on
+     the DuckDB image. Keep the same schedule + ordering (order_state spine first).
+   - `spark-bronze.yaml` / `spark-v4-maintenance.yaml` → the Trino maintenance
+     scripts (`db/iceberg/trino/bronze_maintenance|medallion_maintenance|
+     bronze_raw_retention.py`) on a small Trino-client image.
+   - `spark-erasure.yaml` → `db/iceberg/trino/erasure_raw_delete.py` (DELETE + optimize).
+3. **Terraform**: remove the Karpenter `batch` pool (`infra/helm/karpenter/values.yaml`)
+   + the Spark image build from the CI matrix. (~$20–40/mo realized.)
+4. **`dev:up` e2e**: full stack, drive a pixel/connector event → Bronze → DuckDB
+   Silver/Gold → Trino `mv_*` → BFF, green.
+5. **Delete** `db/iceberg/spark/**` + Spark Dockerfile + update the v4-naming-guard
+   (allow `db/iceberg/duckdb`, forbid new `spark-submit`).
+6. Rollback: every Spark cron template kept in git; re-provision the pool + revert
+   the templates to restore Spark instantly.
+
+---
+
 **Status:** Phase 0 in progress. **Decision needed before Phase 1.**
 **Goal:** replace every Spark *transform* job (Silver, Gold, identity, maintenance,
 RTBF) with DuckDB, decommission the Spark `batch` compute, keep the architecture

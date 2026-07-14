@@ -433,12 +433,13 @@ resource "aws_eks_addon" "ebs_csi" {
 # ECR Repositories — per service, immutable tags
 ###############################################################################
 locals {
-  # The 4 app deployables + the spark-bronze data-plane job image (the Iceberg Bronze sink; the same
-  # image also carries the V4 Silver/Gold marts for the sparkV4 crons). All get an IMMUTABLE,
+  # The 4 app deployables + the `duckdb` data-plane job image (the DuckDB transform tier + Trino
+  # maintenance client — the Spark→DuckDB cutover replaced brain-spark-bronze). All get an IMMUTABLE,
   # KMS-encrypted, scan-on-push ECR repo + lifecycle policy. The cronworkflows chart (sparkBronze.image /
   # sparkV4.image) pulls it; CI builds + digest-pins it (see .github/workflows/deploy.yml build-data-images).
-  # dbt-runner is RETIRED — dbt is removed under Brain V4 (Spark is the sole compute).
-  services = ["collector", "stream-worker", "core", "web", "spark-bronze"]
+  # `spark-bronze` is RETAINED (not built anymore) so its old images survive for cutover rollback; drop it
+  # in a later cleanup once DuckDB is proven in prod. dbt-runner is RETIRED (Brain V4).
+  services = ["collector", "stream-worker", "core", "web", "spark-bronze", "duckdb"]
 }
 
 resource "aws_ecr_repository" "services" {

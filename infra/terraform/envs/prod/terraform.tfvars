@@ -52,11 +52,14 @@ replica_region                  = "ap-south-2"
 # account-wide DNS mutation from a compromised external-dns pod.
 external_dns_zone_ids = ["Z00011362R9ERGL7EC2J9"]
 
-# ── EKS 1.33 upgrade (AUD-OPS-028, −$360/mo extended-support fee) ────────────
-# GATED: commented = live state (1.32 / AL2 / AWS-default support) = no-op plan.
-# Uncomment ONE STEP AT A TIME, apply, verify, then the next — full runbook in
-# docs/runbooks/eks-1-33-upgrade.md. Step 1 REPLACES the system MNG
-# (create-before-destroy) onto AL2023 + gp3 roots (AUD-INFRA-019).
-system_ami_type  = "AL2023_ARM_64_STANDARD" # step 1 EXECUTED 2026-07-12 — prereq (AL2 AMIs end at 1.32)
-cluster_version  = "1.33"                   # step 2 EXECUTED 2026-07-12 — control plane + MNG roll
-eks_support_type = "STANDARD"               # step 3 EXECUTED 2026-07-12 — fail-fast on future extended-support drift
+# ── EKS 1.33 upgrade (AUD-OPS-028) — COMPLETE, dropped the ~$360/mo extended-support fee ──
+# DONE 2026-07-12 (all three steps executed & applied; live cluster verified on
+# 1.33 / AL2023 / STANDARD support 2026-07-14). Runbook (kept for the next major
+# bump): docs/runbooks/eks-1-33-upgrade.md. NOTE: the modules/eks *defaults* stay
+# 1.32 / AL2_ARM_64 as a safe no-op default — these prod overrides are the source
+# of truth. FORWARD: schedule the routine 1.33 → 1.34+ roll before 1.33 standard
+# support ends (~late-2026); now a single-step node roll (already on AL2023). The
+# eks_support_type=STANDARD guard fails the plan if the cluster drifts to extended.
+system_ami_type  = "AL2023_ARM_64_STANDARD" # step 1 DONE 2026-07-12 — prereq (AL2 AMIs end at 1.32)
+cluster_version  = "1.33"                   # step 2 DONE 2026-07-12 — control plane + MNG roll
+eks_support_type = "STANDARD"               # step 3 DONE 2026-07-12 — fail-fast on future extended-support drift

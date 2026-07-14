@@ -1,5 +1,12 @@
 # Runbook — Production turn-on (ordered)
 
+> **SUPERSEDED (2026-07-06) — use `docs/runbooks/GO-LIVE.md`.** This document describes the
+> EC10 "declared-but-not-applied" baseline, which no longer exists: the prod modules were
+> UN-GATED (AUD-COST-001, `envs/prod/bootstrap.tf`), RDS was replaced by Aurora Serverless v2
+> (ADR-0009), Strimzi/Karpenter/pgbouncer prod apps now exist, and the `bronze-materialize`
+> CronWorkflow it references was removed — Bronze landing is the kafka-connect Deployment
+> (ADR-0010, `infra/argocd/envs/prod/kafka-connect.yaml`). Kept as historical context only.
+
 Bring the Brain V4 platform up in the **prod** AWS account (`ap-south-1`) from the
 EC10 "declared-but-not-applied" baseline to a serving stack. Grounded in
 `infra/terraform/envs/prod`, `infra/helm/*`, and `infra/argocd/envs/prod/*`.
@@ -187,7 +194,7 @@ replay-and-recount in `DEDUP-GUARANTEE.md`: produce a batch, force a re-delivery
 
 | Name | Referenced for | Status |
 | --- | --- | --- |
-| `tools/dev/dev-bronze-streaming.sh` | host combined-bronze wrapper | not in repo; combined Bronze landing is the two compose services `spark-bronze-sink` + `spark-bronze-raw-sink` (see local-dev runbook) |
+| `tools/dev/dev-bronze-streaming.sh` | host combined-bronze wrapper | not in repo; Bronze landing is the compose `kafka-connect` service / `infra/helm/kafka-connect` chart (ADR-0010, cutover 2026-07-05 — see local-dev runbook) |
 | Strimzi `Kafka` CR / operator manifests | prod Kafka broker | not in repo (only doc comments); to-be-created |
 | Karpenter NodePool / EC2NodeClass / IRSA | data-plane autoscaling | not in repo; to-be-created |
 | `pgbouncer-prod` ArgoCD Application | RDS connection pooling | chart exists, prod Application missing; to-be-created |

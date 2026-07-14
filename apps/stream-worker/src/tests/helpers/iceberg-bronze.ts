@@ -1,27 +1,28 @@
 /**
  * iceberg-bronze.ts — shared test helper for the Iceberg Bronze e2e suites.
  *
- * MEDALLION / Iceberg-Bronze: the stream-worker no longer writes Bronze to PostgreSQL (the PG
- * data_plane.bronze_events table was dropped — migration 0070; ProcessEventUseCase's PG write is a
- * no-op by default). The SOLE Bronze system-of-record is the Spark Structured-Streaming sink: the
- * unified landing job (db/iceberg/spark/bronze_landing.py) consumes the collector + backfill + raw
- * connector topics and MERGEs into the Iceberg table `brain_bronze.events` (idempotent on dedup_key
- * = evt:{brand_id}:{event_id} for collector rows). The legacy split sinks wrote
- * `brain_bronze.collector_events` — selectable via BRONZE_SOURCE until Phase-8 decommission.
+ * MEDALLION / Iceberg-Bronze (ADR-0010): the stream-worker no longer writes Bronze to PostgreSQL
+ * (the PG data_plane.bronze_events table was dropped — migration 0070; ProcessEventUseCase's PG
+ * write is a no-op by default). The SOLE Bronze landing writer is the Kafka Connect Iceberg sink
+ * (the compose `kafka-connect` service): it APPENDS the collector topic into the truly-raw
+ * `brain_bronze.collector_events_connect` table (payload + kafka coords only) on a ~30s commit
+ * interval. Bronze is APPEND-ONLY — NO Bronze dedup; business dedup lives in Silver
+ * (silver_collector_event MERGE on brand_id/event_id). The Spark sinks (bronze_landing.py /
+ * brain-bronze-sink container) are RETIRED.
  *
  * So the "does an event land in Bronze?" e2e tests: PRODUCE a raw-JSON collector envelope to the
- * Bronze-bound Kafka topic → the running Spark sink lands it in Iceberg → READ it back over TRINO
- * (BRAIN V4: StarRocks is REMOVED; Trino-over-Iceberg is the sole serving engine — this helper
- * reads the three-part `iceberg.brain_bronze.*` name through the same Trino REST adapter the app
- * uses). Trino reads Iceberg snapshots directly, so unlike the old StarRocks reader there is NO
- * external-table metadata cache to bust (no REFRESH EXTERNAL TABLE) — a freshly MERGEd row is
- * visible on the next snapshot.
+ * Bronze-bound Kafka topic → the running Connect sink lands it in Iceberg → READ it back over TRINO
+ * through the LIFT VIEW `iceberg.brain_bronze.collector_events_connect_lifted`, which exposes the
+ * lifted envelope columns (event_id/brand_id/event_type/occurred_at/...) these pollers filter on.
+ * Trino reads Iceberg snapshots directly — no external-table metadata cache to bust; a row is
+ * visible on the first snapshot after the Connect sink's commit (POLL TIMEOUTS must tolerate the
+ * ~30-60s commit latency — hence the 120s default below).
  *
  * Tenant isolation in the lakehouse is PREDICATE-BASED at the read seam (every read filters
  * `brand_id = ?`, mirroring metric-engine withTrinoBrand / dq silver-reader), NOT PG RLS. A
  * brand-scoped query therefore returns 0 rows for another brand's event BY CONSTRUCTION.
  *
- * REQUIRES the `lakehouse` docker profile (Kafka + Spark sink + Iceberg REST + MinIO + Trino).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
  * Suites self-skip via `icebergBronzeAvailable()` when it is not up.
  */
 import { createTrinoPool } from '@brain/metric-engine';
@@ -33,21 +34,18 @@ const TRINO_URL =
 const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
 
 /**
- * BRONZE_SOURCE cutover seam (unified-bronze-landing): 'events' = the unified
- * brain_bronze.events table written by bronze_landing.py (the DEPLOYED default);
- * 'legacy' = the pre-unified brain_bronze.collector_events written by the split sinks.
- * Three-part names resolve the raw Bronze tables directly through the iceberg catalog.
+ * The Bronze read target (ADR-0010, CONSTANT — the BRONZE_SOURCE cutover seam is REMOVED): the
+ * Trino lift view over the Kafka Connect collector table. The three-part name resolves the view
+ * directly through the iceberg catalog; it exposes the event_id/brand_id/event_type columns the
+ * pollers below filter on.
  */
-const BRONZE_SOURCE = process.env['BRONZE_SOURCE'] ?? 'events';
-export const BRONZE_TABLE =
-  BRONZE_SOURCE === 'legacy'
-    ? 'iceberg.brain_bronze.collector_events'
-    : 'iceberg.brain_bronze.events';
+const BRONZE_TABLE = 'iceberg.brain_bronze.collector_events_connect_lifted';
 
-// The running Spark sink consumes the env-PREFIXED topic; the local-prod stack uses `prod.`
-// (verified: brain-bronze-sink COLLECTOR_TOPIC=prod.collector.event.v1). Default to that so the
-// suites exercise the LIVE sink without a manual override; set COLLECTOR_TOPIC for other envs.
-export const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.v1';
+// The running Connect sink consumes the env-PREFIXED topic; the local-prod stack uses `prod.`
+// (the kafka-connect compose service's collector connector reads prod.collector.event.v1). Default
+// to that so the suites exercise the LIVE sink without a manual override; set COLLECTOR_TOPIC for
+// other envs.
+const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.v1';
 export const KAFKA_BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
 
 /**
@@ -78,7 +76,8 @@ export async function icebergBronzeAvailable(pool: BronzePool): Promise<boolean>
   }
 }
 
-/** A minimal collector envelope (the raw-JSON shape the collector produces + the Spark sink parses). */
+/** A minimal collector envelope (the raw-JSON shape the collector produces; the Connect sink lands
+ *  it verbatim as `payload` and the lift view lifts these scalars at query time). */
 export interface CollectorEnvelope {
   schema_version: string;
   event_id: string;
@@ -95,7 +94,7 @@ export interface CollectorEnvelope {
 /**
  * Produce a raw-JSON collector envelope to the Bronze-bound Kafka topic (keyed by brand_id).
  * `topic` defaults to the helper's COLLECTOR_TOPIC; callers in a differently-prefixed stack
- * pass the matching topic explicitly so the running Spark sink actually consumes it.
+ * pass the matching topic explicitly so the running Connect sink actually consumes it.
  */
 export async function produceCollectorEvent(
   producer: Producer,
@@ -125,10 +124,11 @@ export interface BronzeMatch {
 
 /**
  * Poll Iceberg Bronze (over Trino) until at least `min` rows match. Trino reads Iceberg snapshots
- * directly — no metadata cache-bust needed; a just-MERGEd row is visible on the next poll. Returns
- * the matching row count (>= min on success, or the last count seen at timeout). A brand-scoped
- * query returns 0 for another brand's event by construction (read-seam isolation) — use that for
- * the negative/isolation controls.
+ * directly — no metadata cache-bust needed; a row is visible on the first snapshot after the
+ * Connect sink's ~30s commit, so the default timeout is 120s (ADR-0010: tolerate 30-60s commit
+ * latency). Returns the matching row count (>= min on success, or the last count seen at timeout).
+ * A brand-scoped query returns 0 for another brand's event by construction (read-seam isolation) —
+ * use that for the negative/isolation controls.
  */
 export async function pollIcebergBronzeCount(
   pool: BronzePool,
@@ -137,7 +137,7 @@ export async function pollIcebergBronzeCount(
 ): Promise<number> {
   const min = opts.min ?? 1;
   const interval = opts.intervalMs ?? 1500;
-  const deadline = Date.now() + (opts.timeoutMs ?? 45_000);
+  const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
 
   const where: string[] = ['brand_id = ?'];
   const params: unknown[] = [match.brandId];
@@ -164,17 +164,4 @@ export async function pollIcebergBronzeCount(
     if (Date.now() >= deadline) return last;
     await new Promise((r) => setTimeout(r, interval));
   }
-}
-
-/**
- * Convenience: poll until a single (brand, eventId) row is visible. Returns true if it landed.
- * Use for "this exact event reached Bronze" assertions (dedup-safe: Spark MERGE collapses re-delivery).
- */
-export async function waitForBronzeEvent(
-  pool: BronzePool,
-  brandId: string,
-  eventId: string,
-  timeoutMs = 45_000,
-): Promise<boolean> {
-  return (await pollIcebergBronzeCount(pool, { brandId, eventId }, { min: 1, timeoutMs })) >= 1;
 }

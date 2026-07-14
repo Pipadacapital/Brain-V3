@@ -13,8 +13,6 @@
 import { METRIC_REGISTRY, type MetricId } from '@brain/metric-engine';
 import { CHANNEL_ENUM } from '@brain/ai-gateway-client';
 
-export const RESOLVER_PROMPT_VERSION = 'nlq-resolver-v1';
-
 /** One-line intent hint per metric id, sourced deterministically from the registry. */
 function metricCatalogue(): string {
   return (Object.keys(METRIC_REGISTRY) as MetricId[])

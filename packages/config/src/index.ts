@@ -1,3 +1,6 @@
+// prod go-live 2026-07-11: first CI build of the app images (retry with the
+// path-based affected check in deploy.yml + repo vars/secret now set) — touch a
+// packages/ file so the path-based check builds all apps (harmless comment).
 /**
  * @brain/config — Zod-validated environment configuration.
  *

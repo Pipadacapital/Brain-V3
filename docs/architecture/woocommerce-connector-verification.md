@@ -1,5 +1,9 @@
 # WooCommerce Connector — Correctness Verification (ULenin)
 
+> **Writer note (ADR-0010, 2026-07-05):** `bronze_materialize.py` referenced below was removed —
+> Bronze is landed verbatim by the Kafka Connect sink with NO Bronze-side gate; the
+> `SERVER_TRUSTED` admit set now lives only in `silver_collector_event.py` (one edit, not two).
+
 **Brand:** ULenin — `5b2e975c-7186-4608-84d6-760f51fe2389` (WooCommerce, store `https-ulinen.com`)
 **Verdict:** `major_gaps` (4/4 review dimensions + live diagnosis all agree)
 **Date:** 2026-06-27

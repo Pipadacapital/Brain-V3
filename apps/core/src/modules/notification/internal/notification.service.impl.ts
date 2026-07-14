@@ -10,6 +10,7 @@ import type { NotificationService } from '../service.js';
 import type { EmailAdapter } from './ses-adapter.js';
 import { writeSendLog } from './send-log.js';
 import { captureDevLink } from './dev-link-capture.js';
+import { renderBrainEmail } from './email-layout.js';
 import type { CanContactEngine } from './compliance/can-contact.engine.js';
 import type {
   ContactChannel,
@@ -67,6 +68,17 @@ export class NotificationServiceImpl implements NotificationService {
           '',
           'If you did not create an account, please ignore this email.',
         ].join('\n'),
+        htmlBody: renderBrainEmail({
+          preheader: 'Confirm your email to activate your Brain account.',
+          heading: 'Verify your email',
+          intro:
+            'Welcome to Brain. Confirm this is your email to activate your account and start turning your commerce data into decisions.',
+          ctaLabel: 'Verify email address',
+          ctaUrl: verifyUrl,
+          note: 'This link expires in 24 hours.',
+          footer:
+            "If you didn't create a Brain account, you can safely ignore this email — no account will be activated.",
+        }),
         correlationId,
       });
 
@@ -117,6 +129,15 @@ export class NotificationServiceImpl implements NotificationService {
           '',
           'If you did not request this, please ignore this email.',
         ].join('\n'),
+        htmlBody: renderBrainEmail({
+          preheader: 'Reset your Brain password.',
+          heading: 'Reset your password',
+          intro: 'We received a request to reset the password for your Brain account. Choose a new password using the button below.',
+          ctaLabel: 'Reset password',
+          ctaUrl: resetUrl,
+          note: 'This link expires in 1 hour.',
+          footer: "If you didn't request a password reset, you can safely ignore this email — your password won't change.",
+        }),
         correlationId,
       });
 
@@ -166,6 +187,15 @@ export class NotificationServiceImpl implements NotificationService {
           '',
           'If you did not expect this invitation, please ignore this email.',
         ].join('\n'),
+        htmlBody: renderBrainEmail({
+          preheader: "You've been invited to join a workspace on Brain.",
+          heading: "You've been invited to Brain",
+          intro: 'A teammate has invited you to join their workspace on Brain — the AI-native commerce OS. Accept the invitation to get started.',
+          ctaLabel: 'Accept invitation',
+          ctaUrl: inviteUrl,
+          note: 'This invitation expires in 7 days.',
+          footer: "If you weren't expecting this invitation, you can safely ignore this email.",
+        }),
         correlationId,
       });
 

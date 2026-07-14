@@ -1,0 +1,116 @@
+# Brain network segmentation + Pod Security Admission (AUD-INFRA-021/022).
+#
+# The audit measured a FLAT pod network: zero NetworkPolicies outside the
+# Strimzi-managed ones (ns kafka) — a compromised pod (e.g. the internet-facing
+# collector) had unrestricted lateral reach to pgbouncer→Aurora, Trino,
+# iceberg-rest and Neo4j. This chart ships default-deny-ingress per Brain
+# namespace + explicit allows for the REAL flows (inventoried from the live
+# env-secret wiring in tools/deploy/seed-prod-secrets.sh / seed-core-env.sh and
+# the chart values).
+#
+# ENFORCEMENT NOTE (read before trusting this): NetworkPolicy objects are inert
+# unless the CNI enforces them. The prod cluster runs the default AWS VPC CNI
+# WITHOUT the network-policy agent enabled (no vpc-cni addon config anywhere in
+# infra/terraform) — enabling `enableNetworkPolicy: "true"` on the vpc-cni
+# addon is the REQUIRED cluster activation step (see README.md). Shipping the
+# policies first is deliberate: zero-risk now, and the allows are already in
+# place the moment enforcement turns on.
+#
+# The `kafka` namespace is intentionally NOT covered: Strimzi manages its own
+# NetworkPolicies there, and kafka-connect (same ns) is every producer's
+# landing path — a wrong deny is an event-loss risk. Follow-up, not this set.
+
+# Prometheus (kube-prometheus-stack) lives here; every covered namespace gets a
+# blanket allow-from-monitoring so ServiceMonitor/PodMonitor scrapes keep
+# working (collector :3001 /metrics, stream-worker :8090, future exporters).
+monitoringNamespace: monitoring
+
+# The Brain ALB uses target-type=ip — public traffic arrives at pod IPs from
+# ALB ENIs INSIDE the VPC, so the ingress allow for ALB-fronted tiers is an
+# ipBlock on the VPC CIDR (infra/terraform/envs/prod vpc_cidr). Honest caveat:
+# with VPC CNI, pod IPs are VPC IPs too, so this admits any in-VPC peer on that
+# ONE port — still a hard deny on every other port. Tighten to the ALB subnet
+# CIDRs once they are pinned as values.
+vpcCidr: "10.0.0.0/16"
+
+# AUD-INFRA-022 — Pod Security Admission namespace labels (SSA-merged onto the
+# ArgoCD-created namespaces; the app MUST sync with ServerSideApply=true).
+podSecurity:
+  # The 4 app charts already render restricted-compliant pod specs
+  # (runAsNonRoot + seccomp RuntimeDefault pod-level; allowPrivilegeEscalation
+  # false + drop ALL per container; secret/emptyDir volumes only) — verified
+  # against the v1.31 restricted profile, so these go straight to enforce.
+  enforceRestricted:
+    - core
+    - web
+    - collector
+    - stream-worker
+  # Data-tier charts are NOT audited for restricted compliance (images may run
+  # as root) — audit+warn only: surfaces violators in the API audit log without
+  # blocking admission. Promote to enforce per-namespace once clean.
+  auditRestricted:
+    - trino
+    - iceberg-rest
+    - pgbouncer
+    - neo4j
+
+# AUD-INFRA-021 — per-namespace default-deny-ingress + explicit allows.
+# Flow inventory (evidence):
+#   web  → core:3001            (web-env BFF_BASE_URL/CORE_API_URL)
+#   ALB  → core:3001 / web:3000 / collector:3001   (target-type=ip Ingresses)
+#   core|collector|stream-worker|argo → pgbouncer:6432   (DATABASE_URL /
+#         BRAIN_APP_DATABASE_URL host; argo = spark jobs w/ core-env + the
+#         db-migrate Job which runs in ns stream-worker)
+#   core|stream-worker|argo → trino:8080   (TRINO_HOST serving reads,
+#         journey-stitch, cron mv-refresh) + trino intra-ns (workers↔coordinator)
+#   core|trino|kafka|argo → iceberg-rest:8181   (ICEBERG_REST_URI; the Kafka
+#         Connect Iceberg sink lives in ns kafka; spark jobs in ns argo)
+#   core|stream-worker|argo → neo4j:7687 (+7474 http)   (NEO4J_URI identity
+#         graph) + neo4j intra-ns (neo4j-backup Job, same namespace)
+#   monitoring → every covered ns (blanket, see monitoringNamespace)
+# Egress is NOT restricted by this set (Aurora/Redis/Kafka/S3 are egress-side;
+# ingress-deny is the lateral-movement cut).
+namespaces:
+  - name: core
+    allows:
+      - name: web-bff
+        ports: [3001]
+        fromNamespaces: [web]
+      - name: alb
+        ports: [3001]
+        fromVpc: true
+  - name: web
+    allows:
+      - name: alb
+        ports: [3000]
+        fromVpc: true
+  - name: collector
+    allows:
+      - name: alb
+        ports: [3001]
+        fromVpc: true
+  - name: stream-worker
+    # No inbound flows besides monitoring (:8090 PodMonitor) — headless worker.
+    allows: []
+  - name: pgbouncer
+    allows:
+      - name: app-db-clients
+        ports: [6432]
+        fromNamespaces: [core, collector, stream-worker, argo]
+  - name: trino
+    intraNamespace: true   # coordinator ↔ workers
+    allows:
+      - name: serving-readers
+        ports: [8080]
+        fromNamespaces: [core, stream-worker, argo]
+  - name: iceberg-rest
+    allows:
+      - name: catalog-clients
+        ports: [8181]
+        fromNamespaces: [core, trino, kafka, argo]
+  - name: neo4j
+    intraNamespace: true   # neo4j-backup Job runs in this namespace
+    allows:
+      - name: bolt-clients
+        ports: [7687, 7474]
+        fromNamespaces: [core, stream-worker, argo]

@@ -1,0 +1,23 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: return_rate
+version: v1
+entity: semantic_order
+time_column: state_effective_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: none
+identity_basis: deterministic_only
+interactive: false
+owner: logistics-team
+description: >-
+  Refund/return rate per period: refunded orders divided by all TERMINAL orders
+  (lifecycle_state='refunded' over is_terminal). A count ratio (no currency). Deterministic order
+  spine only (§1.4). Null when there are zero terminal orders.
+measures:
+  - name: refunded_orders
+    agg: SUM(CASE WHEN lifecycle_state = 'refunded' THEN 1 ELSE 0 END)
+  - name: terminal_orders
+    agg: SUM(CASE WHEN is_terminal THEN 1 ELSE 0 END)
+expression: CAST(refunded_orders AS double) / NULLIF(terminal_orders, 0)
+examples:
+  - "Return rate at grain=month."

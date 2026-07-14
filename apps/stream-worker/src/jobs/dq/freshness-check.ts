@@ -23,7 +23,7 @@ import { log } from "../../log.js";
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** Freshness SLA per target (max age in minutes). Frozen config — no model. */
-export const FRESHNESS_SLA_MINUTES: Readonly<Record<string, number>> = {
+const FRESHNESS_SLA_MINUTES: Readonly<Record<string, number>> = {
   bronze_events: 60,
   connector_sync_status: 1440, // 24h — connectors sync on a slower cadence
   'silver.order_state': 120,
@@ -106,8 +106,8 @@ export async function freshnessCheck(
     client.release();
   }
 
-  // ── Lakehouse targets (StarRocks: Iceberg Bronze + Silver, brand-scoped at the seam) ──
-  // bronze_events freshness now reads the Iceberg Bronze SoR (collector_events), NOT PG.
+  // ── Lakehouse targets (Trino: Iceberg Bronze + Silver, brand-scoped at the seam) ──
+  // bronze_events freshness reads the Iceberg Bronze SoR (the ADR-0010 connect lift view), NOT PG.
   if (silver !== null) {
     // Bronze (Iceberg) freshness.
     try {
@@ -128,13 +128,13 @@ export async function freshnessCheck(
     try {
       const sr = await silver.scopedQuery<{ latest: string | null }>(
         brandId,
-        // BRONZE_COLLECTOR_PREDICATE is Bronze-only (`connector` exists on brain_bronze.events,
-        // not on Silver views) — under BRONZE_SOURCE=events it broke this read for every brand.
+        // BRONZE_COLLECTOR_PREDICATE is Bronze-only and now a constant no-op TRUE (ADR-0010:
+        // the single-lane connect lift view) — still never applied to Silver views.
         `SELECT MAX(updated_at) AS latest FROM brain_serving.mv_silver_order_state WHERE ${BRAND_PREDICATE}`,
       );
       const raw = sr[0]?.latest ?? null;
-      // raw is a JS Date (mysql2 parses DATETIME) built using the pool's UTC timezone (see
-      // silver-reader createPool timezone:'Z') so the absolute instant is correct on any worker tz.
+      // raw is the Trino varchar timestamp ('yyyy-MM-dd HH:mm:ss[.SSS] UTC'); new Date() parses it
+      // as an absolute UTC instant, so the freshness delta is correct on any worker tz.
       rows.push(toRow(brandId, 'silver.order_state', raw ? new Date(raw) : null, now));
     } catch (err) {
       // Silver unreachable → honest D row, never a silent skip (the surface must show it).

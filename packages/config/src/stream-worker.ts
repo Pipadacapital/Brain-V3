@@ -92,6 +92,44 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .string()
     .default('stream-worker-analytics-cache-invalidate'),
 
+  /**
+   * SPEC: A.2.3.5 (WA-18, AMD-08) — consumer group for the event-driven re-stitch dirty-set consumer.
+   * It consumes the SAME identity.{minted,linked,merged,unmerged}.v1 lane under its OWN group (AMD-08 R1
+   * unifies the map-mutation lane; separate offsets from the recompute consumer) and marks the affected
+   * (brand_id, identifier_hash | brain_id) keys dirty in ops.restitch_pending so the Spark stitch job
+   * re-evaluates PAST sessions within the attribution lookback. Per-brand gated by `stitch.v2` (DEFAULT
+   * OFF): with no brand opted in it is an inert flag-check (nothing enqueued, byte-identical golden).
+   */
+  RESTITCH_DIRTY_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-restitch-dirty'),
+
+  /**
+   * SPEC: B.2 (WB-B2, AMD-08, AMD-11) — consumer group for the event-driven cross-device JOURNEY
+   * re-version dirty-set consumer. It consumes the SAME identity.{linked,merged,unmerged}.v1 lane under
+   * its OWN group (AMD-08 R1 unifies the map-mutation lane; separate offsets from the recompute + restitch
+   * consumers) and marks the affected BRAIN_IDS dirty in ops.journey_reversion_pending so the Spark
+   * reversion job rebuilds those brains' journeys as version N+1 + writes journey_version_log. Per-brand
+   * gated by `journey.engine` (DEFAULT OFF): with no brand opted in it is an inert flag-check (nothing
+   * enqueued, byte-identical golden journeys).
+   */
+  JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID: z
+    .string()
+    .default('stream-worker-journey-reversion-dirty'),
+
+  // ── Real-time touchpoint cache (SPEC: A.4 / flag identity.tp_cache, default OFF) ──
+  /**
+   * Consumer group for the touchpoint-cache consumer. Reads the SAME live collector topic
+   * (touchpoint content) AND the identity.merged.v1 lane (merge invalidation) under its OWN
+   * group — no new topic, no new deployable (I-E05). Per-event gated by the per-brand
+   * identity.tp_cache flag (default OFF): with no brand opted in it is an inert flag-check.
+   */
+  TP_CACHE_CONSUMER_GROUP_ID: z.string().default('stream-worker-tp-cache'),
+  /** Max touchpoints retained per {brand}:tp:{brain} zset (A.4 = 200). */
+  TP_CACHE_MAX_TOUCHPOINTS: z.coerce.number().int().positive().default(200),
+  /** Sliding TTL (days) refreshed on every write (A.4 = 30d). */
+  TP_CACHE_TTL_DAYS: z.coerce.number().int().positive().default(30),
+
   // ── Backfill lane (main.ts) ──────────────────────────────────────────────────
   /**
    * Backfill topic. Default DERIVES from NODE_ENV (prod→'prod', else→'dev'); the
@@ -148,6 +186,16 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   /** Optional — no default (job branches on undefined). */
   PARTITION_RETENTION_MONTHS: z.string().optional(),
 
+  // ── ingest-dedup-prune job (ADR-0012) ────────────────────────────────────────
+  /**
+   * Retention window for data_plane.ingest_dedup, as a Postgres interval literal (e.g. '180 days').
+   * Rows whose ingested_at is older than now() - this are pruned. Must stay >= the longest backfill
+   * window so a re-ingest never re-presents a forgotten (brand_id, event_id). Default 180 days.
+   */
+  INGEST_DEDUP_RETAIN: z.string().default('180 days'),
+  /** Batch size for the batched prune DELETE (bounds the lock per statement). */
+  INGEST_DEDUP_PRUNE_BATCH: z.coerce.number().int().positive().default(50000),
+
   // ── Repull / backfill paging knobs ───────────────────────────────────────────
   /** shopify-backfill page sleep (ms). */
   BACKFILL_PAGE_SLEEP_MS: z.coerce.number().int().default(0),
@@ -190,6 +238,30 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   // ── identity-export job flag ─────────────────────────────────────────────────
   /** Full refresh ('1' → full). */
   IDENTITY_EXPORT_FULL: strictOne(false),
+
+  // ── Argo Workflows submit (Bronze raw-PII erasure — AUD-OPS-037) ─────────────
+  /**
+   * Base URL the erasure orchestrator submits the `bronze-raw-erasure` WorkflowTemplate
+   * against. UNSET (default — dev/tests) → the Bronze-raw erasure step stays the
+   * registered-DISABLED shredIcebergSnapshots seam (honest no-op, never a silent success).
+   * Prod (k8s mode): https://kubernetes.default.svc — the argo-workflows app is
+   * controller-only (no REST server), so submit = a k8s-API Workflow create.
+   */
+  ARGO_SERVER_URL: z.string().optional(),
+  /**
+   * 'k8s' (default) = create a Workflow CR with workflowTemplateRef via the Kubernetes API
+   * (projected SA token + cluster CA). 'argo-server' = POST the Argo server's
+   * /api/v1/workflows/{ns}/submit (requires the server to be enabled; Bearer = ARGO_TOKEN).
+   */
+  ARGO_SUBMIT_MODE: z.enum(['k8s', 'argo-server']).default('k8s'),
+  /** Namespace the WorkflowTemplate lives in (the cronworkflows chart's destination). */
+  ARGO_WORKFLOWS_NAMESPACE: z.string().default('argo'),
+  /** WorkflowTemplate name (infra/helm/cronworkflows/templates/spark-erasure.yaml). */
+  ARGO_ERASURE_WORKFLOW_TEMPLATE: z.string().default('bronze-raw-erasure'),
+  /** Optional static bearer token (argo-server mode / out-of-cluster dev). */
+  ARGO_TOKEN: z.string().optional(),
+  /** Whole-request submit timeout (ms). */
+  ARGO_SUBMIT_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
 });
 
 export type StreamWorkerEnv = z.infer<typeof StreamWorkerEnvSchema>;

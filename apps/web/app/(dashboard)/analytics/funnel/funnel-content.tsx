@@ -15,13 +15,16 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Filter, ArrowRight, Users, ChevronRight } from 'lucide-react';
+import { Filter, ArrowRight, Users, ChevronRight, TrendingDown } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
+import { MetricTitle } from '@/components/ui/metric-title';
+import { Tooltip } from '@/components/ui/tooltip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
+import { relativeTime } from '@/lib/format/relative-time';
 import {
   Dialog,
   DialogContent,
@@ -37,12 +40,14 @@ import type { AnalyticsFunnelResponse, FunnelStep } from '@/lib/api/types';
 
 type FunnelHasData = Extract<AnalyticsFunnelResponse, { state: 'has_data' }>;
 
-// Friendly labels for the four stage keys emitted by the engine.
+// Plain-language labels for the stage keys emitted by the engine.
+// NOTE: the endpoint emits four stages — there is no "Checkout started" stage in its
+// payload (that step exists only in the per-visitor furthest_step enum below).
 const STAGE_LABELS: Record<string, string> = {
-  sessions: 'Sessions',
-  product_viewed: 'Viewed a product',
-  cart_added: 'Added to cart',
-  purchased: 'Purchased',
+  sessions: 'Visit',
+  product_viewed: 'Product view',
+  cart_added: 'Add to cart',
+  purchased: 'Purchase',
 };
 
 /**
@@ -57,28 +62,25 @@ const STAGE_TO_STEP: Record<string, FunnelStep> = {
   purchased: 'purchase',
 };
 
-// Friendly labels for the per-visitor furthest_step enum (drill-down title + table cell).
+// Plain-language labels for the per-visitor furthest_step enum (drill-down title + table cell).
 const STEP_LABELS: Record<FunnelStep, string> = {
-  session: 'Session',
-  product_view: 'Viewed a product',
-  cart: 'Added to cart',
-  checkout: 'Reached checkout',
-  purchase: 'Purchased',
+  session: 'Visit',
+  product_view: 'Product view',
+  cart: 'Add to cart',
+  checkout: 'Checkout started',
+  purchase: 'Purchase',
 };
 
 const DRILLDOWN_PAGE_SIZE = 20;
 
-function fmtLastSeen(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString('en-IN', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+/**
+ * Relative "last seen" (plain-language rule 4 — relative first) with the absolute
+ * timestamp in the title attr; an honest "—" when the timestamp is missing/unparseable.
+ */
+function LastSeen({ iso }: { iso: string | null }) {
+  const t = relativeTime(iso, Number.POSITIVE_INFINITY);
+  if (!t.absolute) return <span>—</span>;
+  return <span title={t.absolute}>{t.label}</span>;
 }
 
 function num(s: string): string {
@@ -125,6 +127,39 @@ function EmptyCard() {
   );
 }
 
+/** Trim a display percentage like 84.50 → "84.5" (display-only — never money math). */
+function fmtPct(n: number): string {
+  return n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+/**
+ * Find the step with the LARGEST drop-off: for each stage after the first with a
+ * step_pct, the leave-% is 100 − step_pct (share of the previous step that did NOT
+ * continue). Returns null when no stage has a computable step_pct — the callout then
+ * simply doesn't render (never a fabricated number).
+ */
+function biggestDropOff(
+  stages: FunnelHasData['stages'],
+): { index: number; leavePct: number; fromLabel: string; toLabel: string } | null {
+  let best: { index: number; leavePct: number; fromLabel: string; toLabel: string } | null = null;
+  stages.forEach((s, i) => {
+    if (i === 0 || s.step_pct === null) return;
+    const prev = stages[i - 1];
+    if (!prev) return;
+    const leavePct = 100 - Number(s.step_pct);
+    if (leavePct <= 0) return;
+    if (!best || leavePct > best.leavePct) {
+      best = {
+        index: i,
+        leavePct,
+        fromLabel: STAGE_LABELS[prev.key] ?? prev.key,
+        toLabel: STAGE_LABELS[s.key] ?? s.key,
+      };
+    }
+  });
+  return best;
+}
+
 function FunnelBars({
   stages,
   onSelectStep,
@@ -132,11 +167,16 @@ function FunnelBars({
   stages: FunnelHasData['stages'];
   onSelectStep: (step: FunnelStep) => void;
 }) {
+  const dropOff = biggestDropOff(stages);
+
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          Conversion funnel (session reach per stage)
+          <MetricTitle
+            label="Conversion funnel"
+            help="How many visits made it to each step on the way to a purchase."
+          />
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -145,11 +185,20 @@ function FunnelBars({
             const widthPct = Math.min(100, Number(s.conversion_pct ?? 0));
             const step = STAGE_TO_STEP[s.key];
             const label = STAGE_LABELS[s.key] ?? s.key;
+            const isBiggestDrop = dropOff !== null && dropOff.index === i;
+            // step_pct = share of the PREVIOUS step that continued to this one.
+            const continuedPct = i > 0 && s.step_pct !== null ? s.step_pct : null;
             const bar = (
               <>
-                <div className="flex items-center justify-between text-sm mb-1">
-                  <span className="text-foreground inline-flex items-center gap-1">
+                <div className="flex items-center justify-between gap-2 text-sm mb-1">
+                  <span className="text-foreground inline-flex items-center gap-1.5">
                     {label}
+                    {isBiggestDrop && (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-warning-subtle px-1.5 py-0.5 text-[10px] font-medium text-warning-subtle-foreground">
+                        <TrendingDown className="h-2.5 w-2.5" aria-hidden="true" />
+                        Biggest drop-off
+                      </span>
+                    )}
                     {step && (
                       <ChevronRight
                         className="h-3.5 w-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
@@ -159,16 +208,20 @@ function FunnelBars({
                   </span>
                   <span className="text-muted-foreground tabular-nums">
                     {num(s.sessions)}
-                    {s.conversion_pct !== null && (
-                      <span className="ml-2 text-foreground">{s.conversion_pct}%</span>
-                    )}
-                    {i > 0 && s.step_pct !== null && (
-                      <span className="ml-2 text-xs">({s.step_pct}% of prev)</span>
+                    {continuedPct !== null && (
+                      <Tooltip content="Of the visitors who reached the previous step, the share that continued to this one.">
+                        <span className="ml-2 text-xs" tabIndex={0}>
+                          {continuedPct}% continued
+                        </span>
+                      </Tooltip>
                     )}
                   </span>
                 </div>
                 <div className="h-3 rounded bg-muted overflow-hidden" aria-hidden="true">
-                  <div className="h-full bg-foreground/70" style={{ width: `${widthPct}%` }} />
+                  <div
+                    className={isBiggestDrop ? 'h-full bg-warning' : 'h-full bg-foreground/70'}
+                    style={{ width: `${widthPct}%` }}
+                  />
                 </div>
               </>
             );
@@ -178,21 +231,37 @@ function FunnelBars({
                   <button
                     type="button"
                     onClick={() => onSelectStep(step)}
-                    className="group w-full rounded-md px-2 py-1 -mx-2 text-left transition-colors hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label={`See the visitors who dropped at "${label}"`}
+                    className={`group w-full rounded-md px-2 py-1 -mx-2 text-left transition-colors hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      isBiggestDrop ? 'bg-warning-subtle/40' : ''
+                    }`}
+                    aria-label={`See the visitors who left at "${label}"`}
                     data-testid={`funnel-step-${step}`}
                   >
                     {bar}
                   </button>
                 ) : (
-                  <div className="px-2 py-1 -mx-2">{bar}</div>
+                  <div className={`px-2 py-1 -mx-2 ${isBiggestDrop ? 'rounded-md bg-warning-subtle/40' : ''}`}>
+                    {bar}
+                  </div>
                 )}
               </li>
             );
           })}
         </ul>
+
+        {dropOff && (
+          <p
+            className="mt-3 flex items-center gap-1.5 rounded-md bg-warning-subtle px-2.5 py-1.5 text-sm font-medium text-warning-subtle-foreground"
+            data-testid="funnel-biggest-dropoff"
+          >
+            <TrendingDown className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Biggest drop-off: {fmtPct(dropOff.leavePct)}% leave between {dropOff.fromLabel} and{' '}
+            {dropOff.toLabel}.
+          </p>
+        )}
+
         <p className="mt-3 text-xs text-muted-foreground">
-          Tip: click any stage to see the visitors who dropped at that step.
+          Tip: click any step to see the visitors who left there.
         </p>
       </CardContent>
     </Card>
@@ -240,10 +309,10 @@ function FunnelStepDrilldown({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            Dropped at “{step ? STEP_LABELS[step] : ''}”
+            Stopped at “{step ? STEP_LABELS[step] : ''}”
           </DialogTitle>
           <DialogDescription>
-            Visitors whose furthest reached step was this one, between {range.from} and {range.to}.
+            Visitors who got this far and no further, between {range.from} and {range.to}.
             {total > 0 && ` ${total.toLocaleString('en-IN')} visitor${total === 1 ? '' : 's'}.`}
           </DialogDescription>
         </DialogHeader>
@@ -273,7 +342,7 @@ function FunnelStepDrilldown({
               <TableHeader>
                 <TableRow>
                   <TableHead>Visitor</TableHead>
-                  <TableHead>Furthest step</TableHead>
+                  <TableHead>How far they got</TableHead>
                   <TableHead>Last seen</TableHead>
                 </TableRow>
               </TableHeader>
@@ -283,7 +352,7 @@ function FunnelStepDrilldown({
                     <TableCell className="font-mono text-xs">{v.visitor_id}</TableCell>
                     <TableCell>{STEP_LABELS[v.furthest_step] ?? v.furthest_step}</TableCell>
                     <TableCell className="text-muted-foreground">
-                      {fmtLastSeen(v.last_seen_at)}
+                      <LastSeen iso={v.last_seen_at} />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -332,7 +401,7 @@ export function FunnelContent() {
     <div className="space-y-8">
       <PageHeader
         title="Funnel"
-        description="How storefront sessions convert — from browsing to viewing a product, adding to cart, and purchasing — captured by the Brain Pixel and stitched to orders in the Silver tier."
+        description="How visits turn into purchases — from browsing to viewing a product, adding to cart, and buying — captured by the Brain Pixel and matched to orders."
         meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -372,19 +441,22 @@ function FunnelData({ data, range }: { data: FunnelHasData; range: DateRange }) 
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
-          label="Sessions"
-          value={sessions ? num(sessions.sessions) : '0'}
+          label="Visits"
+          help="How many browsing sessions your store had in the selected period."
+          value={sessions ? num(sessions.sessions) : null}
           sublabel={`${data.from} → ${data.to}`}
         />
         <KpiTile
-          label="Cart-add rate"
-          value={cart?.conversion_pct !== undefined && cart?.conversion_pct !== null ? `${cart.conversion_pct}%` : '—'}
-          sublabel="sessions that added to cart"
+          label="Add-to-cart rate"
+          help="Of all visits, the share where the shopper added something to their cart."
+          value={cart?.conversion_pct !== undefined && cart?.conversion_pct !== null ? `${cart.conversion_pct}%` : null}
+          sublabel="visits that added to cart"
         />
         <KpiTile
           label="Purchase rate"
-          value={purchased?.conversion_pct !== undefined && purchased?.conversion_pct !== null ? `${purchased.conversion_pct}%` : '—'}
-          sublabel="sessions that converted"
+          help="Of all visits, the share that ended in a purchase."
+          value={purchased?.conversion_pct !== undefined && purchased?.conversion_pct !== null ? `${purchased.conversion_pct}%` : null}
+          sublabel="visits that ended in a purchase"
         />
       </div>
 

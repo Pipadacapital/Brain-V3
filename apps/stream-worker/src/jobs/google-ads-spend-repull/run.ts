@@ -28,13 +28,15 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext } from '@brain/observability';
+import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import {
   mapGoogleRowToEvent,
   uuidV5FromSpendRow,
+  googleBreakdownKey,
   SPEND_LIVE_V1_EVENT_NAME,
 } from '@brain/ad-spend-mapper';
 import {
@@ -63,6 +65,14 @@ const LIVE_TOPIC = `${ENV}.${COLLECTOR_EVENT_V1_TOPIC_SUFFIX}`;
 const CURSOR_RESOURCE = 'google_ads.spend' as const;
 const WINDOW_DAYS = 35;
 const GOOGLE_LEVELS: Array<'campaign' | 'adset' | 'ad'> = ['campaign', 'adset', 'ad'];
+
+// FIREHOSE views pulled on the SAME trailing window as base spend (each a distinct GAQL view carrying
+// its own segment dims; the mapper folds those into a distinct breakdownKey → collision-free ids).
+// click is a date_window view but API-capped at 90d; the 35d trailing window is well inside that cap.
+const GOOGLE_FIREHOSE_RESOURCES: readonly string[] = [
+  'spend_by_device', 'ad_schedule', 'keyword', 'search_term', 'geo',
+  'age_range', 'gender', 'shopping_product', 'click', 'conversion_action',
+];
 
 interface AdConnectorRow {
   connector_instance_id: string;
@@ -216,11 +226,46 @@ async function repullConnector(params: RepullParams): Promise<void> {
     }
 
     const { emitted, maxDate } = await emitRows({
-      rows, brandId, ciId, producer,
+      rows, brandId, ciId, producer, pool,
     });
     totalEmitted += emitted;
     if (maxDate && (maxStatDate === null || maxDate > maxStatDate)) maxStatDate = maxDate;
     if (maxStatDate) await upsertCursorValue(pool, brandId, ciId, CURSOR_RESOURCE, maxStatDate);
+  }
+
+  // ── FIREHOSE views (device/network, ad-schedule, keyword, search-term, geo, demo, shopping, click,
+  //    conversion-action) over the SAME trailing window. Each is best-effort per-resource: a view a
+  //    given account can't serve (e.g. no shopping campaigns) logs + continues; quota/auth aborts the
+  //    whole run via the SAME two-error branch as base spend. Distinct breakdownKey → no collision.
+  for (const resource of GOOGLE_FIREHOSE_RESOURCES) {
+    let rows;
+    try {
+      rows = await client.streamResource(resource, from, to);
+    } catch (err) {
+      const s = String(err);
+      if (s.includes(GOOGLE_RESOURCE_EXHAUSTED) || s.includes(GOOGLE_RESOURCE_TEMPORARILY_EXHAUSTED)) {
+        log.error(`connector=${ciId} RateLimited on firehose ${resource} — aborting run (retry next)`);
+        await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
+        return;
+      }
+      if (s.includes(GOOGLE_AUTH_ERROR)) {
+        recordConnectorAuthRejected('google_ads');
+        await setSyncState(pool, brandId, ciId, 'error', 'google auth error — RECONNECT_REQUIRED');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+        return;
+      }
+      if (s.includes(GOOGLE_ACCOUNT_DISABLED)) {
+        await setSyncState(pool, brandId, ciId, 'error', 'ad account disabled — re-enable or reconnect');
+        await updateConnectorInstanceHealth(pool, brandId, ciId, 'account_disabled');
+        return;
+      }
+      // A view the account cannot serve is non-fatal — keep the run going.
+      log.warn(`connector=${ciId} firehose ${resource} stream error (non-fatal)`, { err });
+      continue;
+    }
+    const { emitted } = await emitRows({ rows, brandId, ciId, producer, pool });
+    totalEmitted += emitted;
   }
 
   await setSyncState(pool, brandId, ciId, 'connected', null);
@@ -359,7 +404,7 @@ async function backfillConnector(params: {
         log.error(`backfill connector=${ciId} level=${level} chunk=${chunkFrom}..${chunkTo} stream error`, { err });
         continue; // non-fatal per level
       }
-      const { emitted } = await emitRows({ rows, brandId, ciId, producer });
+      const { emitted } = await emitRows({ rows, brandId, ciId, producer, pool });
       totalEmitted += emitted;
     }
     // Chunk complete → record the chunk floor (oldest fully-processed date) for resumability.
@@ -383,12 +428,13 @@ interface EmitParams {
   brandId: string;
   ciId: string;
   producer: Producer;
+  pool: Pool;
 }
 
 async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: string | null }> {
   if (p.rows.length === 0) return { emitted: 0, maxDate: null };
 
-  const messages = [];
+  const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
   let maxDate: string | null = null;
 
   for (const raw of p.rows) {
@@ -398,8 +444,10 @@ async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: stri
     const props = mapped.properties;
     if (!props.stat_date || !props.level_id) continue;
 
+    // breakdownKey folds any segment dims present on the row (base spend pass → '' → byte-identical
+    // base event_id). A firehose (segmented) row gets a distinct id → no collision under the MERGE.
     const eventId = uuidV5FromSpendRow(
-      p.brandId, 'google_ads', props.stat_date, props.level, props.level_id,
+      p.brandId, 'google_ads', props.stat_date, props.level, props.level_id, googleBreakdownKey(props),
     );
 
     const envelope = CollectorEventV1Schema.parse({
@@ -413,19 +461,46 @@ async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: stri
       properties: props as unknown as Record<string, unknown>,
     });
 
-    messages.push({ key: buildPartitionKey(p.brandId, eventId), value: Buffer.from(JSON.stringify(envelope)) });
+    messages.push({ eventId, key: buildPartitionKey(p.brandId, eventId), value: Buffer.from(JSON.stringify(envelope)) });
     if (maxDate === null || props.stat_date > maxDate) maxDate = props.stat_date;
   }
 
+  let emitted = 0;
   if (messages.length > 0) {
-    // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-    // message so the bronze-bridge consumer resumes this repull's trace.
-    const traceHeaders: Record<string, Buffer | string> = {};
-    injectKafkaTraceContext(traceHeaders);
-    await p.producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
-    log.info(`connector=${p.ciId} emitted=${messages.length}`);
+    // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
+    // so a re-pull/backfill overlap never re-floods Bronze. brand GUC set on a short pooled client,
+    // then filter+mark. ORDER IS CRITICAL: produce FIRST, mark AFTER (a crash between at worst
+    // re-produces a dup on retry, which Silver backstops — never loses an event).
+    const dedupClient = await p.pool.connect();
+    try {
+      await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+      const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
+
+      const toSend = messages.filter((m) => unseen.has(m.eventId));
+      const dropped = messages.length - toSend.length;
+      if (dropped > 0) {
+        incrementCounter('ingest_dedup_dropped_total', { provider: 'google_ads' });
+        log.info(`connector=${p.ciId} dedup: dropped ${dropped} already-ingested events`);
+      }
+
+      if (toSend.length > 0) {
+        // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+        // message so the bronze-bridge consumer resumes this repull's trace.
+        const traceHeaders: Record<string, Buffer | string> = {};
+        injectKafkaTraceContext(traceHeaders);
+        await p.producer.send({
+          topic: LIVE_TOPIC,
+          messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+        });
+        await markEventIdsSeen(dedupClient, p.brandId, toSend.map((m) => m.eventId));
+        emitted = toSend.length;
+      }
+    } finally {
+      dedupClient.release();
+    }
+    log.info(`connector=${p.ciId} emitted=${emitted}`);
   }
-  return { emitted: messages.length, maxDate };
+  return { emitted, maxDate };
 }
 
 // ── Credentials resolver (dev: dev_secret JSON bundle; never logged — I-S09) ──
@@ -433,24 +508,25 @@ async function emitRows(p: EmitParams): Promise<{ emitted: number; maxDate: stri
 export async function resolveGoogleCredentials(
   secretRef: string, adAccountIdCol: string | null,
 ): Promise<GoogleAdsCredentials | null> {
-  // P0 CREDENTIAL-BUNDLE FIX: the OAuth callback stores ONLY {refresh_token, ad_account_id} in the
-  // per-brand secret. The app-level Google Cloud creds (client_id, client_secret, developer_token)
-  // are the SAME for every brand and come from ENV — NOT the per-brand bundle. The previous resolver
-  // demanded all five from the bundle → b.client_id/etc were undefined → returned null → ZERO spend
-  // on every real connect. App creds from env + the bundle's refresh_token/ad_account_id is correct.
-  const clientId = process.env['GOOGLE_ADS_CLIENT_ID'];
-  const clientSecret = process.env['GOOGLE_ADS_CLIENT_SECRET'];
-  const developerToken = process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
+  // BYO REFRESH FIX (audit-verified zero-spend defect): a refresh_token is only ever valid against
+  // the OAuth client that MINTED it. The callback now persists the resolving client_id /
+  // client_secret (+ developer_token) INTO the per-account bundle, so the bundle is PREFERRED here
+  // — a brand on BYO app creds refreshes with its own client (env creds would be invalid_grant →
+  // permanent zero spend). ENV stays the fallback for legacy bundles minted by the shared env app
+  // (the P0 fix's behaviour, unchanged for them). Ingestion-backfill resolves through this same fn.
+  const bundle = await readGoogleSecretBundle(secretRef);
+  if (!bundle?.refresh_token) return null;
+
+  const clientId = bundle.client_id ?? process.env['GOOGLE_ADS_CLIENT_ID'];
+  const clientSecret = bundle.client_secret ?? process.env['GOOGLE_ADS_CLIENT_SECRET'];
+  const developerToken = bundle.developer_token ?? process.env['GOOGLE_ADS_DEVELOPER_TOKEN'];
   if (!clientId || !clientSecret || !developerToken) {
     log.warn(
-      '[google-ads] app-level creds missing (GOOGLE_ADS_CLIENT_ID / GOOGLE_ADS_CLIENT_SECRET / ' +
-        'GOOGLE_ADS_DEVELOPER_TOKEN) — cannot resolve credentials',
+      '[google-ads] client creds missing (neither the secret bundle nor GOOGLE_ADS_CLIENT_ID / ' +
+        'GOOGLE_ADS_CLIENT_SECRET / GOOGLE_ADS_DEVELOPER_TOKEN env provides them) — cannot resolve credentials',
     );
     return null;
   }
-
-  const bundle = await readGoogleSecretBundle(secretRef);
-  if (!bundle?.refresh_token) return null;
   // customer_id (CID), digits only. MULTI-ACCOUNT FIX: the connector_instance's OWN ad_account_id
   // (adAccountIdCol, passed per-connector by the caller) MUST win. One OAuth login creates N
   // connectors that SHARE a single secret bundle (subKey = the FIRST account at connect), so the

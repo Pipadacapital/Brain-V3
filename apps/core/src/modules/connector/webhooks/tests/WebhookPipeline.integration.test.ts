@@ -333,7 +333,10 @@ describe('WebhookPipeline — integration tests', () => {
 
   it('5. Redis dedup: same dedup key replayed → 409 DUPLICATE_EVENT', async () => {
     const redis = new InMemoryRedis();
-    // Pre-seed the dedup key
+    // Pre-seed the dedup key — must byte-match the key WebhookPipeline builds
+    // internally (asserting replay dedup against an in-memory test double), so
+    // brandKey() is not applicable here.
+    // eslint-disable-next-line brain-redis/no-raw-redis-key
     await redis.set('test-provider:dedup:dedup-key-005', '1', 'EX', 600, 'NX');
 
     // Override isDuplicate behavior — the strategy returns dedupKey 'dedup-key-005'

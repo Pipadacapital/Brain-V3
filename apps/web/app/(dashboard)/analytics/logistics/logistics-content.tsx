@@ -25,6 +25,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { DateRangeFilter, type DateRange, initialRange } from '@/components/ui/date-range-filter';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { useShipmentOutcomes, useReturnFunnel } from '@/lib/hooks/use-analytics';
@@ -79,9 +81,9 @@ function EmptyCard() {
         <div>
           <p className="font-medium text-foreground">No shipment data yet</p>
           <p className="text-sm text-muted-foreground mt-1 max-w-md">
-            Shipment outcomes appear once a logistics connector (GoKwik or Shiprocket) syncs
-            AWB / tracking lifecycle events. Delivery vs RTO and courier performance build from
-            those in the Silver tier.
+            Shipment outcomes appear once a logistics connector (GoKwik or Shiprocket) starts
+            sharing tracking updates. Delivered-vs-returned outcomes and courier performance are
+            built from those updates.
           </p>
         </div>
         <Link href="/settings/connectors">
@@ -149,7 +151,10 @@ function RtoTable({
                     <td className="py-1.5 text-foreground">{r.key}</td>
                     <td className="py-1.5 text-right tabular-nums">{num(r.delivered)}</td>
                     <td className="py-1.5 text-right tabular-nums">{num(r.rto)}</td>
-                    <td className="py-1.5 text-right tabular-nums font-medium">
+                    <td
+                      className="py-1.5 text-right tabular-nums font-medium"
+                      title={r.rto_pct === null ? 'Not enough data yet' : undefined}
+                    >
                       {r.rto_pct === null ? '—' : `${r.rto_pct}%`}
                     </td>
                   </tr>
@@ -185,14 +190,14 @@ export function LogisticsContent() {
     <div className="space-y-8">
       <PageHeader
         title="Logistics"
-        description="Delivery vs RTO outcomes and courier / pincode performance — folded deterministically from shipment-lifecycle events across every logistics source (GoKwik AWB, Shiprocket)."
+        description="Deliveries versus RTO (shipments returned to origin), and which couriers and pincodes drive them — counted from the tracking updates your logistics sources send (GoKwik, Shiprocket)."
         meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title="Read from the Silver tier (silver_shipment) via the metric-engine shipment-outcomes seam."
+            title="Built from the delivery and return tracking updates your logistics connectors send."
           >
             <Truck className="h-3 w-3" aria-hidden="true" />
-            Powered by the Silver tier
+            Powered by shipment tracking
           </span>
         }
       />
@@ -202,7 +207,7 @@ export function LogisticsContent() {
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold text-foreground">Shipment outcomes</h2>
             {synthetic && (
-              <SyntheticBadge reason="Shipment lifecycle is fixture-sourced in dev (real shape, synthetic source) until partner sandbox access. Never presented as live." />
+              <SyntheticBadge reason="Shipment data here comes from a sample source until your courier partner account is connected. It is never presented as live." />
             )}
           </div>
           <DateRangeFilter
@@ -225,11 +230,10 @@ export function LogisticsContent() {
           <h2 className="text-lg font-semibold text-foreground">Return lifecycle</h2>
         </div>
         <p className="mb-3 max-w-2xl text-sm text-muted-foreground">
-          Returns are a <span className="font-medium text-foreground">separate</span> lifecycle from
+          Returns are a <span className="font-medium text-foreground">separate</span> journey from
           forward delivery — a return that is &ldquo;delivered&rdquo; or &ldquo;completed&rdquo; means
-          delivered <em>back</em> to origin / refund closed, and is never counted as a sale. Folded
-          from <code className="text-xs">shiprocket.return_status.v1</code> into the dedicated
-          return mart.
+          delivered <em>back</em> to you / refund closed, and is never counted as a sale. Built from
+          the return-status updates Shiprocket sends.
         </p>
 
         {rq.isLoading && <Loading />}
@@ -252,9 +256,9 @@ function ReturnsEmptyCard() {
         </div>
         <p className="font-medium text-foreground">No returns in this window</p>
         <p className="max-w-md text-sm text-muted-foreground">
-          Return-lifecycle events (initiated → in transit → delivered to origin → completed) appear
-          here once Shiprocket sends <code className="text-xs">return.*</code> webhooks. None recorded
-          for the selected range — which is the honest state, not a fabricated zero.
+          Return updates (initiated → in transit → delivered back to you → completed) appear
+          here once Shiprocket starts sending them. None were recorded for the selected range —
+          that is the honest state, not a made-up zero.
         </p>
       </CardContent>
     </Card>
@@ -266,14 +270,35 @@ function ReturnsData({ data }: { data: ReturnHasData }) {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <DataWindowBadge from={data.from} to={data.to} count={Number(data.total)} label="returns" />
+        <VerifyLink href="/analytics/orders?tab=status" label="See the orders behind these returns" />
+      </div>
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <KpiTile label="Total returns" value={num(data.total)} sublabel={`${data.from} → ${data.to}`} />
-        <KpiTile label="Completed" value={num(data.completed)} sublabel="returned / refunded" />
-        <KpiTile label="In progress" value={num(data.in_progress)} sublabel="not yet closed" />
+        <KpiTile
+          label="Total returns"
+          help="How many return journeys started in the selected period."
+          value={num(data.total)}
+          sublabel={`${data.from} → ${data.to}`}
+        />
+        <KpiTile
+          label="Completed"
+          help="Returns that finished — the item came back and any refund was closed."
+          value={num(data.completed)}
+          sublabel="returned / refunded"
+        />
+        <KpiTile
+          label="In progress"
+          help="Returns that have started but have not finished yet."
+          value={num(data.in_progress)}
+          sublabel="not yet closed"
+        />
         <KpiTile
           label="Completion rate"
+          help="The share of returns that have fully finished."
           value={data.completion_pct === null ? '—' : `${data.completion_pct}%`}
-          sublabel="completed ÷ total"
+          sublabel={data.completion_pct === null ? 'Not enough data yet' : 'completed ÷ total'}
         />
       </div>
 
@@ -353,12 +378,45 @@ function ReturnsData({ data }: { data: ReturnHasData }) {
 function OutcomesData({ data }: { data: ShipmentHasData }) {
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <DataWindowBadge from={data.from} to={data.to} count={Number(data.total)} label="shipments" />
+        <VerifyLink
+          href="/analytics/orders?tab=status"
+          label="See the shipments behind these numbers"
+        />
+      </div>
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <KpiTile label="RTO rate" value={data.rto_pct === null ? '—' : `${data.rto_pct}%`} sublabel={`${data.from} → ${data.to}`} />
-        <KpiTile label="Delivered" value={num(data.delivered)} sublabel="terminal" />
-        <KpiTile label="RTO" value={num(data.rto)} sublabel="returned to origin" />
-        <KpiTile label="In transit" value={num(data.in_transit)} sublabel="not yet terminal" />
-        <KpiTile label="Total shipments" value={num(data.total)} sublabel="in range" />
+        <KpiTile
+          label="RTO rate"
+          help="The share of finished shipments that came back undelivered (returned to origin)."
+          value={data.rto_pct === null ? '—' : `${data.rto_pct}%`}
+          sublabel={data.rto_pct === null ? 'Not enough data yet' : `${data.from} → ${data.to}`}
+        />
+        <KpiTile
+          label="Delivered"
+          help="Shipments that reached the customer."
+          value={num(data.delivered)}
+          sublabel="reached the customer"
+        />
+        <KpiTile
+          label="RTO"
+          help="Shipments that could not be delivered and came back to you."
+          value={num(data.rto)}
+          sublabel="returned to origin"
+        />
+        <KpiTile
+          label="In transit"
+          help="Shipments still on their way — not yet delivered or returned."
+          value={num(data.in_transit)}
+          sublabel="still on the way"
+        />
+        <KpiTile
+          label="Total shipments"
+          help="All shipments created in the selected period."
+          value={num(data.total)}
+          sublabel="in range"
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

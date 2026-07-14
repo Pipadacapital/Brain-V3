@@ -5,9 +5,27 @@
 # Expected contents per secret: see this chart's README.md.
 region: ap-south-1
 
+# AUD-INFRA (2026-07-13): do NOT declare the workload Namespace objects here. They are owned by
+# network-policies-prod (sync-wave -4 — creates them + stamps the PSA `restricted` labels) and by
+# argo-workflows-prod (sync-wave -3 — the `argo` ns). Both now sync BEFORE this app (wave -2), so the
+# ExternalSecrets land into namespaces that already exist. Previously createNamespaces:true had this app
+# ALSO declare all 8 namespaces (only a `part-of: brain` label), which permanently double-owned the 7
+# network-policies namespaces → OutOfSync (the last SSA writer, network-policies, held the tracking
+# label). Single-owner now: this app owns only the ExternalSecrets, never the namespaces.
+createNamespaces: false
+
 secrets:
   # core BFF — DATABASE_URL/BRAIN_APP_DATABASE_URL (via pgbouncer:6432), REDIS_URL,
   # KAFKA_BROKERS, TRINO_HOST, NEO4J_*, AI gateway + connector secrets, ...
+  #
+  # AUD-OBS-2 — OPTIONAL observability keys, supported by every service env map
+  # (core-env / collector-env / stream-worker-env). Both are env-gated no-ops
+  # when absent, so adding them to the SM JSON is the entire ON-switch:
+  #   SENTRY_DSN                  → error-tracking backend (initSentry; PII-scrubbed
+  #                                 via redactLogRecord beforeSend, sendDefaultPii=false)
+  #   OTEL_EXPORTER_OTLP_HEADERS  → auth headers for the OTLP endpoint enabled by the
+  #                                 charts' otelExporterOtlpEndpoint value (e.g.
+  #                                 "authorization=Basic <grafana-cloud-token>")
   - name: core-env
     namespace: core
     key: brain/prod/k8s/core-env

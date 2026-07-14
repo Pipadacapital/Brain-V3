@@ -34,7 +34,12 @@ spec:
     chart: strimzi-kafka-operator
     # Pin the operator release; keep in lockstep with the Kafka broker version (3.8.1). Verify the
     # exact tag that ships Kafka 3.8.1 before promote (`helm search repo strimzi/strimzi-kafka-operator`).
-    targetRevision: 0.45.0
+    # 0.45.2: MINIMUM version whose fabric8 client parses the Kubernetes 1.33
+    # /version response (1.33 added emulationMajor/Minor; 0.45.0's client threw
+    # UnrecognizedPropertyException at startup → operator CrashLoop after the
+    # EKS 1.33 upgrade, 2026-07-12). Patch release, same CRD API — live-verified
+    # reconciling on brain-prod.
+    targetRevision: 0.45.2
     helm:
       releaseName: strimzi-operator
       values: |
@@ -79,8 +84,22 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "1"
-    # Selective deploy: only syncs when the Kafka CR chart changes.
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/strimzi-kafka
+    # Selective deploy: only re-renders when the Kafka CR chart changes.
+    # AUD-INFRA-002: the path MUST be repo-root-absolute (leading '/'). A relative value is
+    # resolved AGAINST spec.source.path (ArgoCD manifest-paths annotation contract), so the
+    # previous `infra/helm/strimzi-kafka` watched the never-existing
+    # `infra/helm/strimzi-kafka/infra/helm/strimzi-kafka` — every commit was judged
+    # irrelevant and the repo-server forward-copied the STALE cached manifests to each new
+    # revision ("manifest cache hit", zero helm renders). That is why the AUD-LIVE-5 PVC
+    # guard annotations never reached the live KafkaNodePool despite 3 Succeeded syncs.
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/strimzi-kafka
+    # AUD-INFRA-003: with ServerSideApply=true but client-side diff, the
+    # operator-defaulted CR/StatefulSet fields registered as permanent false
+    # OutOfSync. ServerSideDiff (SSA dry-run prediction) absorbs API-server/
+    # operator-injected defaults. (The 3 Kafka data PVCs showing OutOfSync are
+    # a SEPARATE finding — live prune candidates, AUD-INFRA-002 — guarded via
+    # IgnoreExtraneous/Prune=false in the chart, not hidden here.)
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   labels:
     project: brain
     environment: prod
@@ -88,7 +107,7 @@ metadata:
 spec:
   project: brain-prod
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/helm/strimzi-kafka
     helm:

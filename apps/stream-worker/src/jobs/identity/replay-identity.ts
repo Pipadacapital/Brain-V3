@@ -152,7 +152,6 @@ if (
   runIdentityReplay(brandId, { source, saltProvider })
     .then((report) => {
       log.info('[replay-identity] complete', { ...report });
-      // eslint-disable-next-line no-console
       console.log(JSON.stringify(report, null, 2));
       process.exit(replayExitCode(report));
     })

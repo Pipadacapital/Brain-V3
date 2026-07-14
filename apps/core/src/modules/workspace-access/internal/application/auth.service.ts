@@ -29,7 +29,7 @@ import type { Pool } from 'pg';
 
 import type { DbPool } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
-import type { NotificationService } from '../../../notification/service.js';
+import type { NotificationService } from '../../../notification/index.js';
 
 import type { AppUser, JwtClaims } from '../domain/auth/entities.js';
 

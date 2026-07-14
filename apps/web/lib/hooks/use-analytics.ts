@@ -496,6 +496,22 @@ export function useJourneyPaths(params?: { limit?: number }) {
 }
 
 /**
+ * useJourneyList — one PAGE of the recent-journeys list (mv_gold_journey), newest-first by
+ * last_touch_at. Keyset-paginated: pass the previous page's next_cursor to fetch the next (older)
+ * page; the queryKey includes the cursor so each page caches independently. Shares the 'analytics'
+ * prefix → auto-invalidates on brand switch. Keeps the previous page while the next loads.
+ * @param params - Optional page size (1..100; server defaults to 25) + opaque keyset cursor.
+ */
+export function useJourneyList(params?: { limit?: number; cursor?: string | null }) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-list', params?.limit ?? null, params?.cursor ?? null],
+    queryFn: () => analyticsApi.getJourneyList({ limit: params?.limit, cursor: params?.cursor ?? null }),
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
  * useJourneyTimeline — ordered touchpoints for one selected order.
  * Disabled until an orderId is provided (no fabricated empty query).
  * @param orderId - The order to resolve a journey timeline for (or null/undefined to skip).
@@ -505,6 +521,24 @@ export function useJourneyTimeline(orderId?: string | null) {
     queryKey: [...ANALYTICS_QUERY_KEY, 'journey-timeline', orderId ?? null],
     queryFn: () => analyticsApi.getJourneyTimeline({ orderId: orderId as string }),
     enabled: Boolean(orderId && orderId.trim().length > 0),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * useJourneyEvents — one PAGE of the versioned journey LEDGER for a resolved customer
+ * (mv_journey_events_current), newest-first. Keyset-paginated: pass the previous page's
+ * next_cursor to fetch the next (older) page; the queryKey includes the cursor so each page
+ * caches independently. Disabled until a brainId is provided (no fabricated empty query).
+ * @param brainId - The resolved customer's brain_id (or null/undefined to skip).
+ * @param cursor  - Opaque next_cursor from the previous page (null = first page).
+ */
+export function useJourneyEvents(brainId?: string | null, cursor?: string | null) {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'journey-events', brainId ?? null, cursor ?? null],
+    queryFn: () =>
+      analyticsApi.getJourneyEvents({ brainId: brainId as string, cursor: cursor ?? null }),
+    enabled: Boolean(brainId && brainId.trim().length > 0),
     staleTime: 5 * 60_000,
   });
 }

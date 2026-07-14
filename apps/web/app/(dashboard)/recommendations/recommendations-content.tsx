@@ -24,6 +24,11 @@ import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { useRecommendations, useRefreshRecommendations, useRecommendationAction } from '@/lib/hooks/use-recommendations';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { plainLabel } from '@/lib/format/plain-language';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { MetricTitle } from '@/components/ui/metric-title';
 import type { Recommendation } from '@/lib/api/types';
 
 /** Confidence → badge styling (Trusted strongest; engine never overstates — doc 09 Part 7). */
@@ -49,9 +54,30 @@ function inr(minor: string): string {
   }
 }
 
+/**
+ * Format a raw evidence value for display given its key: money keys (`_minor`) render as exact
+ * minor-unit money (never floated — I-S07), percent keys (`_pct`/`_percent`) get a `%` suffix,
+ * booleans read as Yes/No, everything else prints as-is. Pairs with plainLabel() on the key so a
+ * non-technical reader sees "Return-to-origin rate: 18%" instead of "rto_rate_pct: 18".
+ */
+function formatEvidenceValue(key: string, value: string | number | boolean): string {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  const k = key.toLowerCase();
+  if (k.endsWith('_minor')) return inr(String(value));
+  if (k.endsWith('_pct') || k.endsWith('_percent')) return `${value}%`;
+  return String(value);
+}
+
+/** Format an outcome metric value — pct metrics get a `%`, everything else prints as-is. */
+function formatOutcomeValue(metric: string, value: number): string {
+  const m = metric.toLowerCase();
+  if (m.endsWith('_pct') || m.endsWith('_percent')) return `${value}%`;
+  return String(value);
+}
+
 /** The learning-loop outcome strip: the detector's headline metric then-at-raise vs now. */
 function OutcomeStrip({ outcome }: { outcome: NonNullable<Recommendation['outcome']> }) {
-  const label = outcome.metric.replace(/_/g, ' ').replace(/ pct$/, ' %');
+  const label = plainLabel(outcome.metric);
   const tone = outcome.improved
     ? 'text-success-subtle-foreground bg-success-subtle'
     : 'text-warning-subtle-foreground bg-warning-subtle';
@@ -61,7 +87,8 @@ function OutcomeStrip({ outcome }: { outcome: NonNullable<Recommendation['outcom
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span className="font-medium">Since raised:</span>
       <span className="tabular-nums">
-        {label} {outcome.then} → {outcome.now}
+        {label} {formatOutcomeValue(outcome.metric, outcome.then)} →{' '}
+        {formatOutcomeValue(outcome.metric, outcome.now)}
       </span>
       <span className="font-medium">{outcome.improved ? 'improving' : 'not improving yet'}</span>
     </div>
@@ -71,6 +98,9 @@ function OutcomeStrip({ outcome }: { outcome: NonNullable<Recommendation['outcom
 function RecommendationCard({ rec }: { rec: Recommendation }) {
   const isRisk = rec.kind === 'risk';
   const gmvAtRisk = rec.evidence['gmv_at_risk_minor'];
+  const hasOrderEvidence =
+    typeof gmvAtRisk === 'string' ||
+    Object.keys(rec.evidence).some((k) => k.toLowerCase().includes('order'));
   const act = useRecommendationAction();
   // Optimistic local acknowledgement: the action ledger is append-only and a dismissal also
   // refetches the list (the rec drops off), but until that lands we reflect what the user chose.
@@ -112,11 +142,18 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
 
         {rec.outcome && <OutcomeStrip outcome={rec.outcome} />}
 
-        {/* Evidence — the certified signal behind the recommendation */}
+        {/* Evidence — the certified signal behind the recommendation. Keys are humanized via
+            plainLabel (no rto_rate_pct/gmv_at_risk_minor leaks) and values formatted by unit. */}
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
           {typeof gmvAtRisk === 'string' && gmvAtRisk !== '0' && (
             <div>
-              <dt className="inline">GMV at risk: </dt>
+              <dt className="inline">
+                <MetricTitle
+                  label="Revenue at risk"
+                  help="The exact sales value tied to the orders this recommendation is about, in minor units — never rounded to a float."
+                />
+                {': '}
+              </dt>
               <dd className="inline font-medium text-foreground tabular-nums">{inr(gmvAtRisk)}</dd>
             </div>
           )}
@@ -124,11 +161,19 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
             .filter(([k]) => k !== 'gmv_at_risk_minor')
             .map(([k, v]) => (
               <div key={k}>
-                <dt className="inline">{k.replace(/_/g, ' ')}: </dt>
-                <dd className="inline font-medium text-foreground tabular-nums">{String(v)}</dd>
+                <dt className="inline">{plainLabel(k)}: </dt>
+                <dd className="inline font-medium text-foreground tabular-nums">
+                  {formatEvidenceValue(k, v)}
+                </dd>
               </div>
             ))}
         </dl>
+
+        {/* Verify — click through to the records this recommendation summarizes (closest honest
+            drill: the orders list). Only shown when the evidence is about orders/revenue. */}
+        {hasOrderEvidence && (
+          <VerifyLink href="/analytics/orders" label="See your orders" />
+        )}
 
         {/* Decision-feedback loop (M7): the human acts on the recommendation. Recorded in the
             append-only action ledger; a dismissal also drops the rec off the Morning Brief. */}
@@ -219,15 +264,40 @@ export function RecommendationsContent() {
   const { data, isLoading, error, refetch } = useRecommendations();
   const refresh = useRefreshRecommendations();
 
+  const [query, setQuery] = React.useState('');
+
   const recommendations = data?.state === 'has_data' ? data.recommendations : [];
-  const actionable = recommendations.filter((r) => !r.held);
-  const held = recommendations.filter((r) => r.held);
+
+  // Search across the human-meaningful fields (title/summary/action + humanized detector and
+  // evidence names) so a Shopify owner can find a recommendation without knowing the raw keys.
+  const searchable = React.useCallback(
+    (r: Recommendation) =>
+      [
+        r.title,
+        r.summary,
+        r.recommended_action,
+        r.kind,
+        plainLabel(r.detector),
+        Object.keys(r.evidence).map(plainLabel).join(' '),
+      ].join(' '),
+    [],
+  );
+  const visible = filterRows(recommendations, query, searchable);
+  const actionable = visible.filter((r) => !r.held);
+  const held = visible.filter((r) => r.held);
+
+  // Honest window: recommendations carry no from/to param — they're the current OPEN set, raised
+  // between the earliest and latest created_at. Show that span + count so the reader always knows
+  // what they're looking at (all-time when there are none).
+  const createdAts = recommendations.map((r) => r.created_at).filter(Boolean).sort();
+  const windowFrom = createdAts[0] ?? null;
+  const windowTo = createdAts[createdAts.length - 1] ?? null;
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Recommendations"
-        description="Deterministic detectors over your certified data — ranked actions with confidence and the evidence behind them. Recommend-only: nothing is changed automatically."
+        description="Ranked risks and opportunities found in your data — each with a confidence level and the evidence behind it. Recommend-only: nothing is changed automatically."
         actions={
           <Button
             variant="outline"
@@ -236,14 +306,14 @@ export function RecommendationsContent() {
             onClick={() => refresh.mutate()}
           >
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refresh.isPending ? 'animate-spin' : ''}`} aria-hidden="true" />
-            {refresh.isPending ? 'Running…' : 'Run detectors'}
+            {refresh.isPending ? 'Scanning…' : 'Scan for recommendations'}
           </Button>
         }
       />
 
       {refresh.isError && (
         <p className="text-sm text-destructive" role="alert">
-          Could not run the detectors. Please try again.
+          Could not run the scan. Please try again.
         </p>
       )}
 
@@ -258,16 +328,39 @@ export function RecommendationsContent() {
         <EmptyState
           icon={<Lightbulb className="h-6 w-6" aria-hidden="true" />}
           title="No open recommendations"
-          description="Run the detectors to scan your latest data. Recommendations appear here when a detector finds an actionable risk or opportunity it's confident about."
+          description="Scan your latest data to check for new ones. Recommendations appear here when Brain finds an actionable risk or opportunity it's confident about."
           action={
             <Button size="sm" disabled={refresh.isPending} onClick={() => refresh.mutate()}>
               <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refresh.isPending ? 'animate-spin' : ''}`} aria-hidden="true" />
-              Run detectors
+              Scan for recommendations
             </Button>
           }
         />
       ) : (
         <div className="space-y-8">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <DataWindowBadge
+              from={windowFrom}
+              to={windowTo}
+              count={recommendations.length}
+              label="recommendations"
+            />
+            <TableSearch
+              value={query}
+              onChange={setQuery}
+              placeholder="Search recommendations…"
+              aria-label="Search recommendations"
+            />
+          </div>
+
+          {query.trim() && actionable.length === 0 && held.length === 0 ? (
+            <EmptyState
+              icon={<Lightbulb className="h-6 w-6" aria-hidden="true" />}
+              title="No recommendations match your search"
+              description={`Nothing matches “${query.trim()}”. Clear the search to see all open recommendations.`}
+            />
+          ) : (
+            <>
           {actionable.length > 0 ? (
             <div className="space-y-4">
               {actionable.map((rec) => (
@@ -297,6 +390,8 @@ export function RecommendationsContent() {
                 ))}
               </div>
             </section>
+          )}
+            </>
           )}
         </div>
       )}

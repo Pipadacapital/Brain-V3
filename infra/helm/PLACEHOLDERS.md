@@ -88,3 +88,9 @@ The terraform `secrets` module creates these SHELLS + the ESO read policy
 (AUD-COST-017), so the go-live fill is a value update:
 `aws secretsmanager put-secret-value --secret-id brain/prod/k8s/<name> --secret-string file://<name>.json`
 — values are seeded by the operator and never enter TF state.
+
+## kafka-connect (ADR-0010 Bronze landing writer)
+- `REPLACE_WITH_WAREHOUSE_BUCKET` (`helm/kafka-connect/values-prod.yaml`): the single
+  medallion warehouse bucket — terraform output `warehouse_bucket_name`
+  (`modules/s3-iceberg`, `brain-bronze-prod-<acct>`). Same bucket iceberg-rest serves;
+  Connect writes through the REST catalog with IRSA S3 credentials (no static keys).

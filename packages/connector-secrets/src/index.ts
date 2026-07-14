@@ -30,3 +30,4 @@
 export { AwsSecretsManager } from './AwsSecretsManager.js';
 export { LocalSecretsManager } from './LocalSecretsManager.js';
 export type { ISecretsManager, SecretWriteResult } from './ISecretsManager.js';
+export { unwrapShopifyTokenValue } from './ISecretsManager.js';

@@ -1,11 +1,32 @@
 replicaCount: 3
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
+  digest: "sha256:661380c40996eac6d68435014d6102111bd7b40f98d75d368a4d3685baf795f1"
 
 envSecretName: stream-worker-env
+
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in stream-worker-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""
+
+# Helm lists REPLACE (no merge) — the two defaults are repeated verbatim, then the prod-only wiring.
+env:
+  - name: SERVICE_NAME
+    value: stream-worker
+  # T2-10: the health server binds this port; the helm probes (probes.port) target it.
+  - name: HEALTH_PORT
+    value: "8090"
+  # AUD-OPS-037: activate the erasure orchestrator's Bronze raw-PII step (STEP 4) — submit the
+  # `bronze-raw-erasure` WorkflowTemplate (cronworkflows chart, ns argo). Default submit mode is
+  # 'k8s': the prod argo-workflows app is CONTROLLER-ONLY (no REST server), so the submit is a
+  # Kubernetes-API Workflow create using the pod's projected SA token; RBAC comes from the
+  # bronze-raw-erasure-submitter Role/RoleBinding in the cronworkflows chart. Unset this var to
+  # fall back to the registered-DISABLED seam (honest no-op, logged — never a silent success).
+  - name: ARGO_SERVER_URL
+    value: https://kubernetes.default.svc
 
 # AUD-LOCAL-016-FUP1: prod kube-prometheus-stack scrapes the worker's /metrics (HealthServer
 # containerPort — headless, so a PodMonitor) as job "brain-stream-worker" (up{job=~"brain-.*"}).
@@ -15,30 +36,74 @@ metrics:
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-stream-worker
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-stream-worker
 
 # AUD-PROD-006: the live Kafka consumers ride the streaming pool (t4g.large Spot,
 # WhenEmpty consolidation — never bin-packs live consumers off a node; the HPA
 # replica floor keeps the warm baseline the karpenter README relies on).
+#
+# AUD-COST (2026-07-13): ALSO require capacity-type=spot. The streaming pool is
+# spot-first ["spot","on-demand"], but the Kafka BROKERS pin required
+# on-demand nodes into this pool, and stream-worker (no capacity-type
+# constraint) was bin-packing onto those broker on-demand nodes → the whole
+# consumer tier ran on the priciest capacity for no reason. Pinning spot forces
+# Karpenter to provision cheap spot nodes for the consumers instead. SAFE: these
+# consumers are interruption-tolerant by design (idempotent writes,
+# commit-after-write, DLQ, durable Redis retry counters) — a spot reclaim just
+# triggers a rebalance+resume, no loss. Tradeoff: during a genuine spot drought
+# across ALL streaming instance types (t4g.large/xlarge + m7g.large/xlarge —
+# rare) these pods sit Pending instead of falling back to on-demand; lag builds
+# harmlessly (Kafka retains, KEDA/DLQ) and self-heals when spot returns.
+# Rollback: delete the capacity-type line (falls back to spot-or-on-demand).
 nodeSelector:
   brain.platform/pool: streaming
+  karpenter.sh/capacity-type: spot
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 138m / max 156m, mem p95 ~242Mi / max 479Mi (replay burst) per pod.
+# Was 500m/1Gi. New: cpu 250m — the CPU-only HPA (70%) now fires at 175m, just
+# above the observed max, so real consumer lag scales out instead of sitting at
+# 20%/70% forever; mem 640Mi keeps ~1.3x the burst max (no memory HPA target on
+# this chart). LIMITS UNCHANGED (2 CPU / 2Gi burst+OOM budget). Revert =
+# restore old requests.
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 250m
+    memory: 640Mi
   limits:
     cpu: "2"
     memory: 2Gi
 
-# P2.5: HPA on in prod. The live-topic partition count is the HARD ceiling on useful replicas
-# (a replica beyond the partition count owns no partition → idle). The prod live topic is now 96
-# partitions (infra/helm/strimzi-kafka → live_topic_partition_count, H5 audit), so the
-# worker is no longer pinned at the old hard 12. maxReplicas=48 gives generous headroom while
-# staying well under 96. Raise toward 96 if sustained lag warrants; never exceed the partition
-# count. A *real* repartition (per-brand key) is gated on the producer key change (analytics/identity
-# stream) — see the kafka module header.
+# P2.5 + AUD-OPS-030: autoscaling on in prod, now KEDA-lag-driven. The live-topic partition
+# count is the HARD ceiling on useful replicas (a replica beyond it owns no partition → idle).
+# MEASURED prod reality (2026-07-11 audit): ALL topics are 12 partitions — the strimzi chart
+# clamps `partitions` to 6..12 and values-prod sets 12; the previous "96 partitions (H5)"
+# comment here was never true against that chart. The old maxReplicas=48 was ALSO
+# unschedulable: 48×500m = 24 CPU > the whole 20-CPU streaming pool (shared with Kafka
+# 3×1CPU + collector). maxReplicas=12 == partitions == honest schedulable capacity; raise
+# partitions + pool limits + this ceiling together as ONE deliberate change.
+# CPU was also the wrong trigger for an I/O-bound consumer (lag grows under 70% CPU —
+# burst recovery after downtime/replay) → keda.enabled renders the kafka-lag ScaledObject
+# (KEDA operator installed via infra/argocd/envs/prod/keda.yaml, proven on trino) and
+# suppresses the plain CPU HPA. Rollback = keda.enabled: false (plain CPU HPA returns).
 autoscaling:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 48
+  # AUD-COST (2026-07-13): warm baseline 3 → 2 — right-sized for current low
+  # traffic. KEDA still bursts to maxReplicas=12 on real consumer lag (replay /
+  # backfill / traffic spike), so throughput headroom is unchanged; this only
+  # trims the IDLE floor. Kept at 2 (not 1) deliberately: the consumers now run
+  # on SPOT, so 2 replicas keep one consumer alive through a single-node reclaim
+  # and allow safe rolling updates (PDB). Raise back toward maxReplicas as
+  # sustained traffic grows. Rollback: minReplicas 3.
+  minReplicas: 2
+  maxReplicas: 12
+  keda:
+    enabled: true
+    kafka:
+      # Strimzi in-cluster plaintext bootstrap (same host the app's KAFKA_BROKERS points at).
+      bootstrapServers: "brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
+      # LIVE collector lane consumer group (packages/config stream-worker CONSUMER_GROUP_ID).
+      consumerGroup: stream-worker-live
+      # prod.* lane (strimzi values-prod prefix) — the partition-bearing live topic.
+      topic: prod.collector.event.v1
+      lagThreshold: "1000"

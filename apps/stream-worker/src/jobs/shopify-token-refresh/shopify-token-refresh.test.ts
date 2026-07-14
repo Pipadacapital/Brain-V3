@@ -280,3 +280,119 @@ describe('runShopifyTokenRefresh', () => {
     expect(SHOPIFY_APP_CREDS_MISSING.length).toBeGreaterThan(0);
   });
 });
+
+// ── client-credentials connectors (generic per-brand custom-app connect, 2026-07) ─
+
+describe('runShopifyTokenRefresh — client_credentials re-exchange', () => {
+  const NOW = new Date('2026-07-12T00:00:00Z').getTime();
+  const CONNECTOR = {
+    connector_instance_id: 'ci-shopify-cc-001',
+    brand_id: 'brand-cc-001',
+    shop_domain: 'ccshop.myshopify.com',
+    secret_ref:
+      'arn:aws:secretsmanager:us-east-1:000:secret:brain/connector/shopify/brand-cc-001/ccshop.myshopify.com',
+  };
+  const APP_CREDS_NAME = `brain/connector/shopify_app/${CONNECTOR.brand_id}`;
+
+  function seedAppCreds(pool: Pool): void {
+    (pool as unknown as { _devSecretMap: Map<string, string> })._devSecretMap.set(
+      APP_CREDS_NAME,
+      JSON.stringify({ client_id: 'brand-app-id', client_secret: 'brand-app-secret' }),
+    );
+  }
+
+  it('re-exchanges EVERY run (even a fresh token) using the brand app creds', async () => {
+    const pool = makeMockPool([CONNECTOR]);
+    seedAppCreds(pool);
+    // Token is only 1 hour old — a legacy connector would be skippedNotDue; client_credentials
+    // connectors are re-exchanged unconditionally (24h expiry, no refresh token).
+    seedDevSecret(pool, CONNECTOR.secret_ref, {
+      access_token: 'cc-token-fresh',
+      shop_domain: CONNECTOR.shop_domain,
+      auth_method: 'client_credentials',
+      access_token_issued_at: new Date(NOW - 60 * 60 * 1000).toISOString(),
+      access_token_expires_at: new Date(NOW + 23 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ access_token: 'cc-token-renewed', expires_in: 86399 }),
+    });
+
+    const report = await runShopifyTokenRefresh(pool, NOW, DEFAULT_REFRESH_AGE_DAYS, fetchImpl, undefined);
+
+    expect(report.refreshed).toBe(1);
+    expect(report.skippedNotDue).toBe(0);
+    expect(report.reconnectRequired).toBe(0);
+    expect(report.errors).toBe(0);
+
+    // The exchange used the CLIENT-CREDENTIALS grant with the brand's own app creds.
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, init] = fetchImpl.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe(`https://${CONNECTOR.shop_domain}/admin/oauth/access_token`);
+    const body = JSON.parse(String(init.body)) as Record<string, string>;
+    expect(body).toMatchObject({
+      grant_type: 'client_credentials',
+      client_id: 'brand-app-id',
+      client_secret: 'brand-app-secret',
+    });
+
+    // Write-back carries the renewed token + fresh issued/expiry metadata.
+    const name = CONNECTOR.secret_ref.split(':secret:')[1]!;
+    const written = JSON.parse(
+      (pool as unknown as { _devSecretMap: Map<string, string> })._devSecretMap.get(name)!,
+    ) as Record<string, string>;
+    expect(written['access_token']).toBe('cc-token-renewed');
+    expect(written['auth_method']).toBe('client_credentials');
+    expect(written['access_token_issued_at']).toBe(new Date(NOW).toISOString());
+    expect(written['access_token_expires_at']).toBe(new Date(NOW + 86399 * 1000).toISOString());
+  });
+
+  it('missing brand app creds → RECONNECT_REQUIRED (no exchange attempted)', async () => {
+    const pool = makeMockPool([CONNECTOR]);
+    // NO app creds seeded.
+    seedDevSecret(pool, CONNECTOR.secret_ref, {
+      access_token: 'cc-token',
+      auth_method: 'client_credentials',
+    });
+
+    const fetchImpl = vi.fn();
+    const report = await runShopifyTokenRefresh(pool, NOW, DEFAULT_REFRESH_AGE_DAYS, fetchImpl, undefined);
+
+    expect(report.reconnectRequired).toBe(1);
+    expect(report.refreshed).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('exchange failure (401) → RECONNECT_REQUIRED, no crash', async () => {
+    const pool = makeMockPool([CONNECTOR]);
+    seedAppCreds(pool);
+    seedDevSecret(pool, CONNECTOR.secret_ref, {
+      access_token: 'cc-token',
+      auth_method: 'client_credentials',
+    });
+
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    const report = await runShopifyTokenRefresh(pool, NOW, DEFAULT_REFRESH_AGE_DAYS, fetchImpl, undefined);
+
+    expect(report.reconnectRequired).toBe(1);
+    expect(report.refreshed).toBe(0);
+    expect(report.errors).toBe(0);
+  });
+
+  it('legacy connectors (no auth_method) keep the age-threshold path untouched', async () => {
+    const pool = makeMockPool([CONNECTOR]);
+    seedAppCreds(pool);
+    // Legacy bundle (no auth_method), fresh token → skippedNotDue exactly as before.
+    seedDevSecret(pool, CONNECTOR.secret_ref, {
+      access_token: 'legacy-token',
+      access_token_issued_at: issuedDaysAgo(100, NOW),
+    });
+
+    const fetchImpl = vi.fn();
+    const report = await runShopifyTokenRefresh(pool, NOW, DEFAULT_REFRESH_AGE_DAYS, fetchImpl, undefined);
+
+    expect(report.skippedNotDue).toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});

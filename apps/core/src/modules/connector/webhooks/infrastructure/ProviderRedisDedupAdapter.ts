@@ -13,8 +13,8 @@
 import type { Redis } from 'ioredis';
 import { log } from '../../../../log.js';
 
-export const REPLAY_WINDOW_SECONDS = 5 * 60;   // 5-minute age check (C3)
-export const DEDUP_TTL_SECONDS     = 10 * 60;  // 10-minute Redis TTL (window + margin)
+const REPLAY_WINDOW_SECONDS = 5 * 60;   // 5-minute age check (C3)
+const DEDUP_TTL_SECONDS     = 10 * 60;  // 10-minute Redis TTL (window + margin)
 
 export class ProviderRedisDedupAdapter {
   private readonly keyPrefix: string;

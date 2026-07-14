@@ -61,8 +61,12 @@ import {
   type DateRange,
   type RangePreset,
 } from '@/components/ui/date-range-filter';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { useCampaignAttribution, useCampaignTimeseries } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { plainLabel } from '@/lib/format/plain-language';
 import type { CurrencyCode } from '@brain/money';
 import type {
   AttributionModel,
@@ -87,8 +91,9 @@ function campaignKey(r: CampaignAttributionRow): string {
   return `${r.platform}␟${r.campaign_id}␟${r.currency_code}`;
 }
 
+/** Human-readable campaign name — never a raw ad-platform id on the DOM (plain-language rule). */
 function campaignLabel(r: CampaignAttributionRow): string {
-  return r.campaign_name ?? r.campaign_id;
+  return r.campaign_name ?? 'Unnamed campaign';
 }
 
 /**
@@ -173,6 +178,8 @@ export function CampaignsContent() {
   const [range, setRange] = useState<DateRange>(() => initialRange(CAMPAIGN_PRESETS, '90'));
   // Compare mode — up to 2 campaign ids selected.
   const [compare, setCompare] = useState<string[]>([]);
+  // Free-text filter over the campaign table (narrows already-loaded rows; never re-fetches).
+  const [query, setQuery] = useState('');
 
   const campaignQ = useCampaignAttribution({ model });
   const timeseriesQ = useCampaignTimeseries({
@@ -182,10 +189,18 @@ export function CampaignsContent() {
   });
 
   const campaignData = campaignQ.data;
-  const rows: CampaignAttributionRow[] =
-    campaignData?.state === 'has_data' ? campaignData.rows : [];
+  // Memoized so the array identity is stable across renders (downstream useMemo deps).
+  const rows: CampaignAttributionRow[] = useMemo(
+    () => (campaignData?.state === 'has_data' ? campaignData.rows : []),
+    [campaignData],
+  );
 
-  const roasRows = useMemo(() => toRoasRows(rows), [rows]);
+  // Search filters the visible campaign rows across the human-meaningful columns (name · platform).
+  const visibleRows = useMemo(
+    () => filterRows(rows, query, (r) => `${campaignLabel(r)} ${plainLabel(r.platform)}`),
+    [rows, query],
+  );
+  const roasRows = useMemo(() => toRoasRows(visibleRows), [visibleRows]);
   const trend = useMemo(() => rollupToTrend(timeseriesQ.data), [timeseriesQ.data]);
 
   /** Toggle a campaign into/out of the (max-2) compare set. */
@@ -218,12 +233,12 @@ export function CampaignsContent() {
           {
             heading: 'How credit is assigned',
             body:
-              'Each campaign is credited from the Gold attribution credit ledger over your Silver touchpoints under the model you pick (first / last / linear / position / time-decay / data-driven). The campaign roll-up is brand-wide; the over-time chart honors the date range.',
+              'Each campaign is credited from your customers’ actual journeys under the model you pick (first / last / linear / position / time-decay / data-driven). The campaign roll-up covers all time; the over-time chart honors the date range.',
           },
           {
             heading: 'ROAS',
             body:
-              'ROAS = attributed revenue ÷ ad spend, same-currency only. It reads n/a when a campaign has no spend — we never fabricate an infinite or zero return.',
+              'ROAS = attributed revenue ÷ ad spend, within the same currency only. It shows a dash when a campaign has no spend — we never make up an infinite or zero return.',
           },
           {
             heading: 'Compare',
@@ -233,7 +248,7 @@ export function CampaignsContent() {
           {
             heading: 'Not measured yet',
             body:
-              'Creative-level and demographic breakdowns need marts that do not exist yet, so they render an honest empty — not a fabricated zero.',
+              'Creative-level and demographic breakdowns are not built yet, so they show an honest empty — not a made-up zero.',
           },
         ],
         metrics: [
@@ -241,17 +256,17 @@ export function CampaignsContent() {
             name: 'Attributed revenue (per campaign)',
             definition: 'Revenue credited to each campaign under the selected model.',
             howComputed:
-              'Gold attribution credit ledger over Silver touchpoints carrying utm_campaign; deterministic, switchable model.',
+              'Calculated from the customer journeys that carried this campaign’s tag — the same journeys always give the same answer.',
           },
           {
             name: 'Campaign ROAS',
             definition: 'Return on ad spend per campaign.',
             howComputed:
-              'Attributed revenue ÷ ad spend, same-currency only; honest n/a when spend = 0. Money in bigint minor units.',
+              'Attributed revenue ÷ ad spend, within the same currency only; shows a dash when spend is zero.',
           },
         ],
-        refreshCadence: 'Campaign attribution + spend refresh on the Gold loop.',
-        sources: ['Gold attribution credit ledger', 'Gold ad-spend timeseries'],
+        refreshCadence: 'Campaign attribution and spend refresh on the regular analytics cycle.',
+        sources: ['Your customer journeys and orders', 'Meta and Google ad accounts'],
       }}
     >
       {/* ── 1. Controls: model selector (wired) + date range ── */}
@@ -272,10 +287,25 @@ export function CampaignsContent() {
       <section aria-label="Campaign performance" data-testid="campaigns-table-section">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Megaphone className="size-4" aria-hidden="true" />
-              Campaign performance
-            </CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <Megaphone className="size-4" aria-hidden="true" />
+                Campaign performance
+              </CardTitle>
+              {rows.length > 0 && (
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* The per-campaign roll-up covers all time (only the trend below honors the date range). */}
+                  <DataWindowBadge from={null} to={null} count={rows.length} label="campaigns" />
+                  <TableSearch
+                    value={query}
+                    onChange={setQuery}
+                    placeholder="Search campaigns…"
+                    aria-label="Search campaigns by name or ad platform"
+                    className="sm:w-56"
+                  />
+                </div>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             {campaignQ.isLoading ? (
@@ -286,22 +316,44 @@ export function CampaignsContent() {
               </div>
             ) : campaignQ.error ? (
               <ErrorCard error={campaignQ.error} retry={campaignQ.refetch} />
-            ) : roasRows.length > 0 ? (
-              <ChannelRoasTable rows={roasRows} className="w-full text-sm" />
-            ) : (
+            ) : rows.length === 0 ? (
               <EmptyState
                 compact
                 icon={<Megaphone />}
                 title="No per-campaign attribution yet"
-                description="Campaign-level credit appears once journeys carry a campaign (utm_campaign) and the attribution credit ledger is populated for this model. We don't fabricate campaign rows."
+                description="Campaign rows appear once two things line up: (1) your ad links carry campaign tags (utm_campaign) so Brain can name the campaign, and (2) revenue has been attributed to those journeys under this model. We don't invent campaign rows — this stays empty until real credit exists."
                 action={
-                  <Link href="/settings/pixel">
+                  <Link href="/analytics/attribution">
                     <Button variant="outline" size="sm">
-                      Set up the Brain Pixel
+                      See attribution status
                     </Button>
                   </Link>
                 }
               />
+            ) : roasRows.length === 0 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground" role="status">
+                No campaigns match “{query.trim()}”.{' '}
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  className="font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  Clear search
+                </button>
+              </p>
+            ) : (
+              <>
+                <ChannelRoasTable rows={roasRows} className="w-full text-sm" />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    Every figure traces back to the customer journeys that touched each campaign.
+                  </p>
+                  <VerifyLink
+                    href="/analytics/attribution"
+                    label="See the journeys behind these numbers"
+                  />
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -311,10 +363,14 @@ export function CampaignsContent() {
       <section aria-label="Attributed revenue over time" data-testid="campaigns-trend-section">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <BarChart3 className="size-4" aria-hidden="true" />
-              Attributed revenue over time
-            </CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <BarChart3 className="size-4" aria-hidden="true" />
+                Attributed revenue over time
+              </CardTitle>
+              {/* This chart honors the date range above (unlike the all-time campaign roll-up). */}
+              <DataWindowBadge from={range.from} to={range.to} />
+            </div>
           </CardHeader>
           <CardContent>
             {timeseriesQ.error ? (
@@ -399,7 +455,7 @@ export function CampaignsContent() {
                               <p className="truncate font-medium text-foreground">
                                 {campaignLabel(row)}
                               </p>
-                              <p className="text-xs text-muted-foreground">{row.platform}</p>
+                              <p className="text-xs text-muted-foreground">{plainLabel(row.platform)}</p>
                             </div>
                             <Sparkline
                               data={series}
@@ -412,16 +468,19 @@ export function CampaignsContent() {
                           <div className="grid grid-cols-3 gap-2">
                             <KpiTile
                               label="Attributed"
+                              help="Revenue credited to this campaign under the selected model."
                               value={formatMoneyDisplay(row.attributed_revenue_minor, ccy)}
                             />
                             <KpiTile
                               label="Spend"
+                              help="What you spent on this campaign."
                               value={formatMoneyDisplay(row.spend_minor, ccy)}
                             />
                             <KpiTile
                               label="ROAS"
+                              help="Return on ad spend — attributed revenue divided by what this campaign cost."
                               value={row.roas_ratio != null ? `${row.roas_ratio}×` : null}
-                              sublabel={row.roas_ratio == null ? 'no spend' : undefined}
+                              sublabel={row.roas_ratio == null ? 'no spend recorded' : undefined}
                             />
                           </div>
                         </div>
@@ -453,11 +512,11 @@ export function CampaignsContent() {
               compact
               icon={<ImageIcon />}
               title="No creative-level data yet"
-              description="Per-creative attributed revenue and ROAS need a creative mart we haven't built yet. When the ad connectors land creative-grain spend and the attribution ledger credits it, this fills in — until then we show nothing rather than a fabricated zero."
+              description="Per-creative attributed revenue and ROAS aren't built yet. Once your ad connectors share creative-level spend and revenue is credited to it, this fills in — until then we show nothing rather than a made-up zero."
               hint={
                 <span className="inline-flex items-center gap-1.5">
                   <Layers className="size-3" aria-hidden="true" />
-                  Unlocks with a creative-grain Gold mart
+                  Coming in a future update
                 </span>
               }
             />
@@ -476,11 +535,11 @@ export function CampaignsContent() {
               compact
               icon={<Users />}
               title="No demographic data yet"
-              description="Age / gender / geo breakdowns need a demographic mart we haven't built yet. We never infer or fabricate demographics — this stays empty until a real source lands."
+              description="Age / gender / location breakdowns aren't built yet. We never guess or invent demographics — this stays empty until a real source lands."
               hint={
                 <span className="inline-flex items-center gap-1.5">
                   <Layers className="size-3" aria-hidden="true" />
-                  Unlocks with a demographic Gold mart
+                  Coming in a future update
                 </span>
               }
             />

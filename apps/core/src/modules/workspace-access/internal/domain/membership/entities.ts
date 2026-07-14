@@ -30,28 +30,3 @@ export interface Membership {
  * Role code ordered by capability level (higher index = more capable).
  */
 export const ROLE_HIERARCHY: RoleCode[] = ['analyst', 'manager', 'brand_admin', 'owner'];
-
-/**
- * Returns true if the given role meets or exceeds the minimum required role.
- */
-export function hasMinimumRole(roleCode: RoleCode, minimum: RoleCode): boolean {
-  return ROLE_HIERARCHY.indexOf(roleCode) >= ROLE_HIERARCHY.indexOf(minimum);
-}
-
-/**
- * Returns true if the role can manage members (invite, change role, remove).
- * owner and brand_admin can manage members.
- */
-export function canManageMembers(roleCode: RoleCode): boolean {
-  return roleCode === 'owner' || roleCode === 'brand_admin';
-}
-
-/**
- * UI label for a role code.
- */
-export const ROLE_LABELS: Record<RoleCode, string> = {
-  owner: 'Owner',
-  brand_admin: 'Admin',
-  manager: 'Manager',
-  analyst: 'Analyst',
-};

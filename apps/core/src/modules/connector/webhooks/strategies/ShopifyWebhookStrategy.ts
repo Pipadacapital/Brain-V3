@@ -57,10 +57,29 @@ import {
   projectOrderStitch,
   uuidV5FromOrderLive,
   ORDER_LIVE_V1_EVENT_NAME,
+  SHOPIFY_PROVIDER,
+  SHOPIFY_PRODUCTS_RESOURCE,
+  SHOPIFY_CUSTOMERS_RESOURCE,
+  SHOPIFY_REFUNDS_RESOURCE,
+  SHOPIFY_FULFILLMENTS_RESOURCE,
+  SHOPIFY_INVENTORY_LEVELS_RESOURCE,
+  mapProductToDraft,
+  mapCustomerToDraft,
+  mapRefundToDraft,
+  mapFulfillmentToDraft,
+  mapInventoryLevelToDraft,
   type ShopifyOrderShape,
+  type ShopifyProductShape,
+  type ShopifyCustomerShape,
+  type ShopifyRefundShape,
+  type ShopifyFulfillmentShape,
+  type ShopifyInventoryLevelShape,
+  type MappedResourceRecord,
 } from '@brain/shopify-mapper';
+import { deterministicDedupKeyDeriver, type ResourceDescriptor } from '@brain/connector-core';
 import { redactShopifyPii } from '../../sources/storefront/shopify/domain/redactPii.js';
 import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
+import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
 
 const ORDER_TOPICS = new Set([
   'orders/create',
@@ -73,6 +92,17 @@ const ORDER_TOPICS = new Set([
 /** app/uninstalled: invalidate secret + mark ConnectorInstance Disconnected. */
 const UNINSTALL_TOPIC = 'app/uninstalled' as const;
 
+// ── Resource topic sets (P1 webhook expansion) — the real-time peers of the scheduled resource
+// backfills. Mapped with the SAME pure mappers + the framework's deterministicDedupKeyDeriver over
+// the SAME manifest ResourceDescriptors the resumable backfill uses, so a product/customer/refund/
+// fulfillment state seen on BOTH lanes derives one byte-identical event_id → Bronze drops the
+// replay (live↔backfill dedup parity — the WooCommerceWebhookStrategy pattern).
+const PRODUCT_UPSERT_TOPICS = new Set(['products/create', 'products/update']);
+const CUSTOMER_UPSERT_TOPICS = new Set(['customers/create', 'customers/update']);
+const REFUND_CREATE_TOPIC = 'refunds/create' as const;
+const FULFILLMENT_TOPICS = new Set(['fulfillments/create', 'fulfillments/update']);
+const INVENTORY_LEVEL_TOPIC = 'inventory_levels/update' as const;
+
 /** The full canonical (slash-form) topic set the strategy handles — used for underscore reverse-mapping. */
 const ALL_HANDLED_TOPICS: readonly string[] = [
   ...ORDER_TOPICS,
@@ -80,7 +110,52 @@ const ALL_HANDLED_TOPICS: readonly string[] = [
   'customers/redact',
   'shop/redact',
   UNINSTALL_TOPIC,
+  ...PRODUCT_UPSERT_TOPICS,
+  ...CUSTOMER_UPSERT_TOPICS,
+  REFUND_CREATE_TOPIC,
+  ...FULFILLMENT_TOPICS,
+  INVENTORY_LEVEL_TOPIC,
 ];
+
+/** Uniform fast-ack (HTTP 200, no Kafka produce) — mirrors the WooCommerce strategy's SKIP. */
+const SKIP: PayloadMapResult = {
+  eventId: '',
+  eventName: '',
+  occurredAt: '',
+  properties: {},
+  ageCheckTimestampSeconds: null,
+  dedupKey: null,
+  skip: true,
+};
+
+/**
+ * Project a framework MappedResourceRecord (its single draft) into a PayloadMapResult, deriving the
+ * deterministic event_id with the SAME deriver the resumable backfill uses — so the live webhook and
+ * the backfill page for the same record state produce one byte-identical Bronze id (dedup parity).
+ * Mirrors WooCommerceWebhookStrategy's resourceResult helper.
+ */
+function resourceResult(record: MappedResourceRecord, brandId: string, resource: ResourceDescriptor): PayloadMapResult {
+  const draft = record.events[0];
+  if (!draft) return SKIP;
+  const eventId = deterministicDedupKeyDeriver.deriveEventId({
+    brandId,
+    provider: SHOPIFY_PROVIDER,
+    resource,
+    providerId: record.providerId,
+    eventName: draft.event_name,
+  });
+  return {
+    eventId,
+    eventName: draft.event_name,
+    occurredAt: draft.occurred_at,
+    properties: draft.properties as unknown as Record<string, unknown>,
+    // No transport replay-age gate (same reasoning as orders): Shopify retries up to ~48h; the
+    // deterministic event_id + Bronze MERGE dedup a late/replayed delivery instead of dropping it.
+    ageCheckTimestampSeconds: null,
+    dedupKey: eventId,
+    skip: false,
+  };
+}
 
 /**
  * Resolve the canonical (slash-form) Shopify topic from request headers.
@@ -107,9 +182,14 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
    * @param resolveHmacSecret OPTIONAL — resolves the brand's Shopify app `client_secret` for `shopDomain`
    *   (the real webhook signing key; CRIT-2). Injected by the composition root (registerWebhookRoutes)
    *   with access to the connector resolver + Secrets Manager. Omitted by the pure payloadMap unit tests.
+   * @param erasurePublisher OPTIONAL (AUD-OPS-036) — the RTBF erasure-trigger bridge. When present,
+   *   customers/redact ALSO publishes the canonical privacy.erasure.requested event (subject
+   *   email/phone from the Shopify payload + the resolved brain_id) so the stream-worker
+   *   orchestrator runs the FULL crypto-shred sequence. Omitted by the pure payloadMap unit tests.
    */
   constructor(
     private readonly resolveHmacSecret?: (shopDomain: string) => Promise<string>,
+    private readonly erasurePublisher?: ErasureEventPublisher,
   ) {}
 
   async signatureVerify(
@@ -149,6 +229,8 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
 
   async payloadMap(ctx: WebhookStrategyContext): Promise<PayloadMapResult> {
     const { rawBody, headers, brandId, saltHex, correlationId, requestId } = ctx;
+    // SPEC: A.1.4 (WA-09) — connector.identity_fields flag (pipeline-resolved, fail-closed OFF).
+    const identityFields = { emitInteropIdentifiers: ctx.identityFieldsEnabled === true };
 
     // Canonical (slash-form) topic: Shopify's authoritative X-Shopify-Topic header when present, else the
     // route's injected x-wh-topic URL segment (underscore form reverse-mapped). See resolveTopic.
@@ -187,13 +269,43 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         throw err;
       }
 
-      const customerId = body['customer'] != null
-        ? (body['customer'] as Record<string, unknown>)['id']
+      const customerObj = body['customer'] != null
+        ? (body['customer'] as Record<string, unknown>)
         : null;
+      const customerId = customerObj?.['id'];
       const shopifyCustomerId = customerId != null ? String(customerId) : null;
+      // AUD-OPS-036: Shopify's customers/redact payload carries the subject's raw email/phone —
+      // exactly the envelope shape the erasure orchestrator salt-hashes. Captured for the
+      // trigger emit below; never logged, never stored by this strategy.
+      const customerEmail =
+        typeof customerObj?.['email'] === 'string' && customerObj['email'].length > 0
+          ? (customerObj['email'] as string)
+          : undefined;
+      const customerPhone =
+        typeof customerObj?.['phone'] === 'string' && customerObj['phone'].length > 0
+          ? (customerObj['phone'] as string)
+          : undefined;
       const capturedBrandId = brandId;
       const capturedCorrelationId = correlationId;
       const capturedRequestId = requestId;
+      const erasurePublisher = this.erasurePublisher;
+
+      // AUD-OPS-036: bridge customers/redact to the async full-erasure orchestrator. Runs even
+      // when the synchronous graph erase cannot (no identity graph / customer never converted):
+      // the orchestrator resolves the subject from email/phone itself and is skip-safe when the
+      // subject is unknown. Fail-open inside the publisher (Shopify is acked regardless).
+      const emitErasureTrigger = async (resolvedBrainId?: string): Promise<void> => {
+        if (!erasurePublisher) return;
+        if (!customerEmail && !customerPhone && !resolvedBrainId) return; // unaddressable
+        await erasurePublisher.emitErasureRequested({
+          brandId: capturedBrandId,
+          subjectEmail: customerEmail,
+          subjectPhone: customerPhone,
+          brainId: resolvedBrainId,
+          source: 'shopify.customers_redact',
+          correlationId: capturedCorrelationId,
+        });
+      };
 
       const sideEffect = async (
         _brandId: string,
@@ -202,7 +314,9 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         identityReader?: { resolveBrainIdByStorefrontCustomerId(b: string, h: string): Promise<string | null>; eraseCustomer(b: string, id: string): Promise<{ erased: boolean }> },
       ): Promise<void> => {
         if (!shopifyCustomerId || !identityReader) {
-          // No customer.id in payload, or no identity graph wired — nothing to erase. Fast-exit.
+          // No customer.id in payload, or no identity graph wired — nothing to erase in the
+          // graph, but the async orchestrator can still act on a raw email/phone subject.
+          await emitErasureTrigger();
           return;
         }
 
@@ -214,7 +328,12 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         // a second direct resolveSaltHex — so the redact path resolves identically to the order path
         // and works for runtime-created prod brands (which have no IDENTITY_SALT env).
         const salt = saltHex;
-        if (!salt || salt.length !== 64) return; // bad salt → cannot match; never crash the webhook
+        if (!salt || salt.length !== 64) {
+          // Bad salt → cannot match in the graph; never crash the webhook. The async
+          // orchestrator resolves the subject with its own salt path — still bridge it.
+          await emitErasureTrigger();
+          return;
+        }
         // storefront_customer_id is hashed under identity-core's 'external_id' type (matches the resolver).
         const hash = hashIdentifier(
           normalizeIdentifier(shopifyCustomerId, 'external_id'),
@@ -223,12 +342,18 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         );
         const brainId = await identityReader.resolveBrainIdByStorefrontCustomerId(capturedBrandId, hash);
         if (!brainId) {
-          // Customer not in our identity graph — nothing to erase (never converted). Correct no-op.
+          // Customer not in our identity graph via storefront id — nothing to erase in the graph,
+          // but the subject may still be linked by email/phone: let the orchestrator decide.
+          await emitErasureTrigger();
           return;
         }
         await identityReader.eraseCustomer(capturedBrandId, brainId);
 
-        void capturedCorrelationId; void capturedRequestId;
+        // AUD-OPS-036: synchronous partial erase done (graph tombstone + contact_pii) — now
+        // trigger the full ordered sequence (DEK shred / audit log / surrogate / CAPI).
+        await emitErasureTrigger(brainId);
+
+        void capturedRequestId;
       };
 
       return {
@@ -298,6 +423,73 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
       };
     }
 
+    // ── Resource grains (P1 webhook expansion) → canonical resource events ─────────────────────
+    // products/customers/refunds/fulfillments/inventory_levels: the real-time peers of the
+    // scheduled resource backfills. Same pure mappers, same deterministic dedup namespace →
+    // live↔backfill parity (a state seen on both lanes is ONE Bronze row).
+    const isResourceTopic =
+      PRODUCT_UPSERT_TOPICS.has(topic) ||
+      CUSTOMER_UPSERT_TOPICS.has(topic) ||
+      topic === REFUND_CREATE_TOPIC ||
+      FULFILLMENT_TOPICS.has(topic) ||
+      topic === INVENTORY_LEVEL_TOPIC;
+
+    if (isResourceTopic) {
+      let resourceBody: Record<string, unknown>;
+      try {
+        resourceBody = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
+      } catch {
+        const err = new Error('Webhook body is not valid JSON');
+        (err as NodeJS.ErrnoException & { code: string }).code = 'INVALID_JSON';
+        throw err;
+      }
+
+      // Shopify delivers the resource object directly as the body. An id-less delivery (a
+      // registration ping / malformed payload) is fast-acked — a 4xx would put Shopify into a
+      // ~48h retry storm for a payload that can never map.
+      const hasId = resourceBody['id'] !== undefined && resourceBody['id'] !== null && String(resourceBody['id']).length > 0;
+
+      try {
+        if (PRODUCT_UPSERT_TOPICS.has(topic)) {
+          if (!hasId) return SKIP;
+          const record = mapProductToDraft(resourceBody as unknown as ShopifyProductShape, brandId);
+          return resourceResult(record, brandId, SHOPIFY_PRODUCTS_RESOURCE);
+        }
+        if (CUSTOMER_UPSERT_TOPICS.has(topic)) {
+          if (!hasId) return SKIP;
+          // Raw email/phone are hashed INSIDE the mapper and dropped (D-10 / I-S02).
+          const record = mapCustomerToDraft(
+            resourceBody as unknown as ShopifyCustomerShape,
+            brandId,
+            saltHex,
+            ctx.regionCode ?? 'IN',
+          );
+          return resourceResult(record, brandId, SHOPIFY_CUSTOMERS_RESOURCE);
+        }
+        if (topic === REFUND_CREATE_TOPIC) {
+          if (!hasId) return SKIP;
+          // Currency: honest-null when the refund payload doesn't carry it (the /orders backfill
+          // lane restates the same refund id with the order currency — same event_id, Bronze dedups).
+          const record = mapRefundToDraft(resourceBody as unknown as ShopifyRefundShape, brandId, null);
+          return resourceResult(record, brandId, SHOPIFY_REFUNDS_RESOURCE);
+        }
+        if (FULFILLMENT_TOPICS.has(topic)) {
+          if (!hasId) return SKIP;
+          const record = mapFulfillmentToDraft(resourceBody as unknown as ShopifyFulfillmentShape, brandId);
+          return resourceResult(record, brandId, SHOPIFY_FULFILLMENTS_RESOURCE);
+        }
+        // inventory_levels/update — keyed on inventory_item_id (NOT id; the payload has no id field).
+        const level = resourceBody as unknown as ShopifyInventoryLevelShape;
+        if (level.inventory_item_id == null || String(level.inventory_item_id).length === 0) return SKIP;
+        const record = mapInventoryLevelToDraft(level, brandId);
+        return resourceResult(record, brandId, SHOPIFY_INVENTORY_LEVELS_RESOURCE);
+      } catch {
+        // A permanently-unmappable payload (e.g. unparseable timestamp) → fast-ack, never a
+        // 4xx retry storm. Bronze idempotency is unaffected (nothing was emitted).
+        return SKIP;
+      }
+    }
+
     if (!ORDER_TOPICS.has(topic)) {
       return {
         eventId: '',
@@ -333,7 +525,7 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
 
     const orderId = String(order.id);
     const eventId = uuidV5FromOrderLive(brandId, orderId, updatedAtUtcMs);
-    const mapped = mapOrderToEvent(order, saltHex, 'IN', ORDER_LIVE_V1_EVENT_NAME);
+    const mapped = mapOrderToEvent(order, saltHex, 'IN', ORDER_LIVE_V1_EVENT_NAME, identityFields);
 
     // HIGH (no-event-loss): NO transport replay-age gate for order webhooks. Feeding the business
     // order.updated_at into the pipeline's 5-min window rejected every Shopify retry/delay >5min

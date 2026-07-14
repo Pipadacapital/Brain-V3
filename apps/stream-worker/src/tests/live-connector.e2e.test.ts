@@ -11,8 +11,10 @@
  * T2: Dedup-with-backfill — same order: backfill row (order.backfill.v1) + live row (order.live.v1)
  *     = TWO distinct Bronze rows (different event_id namespaces — D-6 proof).
  *
- * T3: Per-state Bronze — two distinct updated_at → two live Bronze rows;
- *     same updated_at retry → ONE row (dedup on uuidV5FromOrderLive).
+ * T3: Per-state Bronze — two distinct updated_at → two live Bronze rows (distinct event_ids);
+ *     same updated_at retry → SAME event_id, TWO Bronze rows (ADR-0010: Bronze is append-only,
+ *     no Bronze dedup; the collapse to one row per (brand_id, event_id) is Silver's admission
+ *     MERGE — proven in bronze-dedup-effectively-once.live.test.ts).
  *
  * T4: RTO reversal — a cancelled order produces a NEW negative rto_reversal ledger row;
  *     sale row (provisional_recognition) is UNTOUCHED; realized_gmv_as_of falls (D-13).
@@ -145,9 +147,10 @@ beforeAll(async () => {
   superPool = new Pool({ connectionString: SUPERUSER_DB_URL, max: 3 });
   appPool = new Pool({ connectionString: BRAIN_APP_DB_URL, max: 3 });
 
-  // Bronze is the Spark sink → Iceberg (PG bronze write retired). The Bronze-landing tests produce
-  // order.live.v1 / order.backfill.v1 to their lanes — the Spark sink lands both in Iceberg
-  // `brain_bronze.collector_events`, read via StarRocks. Gated on lakehouse infra.
+  // Bronze is the Kafka Connect Iceberg sink (ADR-0010; PG bronze write retired). The Bronze-landing
+  // tests produce order.live.v1 / order.backfill.v1 to their lanes — the compose kafka-connect
+  // service lands both append-only in `brain_bronze.collector_events_connect`, read over Trino via
+  // the lift view. Gated on lakehouse infra.
   const kafka = new Kafka({ clientId: 'live-connector-e2e-producer', brokers: KAFKA_BROKERS, retry: { retries: 3 } });
   producer = kafka.producer();
   await producer.connect();
@@ -193,9 +196,10 @@ describe('T1: Live event lands on LIVE lane (order.live.v1) → Iceberg Bronze, 
     const buf = makeLiveEventBuffer({ eventId, brandId: BRAND_A, orderId, amountMinor: '125000', currencyCode: 'INR', occurredAt });
     await produce(LIVE_TOPIC, buf, BRAND_A, 'order.live.v1');
 
-    const count = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 60_000 });
+    // ADR-0010: Connect-sink commit visibility is 30-60s+ under load — helper's 120s default.
+    const count = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1 });
     expect(count).toBe(1);
-  }, 75_000);
+  }, 150_000);
 
   it('live topic is the collector event topic (not backfill)', () => {
     expect(LIVE_TOPIC).toContain('collector.event.v1');
@@ -254,7 +258,7 @@ describe('T2: Dedup-with-backfill — backfill row + live row = TWO distinct Bro
 
 // ── T3: Per-state Bronze ───────────────────────────────────────────────────────
 
-describe('T3: Per-state Bronze — two distinct updated_at → two live rows; same updated_at → dedup', () => {
+describe('T3: Per-state Bronze — two distinct updated_at → two live rows; same updated_at → same event_id, append-only', () => {
   it('two distinct updated_at values → two distinct Iceberg Bronze rows', async () => {
     if (!infraUp) return;
     const orderId = `PER-STATE-T3-ORDER-${Date.now()}`;
@@ -274,23 +278,23 @@ describe('T3: Per-state Bronze — two distinct updated_at → two live rows; sa
     expect(count).toBe(2);
   }, 90_000);
 
-  it('same updated_at retry → ONE Iceberg Bronze row (MERGE dedup — same event_id)', async () => {
+  it('same updated_at retry → SAME event_id, TWO Bronze rows (append-only; Silver owns dedup)', async () => {
     if (!infraUp) return;
     const orderId = `PER-STATE-T3-ORDER-002-${Date.now()}`;
     const updatedAtMs = Date.now();
     const eventId = uuidV5FromOrderLive(BRAND_A, orderId, updatedAtMs);
 
     const buf = makeLiveEventBuffer({ eventId, brandId: BRAND_A, orderId, amountMinor: '99900', currencyCode: 'INR', occurredAt: new Date(updatedAtMs).toISOString() });
-    // Deliver the same event_id twice → Spark MERGE collapses to one row.
+    // Deliver the same event_id twice (a retry with the SAME updated_at → same uuidV5). ADR-0010:
+    // the Connect sink APPENDS both — Bronze has no dedup; the effectively-once collapse per
+    // (brand_id, event_id) is the Silver admission MERGE (silver_collector_event.py) — see
+    // bronze-dedup-effectively-once.live.test.ts.
     await produce(LIVE_TOPIC, buf, BRAND_A, 'order.live.v1');
     await produce(LIVE_TOPIC, buf, BRAND_A, 'order.live.v1');
 
-    const landed = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 60_000 });
-    expect(landed).toBeGreaterThanOrEqual(1);
-    await new Promise((r) => setTimeout(r, 14_000)); // settle ~1 extra trigger cycle
-    const settled = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 5_000 });
-    expect(settled).toBe(1);
-  }, 90_000);
+    const settled = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 2, timeoutMs: 150_000 });
+    expect(settled).toBe(2); // both deliveries landed — append-only, no Bronze-side dedup
+  }, 180_000);
 });
 
 // ── T5: Cursor advances and resumes ───────────────────────────────────────────
@@ -539,13 +543,15 @@ describe('T8: Cross-brand read-seam isolation — Brand B-scoped read cannot see
     await produce(LIVE_TOPIC, buf, BRAND_A, 'order.live.v1');
 
     // Positive control: brand_A-scoped read sees its own row.
-    const a = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1, timeoutMs: 60_000 });
+    // ADR-0010: the Connect sink commits on a ~30s interval and visibility can take 30-60s+ under
+    // load — use the helper's 120s default rather than a legacy Spark-sink-era 60s deadline.
+    const a = await pollIcebergBronzeCount(sr, { brandId: BRAND_A, eventId }, { min: 1 });
     expect(a).toBe(1);
 
     // Negative control: brand_B-scoped read sees 0 of brand_A's event (read-seam tenant isolation).
     const b = await pollIcebergBronzeCount(sr, { brandId: BRAND_B, eventId }, { min: 1, timeoutMs: 3_000 });
     expect(b).toBe(0);
-  }, 75_000);
+  }, 150_000);
 });
 
 // ── T9: Stale-'syncing' lease self-heal (CRIT-1) ───────────────────────────────

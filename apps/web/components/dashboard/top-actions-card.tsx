@@ -10,6 +10,7 @@
 import Link from 'next/link';
 import { AlertTriangle, TrendingUp, ShieldCheck, ShieldAlert, ArrowRight } from 'lucide-react';
 import { SectionCard } from '@/components/ui/section-card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -29,7 +30,12 @@ export function TopActionsCard() {
 
   return (
     <SectionCard
-      title="Top actions"
+      title={
+        <MetricTitle
+          label="Top actions"
+          help="The three highest-impact things Brain suggests you do next, based on your data."
+        />
+      }
       className="h-full"
       actions={
         <Link

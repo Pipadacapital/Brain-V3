@@ -28,6 +28,7 @@
 
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+import { spendView } from './measurement-migration.js';
 
 export interface BlendedRoasRow {
   /** ISO 4217 currency code */
@@ -68,7 +69,7 @@ function exactRatioString(numerator: bigint, denominator: bigint, fractionalDigi
 export async function computeBlendedRoas(
   brandId: string,
   params: { fromDate: Date; toDate: Date },
-  deps: { srPool: SilverPool },
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<BlendedRoasRow[]> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string; // Date-formatted → injection-safe
   const toStr = params.toDate.toISOString().split('T')[0] as string;
@@ -97,7 +98,7 @@ export async function computeBlendedRoas(
       spend_minor: string | number;
     }>(
       `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
-         FROM brain_serving.mv_silver_marketing_spend
+         FROM ${spendView(deps.measurementMartsMigration)}
         WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}
         GROUP BY platform, currency_code`,

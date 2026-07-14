@@ -31,21 +31,32 @@ provider "aws" {
   # assume_role { role_arn = "arn:aws:iam::<PROD_ACCOUNT_ID>:role/TerraformApply" }
 
   # AUD-NAME-001: mandatory PascalCase tag set (Environment/Service/Owner/
-  # CostCenter + Project/ManagedBy) from modules/_shared, MERGED over the
-  # legacy lowercase keys so already-applied resources see tag ADDITIONS only
-  # (in-place update, no replacement). Per-module `Service` overrides win on
-  # collision (default_tags + resource tags merge, resource value wins).
-  # Follow-up per docs/infra/naming-and-tagging.md §6: strip the lowercase
-  # duplicates once nothing keys on them.
+  # CostCenter + Project/ManagedBy) from modules/_shared. The legacy lowercase
+  # duplicates (project/environment/managed_by) are DROPPED here: prod was never
+  # applied with them, and IAM treats tag keys as case-insensitive, so
+  # project/Project (etc.) collided as duplicate keys on every IAM role
+  # (CreateRole InvalidInput: "Duplicate tag keys found"). PascalCase only.
   default_tags {
-    tags = merge(
-      {
-        project     = local.project
-        environment = local.environment
-        managed_by  = "terraform"
-      },
-      module.tags.common_tags,
-    )
+    tags = module.tags.common_tags
+  }
+}
+
+# AUD-OPS-014: the DR replica region for S3 CRR (module s3_warehouse_crr below).
+# ap-south-2 (Hyderabad) by default — IN-COUNTRY, so the AUD-OPS-042 residency
+# posture is unchanged (decision doc docs/adr/0011-s3-crr-residency.md).
+provider "aws" {
+  alias  = "replica"
+  region = var.replica_region
+  # ap-south-2 is an OPT-IN region this account has NOT enabled — upfront STS
+  # validation fails (InvalidClientTokenId) and breaks EVERY plan, even with
+  # CRR count=0 (2026-07-12). Skip the upfront checks; real API calls still
+  # authenticate normally. BEFORE enabling CRR: opt in to ap-south-2
+  # (Account settings → Regions) or the module's own calls will fail the same way.
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
+  default_tags {
+    tags = module.tags.common_tags
   }
 }
 
@@ -80,9 +91,11 @@ module "oidc_github" {
   project     = local.project
   # AUD-COST-002: MUST match the real remote (git remote -v) or every OIDC
   # role assumption is rejected — was brain-platform/brain (repo doesn't exist).
-  github_org       = "Rishabhporwal"
-  github_repo      = "Brain-V4"
-  allowed_branches = ["master"] # repo default branch (workflow_dispatch runs here) — was "main" (mismatch)
+  github_org  = "Pipadacapital"
+  github_repo = "Brain-V3"
+  # RELEASE-LAYER (2026-07-11): image builds moved to `release` (deploy.yml);
+  # master keeps the prod-promote lane (promote-prod.yml) + workflow_dispatch.
+  allowed_branches = ["master", "release"]
 
   # ECR-push + terraform-apply CI roles (deploy.yml / prod-apply.yml). After apply,
   # set repo variables AWS_ECR_PUSH_ROLE_ARN / AWS_PROD_APPLY_ROLE_ARN from the
@@ -125,6 +138,16 @@ module "vpc_endpoints" {
   region                  = "ap-south-1"
   private_subnet_ids      = module.network.private_subnet_ids
   private_route_table_ids = module.network.private_route_table_ids
+
+  # AUD-INFRA-012 / AUD-OPS-031: the full 5-service × 3-AZ endpoint set was
+  # ~$110-140/mo (15 ENI-hours) — the second-largest fixed line — for traffic
+  # that can ride the fee-free fck-nat (ADR-0009) at ~$0 marginal. Keep ONLY
+  # ecr.api/ecr.dkr (registry auth/manifests for image pulls; layer blobs come
+  # via the FREE S3 gateway endpoint) in a SINGLE subnet. logs/sts/secretsmanager
+  # calls (low-volume JSON) now traverse fck-nat like all other egress.
+  # Rollback: delete these two lines to restore the 5×3 legacy set.
+  interface_services   = ["ecr.api", "ecr.dkr"]
+  interface_subnet_ids = [module.network.private_subnet_ids[0]]
 }
 
 ###############################################################################
@@ -147,6 +170,14 @@ module "eks" {
   # operator allowlist (tfvars) opens the public endpoint pinned to those CIDRs
   # for the go-live bootstrap. Empty = private-only.
   public_access_cidrs = var.eks_public_access_cidrs
+
+  # AUD-OPS-028 / AUD-INFRA-019: EKS 1.33 upgrade gates. Defaults are the LIVE
+  # values (1.32 / AL2 / null) so this plan is a no-op; the operator flips them
+  # in terraform.tfvars per docs/runbooks/eks-1-33-upgrade.md (AL2023 first,
+  # then 1.33, then STANDARD support) to drop the $360/mo extended-support fee.
+  kubernetes_version   = var.cluster_version
+  system_ami_type      = var.system_ami_type
+  cluster_support_type = var.eks_support_type
 }
 
 ###############################################################################
@@ -170,15 +201,99 @@ module "karpenter" {
 # managed HA), NOT plain RDS. PG is operational-only; the workload is spiky.
 ###############################################################################
 module "aurora" {
-  source                     = "../../modules/aurora"
-  environment                = local.environment
-  project                    = local.project
-  vpc_id                     = module.network.vpc_id
-  subnet_ids                 = module.network.private_subnet_ids
-  ingress_security_group_ids = [module.network.rds_sg_id]
+  source      = "../../modules/aurora"
+  environment = local.environment
+  project     = local.project
+  vpc_id      = module.network.vpc_id
+  subnet_ids  = module.network.private_subnet_ids
+  # The EKS-managed cluster SG is what node/pod traffic actually egresses from —
+  # nodes are NOT in the network module's eks_nodes_sg, so rds_sg alone left every
+  # workload→Aurora connection timing out. Allow the real node SG too.
+  ingress_security_group_ids = [module.network.rds_sg_id, module.eks.cluster_primary_security_group_id]
   kms_key_arn                = module.kms.root_kms_key_arn
   min_capacity               = var.aurora_min_capacity
   max_capacity               = var.aurora_max_capacity
+}
+
+# ElastiCache Redis: same fix — allow 6379 from the EKS-managed cluster SG. The
+# network elasticache_sg only admitted the (unused) eks_nodes_sg.
+resource "aws_security_group_rule" "redis_from_eks_cluster_sg" {
+  type                     = "ingress"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = module.network.elasticache_sg_id
+  source_security_group_id = module.eks.cluster_primary_security_group_id
+  description              = "Redis from EKS-managed cluster SG (real node traffic)"
+}
+
+# Karpenter selects node SGs by the karpenter.sh/discovery tag, which lives on the
+# network module's eks_nodes SG — but that SG is NOT the one the EKS control plane
+# trusts for the private API endpoint (nor the one our Aurora/Redis ingress rules
+# allow). Result: Karpenter nodes booted but never registered (NodeNotFound). Tag
+# the EKS-managed cluster SG (what system MNG nodes use + our DB rules trust) so
+# Karpenter nodes attach it and can reach the API + the databases.
+resource "aws_ec2_tag" "cluster_sg_karpenter_discovery" {
+  resource_id = module.eks.cluster_primary_security_group_id
+  key         = "karpenter.sh/discovery"
+  value       = "brain-prod"
+}
+
+# EC2 Spot service-linked role — Karpenter's controller role cannot create it, so
+# the FIRST Spot launch on a fresh account fails with
+# AuthFailure.ServiceLinkedRoleCreationNotPermitted. Create it once here.
+resource "aws_iam_service_linked_role" "spot" {
+  aws_service_name = "spot.amazonaws.com"
+}
+
+# iceberg-rest catalog image (apache/iceberg-rest-fixture + the PG JDBC driver the
+# fixture omits — see db/iceberg/rest/Dockerfile). Not a pnpm app, so it's outside
+# the eks module's brain-<svc>-prod ECR set; same IMMUTABLE, KMS-encrypted posture.
+resource "aws_ecr_repository" "iceberg_rest" {
+  name                 = "brain-iceberg-rest-prod"
+  image_tag_mutability = "IMMUTABLE"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = module.kms.root_kms_key_arn
+  }
+}
+
+# AUD-INFRA-018: the standalone repo lacked the lifecycle policy the eks-module
+# app repos get — IMMUTABLE tags + no lifecycle = every rebuild accumulates
+# forever. Mirrors the eks module's untagged-expiry and adds keep-last-N for
+# tagged images (immutable tagging means every build is a new tag). N=10 keeps
+# any digest a running pod could still pull after a node reschedule.
+resource "aws_ecr_lifecycle_policy" "iceberg_rest" {
+  repository = aws_ecr_repository.iceberg_rest.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 7 days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 7
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only the last 10 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
 }
 
 ###############################################################################
@@ -274,6 +389,21 @@ module "irsa_stream_worker" {
   ]
 }
 
+# core sends transactional email (account verification, invites) via SES.
+# SES itself enforces the verified sending identity (brain.pipadacapital.com
+# DKIM), so scoping the action to * is safe; SendRawEmail covers MIME bodies.
+resource "aws_iam_policy" "core_ses_send" {
+  name = "${local.project}-${local.environment}-core-ses-send"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ses:SendEmail", "ses:SendRawEmail"]
+      Resource = "*"
+    }]
+  })
+}
+
 module "irsa_core" {
   source               = "../../modules/irsa"
   role_name            = "core"
@@ -289,6 +419,8 @@ module "irsa_core" {
     # AUD-PROD-004: create/put/read/delete brain/connector/* runtime secrets +
     # connector CMK encrypt/decrypt (OAuth tokens, PII-vault DEK wrapping).
     module.secrets.core_connector_secrets_rw_policy_arn,
+    # transactional email (account verification) via SES
+    aws_iam_policy.core_ses_send.arn,
   ]
 }
 
@@ -422,16 +554,23 @@ module "irsa_external_dns" {
 }
 
 ###############################################################################
-# Redis serving cache (ADR-0009 sizing: cache.t4g.micro starter)
+# Valkey serving cache (ADR-0009 sizing: cache.t4g.micro starter)
+# Engine swapped Redis OSS 7.1 -> Valkey 8.0 (2026-07): ~20% cheaper per
+# node-hour, drop-in Redis-7 compatible (no app change), same endpoint DNS.
+# The in-place cross-engine upgrade is driven by the AWS CLI (the TF provider's
+# engine flip is unreliable) then reconciled here — runbook:
+# docs/ops/valkey-migration.md.
 ###############################################################################
 module "elasticache" {
-  source      = "../../modules/elasticache"
-  environment = local.environment
-  project     = local.project
-  subnet_ids  = module.network.private_subnet_ids
-  redis_sg_id = module.network.elasticache_sg_id
-  kms_key_arn = module.kms.root_kms_key_arn
-  node_type   = "cache.t4g.micro"
+  source         = "../../modules/elasticache"
+  environment    = local.environment
+  project        = local.project
+  subnet_ids     = module.network.private_subnet_ids
+  redis_sg_id    = module.network.elasticache_sg_id
+  kms_key_arn    = module.kms.root_kms_key_arn
+  node_type      = "cache.t4g.micro"
+  engine         = "valkey"
+  engine_version = "8.0"
   # AUD-PROD-008: single node per the ADR-0009 starter sizing — the module
   # default (2) silently provisioned a 2-node multi-AZ auto-failover group
   # (double cache spend). The module degrades automatic_failover/multi_az to
@@ -460,13 +599,186 @@ module "irsa_spark_jobs" {
   project              = local.project
   policy_arns = [
     module.s3_iceberg.spark_medallion_rw_policy_arn,
+    # journey-stitch-from-identity (runs as brain-jobs via the cron chart)
+    # fetches each brand's pixel salt from brain/connector/* — same read+CMK
+    # decrypt need as stream-worker. Without this the job fail-closed on
+    # kms:Decrypt (D-2 refuses empty-salt hashing; first e2e run 2026-07-12).
+    module.secrets.stream_worker_connector_secrets_read_policy_arn,
+    # audit-checkpoint (also runs as brain-jobs) writes WORM anchors to the
+    # audit bucket + audit CMK GenerateDataKey. Denied on the first post-#69
+    # run (s3:ListBucket on brain-audit-prod / kms:GenerateDataKey) — the
+    # policy previously existed only on core's role.
+    module.s3_audit.audit_writer_policy_arn,
   ]
+}
+
+# Kafka Connect Iceberg sink (ADR-0010 Bronze landing writer). AUD-W1-001:
+# the connect SA annotation pointed at a role that was NEVER created
+# (brain-prod-spark-jobs) — every sink task died on
+# sts:AssumeRoleWithWebIdentity 403 and Bronze landing was down. Same
+# medallion RW policy family as the Spark jobs (warehouse prefixes only).
+module "irsa_kafka_connect" {
+  source               = "../../modules/irsa"
+  role_name            = "kafka-connect"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "kafka"
+  service_account_name = "kafka-connect-prod-kafka-connect"
+  environment          = local.environment
+  project              = local.project
+  policy_arns = [
+    module.s3_iceberg.spark_medallion_rw_policy_arn,
+  ]
+}
+
+###############################################################################
+# Cost guardrails — AUD-OPS-027: the pre-existing brain-prod-monthly-cap budget
+# (console-created, IncludeCredit=true) nets promotional credits into "actual"
+# spend, so with credits covering the bill it reads $0 and can NEVER fire until
+# the credits exhaust. This SECOND budget tracks REAL usage (credits + refunds
+# excluded) so the ~2x-target burn rate is visible while credits still mask the
+# cash bill. Alerts-only (no budget actions), matching the account guardrail
+# posture.
+###############################################################################
+resource "aws_budgets_budget" "usage_real" {
+  name         = "${local.project}-${local.environment}-usage-real"
+  budget_type  = "COST"
+  limit_amount = "1000"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_types {
+    include_credit = false
+    include_refund = false
+  }
+
+  # 50 / 80 / 100% of ACTUAL usage spend → email.
+  dynamic "notification" {
+    for_each = [50, 80, 100]
+    content {
+      comparison_operator        = "GREATER_THAN"
+      notification_type          = "ACTUAL"
+      threshold                  = notification.value
+      threshold_type             = "PERCENTAGE"
+      subscriber_email_addresses = ["rishabhporwal95@gmail.com"]
+    }
+  }
+}
+
+###############################################################################
+# Credit-depletion tripwire (2026-07-13) — the EARLIEST automated signal that
+# promotional credits have stopped covering the bill and REAL CASH charges have
+# begun. Both monthly-cap ($500 net) and this budget include credits, so while
+# credits cover everything the net reads ~$0 and neither fires. The difference:
+# monthly-cap only trips at $400-500 of net CASH (a month-plus into paying),
+# whereas this $20-limit budget trips the moment net cash crosses $20 —
+# i.e. within days of credits running out. FORECASTED at 100% gives an even
+# earlier heads-up (projected net > $20 before it's actually spent). Alerts-only.
+# NOTE: AWS Budgets cannot read the credit BALANCE directly, so a true
+# "credits will run out in N days" alert isn't possible via the API — check the
+# remaining balance in Billing console → Credits and divide by the ~gross
+# run-rate (the usage-real budget above). This tripwire is the automated backstop.
+###############################################################################
+resource "aws_budgets_budget" "credit_depletion" {
+  name         = "${local.project}-${local.environment}-credit-depletion"
+  budget_type  = "COST"
+  limit_amount = "20"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_types {
+    include_credit = true # NET (post-credit) spend — reads ~$0 until credits deplete
+    include_refund = false
+  }
+
+  # ACTUAL > 100% ($20 net cash) = credits have depleted, you're paying cash now.
+  # FORECASTED > 100% = projected to start paying cash this month (earlier warning).
+  dynamic "notification" {
+    for_each = ["ACTUAL", "FORECASTED"]
+    content {
+      comparison_operator        = "GREATER_THAN"
+      notification_type          = notification.value
+      threshold                  = 100
+      threshold_type             = "PERCENTAGE"
+      subscriber_email_addresses = ["rishabhporwal95@gmail.com"]
+    }
+  }
+}
+
+###############################################################################
+# Neo4j backups (AUD-OPS-012) — the identity SoR had ZERO backups. Two layers:
+# DLM daily EBS snapshots (7 retained, targeted by the CSI's
+# kubernetes.io/created-for/pvc/namespace=neo4j tag) + a backups bucket for the
+# nightly neo4j-admin dump CronJob (infra/helm/neo4j-backup, ns neo4j). The
+# module header has the full rationale (incl. why the WORM audit bucket is unfit).
+###############################################################################
+module "neo4j_backup" {
+  source      = "../../modules/neo4j-backup"
+  environment = local.environment
+  project     = local.project
+  kms_key_arn = module.kms.root_kms_key_arn
+}
+
+# IRSA for the dump CronJob — namespace/SA MUST match the neo4j-backup chart's
+# ServiceAccount exactly (NN-3 StringEquals trust): neo4j/neo4j-backup.
+module "irsa_neo4j_backup" {
+  source               = "../../modules/irsa"
+  role_name            = "neo4j-backup"
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  namespace            = "neo4j"
+  service_account_name = "neo4j-backup"
+  environment          = local.environment
+  project              = local.project
+  policy_arns = [
+    module.neo4j_backup.backup_writer_policy_arn,
+  ]
+}
+
+###############################################################################
+# S3 cross-region replication (AUD-OPS-014) — DR replica of the medallion
+# warehouse bucket in ap-south-2 (Hyderabad; in-country, so the AUD-OPS-042
+# residency posture is unchanged — decision doc docs/adr/0011-s3-crr-residency.md).
+# GATED behind var.enable_cross_region_replication (default false): flipping it
+# on in terraform.tfvars is the recorded apply-decision. The tfstate bucket's
+# replica is gated the same way in infra/terraform/bootstrap (its own root).
+###############################################################################
+# Replica-region half (bucket + CMK in ap-south-2) — the module takes the
+# replica-region provider as its default `aws` (no configuration_aliases, so
+# the CI standalone-module validate matrix works).
+module "s3_warehouse_crr_replica" {
+  count  = var.enable_cross_region_replication ? 1 : 0
+  source = "../../modules/s3-crr-replica"
+  providers = {
+    aws = aws.replica
+  }
+  environment      = local.environment
+  project          = local.project
+  purpose          = "warehouse"
+  source_bucket_id = module.s3_iceberg.warehouse_bucket_name
+}
+
+# Source-region half: replication role + the replication configuration on the
+# warehouse bucket.
+module "s3_warehouse_crr" {
+  count               = var.enable_cross_region_replication ? 1 : 0
+  source              = "../../modules/s3-crr"
+  environment         = local.environment
+  project             = local.project
+  purpose             = "warehouse"
+  source_bucket_id    = module.s3_iceberg.warehouse_bucket_name
+  source_bucket_arn   = module.s3_iceberg.warehouse_bucket_arn
+  source_kms_key_arn  = module.kms.root_kms_key_arn
+  replica_bucket_arn  = module.s3_warehouse_crr_replica[0].replica_bucket_arn
+  replica_kms_key_arn = module.s3_warehouse_crr_replica[0].replica_kms_key_arn
 }
 
 ###############################################################################
 # Outputs — the post-apply fill pass reads these (helm values-prod placeholders,
 # ArgoCD IRSA annotations, repo variables). See docs/runbooks/prod-m4-turn-on.md.
 ###############################################################################
+# AUD-OPS-014: null until enable_cross_region_replication = true is applied.
+output "warehouse_crr_replica_bucket" { value = one(module.s3_warehouse_crr_replica[*].replica_bucket_name) }
 output "github_plan_role_arn" { value = module.oidc_github.github_plan_role_arn }
 output "github_ecr_push_role_arn" { value = module.oidc_github.github_ecr_push_role_arn }
 output "github_apply_role_arn" { value = module.oidc_github.github_apply_role_arn }

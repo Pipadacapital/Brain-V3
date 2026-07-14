@@ -25,7 +25,7 @@ import type { ISecretsManager } from '@brain/connector-secrets';
 import { PgSyncRequestRepository } from '../../infrastructure/PgSyncRequestRepository.js';
 
 /** Provider → the repull cursor resource the scheduler locks (informational / dispatch). */
-export const PROVIDER_REPULL_RESOURCE: Record<string, string> = {
+const PROVIDER_REPULL_RESOURCE: Record<string, string> = {
   shopify: 'orders.repull',
   razorpay: 'settlements.payments',
   meta: 'meta.insights',

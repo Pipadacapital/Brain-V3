@@ -19,7 +19,7 @@ export interface ProviderLimit {
 }
 
 /** Per-provider caps. Conservative for the shared-app-quota providers; generous for per-shop ones. */
-export const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimit> = {
+const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimit> = {
   meta: { maxPerWindow: 10, windowMs: 60_000 },        // Meta Graph app-level quota (shared)
   google_ads: { maxPerWindow: 10, windowMs: 60_000 },  // Google Ads developer-token daily ops quota
   shopify: { maxPerWindow: 100, windowMs: 60_000 },    // per-shop bucket — generous

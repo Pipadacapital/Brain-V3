@@ -24,7 +24,10 @@ import {
   IdentityResolver,
   ExtractedIdentifier,
   RULE_VERSION,
+  DEFAULT_IDENTITY_PRIORITY,
+  type IdentityPriorityConfig,
 } from '../domain/identity/IdentityResolver.js';
+import type { FlagService } from '@brain/platform-flags';
 import {
   buildIdentityEvents,
   type IdentityEventPublisher,
@@ -103,6 +106,13 @@ export class ResolveIdentityUseCase {
      * when undefined the deterministic path is unchanged. Wired in the stream-worker composition root.
      */
     private readonly confidence?: ConfidenceReviewDeps,
+    /**
+     * SPEC: A.1.5 (WA-12) — per-brand feature-flag service gating the ordered identity-priority path.
+     * OPTIONAL + fail-closed: when absent (tests / not wired) the flag reads OFF and the legacy
+     * fixed-tier resolver runs byte-identically. When present, `identity.priority_config` (default OFF)
+     * decides whether resolution walks the brand's ordered priority config. A flag read NEVER throws.
+     */
+    private readonly flags?: FlagService,
   ) {}
 
   /**
@@ -363,6 +373,52 @@ export class ResolveIdentityUseCase {
     const idHashes = identifiers.map((i) => ({ type: i.type, hash: i.hash }));
     const state = await this.identityRepo.readState(brandId, idHashes);
 
+    // ── 4b. SPEC A.1.5 (WA-12): per-brand ORDERED priority config (flag-gated, default OFF) ──────
+    // Only when `identity.priority_config` is ON for this brand do we read the versioned config and
+    // switch the resolver onto its ordered-priority decision. Flag OFF (or unwired / store lacks the
+    // reader / flag read errors → fail-closed false) ⇒ priorityConfig stays undefined ⇒ the legacy
+    // fixed-tier union-find runs byte-identically. The read errors are swallowed (fail-open to legacy).
+    let priorityConfig: IdentityPriorityConfig | undefined;
+    if (this.flags && this.identityRepo.readPriorityConfig) {
+      let enabled = false;
+      try {
+        enabled = await this.flags.isFlagEnabled(brandId, 'identity.priority_config');
+      } catch {
+        enabled = false; // fail-closed — never block resolution on a flag read.
+      }
+      if (enabled) {
+        try {
+          priorityConfig =
+            (await this.identityRepo.readPriorityConfig(brandId)) ??
+            { version: 0, order: DEFAULT_IDENTITY_PRIORITY };
+        } catch (err) {
+          // Fail-open to the legacy path: a config-read blip must not lose the resolution.
+          priorityConfig = undefined;
+          log.warn(
+            `[identity] priority-config read failed (fail-open to fixed-tier): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+    }
+
+    // ── 4c. SPEC A.2.3.4 (WA-16): shared-device guard (flag-gated, default OFF) ───────────────────
+    // When `identity.shared_device_guard` is ON for this brand, thread the strong-ownership signal so the
+    // resolver refuses to fold a NEW strong id into an anon's already-strong-owned brain (two family members
+    // on one device stay separate brains → stitch surfaces the conflict). Flag OFF (or read error →
+    // fail-closed) ⇒ undefined ⇒ the resolver's guard is inert, adoption byte-identical to the legacy path.
+    let strongOwnedBrainIds: Set<string> | undefined;
+    if (this.flags) {
+      let guardOn = false;
+      try {
+        guardOn = await this.flags.isFlagEnabled(brandId, 'identity.shared_device_guard');
+      } catch {
+        guardOn = false; // fail-closed — never block resolution on a flag read.
+      }
+      if (guardOn) strongOwnedBrainIds = state.strongOwnedBrainIds;
+    }
+
     // ── 5. Resolve ────────────────────────────────────────────────────────────
     const outcome = this.resolver.resolve(
       brandId,
@@ -372,6 +428,9 @@ export class ResolveIdentityUseCase {
       state.phoneCount,
       state.brandConfig,
       state.aliasChain,
+      undefined,             // now → resolver default (unchanged for the legacy path)
+      priorityConfig,        // A.1.5: undefined unless the flag is ON (byte-identical when absent)
+      strongOwnedBrainIds,   // A.2.3.4: undefined unless the shared-device-guard flag is ON
     );
 
     // ── 5b. Confidence + review gate (deterministic-first; fail-open) ────────────────────────────

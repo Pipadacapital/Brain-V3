@@ -29,19 +29,28 @@ import pg from 'pg';
 // (Wave B repoints those to PG). The serving reads are fronted by the Redis analytics cache.
 import {
   createTrinoPool,
+  createPerBrandTrinoGate,
+  createSemanticServingRouter,
   IoredisCacheAdapter,
   createServingCacheReader,
   type SilverPool,
   type ServingCacheReader,
+  type SemanticServingRouter,
+  type TouchpointZsetClient,
 } from '@brain/metric-engine';
+// SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed).
+import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
 import { DbAuditWriter } from '@brain/audit';
 
-import { assertArgon2Params, AuthService } from './modules/workspace-access/internal/application/auth.service.js';
-import { WorkspaceService } from './modules/workspace-access/internal/application/workspace.service.js';
-import { BrandService } from './modules/workspace-access/internal/application/brand.service.js';
-import { OnboardingService } from './modules/workspace-access/internal/application/onboarding.service.js';
-import { InviteService } from './modules/workspace-access/internal/application/invite.service.js';
-import { RateLimiter } from './modules/workspace-access/internal/infrastructure/rate-limiter.js';
+import {
+  assertArgon2Params,
+  AuthService,
+  WorkspaceService,
+  BrandService,
+  OnboardingService,
+  InviteService,
+  RateLimiter,
+} from './modules/workspace-access/index.js';
 import {
   ContactPiiVaultRepository,
   ContactPiiVaultService,
@@ -59,22 +68,32 @@ import {
 import type { BrandSaltSource } from './modules/identity/index.js';
 import { Neo4jIdentityReader } from './modules/identity/internal/infrastructure/neo4j-identity-reader.js';
 import { createMcpDispatch } from './modules/ai/index.js';
-import { initObservability, initSentry, createLogger } from '@brain/observability';
+import {
+  initObservability,
+  initSentry,
+  createLogger,
+  renderPrometheusText,
+  PROMETHEUS_CONTENT_TYPE,
+  registerProcessFailureHandlers,
+} from '@brain/observability';
 
 /** Structured logger for core's lifecycle/error logs (request logs go through Fastify's pino). */
 const log = createLogger({ serviceName: 'core' });
 import { jtiFromJwt, csrfTokenForSession, csrfTokenMatches } from './modules/frontend-api/internal/csrf.js';
-import { NotificationServiceImpl } from './modules/notification/internal/notification.service.impl.js';
-import { createEmailAdapter } from './modules/notification/internal/ses-adapter.js';
-import { createCapiAdapter } from './modules/notification/internal/capi-adapter.js';
-import { createCapiCredsPort } from './modules/notification/internal/compliance/capi-creds.adapter.js';
-import { CapiPassbackService } from './modules/notification/internal/capi-passback.service.js';
-import { startCapiPassback } from './modules/notification/internal/capi-passback.orchestrator.js';
-import { fetchFinalizedPurchaseCandidatesScoped } from './modules/notification/internal/capi-source.query.js';
-import { CanContactEngine } from './modules/notification/internal/compliance/can-contact.engine.js';
-import { FunctionSaltPort } from './modules/notification/internal/compliance/salt.adapter.js';
-import { PgSuppressionQuery } from './modules/notification/internal/compliance/suppression.query.js';
-import { StubDltRegistry, StubNcprRegistry } from './modules/notification/internal/compliance/stubs.js';
+import {
+  NotificationServiceImpl,
+  createEmailAdapter,
+  createCapiAdapter,
+  createCapiCredsPort,
+  CapiPassbackService,
+  startCapiPassback,
+  fetchFinalizedPurchaseCandidatesScoped,
+  CanContactEngine,
+  FunctionSaltPort,
+  PgSuppressionQuery,
+  StubDltRegistry,
+  StubNcprRegistry,
+} from './modules/notification/index.js';
 
 // ── Connector infrastructure (global primitives; route wiring lives in bootstrap/) ──
 import { PgConnectorInstanceRepository } from './modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorInstanceRepository.js';
@@ -93,6 +112,8 @@ import { registerWorkspaceAccess } from './bootstrap/registerWorkspaceAccess.js'
 import { registerConnectors } from './bootstrap/registerConnectors.js';
 import { runReconnectShopifyByoMigration } from './bootstrap/reconnect-shopify-byo.js';
 import { createM1EventPublisher } from './infrastructure/events/M1EventPublisher.js';
+import { createIdentityEventPublisher } from './infrastructure/events/IdentityEventPublisher.js';
+import { createErasureEventPublisher } from './infrastructure/events/ErasureEventPublisher.js';
 
 // ── Secrets provider (HIGH-SECRETS-01) ───────────────────────────────────────
 import { AwsSecretsProvider } from './infrastructure/secrets/AwsSecretsProvider.js';
@@ -124,6 +145,9 @@ export async function main(): Promise<void> {
     otlpEndpoint: getEnv('OTEL_EXPORTER_OTLP_ENDPOINT', '') || undefined,
   });
   const closeSentry = await initSentry({ serviceName: 'core' }); // gated by SENTRY_DSN (no-op in dev)
+  // Last-resort handlers (AUD-IMPL-003): route unhandledRejection/uncaughtException through the
+  // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
+  registerProcessFailureHandlers({ log, serviceName: 'core', flush: closeSentry });
 
   const nodeEnv = getEnv('NODE_ENV', 'development');
   const isProduction = nodeEnv === 'production';
@@ -363,6 +387,17 @@ export async function main(): Promise<void> {
     timestamp: new Date().toISOString(),
   }));
 
+  // GET /metrics — Prometheus text exposition of the in-process @brain/observability counter
+  // registry (AUD-INFRA-033). Core already RECORDS counters (connector_auth_rejected_total in the
+  // WebhookPipeline, job counters, …) but never exposed them — the core chart's ServiceMonitor
+  // (job brain-core) scrapes this, which also puts core under BrainTargetDown{job=~"brain-.*"}.
+  // Same exposure posture as the collector's ungated /metrics: the payload is bounded
+  // low-cardinality operational counters (provider/reason-class labels, no tenant payloads),
+  // so no auth gate — a degraded core must still be scrapable.
+  app.get('/metrics', async (_req, reply) => {
+    return reply.status(200).header('content-type', PROMETHEUS_CONTENT_TYPE).send(renderPrometheusText());
+  });
+
   // Create Redis client for rate limiting (AC-3 / MA-04). FAIL-OPEN: the RateLimiter
   // itself handles Redis errors by allowing the request (no Redis = no blocking).
   const redis = new Redis(config.redisUrl, {
@@ -414,12 +449,32 @@ export async function main(): Promise<void> {
   // Gold/Silver. The ${BRAND_PREDICATE} injection at the withSilverBrand seam is the load-bearing
   // per-brand isolation (Trino has no native row policy — proven non-inert by the isolation-fuzz test).
   // The adapter satisfies @brain/metric-engine SilverPool (now an alias of the Trino query PORT).
-  const srPool: SilverPool = createTrinoPool({
+  const trinoPool: SilverPool = createTrinoPool({
     baseUrl: `http://${cfg.TRINO_HOST}:${cfg.TRINO_PORT}`,
     catalog: 'iceberg',
     schema: 'brain_serving',
     user: 'brain_core',
   });
+
+  // ── SPEC: §1.11.3 / D.3 — per-brand Trino admission gate at the single serving chokepoint ──
+  // Wrap the pool with a per-brand concurrency gate (max-concurrent + FIFO queue + acquire-timeout,
+  // brand_id read from the LAST query param — the ${BRAND_PREDICATE} seam invariant). ADDITIVE +
+  // DEFAULT-PERMISSIVE: normal load is untouched; a single brand's fan-out can no longer starve the
+  // shared coordinator (a full queue / timeout REJECTS fail-loud). This is a LIVENESS control, NOT
+  // the isolation mechanism — isolation stays the ${BRAND_PREDICATE} injection (isolation-fuzz test).
+  const srPool: SilverPool =
+    cfg.TRINO_BRAND_GATE_ENABLED === 'true'
+      ? createPerBrandTrinoGate(trinoPool, {
+          maxConcurrentPerBrand: cfg.TRINO_BRAND_GATE_MAX_CONCURRENT,
+          maxQueuePerBrand: cfg.TRINO_BRAND_GATE_MAX_QUEUE,
+          acquireTimeoutMs: cfg.TRINO_BRAND_GATE_ACQUIRE_TIMEOUT_MS,
+        })
+      : trinoPool;
+  log.info(
+    `[core] per-brand Trino gate ${cfg.TRINO_BRAND_GATE_ENABLED === 'true' ? 'ENABLED' : 'disabled'} ` +
+      `(maxConcurrent=${cfg.TRINO_BRAND_GATE_MAX_CONCURRENT}, maxQueue=${cfg.TRINO_BRAND_GATE_MAX_QUEUE}, ` +
+      `acquireTimeoutMs=${cfg.TRINO_BRAND_GATE_ACQUIRE_TIMEOUT_MS})`,
+  );
 
   // ── Brain V4 serving cache (Redis-fronted hot serving reads) ─────────────────
   // Front the KNOWN-metric serving reads with the analytics cache (brand_id-leading keys,
@@ -442,6 +497,25 @@ export async function main(): Promise<void> {
   log.info(
     `[core] serving cache ${servingCacheEnabled ? 'ENABLED' : 'disabled'} (Trino serving reads, ttl=${cfg.TRINO_SERVING_CACHE_TTL_MS}ms, version=${cfg.SERVING_VERSION})`,
   );
+
+  // ── SPEC: 0.5 — per-brand platform flags (Redis-backed, DEFAULT OFF, fail-closed) ──
+  // Keys are `{brand_id}:flag:{name}` via the sanctioned tenant-context flagKey().
+  // Reuses the SINGLE shared ioredis client above (same pattern as the serving cache);
+  // ioredis satisfies the structural RedisFlagClient port at runtime — cast for the
+  // overloaded `set` signature. Redis down → every flag reads false → pre-wave behavior.
+  const flagService = createFlagService({
+    store: new RedisFlagStoreAdapter(redis as unknown as RedisFlagClient),
+  });
+
+  // ── SPEC: D.3 — semantic-serving router (compiled-view migration switch, DEFAULT OFF) ──
+  // The single additive switch every migrated metric read passes through. flag `semantic.serving`
+  // OFF (default) → legacy mv_gold_* mart read, BYTE-IDENTICAL; ON + compiled read present →
+  // compiled semantic view. A metric with no compiled read yet stays on legacy even with the flag
+  // ON (safe per-metric migration). FAIL-CLOSED: a flag-read error → legacy. Injected into the BFF
+  // route bundle; the OFF path is a pure pass-through, so the whole wave ships dark by default.
+  const semanticRouter: SemanticServingRouter = createSemanticServingRouter({
+    flags: { isFlagEnabled: (brandId, flag) => flagService.isFlagEnabled(brandId, flag as never) },
+  });
 
   // Create DB pool (3-GUC middleware — NN-1). assertRlsEnforcingRole (P2.3): refuse to start if
   // DATABASE_URL points at an RLS-bypassing role (the superuser footgun) — raw queries would
@@ -672,6 +746,33 @@ export async function main(): Promise<void> {
     },
   });
 
+  // SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge (identity.unmerged.v1).
+  // Reuses the same connected webhook producer (ONE per process). Wired into the BFF deps below.
+  const identityEventPublisher = createIdentityEventPublisher({
+    producer: webhookProducer,
+    env: config.kafkaEnv,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+      error: (obj, msg) => app.log.error(obj, msg),
+    },
+  });
+
+  // AUD-OPS-036: the RTBF erasure-trigger bridge — the ONE producer of the canonical
+  // privacy.erasure.requested event on {env}.collector.event.v1, reused by all three RTBF
+  // entry points (consent/withdraw reason=erasure, identity erase route, Shopify
+  // customers/redact). Without it the stream-worker erasure orchestrator is live but
+  // unreachable. Reuses the same connected webhook producer (ONE per process).
+  const erasureEventPublisher = createErasureEventPublisher({
+    producer: webhookProducer,
+    env: config.kafkaEnv,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+      error: (obj, msg) => app.log.error(obj, msg),
+    },
+  });
+
   // Create application services.
   const authServiceConfig = { jwtSigningSecret: config.jwtSigningSecret };
   const authService = new AuthService(pool, auditWriter, notificationService, authServiceConfig, rawPgPool, emitEvent);
@@ -789,6 +890,9 @@ export async function main(): Promise<void> {
     rawPgPool,
     srPool,
     servingCache,
+    // SPEC: B.3 / A.4 — the B.3 journey timeline reads the A.4 touchpoint zset from the SAME shared
+    // ioredis client (structural TouchpointZsetClient: zrevrange/zcard). Cold cache → Trino fallback.
+    touchpointCacheReader: redis as unknown as TouchpointZsetClient,
     rateLimiter,
     auditWriter,
     authService,
@@ -798,7 +902,14 @@ export async function main(): Promise<void> {
     onboardingService,
     piiVaultService,
     identityReader,
+    identityEventPublisher,
+    // AUD-OPS-036: erasure-trigger bridge for the consent-withdraw + identity-erase entry points.
+    erasureEventPublisher,
     getCoreSaltHex,
+    flagService,
+    // SPEC: D.3 — the semantic-serving flag switch (DEFAULT OFF, legacy pass-through). Migrated
+    // metric reads route through it; a metric with no compiled view yet stays on legacy even ON.
+    semanticRouter,
   });
 
   // ── CQ-2: register the connector + pixel context (HIGH-MOUNT-01) ────────────
@@ -827,6 +938,12 @@ export async function main(): Promise<void> {
     liveTopic,
     getWebhookSaltHex,
     identityReader,
+    // AUD-OPS-036: erasure-trigger bridge for the Shopify customers/redact entry point.
+    erasureEventPublisher,
+    // SPEC: A.1.4 (WA-09) — per-brand connector.identity_fields gate for the webhook mappers
+    // (AMD-01 interop dual-write). FlagService is DEFAULT-OFF + fail-closed by construction.
+    isIdentityFieldsEnabled: (brandId: string) =>
+      flagService.isFlagEnabled(brandId, 'connector.identity_fields'),
     pixelInstallationRepo,
     pixelStatusRepo,
     getOrCreateInstallation,
@@ -849,8 +966,8 @@ export async function main(): Promise<void> {
     await closeSentry().catch(() => { /* ignore */ });
     process.exit(0);
   };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
 
   // One-shot idempotent data migration: flip existing Shopify installs (env-app) to
   // RECONNECT_REQUIRED so the connect UI prompts the merchant. Safe to re-run — guarded by

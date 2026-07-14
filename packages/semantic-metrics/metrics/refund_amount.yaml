@@ -1,0 +1,23 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: refund_amount
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: per_currency
+identity_basis: deterministic_only
+interactive: true
+owner: measurement-team
+description: >-
+  Refunded/returned value per period, per currency, derived at the order grain as gross order value
+  minus recognised net revenue (order_value_minor - net_revenue_minor). Deterministic order spine
+  only (§1.4). Never blended across currency.
+measures:
+  - name: gross_revenue_minor
+    agg: SUM(order_value_minor)
+  - name: net_revenue_minor
+    agg: SUM(net_revenue_minor)
+expression: gross_revenue_minor - net_revenue_minor
+examples:
+  - "Total refund amount in INR for June at grain=month."

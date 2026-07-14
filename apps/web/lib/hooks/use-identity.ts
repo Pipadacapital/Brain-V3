@@ -14,7 +14,7 @@ import type {
   UnmergeResultResponse,
 } from '@/lib/api/types';
 
-export const IDENTITY_QUERY_KEY = ['identity'] as const;
+const IDENTITY_QUERY_KEY = ['identity'] as const;
 
 /**
  * useCustomers — paginated customer BROWSE for the active brand (the discover front-door).

@@ -28,7 +28,7 @@
  * dependency). Both deployables now share ONE implementation, so the worker's READ path uses the
  * exact same per-brand KMS EncryptionContext core's WRITE path binds — no decryption drift.
  */
-import { AwsSecretsManager } from '@brain/connector-secrets';
+import { AwsSecretsManager, unwrapShopifyTokenValue } from '@brain/connector-secrets';
 
 /** Minimal secrets interface for the worker (subset of ISecretsManager) */
 export interface WorkerSecretsProvider {
@@ -119,7 +119,9 @@ export class LocalWorkerSecretsProvider implements WorkerSecretsProvider {
         [name],
       );
       if (res.rows[0]?.secret_value) {
-        return res.rows[0].secret_value; // NEVER logged (I-S09)
+        // NEVER logged (I-S09). Bundle-aware: the client-credentials connect path stores a JSON
+        // bundle ({ access_token, ... }); legacy OAuth connects store the raw token string.
+        return unwrapShopifyTokenValue(res.rows[0].secret_value);
       }
     } catch {
       // dev_secret unavailable (e.g. migration not applied) — fall through to the env fallback.

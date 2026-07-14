@@ -1,0 +1,30 @@
+# identity-view-guard allowlist (SPEC: A.2.2 / AMD-07) — files PERMITTED to reference
+# brain_silver.silver_identity_map directly. Every OTHER file under db/iceberg/spark, db/trino/views,
+# apps, packages must read the map ONLY through the sanctioned accessors:
+#   - Spark: _identity_views.identity_current / identity_asof / identity_raw
+#   - Trino: iceberg.brain_serving.identity_current_v / identity_asof
+# One repo-relative path per line. Adding a path here requires a WHY (the trailing comment).
+#
+# ── The map WRITER (produces the table) ──
+db/iceberg/spark/silver/silver_identity_map.py            # WRITER — projects the bi-temporal map from Neo4j (append-per-mutation)
+#
+# ── The two SANCTIONED accessors (they ARE the governed read surface) ──
+db/iceberg/spark/_identity_views.py                       # Spark accessor — the single physical spark.table read
+db/trino/views/identity_current_v.sql                     # Trino accessor — valid-now + known-now view
+db/trino/views/identity_asof.sql                          # Trino accessor — bi-temporal as-of view
+#
+# ── The raw serving projection the accessors + metric-engine build upon ──
+db/trino/views/mv_silver_identity_map.sql                 # thin bitemporal serving mirror (brain_serving.mv_silver_identity_map)
+#
+# ── Dependency MANIFESTS (metadata lists, not queries) ──
+db/iceberg/spark/gold/_gold_registry.py                   # reads_from=[...] dependency graph declaration, not a read
+packages/contracts/src/api/intelligence.api.v1.ts         # reads_from job-contract manifest, not a read
+#
+# ── Golden baseline capture (must snapshot the raw table's current state) ──
+packages/testing-golden/scripts/capture-baseline.sh       # captures min identifier_hash as a stable ref for byte-identical baselines
+#
+# ── Guard/enum TEST fixtures + a provenance LABEL (first post-migration full CI run, 2026-07-11) ──
+db/iceberg/spark/silver/silver_session_identity_test.py   # the test that ENFORCES the accessor rule — asserts the job resolves via identity_current(), mentions the raw name only in its assertion strings
+packages/contracts/src/api/journey-api.v1.B3.contract.test.ts  # 'silver_identity_map' is a source-enum VALUE in the evidence schema test, not a read
+packages/metric-engine/src/journey-identity-evidence.B3.test.ts # same source-enum value in expected output, not a read
+packages/metric-engine/src/journey-identity-evidence.ts   # provenance label string ('merge'|'silver_identity_map') on evidence rows; the actual read is brain_serving.mv_silver_identity_map (the sanctioned serving mirror above)

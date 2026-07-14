@@ -1,5 +1,12 @@
 # Redpanda → Apache Kafka (KRaft) + Spark-SS Bronze landing — plan
 
+> **SUPERSEDED by ADR-0010 (2026-07-05).** The Spark-SS Bronze landing this plan built (K2/K2b —
+> `bronze_materialize.py`, `bronze_raw_landing.py`, later unified as `bronze_landing.py`) was
+> decommissioned and REMOVED from the codebase; Bronze landing is the Kafka Connect Iceberg sink
+> again (`kafka-connect` compose service / `infra/helm/kafka-connect` chart). The Kafka (KRaft)
+> broker swap in this plan still stands. Kept as decision/design history — do not execute the
+> Spark-landing sections.
+
 Branch `feat/kafka-kraft-spark-landing` (off master, parallel to the StarRocks→Trino PR). Two coupled changes to the ingestion path; Bronze/Silver business logic unchanged.
 
 ## Current state (recon)

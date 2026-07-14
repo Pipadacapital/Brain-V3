@@ -15,15 +15,19 @@
  * Dev DB connects as superuser 'brain' which BYPASSES RLS — NEVER use
  * DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
-import { Kafka } from 'kafkajs';
+import { Kafka, type ConsumerConfig } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
 import { assertRoleEnforcesRls } from '@brain/db';
 import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import {
   buildTopic,
+  IDENTITY_MINTED_TOPIC_SUFFIX,
+  IDENTITY_LINKED_TOPIC_SUFFIX,
   IDENTITY_MERGED_TOPIC_SUFFIX,
   IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
+  IDENTITY_UNMERGED_TOPIC_SUFFIX,
 } from '@brain/contracts';
+import { resolveRackId } from './infrastructure/kafka/resolveRackId.js';
 import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
@@ -32,11 +36,20 @@ import { createIdempotentProducer } from './infrastructure/kafka/idempotent-prod
 import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
 import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/IdentityChangeRecomputeConsumer.js';
 import { PgScopedRecomputeRepository } from './infrastructure/pg/ScopedRecomputeRepository.js';
+import { RestitchDirtyConsumer } from './interfaces/consumers/RestitchDirtyConsumer.js';
+import { PgRestitchDirtyRepository } from './infrastructure/pg/RestitchDirtyRepository.js';
+import { JourneyReversionDirtyConsumer } from './interfaces/consumers/JourneyReversionDirtyConsumer.js';
+import { PgJourneyReversionDirtyRepository } from './infrastructure/pg/JourneyReversionDirtyRepository.js';
 import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
 import { AnalyticsCacheInvalidateConsumer } from './interfaces/consumers/AnalyticsCacheInvalidateConsumer.js';
 import { Redis } from 'ioredis';
+import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
+import { RedisTouchpointCacheStore } from './touchpoint-cache/TouchpointCacheStore.js';
+import { IdentityStoreBrainIdResolver } from './touchpoint-cache/BrainIdResolver.js';
+import { TouchpointCacheService } from './touchpoint-cache/TouchpointCacheService.js';
+import { TouchpointCacheConsumer } from './touchpoint-cache/TouchpointCacheConsumer.js';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
-import { initObservability, initSentry, createLogger } from '@brain/observability';
+import { initObservability, initSentry, createLogger, registerProcessFailureHandlers } from '@brain/observability';
 import { loadStreamWorkerConfig } from '@brain/config';
 
 /** Structured logger for stream-worker lifecycle/error logs. */
@@ -63,6 +76,7 @@ import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUse
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
 import { ErasureOrchestratorConsumer } from './interfaces/consumers/ErasureOrchestratorConsumer.js';
 import { EraseSubjectUseCase, type IBrainIdLookup } from './application/EraseSubjectUseCase.js';
+import { ArgoErasureWorkflowSubmitter } from './infrastructure/argo/ArgoErasureWorkflowSubmitter.js';
 import { ErasureRepository } from './infrastructure/pg/ErasureRepository.js';
 import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 // MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
@@ -141,6 +155,9 @@ export async function main(): Promise<void> {
   const cfg = loadStreamWorkerConfig();
   const shutdownObservability = await initObservability({ serviceName: 'stream-worker', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
   const closeSentry = await initSentry({ serviceName: 'stream-worker' }); // gated by SENTRY_DSN (no-op in dev)
+  // Last-resort handlers (AUD-IMPL-003): route unhandledRejection/uncaughtException through the
+  // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
+  registerProcessFailureHandlers({ log, serviceName: 'stream-worker', flush: closeSentry });
 
   const brokers = cfg.KAFKA_BROKERS.split(',');
   const redisUrl = cfg.REDIS_URL;
@@ -188,6 +205,18 @@ export async function main(): Promise<void> {
     brokers,
     retry: { retries: 5 },
   });
+
+  // KIP-392: inject this pod's AZ as the consumer rackId so EVERY consumer fetches from a same-AZ
+  // replica (RackAwareReplicaSelector on the brokers) instead of the cross-AZ leader — cutting
+  // DataTransfer-Regional-Bytes $. One wrap covers all consumer sites; an empty rackId (IMDS
+  // unreachable / override unset) leaves today's leader-fetch behaviour untouched (no regression).
+  const rackId = await resolveRackId();
+  if (rackId) {
+    // Monkeypatch the shared client so every consumer created downstream inherits the rackId (KIP-392).
+    const base = kafka.consumer.bind(kafka);
+    kafka.consumer = (config: ConsumerConfig) => base({ ...config, rackId });
+    log.info('kafka rack-awareness enabled (KIP-392 follower fetching)', { rackId });
+  }
 
   // ── Audit writer (R3/REC-1: pixel.brand_mismatch) ───────────────────────────
   // audit_log has RLS DISABLED (cross-brand SoR); isolation is the mandatory
@@ -326,6 +355,14 @@ export async function main(): Promise<void> {
   const confidenceEngine = new ConfidenceEngine({ matchers: matcherRegistry.enabled() });
   const decisionEngine = new DecisionEngine();
   const identityDecisionLog = new IdentityAuditDecisionLog(new PgPool({ connectionString: dbUrl, max: 3 }));
+  // SPEC A.1.5 (WA-12): per-brand feature-flag service gating the ordered identity-priority path.
+  // A dedicated ioredis client (mirrors cacheEvictionRedis / RetryCounterAdapter); the domain
+  // FlagService is fail-closed + DEFAULT OFF, so `identity.priority_config` reads OFF everywhere until
+  // an admin sets it → the legacy fixed-tier resolver runs byte-identically until then.
+  const flagRedis = new Redis(redisUrl);
+  const identityFlagService = createFlagService({
+    store: new RedisFlagStoreAdapter(flagRedis as unknown as RedisFlagClient),
+  });
   const resolveIdentityUseCase = new ResolveIdentityUseCase(
     saltProvider,
     identityRepo,
@@ -336,6 +373,7 @@ export async function main(): Promise<void> {
       decisionLog: identityDecisionLog,
       evidenceStore: identityDecisionLog,
     },
+    identityFlagService,
   );
   // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
   // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
@@ -380,6 +418,59 @@ export async function main(): Promise<void> {
     retryCounter,
   );
 
+  // ── Event-driven re-stitch dirty-set consumer (SPEC: A.2.3.5 / WA-18 / AMD-08) ──
+  // Consumes the SAME identity.{minted,linked,merged,unmerged}.v1 map-mutation lane under its OWN group
+  // (AMD-08 R1 unifies the lane; separate offsets from the recompute consumer). On each mutation it marks
+  // the affected (brand_id, identifier_hash | brain_id) keys dirty in ops.restitch_pending so the Spark
+  // stitch job (silver_session_identity.py) re-evaluates PAST sessions within the attribution lookback —
+  // the A.2.3(5) / A.5.5 "day-7 identify stitches day-1 sessions in one incremental run" lift.
+  //
+  // FLAG-GATED per-brand `stitch.v2` (DEFAULT OFF, fail-closed) via the SAME identityFlagService: with no
+  // brand opted in NOTHING is enqueued → the drain no-ops → golden outputs byte-identical (A.5.8). Reuses
+  // opsPool (brain_app; ops.restitch_pending is a cross-brand ETL queue, not RLS-forced, like
+  // ops.scoped_recompute_request) + the shared durable retryCounter (DLQ after 5).
+  const restitchDirtyRepo = new PgRestitchDirtyRepository(opsPool);
+  const restitchDirtyTopics = [
+    buildTopic(identityEventEnvPrefix, IDENTITY_MINTED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_LINKED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_UNMERGED_TOPIC_SUFFIX),
+  ];
+  const restitchDirtyConsumer = new RestitchDirtyConsumer(
+    kafka,
+    restitchDirtyRepo,
+    identityFlagService,
+    restitchDirtyTopics,
+    cfg.RESTITCH_DIRTY_CONSUMER_GROUP_ID,
+    retryCounter,
+  );
+
+  // ── Event-driven cross-device JOURNEY re-version dirty-set consumer (SPEC: B.2 / WB-B2 / AMD-08/11) ──
+  // Consumes the SAME identity.{linked,merged,unmerged}.v1 map-mutation lane under its OWN group (separate
+  // offsets from the recompute + restitch consumers). On each mutation it marks the affected BRAIN_IDS
+  // dirty in ops.journey_reversion_pending with the re-version CAUSE (merge|unmerge|restitch) so the Spark
+  // reversion job (gold_journey_events_reversion.py) rebuilds those brains' journeys as version N+1 and
+  // writes journey_version_log {brand_id, brain_id, from_version, to_version, cause, at} (AMD-11).
+  //
+  // FLAG-GATED per-brand `journey.engine` (DEFAULT OFF, fail-closed) via the SAME identityFlagService:
+  // with no brand opted in NOTHING is enqueued → the drain no-ops → golden journeys byte-identical. Reuses
+  // opsPool (brain_app; ops.journey_reversion_pending is a cross-brand ETL queue, not RLS-forced, like
+  // ops.restitch_pending) + the shared durable retryCounter (DLQ after 5).
+  const journeyReversionDirtyRepo = new PgJourneyReversionDirtyRepository(opsPool);
+  const journeyReversionDirtyTopics = [
+    buildTopic(identityEventEnvPrefix, IDENTITY_LINKED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
+    buildTopic(identityEventEnvPrefix, IDENTITY_UNMERGED_TOPIC_SUFFIX),
+  ];
+  const journeyReversionDirtyConsumer = new JourneyReversionDirtyConsumer(
+    kafka,
+    journeyReversionDirtyRepo,
+    identityFlagService,
+    journeyReversionDirtyTopics,
+    cfg.JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID,
+    retryCounter,
+  );
+
   // ── Analytics cache-invalidation consumer (the CONSUMER side of cache.invalidate.v1) ──
   // The identity-recompute consumer EMITS cache.invalidate.v1 after an identity merge/suppress;
   // this consumer evicts the brand-scoped serving-cache keys so the serving tier never serves
@@ -421,26 +512,41 @@ export async function main(): Promise<void> {
   );
 
   // ── Erasure orchestrator (DPDP/PDPL crypto-shred — feat-erasure-orchestrator) ──
-  // Same live topic, separate consumer group. Drives the ordered 6-step per-subject erasure
-  // sequence: DEK shred (subject_keyring is_active=FALSE) → surrogate tombstone → scoped
-  // Gold re-projection → disabled Iceberg compaction seam → CAPI deletion → erasure complete.
-  // Reuses the SAME saltProvider, requestCapiDeletionUseCase, and identityRepo as the other
-  // consumers on this topic — no new hashing logic, no duplicated CAPI deletion path.
+  // Same live topic, separate consumer group. Drives the ordered per-subject erasure sequence:
+  // DEK shred (subject_keyring is_active=FALSE) → surrogate tombstone → Neo4j graph purge →
+  // scoped Gold re-projection + serving-cache invalidation → Bronze raw sweep → CAPI deletion
+  // → erasure complete. Reuses the SAME saltProvider, requestCapiDeletionUseCase, identityRepo
+  // and cacheInvalidatePublisher as the other consumers — no new hashing logic, no duplicated
+  // CAPI deletion path, no parallel cache-invalidation lane.
   //
-  // brainIdLookup: inline adapter over identityRepo.readState() — returns the first active
-  // brain_id linked to the subject hash in the Neo4j graph. Throws on Neo4j down (→ retry).
-  // Returns null on not-found (→ 'no_brain_id' skip, WARN logged, no retry).
+  // brainIdLookup: inline adapter over identityRepo.findBrainIdForErasure() — the erasure-lane
+  // resolution that ALSO matches tombstoned edges (AUD-OPS-039 replay-safety: STEP 2b tombstones
+  // the graph, and a replayed erasure must still resolve to re-run the idempotent remainder).
+  // Throws on Neo4j down (→ retry). Returns null on not-found (→ 'no_brain_id' skip, WARN).
   const brainIdLookup: IBrainIdLookup = {
     async findBrainId(lookupBrandId, subjectHash, identifierType) {
       // SEC H-1: match on the SUBJECT'S identifier type (email OR phone) — hardcoding 'email'
       // silently dropped phone-only RTBF erasures (acknowledged, never shredded = DPDP failure).
-      const state = await identityRepo.readState(lookupBrandId, [
-        { type: identifierType, hash: subjectHash },
-      ]);
-      return state.existingLinks.find((l) => l.is_active)?.brain_id ?? null;
+      return identityRepo.findBrainIdForErasure(lookupBrandId, identifierType, subjectHash);
     },
   };
   const erasureRepo = new ErasureRepository(dbUrl);
+  // AUD-OPS-037: Bronze raw-PII erasure submitter — STEP 4 of the ordered sequence submits the
+  // `bronze-raw-erasure` Argo WorkflowTemplate (erasure_raw_delete.py) so the subject's raw rows
+  // leave the Bronze Iceberg tables (physical completion after bronze-maintenance snapshot expiry).
+  // GATED on ARGO_SERVER_URL: unset (dev/tests) → the use case falls back to the registered-
+  // DISABLED shredIcebergSnapshots seam. FAIL-SAFE when set: an unreachable Argo/k8s API throws →
+  // the consumer does not commit → retry → DLQ@MAX_RETRY (an erasure is never silently dropped).
+  const bronzeRawErasureSubmitter = cfg.ARGO_SERVER_URL
+    ? new ArgoErasureWorkflowSubmitter({
+        serverUrl: cfg.ARGO_SERVER_URL,
+        mode: cfg.ARGO_SUBMIT_MODE,
+        namespace: cfg.ARGO_WORKFLOWS_NAMESPACE,
+        templateName: cfg.ARGO_ERASURE_WORKFLOW_TEMPLATE,
+        authToken: cfg.ARGO_TOKEN,
+        timeoutMs: cfg.ARGO_SUBMIT_TIMEOUT_MS,
+      })
+    : undefined;
   const eraseSubjectUseCase = new EraseSubjectUseCase(
     saltProvider,
     erasureRepo,
@@ -449,6 +555,14 @@ export async function main(): Promise<void> {
     requestCapiDeletionUseCase,
     // SEC M-1: evict the hot subject DEK from this process's vault cache the instant it is shredded.
     (b, s) => vaultKeyProvider.invalidate(b, s),
+    bronzeRawErasureSubmitter,
+    // AUD-TP-22: RTBF → serving-cache invalidation. The SAME CacheInvalidatePublisher the
+    // identity-recompute lane uses (one publisher → one AnalyticsCacheInvalidateConsumer →
+    // brand-scoped Redis eviction). FAIL-OPEN inside the use case.
+    cacheInvalidatePublisher,
+    // AUD-OPS-039: Neo4j graph purge (STEP 2b) + graph-hash keying for the Bronze sweep on
+    // brain_id-only triggers (STEP 4). Same identityRepo as every identity consumer.
+    identityRepo,
   );
   const erasureOrchestratorConsumer = new ErasureOrchestratorConsumer(
     kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,
@@ -470,6 +584,30 @@ export async function main(): Promise<void> {
   );
   const backfillConsumer = new BackfillOrderConsumer(
     kafka, backfillProcessEvent, backfillTopic, backfillGroupId, retryCounter,
+  );
+
+  // ── Real-time touchpoint cache (SPEC: A.4 — flag identity.tp_cache, DEFAULT OFF) ──────────
+  // A NEW consumer group on the SAME live collector topic (touchpoint content) PLUS the
+  // identity.merged.v1 lane (merge invalidation) — no new topic, no new deployable (I-E05).
+  // Maintains the Redis zset `{brand_id}:tp:{brain_id}` (last 200 touchpoints, score=event-ts-ms).
+  // Best-effort HOT cache: every write is fail-safe (offset commits regardless) — journey APIs
+  // fall back to Iceberg (the truth). Per-brand gated by identity.tp_cache: with no brand opted
+  // in, this loop is an inert flag-check per message (byte-identical golden, flags-OFF invariant).
+  // Reuses identityFlagService (WA-12) + saltProvider + identityRepo — the resolver is a READ-ONLY
+  // deterministic lookup (never mints/links/merges; that stays the identity-bridge consumer's job).
+  const tpCacheStore = new RedisTouchpointCacheStore(redisUrl);
+  await tpCacheStore.connect();
+  const tpCacheService = new TouchpointCacheService(
+    identityFlagService,
+    new IdentityStoreBrainIdResolver(saltProvider, identityRepo),
+    tpCacheStore,
+    {
+      maxTouchpoints: cfg.TP_CACHE_MAX_TOUCHPOINTS,
+      ttlSeconds: cfg.TP_CACHE_TTL_DAYS * 24 * 60 * 60,
+    },
+  );
+  const touchpointCacheConsumer = new TouchpointCacheConsumer(
+    kafka, tpCacheService, topic, identityEventEnvPrefix, cfg.TP_CACHE_CONSUMER_GROUP_ID,
   );
 
   // ── MEDALLION REALIGNMENT (Epic 1 / decision B) ────────────────────────────
@@ -595,8 +733,9 @@ export async function main(): Promise<void> {
     // Drain only providers with a backfill runner (single source of truth shared with the
     // RequestConnectorBackfillCommand reject guard: @brain/connector-core). Two lanes:
     //   - supportsBackfillQueue (shopify) → the BESPOKE shopify paged-backfill runner.
-    //   - supportsIngestionBackfill (meta/google_ads/razorpay/shiprocket/ga4) → the GENERIC resumable
-    //     ingestion framework (claim + drive every manifest resource + finalize the backfill_job).
+    //   - supportsIngestionBackfill (meta/google_ads/razorpay/shiprocket/ga4/woocommerce) → the
+    //     GENERIC resumable ingestion framework (claim + drive every manifest resource + finalize the
+    //     backfill_job; woocommerce drives its NON-ORDER resources — orders stay on the sync lane).
     // A connector in neither lane is never claimed (no orphan job mis-claim).
     for (const c of connectors.filter(
       (x) => supportsBackfillQueue(x.provider) || supportsIngestionBackfill(x.provider),
@@ -623,7 +762,7 @@ export async function main(): Promise<void> {
     }
   };
   const backfillClaimerJob = startPeriodicJob('backfill-claimer', backfillClaimerIntervalMs, runBackfillClaim);
-  log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job: shopify bespoke + meta/google_ads/razorpay/shiprocket/ga4 generic)`);
+  log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job: shopify bespoke + meta/google_ads/razorpay/shiprocket/ga4/woocommerce generic)`);
 
   const metaEntitySyncJob = startPeriodicJob('meta-entity-sync', adEntitySyncIntervalMs, () => runMetaEntitySync());
   const googleEntitySyncJob = startPeriodicJob('google-entity-sync', adEntitySyncIntervalMs, () => runGoogleEntitySync());
@@ -641,11 +780,14 @@ export async function main(): Promise<void> {
       consumer.stop(),
       identityConsumer.stop(),
       identityRecomputeConsumer.stop(),
+      restitchDirtyConsumer.stop(),
+      journeyReversionDirtyConsumer.stop(),
       analyticsCacheInvalidateConsumer.stop(),
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
       erasureOrchestratorConsumer.stop(),
       backfillConsumer.stop(),
+      touchpointCacheConsumer.stop(),
       // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
       ...bronzeBridgeConsumers.map((c) => c.stop()),
       syncRequestClaimer.stop(),
@@ -669,11 +811,13 @@ export async function main(): Promise<void> {
     await retryCounter.quit();
     await dedup.quit();
     await backfillDedup.quit();
+    await tpCacheStore.quit().catch(() => undefined);
     await bronze.end();
     await backfillBronze.end();
     await auditPool.end();
     await identityEventProducer.disconnect().catch(() => undefined);
     await cacheEvictionRedis.quit().catch(() => undefined);
+    await flagRedis.quit().catch(() => undefined);
     await opsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
@@ -710,6 +854,22 @@ export async function main(): Promise<void> {
   await analyticsCacheInvalidateConsumer.start();
   log.info('identity-recompute consumer running');
 
+  // ── Event-driven re-stitch dirty-set consumer (SPEC: A.2.3.5 / WA-18 MANDATORY WIRE) ──
+  // Subscribes to the identity.{minted,linked,merged,unmerged}.v1 map-mutation lane (same env prefix) and
+  // marks re-stitch dirty keys in ops.restitch_pending (per-brand stitch.v2 gated, DEFAULT OFF → inert).
+  // WIRED HERE: do NOT remove without verifying the restitch-dirty unit test + the Spark drain.
+  log.info(`starting restitch-dirty consumer — topics=${restitchDirtyTopics.join(',')} group=${cfg.RESTITCH_DIRTY_CONSUMER_GROUP_ID}`);
+  await restitchDirtyConsumer.start();
+  log.info('restitch-dirty consumer running');
+
+  // ── Event-driven cross-device JOURNEY re-version dirty-set consumer (SPEC: B.2 / WB-B2 MANDATORY WIRE) ──
+  // Subscribes to the identity.{linked,merged,unmerged}.v1 map-mutation lane and marks affected brain_ids
+  // dirty in ops.journey_reversion_pending (per-brand journey.engine gated, DEFAULT OFF → inert). WIRED
+  // HERE: do NOT remove without verifying the journey-reversion-dirty unit test + the Spark drain.
+  log.info(`starting journey-reversion-dirty consumer — topics=${journeyReversionDirtyTopics.join(',')} group=${cfg.JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID}`);
+  await journeyReversionDirtyConsumer.start();
+  log.info('journey-reversion-dirty consumer running');
+
   // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
   // Same live topic, independent consumer group. Projects consent_flags →
   // consent_record + consent_tombstone (the SoR can_contact() reads fail-closed).
@@ -741,6 +901,14 @@ export async function main(): Promise<void> {
   log.info(`starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
   await backfillConsumer.start();
   log.info('backfill consumer running');
+
+  // ── Touchpoint-cache consumer (SPEC: A.4 MANDATORY WIRE) ──────────────────────
+  // New group on the live collector topic + identity.merged.v1. Per-brand gated by
+  // identity.tp_cache (DEFAULT OFF). WIRED HERE: do NOT remove without updating
+  // touchpoint-cache.A4.test.ts.
+  log.info(`starting touchpoint-cache consumer — topic=${topic}+identity.merged group=${cfg.TP_CACHE_CONSUMER_GROUP_ID}`);
+  await touchpointCacheConsumer.start();
+  log.info('touchpoint-cache consumer running');
 
   // ── MEDALLION REALIGNMENT (Epic 1): live-ledger / settlement / gokwik-awb ledger bridges REMOVED.
   // The recognition ledger is built from Bronze by dbt (recognition-refresh). See the wiring note above.

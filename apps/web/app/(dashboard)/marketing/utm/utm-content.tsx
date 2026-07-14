@@ -35,6 +35,12 @@ import {
   ArrowRight,
   CircleSlash,
   X,
+  Trophy,
+  Gem,
+  Repeat,
+  Tag,
+  TrendingUp,
+  Lightbulb,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -77,7 +83,13 @@ function formatCount(value: string): string {
 
 /** Money cell: honest "—" when there's no currency signal (never a blended/float fallback). */
 function money(minor: string, ccy: string | null): React.ReactNode {
-  if (!ccy) return <span className="text-muted-foreground">—</span>;
+  if (!ccy) {
+    return (
+      <span className="text-muted-foreground" title="No revenue recorded yet">
+        —
+      </span>
+    );
+  }
   return formatMoneyDisplay(minor, ccy as CurrencyCode);
 }
 
@@ -86,6 +98,286 @@ function ConsentDot({ on, label }: { on: boolean; label: string }) {
     <ShieldCheck className="h-4 w-4 text-success" aria-label={`${label}: granted`} />
   ) : (
     <ShieldOff className="h-4 w-4 text-muted-foreground" aria-label={`${label}: not granted`} />
+  );
+}
+
+// ── Insights layer — derived ENTIRELY from the loaded matrix rows (no extra fetch). ──────────────
+// The raw source×medium table answers "what are my numbers"; this turns it into "what does it mean":
+// which source converts best, which brings the most (but lowest-intent) traffic, whose customers are
+// worth most / come back most, and how much traffic is untagged. All aggregated to the SOURCE grain
+// (people think in sources, not source×medium pairs) and phrased for a non-technical reader.
+
+function num(s: string | number | null | undefined): number {
+  const n = Number(s ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+const pct = (part: number, whole: number): number => (whole > 0 ? (part / whole) * 100 : 0);
+const fmtPct = (v: number): string => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
+
+interface SourceAgg {
+  source: string;
+  visitors: number;
+  conversions: number;
+  revenueMinor: number;
+  currency: string | null;
+  repeatWeighted: number; // Σ repeat_rate_pct × conversions  → conversions-weighted repeat rate
+}
+
+interface UtmInsight {
+  key: string;
+  icon: React.ElementType;
+  tone: 'positive' | 'warning' | 'neutral';
+  title: string;
+  body: React.ReactNode;
+}
+
+function aggregateBySource(rows: UtmSourceRow[]): SourceAgg[] {
+  const by = new Map<string, SourceAgg>();
+  for (const r of rows) {
+    const a =
+      by.get(r.source) ??
+      { source: r.source, visitors: 0, conversions: 0, revenueMinor: 0, currency: null, repeatWeighted: 0 };
+    a.visitors += num(r.visitors);
+    a.conversions += num(r.conversions);
+    a.revenueMinor += num(r.revenue_minor);
+    if (r.currency_code) a.currency = r.currency_code;
+    a.repeatWeighted += num(r.repeat_rate_pct) * num(r.conversions);
+    by.set(r.source, a);
+  }
+  return [...by.values()];
+}
+
+/** Is a source label a real tagged channel, or untagged/direct traffic? */
+function isUntagged(source: string): boolean {
+  const s = source.toLowerCase();
+  return s === 'unknown' || s === 'direct' || s === '' || s === '(none)' || s === 'none';
+}
+
+function computeUtmInsights(rows: UtmSourceRow[]): {
+  totalVisitors: number;
+  totalConversions: number;
+  overallCvr: number;
+  sourceCount: number;
+  topByConversion: SourceAgg[];
+  insights: UtmInsight[];
+} {
+  const sources = aggregateBySource(rows);
+  const totalVisitors = sources.reduce((s, a) => s + a.visitors, 0);
+  const totalConversions = sources.reduce((s, a) => s + a.conversions, 0);
+  const overallCvr = pct(totalConversions, totalVisitors);
+  const currency = sources.find((a) => a.currency)?.currency ?? null;
+
+  const tagged = sources.filter((a) => !isUntagged(a.source) && a.visitors > 0);
+  const cvrOf = (a: SourceAgg) => pct(a.conversions, a.visitors);
+  const avgSpendOf = (a: SourceAgg) => (a.conversions > 0 ? a.revenueMinor / a.conversions : 0);
+  const repeatOf = (a: SourceAgg) => (a.conversions > 0 ? a.repeatWeighted / a.conversions : 0);
+
+  // Min-sample floor so a 1-visitor / 1-conversion source can't claim "best" from noise.
+  const visitorFloor = Math.max(5, Math.round(totalVisitors * 0.02));
+
+  const insights: UtmInsight[] = [];
+
+  // 1. Best converting tagged source.
+  const converters = tagged.filter((a) => a.conversions > 0 && a.visitors >= visitorFloor);
+  const best = converters.slice().sort((a, b) => cvrOf(b) - cvrOf(a))[0];
+  if (best) {
+    const cvr = cvrOf(best);
+    insights.push({
+      key: 'best-cvr',
+      icon: Trophy,
+      tone: 'positive',
+      title: 'Best at winning customers',
+      body: (
+        <>
+          <strong>{humanize(best.source)}</strong> converts best — {fmtPct(cvr)}% of its visitors become
+          customers{overallCvr > 0 && cvr > overallCvr ? `, ${(cvr / overallCvr).toFixed(1)}× your ${fmtPct(overallCvr)}% average` : ''}. Lean into it.
+        </>
+      ),
+    });
+  }
+
+  // 2. Biggest traffic source (+ intent flag if it converts below average).
+  const biggest = tagged.slice().sort((a, b) => b.visitors - a.visitors)[0];
+  if (biggest && biggest.visitors > 0) {
+    const cvr = cvrOf(biggest);
+    const share = pct(biggest.visitors, totalVisitors);
+    const underperforms = overallCvr > 0 && cvr < overallCvr * 0.75 && biggest.conversions >= 0;
+    insights.push({
+      key: 'biggest',
+      icon: TrendingUp,
+      tone: underperforms ? 'warning' : 'neutral',
+      title: underperforms ? 'Lots of traffic, few buyers' : 'Your biggest source',
+      body: underperforms ? (
+        <>
+          <strong>{humanize(biggest.source)}</strong> sends the most visitors ({formatCount(String(biggest.visitors))},{' '}
+          {fmtPct(share)}% of traffic) but only {fmtPct(cvr)}% buy — below your {fmtPct(overallCvr)}% average. This
+          traffic looks low-intent; check the targeting or landing page.
+        </>
+      ) : (
+        <>
+          <strong>{humanize(biggest.source)}</strong> is your biggest source — {formatCount(String(biggest.visitors))}{' '}
+          visitors ({fmtPct(share)}% of all traffic), converting at {fmtPct(cvr)}%.
+        </>
+      ),
+    });
+  }
+
+  // 3. Most valuable customers (avg spend per acquired customer).
+  const valued = converters
+    .filter((a) => a.revenueMinor > 0 && a.currency)
+    .slice()
+    .sort((a, b) => avgSpendOf(b) - avgSpendOf(a))[0];
+  if (valued) {
+    insights.push({
+      key: 'valuable',
+      icon: Gem,
+      tone: 'positive',
+      title: 'Most valuable customers',
+      body: (
+        <>
+          Customers from <strong>{humanize(valued.source)}</strong> spend the most —{' '}
+          {formatMoneyDisplay(String(Math.round(avgSpendOf(valued))), valued.currency as CurrencyCode)} each on average.
+          Worth paying more to acquire.
+        </>
+      ),
+    });
+  }
+
+  // 4. Most loyal (highest conversions-weighted repeat rate).
+  const loyal = converters
+    .filter((a) => repeatOf(a) > 0)
+    .slice()
+    .sort((a, b) => repeatOf(b) - repeatOf(a))[0];
+  if (loyal) {
+    insights.push({
+      key: 'loyal',
+      icon: Repeat,
+      tone: 'positive',
+      title: 'Brings customers who come back',
+      body: (
+        <>
+          <strong>{humanize(loyal.source)}</strong> brings the most loyal customers — {fmtPct(repeatOf(loyal))}% buy
+          again. Repeat buyers cost nothing to re-acquire.
+        </>
+      ),
+    });
+  }
+
+  // 5. Untagged traffic — actionable nudge (only if it's a meaningful share).
+  const untaggedVisitors = sources.filter((a) => isUntagged(a.source)).reduce((s, a) => s + a.visitors, 0);
+  const untaggedShare = pct(untaggedVisitors, totalVisitors);
+  if (untaggedShare >= 15) {
+    insights.push({
+      key: 'untagged',
+      icon: Tag,
+      tone: 'warning',
+      title: 'Untagged traffic is hiding what works',
+      body: (
+        <>
+          {fmtPct(untaggedShare)}% of your visitors arrive with no source tag (shown as “unknown”). Add UTM tags
+          (<code className="text-xs">utm_source</code> / <code className="text-xs">utm_medium</code>) to your ad,
+          email and social links so Brain can tell you which campaigns actually drive sales.
+        </>
+      ),
+    });
+  }
+  void currency; // referenced for future currency-aware copy; keep single-currency assumption explicit
+
+  return {
+    totalVisitors,
+    totalConversions,
+    overallCvr,
+    sourceCount: sources.length,
+    topByConversion: tagged.slice().sort((a, b) => cvrOf(b) - cvrOf(a)).slice(0, 5),
+    insights: insights.slice(0, 4),
+  };
+}
+
+const TONE_STYLES: Record<UtmInsight['tone'], string> = {
+  positive: 'border-success/30 bg-success/5 text-success',
+  warning: 'border-warning/30 bg-warning/5 text-warning',
+  neutral: 'border-border bg-muted/30 text-muted-foreground',
+};
+
+function UtmInsights({ rows }: { rows: UtmSourceRow[] }) {
+  const { totalVisitors, totalConversions, overallCvr, sourceCount, topByConversion, insights } =
+    React.useMemo(() => computeUtmInsights(rows), [rows]);
+
+  if (totalVisitors === 0) return null;
+
+  const cvrOf = (a: SourceAgg) => pct(a.conversions, a.visitors);
+  const maxCvr = topByConversion.length ? cvrOf(topByConversion[0]!) : 0;
+
+  return (
+    <SectionCard
+      title={
+        <span className="inline-flex items-center gap-2">
+          <Lightbulb className="size-4 text-primary" aria-hidden="true" />
+          What your acquisition data is telling you
+        </span>
+      }
+      description="Automatic read of the matrix below — best sources, where to focus, and what to fix."
+    >
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {[
+          { label: 'Visitors tracked', value: formatCount(String(totalVisitors)) },
+          { label: 'Customers acquired', value: formatCount(String(totalConversions)) },
+          { label: 'Overall conversion', value: `${fmtPct(overallCvr)}%` },
+          { label: 'Sources', value: String(sourceCount) },
+        ].map((k) => (
+          <div key={k.label} className="rounded-lg border border-border bg-background p-3">
+            <div className="text-xl font-semibold tabular-nums text-foreground">{k.value}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Insight cards */}
+      {insights.length > 0 && (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {insights.map((ins) => (
+            <div key={ins.key} className={`flex gap-3 rounded-lg border p-3 ${TONE_STYLES[ins.tone]}`}>
+              <ins.icon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-foreground">{ins.title}</div>
+                <p className="mt-0.5 text-sm text-muted-foreground">{ins.body}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Top sources by conversion — compact ranked bars */}
+      {topByConversion.length > 1 && (
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Top sources by conversion rate
+          </div>
+          <ul className="space-y-1.5" role="list">
+            {topByConversion.map((a) => {
+              const cvr = cvrOf(a);
+              return (
+                <li key={a.source} className="flex items-center gap-3">
+                  <span className="w-28 shrink-0 truncate text-sm text-foreground" title={humanize(a.source)}>
+                    {humanize(a.source)}
+                  </span>
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${maxCvr > 0 ? Math.max(4, (cvr / maxCvr) * 100) : 0}%` }}
+                    />
+                  </div>
+                  <span className="w-24 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                    {fmtPct(cvr)}% · {formatCount(String(a.conversions))} won
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </SectionCard>
   );
 }
 
@@ -136,29 +428,31 @@ export function UtmContent() {
         metrics: [
           {
             name: 'Visitors',
-            definition: 'Distinct first-touch visitors attributed to the source/medium.',
-            howComputed: 'gold_utm_source — count of distinct first-touch identities per (source, medium).',
+            definition: 'Distinct visitors whose first touch came from this source/medium.',
+            howComputed: 'Counted from the first recorded visit of each person, per source and medium.',
           },
           {
             name: 'Conversions',
-            definition: 'Distinct attributed orders from customers acquired via this source/medium.',
-            howComputed: 'gold_utm_source — distinct converting customers tied to the first-touch dimension.',
+            definition: 'Distinct customers acquired via this source/medium who went on to buy.',
+            howComputed: 'Counted from customers whose first touch was this source and who later placed an order.',
           },
           {
             name: 'Revenue / Avg LTV',
-            definition: 'Attributed revenue and average lifetime value of customers acquired here.',
-            howComputed: 'Folded from the Gold customer marts; bigint MINOR units + currency_code, never blended across currencies.',
+            definition: 'Revenue from customers acquired here, and their average lifetime value.',
+            howComputed: 'Added up from those customers’ orders, always within one currency — never blended.',
           },
           {
             name: 'Repeat-purchase rate',
             definition: 'Share of customers acquired via this source who placed more than one order.',
-            howComputed: 'gold_utm_source — repeat customers ÷ converting customers (0-100%); honest 0 when the denominator is small.',
+            howComputed: 'Repeat customers ÷ converting customers (0–100%).',
           },
         ],
-        refreshCadence: 'The UTM source matrix refreshes on the Gold loop; the drilldown customer list is read live from the identity BFF.',
-        sources: ['gold_utm_source', 'gold_customer_360', 'BFF /v1/analytics/utm-source', 'BFF /v1/identity/customers'],
+        refreshCadence: 'The source matrix refreshes on the regular analytics cycle; the drilldown customer list is read live.',
+        sources: ['First-touch visits recorded by the Brain Pixel', 'Customer 360 profiles'],
       }}
     >
+      {rows.length > 0 ? <UtmInsights rows={rows} /> : null}
+
       <SectionCard
         title="Source × medium matrix"
         description="One row per first-touch (source, medium). Click a row to drill into the customers it acquired."
@@ -195,8 +489,20 @@ export function UtmContent() {
                   <th scope="col" className="px-4 py-2.5 font-medium text-right">Visitors</th>
                   <th scope="col" className="px-4 py-2.5 font-medium text-right">Conversions</th>
                   <th scope="col" className="px-4 py-2.5 font-medium text-right">Revenue</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium text-right">Avg LTV</th>
-                  <th scope="col" className="px-4 py-2.5 font-medium text-right">Repeat rate</th>
+                  <th
+                    scope="col"
+                    className="px-4 py-2.5 font-medium text-right"
+                    title="Average lifetime value — what a customer from this source spends with you in total, on average."
+                  >
+                    Avg LTV
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-4 py-2.5 font-medium text-right"
+                    title="The share of customers from this source who came back to buy again."
+                  >
+                    Repeat rate
+                  </th>
                   <th scope="col" className="px-4 py-2.5 font-medium sr-only">Drill in</th>
                 </tr>
               </thead>
@@ -364,21 +670,21 @@ function SourceDrilldown({ source, onClose }: { source: string; onClose: () => v
                             {SEGMENT_LABEL[c.segment] ?? humanize(c.segment)}
                           </StatusBadge>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground" title="No segment assigned yet">—</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {c.ltv_minor != null && c.currency_code ? (
                           formatMoneyDisplay(c.ltv_minor, c.currency_code as CurrencyCode)
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground" title="No purchases recorded yet">—</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {c.order_count != null ? (
                           c.order_count
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground" title="No orders recorded yet">—</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5">

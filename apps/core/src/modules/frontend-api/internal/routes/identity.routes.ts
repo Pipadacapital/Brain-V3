@@ -32,12 +32,13 @@ import {
   getCustomerSegmentMembers,
   getCustomerAcquisitionSourceMembers,
   getCustomerOrders,
+  getCustomerOrdersPage,
   isLifecycleSegment,
 } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
 
 export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, identityReader, vaultService } = deps;
+  const { bffProtectedPreHandler, identityReader, vaultService, identityEventPublisher, erasureEventPublisher } = deps;
 
   // ── GET /api/v1/identity/customers — customer BROWSE (discover front-door) ────
   /**
@@ -220,6 +221,90 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
     },
   );
 
+  // ── GET /api/v1/identity/customer/orders — keyset-paged order list (AUD-SL-11) ─
+  /**
+   * GET /api/v1/identity/customer/orders?brain_id=<uuid>&limit=&cursor=
+   *
+   * ONE keyset page of the resolved customer's orders (latest lifecycle state each,
+   * newest-first) — the paginated continuation of the Customer-360 "Orders" sub-tab,
+   * which embeds only the first page. Opaque cursor (never OFFSET): pass a page's
+   * `next_cursor` back to get the next (older) page; an invalid cursor degrades to the
+   * first page (honest, never a 400). Brand from session (D-1); reads the
+   * brain_serving.mv_silver_order_state Trino view through the ${BRAND_PREDICATE} seam.
+   * Money (I-S07): order_value_minor is a SIGNED bigint minor-unit string + currency_code.
+   */
+  fastify.get(
+    '/api/v1/identity/customer/orders',
+    {
+      preHandler: [bffProtectedPreHandler],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            brain_id: {
+              type: 'string',
+              pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+            },
+            limit: { type: 'integer', minimum: 1, maximum: 200 },
+            cursor: { type: 'string', maxLength: 512 },
+          },
+          required: ['brain_id'],
+          additionalProperties: false,
+        },
+        attachValidation: true,
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+
+      const validationError = (request as FastifyRequest & { validationError?: Error }).validationError;
+      if (validationError) {
+        return reply.code(400).send({
+          request_id: requestId,
+          error: { code: 'INVALID_BRAIN_ID', message: 'brain_id must be a UUID.' },
+        });
+      }
+
+      const auth = (request as AuthenticatedRequest).auth;
+      const q = request.query as { brain_id: string; limit?: number; cursor?: string };
+
+      // Honest empty: no active brand / no serving pool → nothing to page (never a 500).
+      if (!auth.brandId || !deps.srPool) {
+        return reply.send({ request_id: requestId, data: { rows: [], next_cursor: null } });
+      }
+
+      try {
+        const page = await getCustomerOrdersPage(auth.brandId, q.brain_id, { srPool: deps.srPool }, {
+          limit: q.limit,
+          cursor: q.cursor ?? null,
+        });
+        return reply.send({
+          request_id: requestId,
+          data: {
+            rows: page.rows.map((o) => ({
+              order_id: o.orderId,
+              lifecycle_state: o.lifecycleState,
+              is_terminal: o.isTerminal,
+              order_value_minor: o.orderValueMinor,
+              currency_code: o.currencyCode,
+              first_event_at: o.firstEventAt,
+              state_effective_at: o.stateEffectiveAt,
+            })),
+            next_cursor: page.nextCursor,
+          },
+        });
+      } catch {
+        return reply.code(503).send({
+          request_id: requestId,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'This data is temporarily unavailable. Please try again.',
+          },
+        });
+      }
+    },
+  );
+
   // ── GET /api/v1/identity/vault-coverage — PII vault coverage (P0-C, slice 2) ──
   /**
    * GET /api/v1/identity/vault-coverage
@@ -260,6 +345,13 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
    * tombstones identity_link, marks the customer 'erased', audits the action. State-changing
    * → CSRF-enforced via bffProtectedPreHandler. Brand from session (D-1) — a brain_id from
    * another brand erases nothing (the SECURITY DEFINER fn is scoped to brand_id + brain_id).
+   *
+   * AUD-OPS-036/039: the synchronous erase above is PARTIAL (immediate UX). On success we also
+   * publish the canonical privacy.erasure.requested trigger (brain_id-addressed — the raw
+   * subject is already hard-deleted here, so no email/phone exists to carry) so the
+   * stream-worker orchestrator runs the FULL ordered sequence: DEK shred, pii_erasure_log,
+   * surrogate brain_id, Gold re-projection, CAPI deletion. Fail-open: a publish failure never
+   * fails this response (the publisher logs; the idempotent erase can be re-issued).
    */
   fastify.post(
     '/api/v1/identity/customer/erase',
@@ -317,6 +409,16 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
             code: 'IDENTITY_GRAPH_UNAVAILABLE',
             message: 'The identity service is temporarily unavailable. Please try again.',
           },
+        });
+      }
+      // AUD-OPS-036: bridge to the async full-erasure orchestrator. Only for a REAL erase
+      // (erased=false means the brain_id did not exist for this brand — nothing to trigger).
+      if (result.erased && erasureEventPublisher) {
+        await erasureEventPublisher.emitErasureRequested({
+          brandId: auth.brandId,
+          brainId: brain_id,
+          source: 'identity.erase',
+          correlationId: requestId,
         });
       }
       return reply.send({ request_id: requestId, data: result });
@@ -406,6 +508,8 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
               type: 'string',
               pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
             },
+            // SPEC: A.2.4 (WA-19) — optional operator reason for the reversible-decision-log (audited).
+            reason: { type: 'string', maxLength: 500 },
           },
           required: ['brain_id'],
           additionalProperties: false,
@@ -423,7 +527,7 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
         });
       }
       const auth = (request as AuthenticatedRequest).auth;
-      const { brain_id } = request.body as { brain_id: string };
+      const { brain_id, reason } = request.body as { brain_id: string; reason?: string };
       if (!auth.brandId || !identityReader) {
         return reply.code(409).send({
           request_id: requestId,
@@ -432,7 +536,24 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
       }
       let result: ContractUnmergeResult;
       try {
-        result = await unmergeCustomer(auth.brandId, brain_id, identityReader);
+        // SPEC: A.2.4 (WA-19) — actor = the auth principal (audited); onUnmerged emits
+        // identity.unmerged.v1 (AMD-08) for downstream re-versioning/re-stitch, fail-open.
+        result = await unmergeCustomer(auth.brandId, brain_id, identityReader, {
+          actor: auth.userId,
+          reason,
+          onUnmerged: identityEventPublisher
+            ? (evt) =>
+                identityEventPublisher.emitUnmerged({
+                  brandId: evt.brandId,
+                  restoredBrainId: evt.restoredBrainId,
+                  survivorBrainId: evt.survivorBrainId,
+                  mergeEventId: evt.mergeEventId,
+                  actor: evt.actor,
+                  reason: evt.reason,
+                  correlationId: requestId,
+                })
+            : undefined,
+        });
       } catch {
         return reply.code(503).send({
           request_id: requestId,

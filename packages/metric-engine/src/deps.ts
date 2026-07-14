@@ -29,17 +29,58 @@ export interface EngineDeps {
 }
 
 /** Default NOBYPASSRLS role the RLS policies are written `TO` (migration 0001_init). */
-export const DEFAULT_APP_ROLE = 'brain_app';
+const DEFAULT_APP_ROLE = 'brain_app';
 
 /** Bare SQL identifier — the role name is interpolated into SET LOCAL ROLE. */
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/i;
 
 /**
+ * Injection guard for the brand GUC value. It is interpolated into a single-quoted
+ * `SET LOCAL app.current_brand_id = '<value>'` literal, so it must be a BARE TOKEN — alphanumerics,
+ * hyphen, underscore only — with no quote/semicolon/whitespace/backslash that could break out of the
+ * literal. Real brand ids are UUIDs (which match); non-UUID bare tokens (e.g. the `brand-a` fixtures
+ * in unit tests, where the DB is mocked) also match and pass through. Anything else throws.
+ */
+const BRAND_GUC_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * All-zero UUID — the fail-closed sentinel for an absent/empty brand GUC. A VALID uuid that no real
+ * row matches, so the RLS cast `current_setting('app.current_brand_id', true)::uuid` stays a valid
+ * `'<nil>'::uuid` (→ 0 rows) instead of raising `invalid input syntax for type uuid: ""`.
+ */
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Resolve the literal value written into `SET LOCAL app.current_brand_id`. Empty/undefined →
+ * NIL_UUID (fail-closed); a non-empty value must be an injection-safe bare token (see
+ * BRAND_GUC_TOKEN_RE) or it throws. This is the fix for the `''::uuid` cast error: a pooled
+ * connection whose session GUC was left as the empty string (RESET on a custom GUC yields '', not
+ * NULL) would make an RLS policy that casts the GUC raise 22P02. Writing NIL_UUID for empty keeps
+ * every cast legal; the token guard blocks SQL-literal breakout without rejecting the non-UUID brand
+ * fixtures used by unit tests (which mock the DB, so the value never reaches Postgres).
+ */
+function brandGucLiteral(brandId: string): string {
+  if (brandId === undefined || brandId === null || brandId === '') return NIL_UUID;
+  if (!BRAND_GUC_TOKEN_RE.test(brandId)) {
+    throw new Error(`[metric-engine] brandId "${brandId}" is not an injection-safe bare token`);
+  }
+  return brandId;
+}
+
+/**
  * withBrandTxn — executes fn inside an explicit BEGIN/COMMIT with the brand GUC set.
  *
- * BEGIN → set_config('app.current_brand_id', brandId, true) → fn(client) → COMMIT
- * ROLLBACK on error. The GUC is transaction-local (is_local=true), so it resets
- * automatically on COMMIT/ROLLBACK and cannot leak across pool connections.
+ * BEGIN → SET LOCAL ROLE → SET LOCAL app.current_brand_id = '<uuid>' → fn(client) → COMMIT
+ * ROLLBACK on error. The GUC is transaction-local (SET LOCAL), so it resets automatically on
+ * COMMIT/ROLLBACK and cannot leak across pool connections.
+ *
+ * The brand GUC is written as a literal `SET LOCAL` (UUID-validated), mirroring @brain/db's
+ * executeInRlsTxn — NOT the parameterized `set_config(...)` this used to call. On a pgbouncer-pooled
+ * connection whose session GUC was left as the empty string (RESET on a custom GUC yields '', not
+ * NULL), the brand table's RLS policy `id = current_setting('app.current_brand_id', TRUE)::uuid`
+ * would cast '' → uuid and raise 22P02 (`invalid input syntax for type uuid: ""`), 500-ing every
+ * metric-engine read (contribution-margin, orders FX enrichment). Always writing a valid uuid here
+ * makes the cast legal on every connection.
  *
  * The fn receives a PoolClient already inside the transaction with the GUC set.
  *
@@ -58,14 +99,25 @@ export async function withBrandTxn<T>(
   if (!IDENT_RE.test(appRole)) {
     throw new Error(`[metric-engine] app role "${appRole}" is not a valid SQL identifier`);
   }
+  // Resolve + validate the GUC value BEFORE opening the txn (empty → NIL_UUID, invalid → throw).
+  const brandGuc = brandGucLiteral(brandId);
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    // Drop superuser/owner privilege to the NOBYPASSRLS app role so RLS is enforced
-    // for the duration of this transaction (audit R-01). Resets on COMMIT/ROLLBACK.
-    await client.query(`SET LOCAL ROLE ${appRole}`);
-    // GUC: transaction-scoped (is_local=true) — resets on COMMIT/ROLLBACK
-    await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+    // Open the txn, drop to the NOBYPASSRLS app role (audit R-01), and set ALL THREE RLS GUCs in ONE
+    // round-trip — exactly like @brain/db's buildContextGucSql. Setting ONLY app.current_brand_id was
+    // the real bug behind the contribution-margin / orders-FX 500s: the `brand` table carries a SECOND
+    // permissive policy (`brand_self_read`) whose predicate casts app.current_user_id::uuid. Postgres
+    // evaluates EVERY permissive policy, and on a pgbouncer connection whose session GUCs were RESET to
+    // '' at checkout, that unset user GUC cast `''::uuid` → 22P02 — even though app.current_brand_id was
+    // set correctly (verified live). Defaulting the workspace + user GUCs to NIL_UUID (a valid,
+    // matches-nothing uuid, fail-closed) keeps every policy's cast legal; access still flows through
+    // brand_isolation. UUID-validated literal (injection-safe).
+    await client.query(
+      `BEGIN; SET LOCAL ROLE ${appRole};` +
+        ` SET LOCAL app.current_brand_id = '${brandGuc}';` +
+        ` SET LOCAL app.current_workspace_id = '${NIL_UUID}';` +
+        ` SET LOCAL app.current_user_id = '${NIL_UUID}'`,
+    );
     const result = await fn(client);
     await client.query('COMMIT');
     return result;

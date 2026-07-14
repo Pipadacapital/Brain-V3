@@ -37,8 +37,38 @@ variable "project" {
   default     = "brain"
 }
 
+# AUD-OPS-014 (DR): cross-region replica of the tfstate bucket. The state file
+# is tiny but is the recovery keystone (RB-2 EKS/account rebuild starts from
+# it) — a regional S3 event or a delete-marker attack on the single bucket
+# would orphan every root. Gated (default false); the replica region is
+# IN-COUNTRY (ap-south-2) per the residency decision
+# docs/adr/0011-s3-crr-residency.md (AUD-OPS-042).
+variable "enable_cross_region_replication" {
+  description = "Enable S3 CRR of the tfstate bucket to replica_region (AUD-OPS-014)."
+  type        = bool
+  default     = false
+}
+
+variable "replica_region" {
+  description = "In-country DR replica region for the tfstate bucket (ADR-0011: must remain in India)."
+  type        = string
+  default     = "ap-south-2"
+}
+
 provider "aws" {
   region = var.aws_region
+  default_tags {
+    tags = {
+      project     = var.project
+      environment = var.environment
+      managed_by  = "terraform"
+    }
+  }
+}
+
+provider "aws" {
+  alias  = "replica"
+  region = var.replica_region
   default_tags {
     tags = {
       project     = var.project
@@ -134,6 +164,39 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
 }
 
 ###############################################################################
+# S3 CRR of the state bucket (AUD-OPS-014) — gated; see the variable docs above.
+# STANDARD storage class on the replica (state is KBs; instant reads matter in
+# an RB-2 rebuild, GLACIER_IR would save nothing).
+###############################################################################
+module "state_crr_replica" {
+  count  = var.enable_cross_region_replication ? 1 : 0
+  source = "../modules/s3-crr-replica"
+  providers = {
+    aws = aws.replica
+  }
+  environment      = var.environment
+  project          = var.project
+  purpose          = "tfstate"
+  source_bucket_id = aws_s3_bucket.state.id
+}
+
+module "state_crr" {
+  count                 = var.enable_cross_region_replication ? 1 : 0
+  source                = "../modules/s3-crr"
+  environment           = var.environment
+  project               = var.project
+  purpose               = "tfstate"
+  source_bucket_id      = aws_s3_bucket.state.id
+  source_bucket_arn     = aws_s3_bucket.state.arn
+  source_kms_key_arn    = aws_kms_key.state.arn
+  replica_bucket_arn    = module.state_crr_replica[0].replica_bucket_arn
+  replica_kms_key_arn   = module.state_crr_replica[0].replica_kms_key_arn
+  replica_storage_class = "STANDARD"
+
+  depends_on = [aws_s3_bucket_versioning.state]
+}
+
+###############################################################################
 # DynamoDB lock table (legacy lock; keep for TF < 1.10 compatibility)
 ###############################################################################
 resource "aws_dynamodb_table" "state_lock" {
@@ -170,4 +233,9 @@ output "state_lock_table" {
 output "state_kms_key_arn" {
   description = "KMS key ARN used for state bucket SSE"
   value       = aws_kms_key.state.arn
+}
+
+output "state_crr_replica_bucket" {
+  description = "Cross-region replica of the state bucket (AUD-OPS-014); null until enabled"
+  value       = one(module.state_crr_replica[*].replica_bucket_name)
 }

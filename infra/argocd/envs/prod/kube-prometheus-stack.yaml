@@ -45,7 +45,7 @@ spec:
         releaseName: kube-prometheus-stack
         valueFiles:
           - $values/infra/helm/kube-prometheus-stack/values-prod.yaml
-    - repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    - repoURL: https://github.com/Pipadacapital/Brain-V3.git
       targetRevision: master
       ref: values
   destination:

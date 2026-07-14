@@ -11,11 +11,18 @@
  *    body is admitted (it quarantines downstream via R2) but counted under a shared bucket so
  *    a flood of token-less bodies cannot exhaust memory.
  *  - Origin allowlist: when configured, an Origin header not on the allowlist is rejected 403.
- *    Empty allowlist = allow-all (dev default).
+ *    Empty allowlist = allow-all (dev default) — LOUDLY flagged at startup in production
+ *    (edgePostureWarnings, AUD-INFRA-025): misconfig must never be a silent allow-all.
+ *  - install_token→brand_id binding (AUD-INFRA-025): a body whose fully-presented pair the
+ *    0121 oracle disproves is rejected 403 TOKEN_BRAND_MISMATCH (see token-brand-binding.ts —
+ *    fail-open on infra errors, unprovable pairs admit).
  *  - VETO Set-Cookie (REC-4): this plugin NEVER sets a cookie; the edge stays stateless.
  *  - Deterministic tier-1: a fixed-window counter per (token, window). No model, no statistics.
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { incrementCounter } from '@brain/observability';
+import { log } from '../../log.js';
+import type { TokenBrandBinding, TokenBindingMode } from './token-brand-binding.js';
 
 export interface EdgeGuardConfig {
   /** Max events per install_token per window. */
@@ -100,10 +107,38 @@ export class EdgeRateLimiter {
   }
 }
 
+/**
+ * Startup posture check (AUD-INFRA-025): an insecure edge posture in production must be LOUD,
+ * never a silent allow-all. Returns human-readable warnings for main.ts to log.warn — it never
+ * throws or blocks boot (fail-safe: misconfig must not drop events, only surface).
+ */
+export function edgePostureWarnings(
+  nodeEnv: string,
+  originAllowlist: readonly string[],
+  bindingMode: TokenBindingMode,
+): string[] {
+  const warnings: string[] = [];
+  if (nodeEnv === 'production' && originAllowlist.length === 0) {
+    warnings.push(
+      'EDGE_ORIGIN_ALLOWLIST is empty in production — the browser Origin filter is OFF (allow-all). ' +
+        'Set it to the known storefront origins (AUD-INFRA-025).',
+    );
+  }
+  if (nodeEnv === 'production' && bindingMode !== 'enforce') {
+    warnings.push(
+      `EDGE_TOKEN_BINDING_MODE=${bindingMode} in production — install_token→brand_id binding is not ` +
+        "enforced; a leaked install_token can write another brand's lane (AUD-INFRA-025).",
+    );
+  }
+  return warnings;
+}
+
 /** Register the edge guard as a preHandler scoped to the /collect routes. */
 export function registerEdgeGuard(
   app: FastifyInstance,
   limiter: EdgeRateLimiter,
+  /** install_token→brand_id binding gate (AUD-INFRA-025). Optional: absent ⇒ gate off (legacy tests/dev harnesses). */
+  binding?: TokenBrandBinding,
 ): void {
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
     // Only guard the ingest endpoints — matched on the ROUTE PATTERN (query-string-free), never
@@ -111,9 +146,15 @@ export function registerEdgeGuard(
     // request (404) has no routeOptions.url and passes through to Fastify's own 404.
     if (req.method !== 'POST' || !GUARDED_INGEST_ROUTES.has(req.routeOptions.url ?? '')) return;
 
-    // Origin allowlist (reject-before-spool).
+    // Origin allowlist (reject-before-spool). LOUD rejection (AUD-INFRA-025): warn log + counter +
+    // clear code — a filtered event is never silently dropped.
     const origin = req.headers['origin'] as string | undefined;
     if (!limiter.originAllowed(origin)) {
+      incrementCounter('collector_edge_origin_rejected_total');
+      log.warn('rejected ingest — Origin not on EDGE_ORIGIN_ALLOWLIST (ORIGIN_NOT_ALLOWED)', {
+        origin, // logged, never a metric label (unbounded cardinality)
+        route: req.routeOptions.url,
+      });
       // NO Set-Cookie (REC-4) — stateless rejection.
       await reply.code(403).send({ accepted: false, error: { code: 'ORIGIN_NOT_ALLOWED' } });
       return;
@@ -127,12 +168,19 @@ export function registerEdgeGuard(
     // `events` field counts as 1 under the tokenless bucket (the route 400s it after admission).
     let eventCount = 1;
     let tokenBody = body;
+    /** The request's event bodies (1 for /collect//v1/events, N for /batch) — the binding gate's unit. */
+    let eventBodies: Record<string, unknown>[] = [body];
     if (req.routeOptions.url === '/batch') {
       const events = body['events'];
       if (Array.isArray(events) && events.length > 0) {
         eventCount = events.length;
         const first = events[0];
         tokenBody = (typeof first === 'object' && first !== null && !Array.isArray(first) ? first : {}) as Record<string, unknown>;
+        eventBodies = events.map((ev) =>
+          (typeof ev === 'object' && ev !== null && !Array.isArray(ev) ? ev : {}) as Record<string, unknown>,
+        );
+      } else {
+        eventBodies = []; // malformed `events` — the route 400s it after admission; nothing to bind
       }
     }
     const props = (typeof tokenBody['properties'] === 'object' && tokenBody['properties'] !== null ? tokenBody['properties'] : {}) as Record<string, unknown>;
@@ -150,6 +198,24 @@ export function registerEdgeGuard(
     if (!isAdmissibleBodyShape(req.body)) {
       await reply.code(400).send({ accepted: false, error: { code: 'MALFORMED_BODY', message: 'Body must be a JSON object.' } });
       return;
+    }
+
+    // install_token→brand_id binding (AUD-INFRA-025, reject-before-spool). LAST gate: it is the
+    // only PG-touching one, so the rate-limit above bounds oracle lookups (plus the TTL cache).
+    // Rejects ONLY a PROVEN pairing violation (leaked/forged token writing another brand's lane);
+    // unprovable pairs and oracle outages ADMIT (fail-open — see token-brand-binding.ts).
+    if (binding) {
+      const decision = await binding.admits(eventBodies);
+      if (!decision.admit) {
+        await reply.code(403).send({
+          accepted: false,
+          error: {
+            code: 'TOKEN_BRAND_MISMATCH',
+            message: 'install_token is not registered to the presented brand_id.',
+          },
+        });
+        return;
+      }
     }
   });
 }

@@ -3,7 +3,7 @@ replicaCount: 2
 
 image:
   # CI bumps image.digest to the immutable ECR digest at deploy time.
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-collector
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-collector
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
@@ -53,6 +53,12 @@ env:
   - name: PORT
     value: "3001"
 
+# AUD-OBS-2: OTel OTLP export flag — empty (default) keeps initObservability() a no-op
+# (no SDK loaded; spans/metrics stay in-process). Set per env to the collector/vendor
+# OTLP endpoint to turn tracing+metrics export ON; auth headers (if the endpoint needs
+# them) belong in the envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS.
+otelExporterOtlpEndpoint: ""
+
 serviceAccount:
   annotations: {}   # set eks.amazonaws.com/role-arn per env (IRSA)
 
@@ -82,3 +88,32 @@ autoscaling:
       stabilizationWindowSeconds: 0     # react immediately to ingest spikes (no false-shed)
     scaleDown:
       stabilizationWindowSeconds: 300
+
+# ── Wave-2 workload hardening (AUD-OPS-001/002/004, AUD-INFRA-022) ────────────
+# AUD-OPS-001: the 99.95%-SLA edge must survive node drains / Spot reclaims /
+# Karpenter consolidation — never let a drain wave evict every replica at once.
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# AUD-OPS-002: best-effort zone + node spread (ScheduleAnyway never blocks
+# scheduling on the single streaming pool or kind).
+topologySpread:
+  enabled: true
+  constraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+# AUD-OPS-004: wider window than core/web — SIGTERM stops the drainer (flushes
+# the in-flight spool batch to Kafka) after the preStop ALB-deregistration hold.
+# The PG spool is durable, so this bounds request loss, never event loss.
+terminationGracePeriodSeconds: 60
+preStopSleepSeconds: 15
+
+# AUD-INFRA-022: read-only root FS. OFF until verified against the runtime image
+# (tsx/pnpm may write under /tmp — an emptyDir is mounted there when enabled).
+readOnlyRootFilesystem: false

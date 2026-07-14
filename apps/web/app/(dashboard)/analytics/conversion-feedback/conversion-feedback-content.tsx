@@ -29,6 +29,7 @@
  * minor→major by formatMoneyDisplay at render (no float math in the client).
  */
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { ShieldCheck, FlaskConical, Send, Trash2, Target, ArrowRight } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -40,29 +41,40 @@ import { ErrorCard } from '@/components/ui/error-card';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { CapiEventsTable } from '@/components/capi-feedback/capi-events-table';
 import { CapiDeletionsTable } from '@/components/capi-feedback/capi-deletions-table';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
 import {
   useCapiFeedbackSummary,
   useCapiFeedbackEvents,
   useCapiFeedbackDeletions,
 } from '@/lib/hooks/use-capi-feedback';
-import type { CapiFeedbackSummaryResponse } from '@/lib/api/types';
+import type {
+  CapiFeedbackSummaryResponse,
+  CapiFeedbackEventsResponse,
+  CapiFeedbackDeletionsResponse,
+} from '@/lib/api/types';
 
 type SummaryHasData = Extract<CapiFeedbackSummaryResponse, { state: 'has_data' }>;
+type EventsHasData = Extract<CapiFeedbackEventsResponse, { state: 'has_data' }>;
+type DeletionsHasData = Extract<CapiFeedbackDeletionsResponse, { state: 'has_data' }>;
 
 /** A small section wrapper with a heading + labelled region. */
 function Panel({
   title,
   description,
   testId,
+  id,
   children,
 }: {
   title: string;
   description?: string;
   testId: string;
+  id?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section aria-label={title} data-testid={testId} className="space-y-3">
+    <section id={id} aria-label={title} data-testid={testId} className="scroll-mt-24 space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-foreground">{title}</h2>
         {description && <p className="text-sm text-muted-foreground">{description}</p>}
@@ -91,10 +103,10 @@ function NoConversionsEmpty({ testId }: { testId: string }) {
         <div>
           <p className="font-medium text-foreground">No conversions matched yet</p>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Once a realized purchase is finalized for a subject who has granted{' '}
+            Once a confirmed purchase is finalized for a customer who has granted{' '}
             <span className="font-medium text-foreground">advertising</span> consent, it is
-            matched, gated by can_contact(), and recorded here. Conversions for
-            non-consented subjects are <span className="font-medium text-foreground">blocked</span>,
+            matched, checked against that consent, and recorded here. Conversions for
+            customers without consent are <span className="font-medium text-foreground">blocked</span>,
             never passed back.
           </p>
         </div>
@@ -114,15 +126,15 @@ function DevBoundaryBanner() {
   return (
     <Alert
       variant="warning"
-      title="Would-send in dev — no live Meta CAPI credentials"
+      title="Test mode — nothing is actually sent to Meta yet"
       icon={<FlaskConical className="size-4" />}
       aria-label="Development boundary"
       data-testid="capi-dev-boundary-banner"
     >
-      Conversions are matched, hashed, and gated by can_contact() — but the actual Meta
-      send is a default-closed stub in development (no access token / pixel id). These
-      events show <span className="font-medium">would-send</span>; they are never sent and
-      never faked. Live sending is a platform follow-up.
+      Conversions are matched, scrambled (hashed), and checked against consent — but this
+      environment has no live Meta connection, so nothing is actually sent. These events
+      show <span className="font-medium">would-send</span>; they are never sent and never
+      faked. Live sending switches on with a production Meta connection.
     </Alert>
   );
 }
@@ -141,8 +153,9 @@ function SummaryBand({ data }: { data: SummaryHasData }) {
     >
       <KpiTile
         label="Passed back"
+        help="Conversions shared with Meta to improve its ad targeting — only ever with the customer's advertising consent."
         value={passedBack.toLocaleString('en-IN')}
-        sublabel={`${Number(data.sent ?? '0').toLocaleString('en-IN')} sent · ${Number(data.would_send_dev ?? '0').toLocaleString('en-IN')} would-send (dev)`}
+        sublabel={`${Number(data.sent ?? '0').toLocaleString('en-IN')} sent · ${Number(data.would_send_dev ?? '0').toLocaleString('en-IN')} would-send (test mode)`}
         data-testid="capi-kpi-passed-back"
       />
 
@@ -150,28 +163,102 @@ function SummaryBand({ data }: { data: SummaryHasData }) {
           a BLOCK here, never a send. */}
       <KpiTile
         label="Blocked by consent"
+        help="Conversions we refused to share because the customer hadn't given advertising consent — the target is always zero sent without consent."
         value={blocked.toLocaleString('en-IN')}
-        sublabel="non-consented passbacks denied (SLO target: 0 sent)"
+        sublabel="withheld — nothing sent without consent"
         data-testid="capi-kpi-blocked"
       />
 
       <KpiTile
         label="Deletions"
+        help="Requests sent to Meta to delete previously shared conversions after a customer withdrew consent."
         value={deletions.toLocaleString('en-IN')}
-        sublabel="retroactive withdrawal requests"
+        sublabel="after consent withdrawals"
         data-testid="capi-kpi-deletions"
       />
 
       <KpiTile
         label="Match quality"
+        help="How completely Meta can match these conversions to real people — based on how many identifying fields (like email or phone, scrambled) each event carried."
         value={matchPct != null ? `${matchPct.toFixed(1)}%` : null}
         sublabel={
           data.avg_match_keys != null
-            ? `avg ${data.avg_match_keys.toFixed(1)} of 4 Meta keys`
+            ? `avg ${data.avg_match_keys.toFixed(1)} of 4 match fields`
             : 'no events yet'
         }
         data-testid="capi-kpi-match-quality"
       />
+    </div>
+  );
+}
+
+/** Events table + a client-side search that narrows the already-loaded rows (never re-fetches). */
+function EventsTableWithSearch({ data }: { data: EventsHasData }) {
+  const [query, setQuery] = useState('');
+  const rows = data.events ?? [];
+  // Search across the human-meaningful columns: the event id, the plain-word status
+  // ("blocked no consent", "would send dev", "sent"), the block reason, and the value.
+  const filtered = filterRows(
+    rows,
+    query,
+    (r) =>
+      `${r.event_id_short} ${r.status.replace(/_/g, ' ')} ${r.block_reason ?? ''} ${r.currency_code} ${r.value_minor}`,
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search by status, id, or value…"
+          aria-label="Search passback events"
+        />
+      </div>
+      {query && filtered.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No passback events match “{query}”. Clear the search to see all {rows.length} recent
+            events.
+          </CardContent>
+        </Card>
+      ) : (
+        <CapiEventsTable data={{ ...data, events: filtered }} />
+      )}
+    </div>
+  );
+}
+
+/** Deletions table + a client-side search over the plain-word status column. */
+function DeletionsTableWithSearch({ data }: { data: DeletionsHasData }) {
+  const [query, setQuery] = useState('');
+  const rows = data.deletions ?? [];
+  const filtered = filterRows(
+    rows,
+    query,
+    (r) => `${r.status.replace(/_/g, ' ')} ${r.event_count}`,
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search by status…"
+          aria-label="Search deletion requests"
+        />
+      </div>
+      {query && filtered.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No deletion requests match “{query}”. Clear the search to see all {rows.length} recent
+            requests.
+          </CardContent>
+        </Card>
+      ) : (
+        <CapiDeletionsTable data={{ ...data, deletions: filtered }} />
+      )}
     </div>
   );
 }
@@ -183,6 +270,11 @@ export function ConversionFeedbackContent() {
 
   const summaryData = summary.data;
   const devBoundary = summaryData?.state === 'has_data' && summaryData.dev_boundary === true;
+  // The CAPI endpoints return an all-time aggregate + the most-recent log rows (no date
+  // window to filter on), so we state the window honestly as "all time" and surface the
+  // count of recent events shown — never a fabricated range.
+  const recentEventsCount =
+    events.data?.state === 'has_data' ? events.data.events.length : undefined;
 
   return (
     <div className="space-y-8">
@@ -190,25 +282,33 @@ export function ConversionFeedbackContent() {
         title="Conversion Feedback"
         description={
           <>
-            Realized conversions passed back to Meta to improve optimization — every passback
-            first clears the single <span className="font-medium text-foreground">can_contact()</span>{' '}
-            gate on the <span className="font-medium text-foreground">advertising</span> consent
-            category, which is{' '}
-            <span className="font-medium text-foreground">default-closed</span>. No consent →
-            no passback. PII is SHA-256-hashed at the boundary (Meta match spec); raw email and
-            phone are never stored, logged, or sent.
+            Confirmed purchases passed back to Meta to improve its ad targeting — every one
+            first clears a check on the customer&apos;s{' '}
+            <span className="font-medium text-foreground">advertising</span> consent, which is{' '}
+            <span className="font-medium text-foreground">off by default</span>. No consent →
+            no passback. Email and phone are scrambled (hashed) before sending; the raw values
+            are never stored, logged, or sent.
           </>
         }
         meta={
           <span
             data-testid="capi-platform-label"
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title="Realized conversions passed back to Meta via the Conversions API, behind the can_contact() consent gate."
+            title="Confirmed purchases passed back to Meta via its Conversions API, only with the customer's advertising consent."
           >
             <Target className="h-3 w-3" aria-hidden="true" />
             Meta CAPI
           </span>
         }
+      />
+
+      {/* Honest data window — these figures are all-time; there is no date filter to apply. */}
+      <DataWindowBadge
+        from={null}
+        to={null}
+        count={recentEventsCount}
+        label="recent events"
+        data-testid="capi-data-window"
       />
 
       {/* The dev boundary — explicit when any event is 'would_send_dev'. */}
@@ -228,7 +328,15 @@ export function ConversionFeedbackContent() {
           <NoConversionsEmpty testId="capi-summary-empty" />
         )}
         {!summary.isLoading && !summary.error && summaryData?.state === 'has_data' && (
-          <SummaryBand data={summaryData} />
+          <div className="space-y-3">
+            <SummaryBand data={summaryData} />
+            {/* Drill-through — every headline count is backed by the records on this page. */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              <span className="text-muted-foreground">See the records behind these numbers:</span>
+              <VerifyLink href="#capi-events-panel" label="Passback events" />
+              <VerifyLink href="#capi-deletions-panel" label="Deletion requests" />
+            </div>
+          </div>
         )}
       </Panel>
 
@@ -237,6 +345,7 @@ export function ConversionFeedbackContent() {
         title="Passback events"
         description="Recent conversion events evaluated for Meta passback — a blocked row proves the gate denied a non-consented send."
         testId="capi-events-panel"
+        id="capi-events-panel"
       >
         {events.isLoading && <PanelSkeleton />}
         {!events.isLoading && events.error && (
@@ -245,22 +354,23 @@ export function ConversionFeedbackContent() {
         {!events.isLoading && !events.error && events.data?.state === 'no_data' && (
           <Card data-testid="capi-events-empty">
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No passback events recorded yet. Once a finalized purchase is evaluated for a
-              consented subject, every can_contact() decision appears here — including the
-              blocks that prove the gate is closed by default.
+              No passback events recorded yet. Once a finalized purchase is evaluated, every
+              consent decision appears here — including the blocks that prove nothing is
+              shared without consent.
             </CardContent>
           </Card>
         )}
         {!events.isLoading && !events.error && events.data?.state === 'has_data' && (
-          <CapiEventsTable data={events.data} />
+          <EventsTableWithSearch data={events.data} />
         )}
       </Panel>
 
       {/* 3 — Deletions table (the ≤15-min retroactive-withdrawal path) */}
       <Panel
         title="Retroactive deletions"
-        description="Consent-withdrawal deletion requests — fired within the ≤15-minute SLA when a subject withdraws advertising consent."
+        description="Deletion requests sent to Meta within 15 minutes of a customer withdrawing advertising consent."
         testId="capi-deletions-panel"
+        id="capi-deletions-panel"
       >
         {deletions.isLoading && <PanelSkeleton />}
         {!deletions.isLoading && deletions.error && (
@@ -273,13 +383,13 @@ export function ConversionFeedbackContent() {
                 <Trash2 className="h-4 w-4" aria-hidden="true" />
                 No consent withdrawals yet.
               </span>{' '}
-              When a subject withdraws advertising consent, a retroactive Meta deletion is
-              requested here within 15 minutes.
+              When a customer withdraws advertising consent, a Meta deletion request appears
+              here within 15 minutes.
             </CardContent>
           </Card>
         )}
         {!deletions.isLoading && !deletions.error && deletions.data?.state === 'has_data' && (
-          <CapiDeletionsTable data={deletions.data} />
+          <DeletionsTableWithSearch data={deletions.data} />
         )}
       </Panel>
 
@@ -287,8 +397,8 @@ export function ConversionFeedbackContent() {
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <p>
-          Every figure is read via the BFF over the CAPI passback log — never a direct send
-          path. The can_contact() gate is the sole outbound chokepoint; no consent, no
+          Every figure comes from Brain&apos;s own record of what was (and wasn&apos;t) shared
+          with Meta. The consent check is the only way anything leaves — no consent, no
           passback.
         </p>
       </div>

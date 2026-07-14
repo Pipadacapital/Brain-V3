@@ -1,0 +1,10 @@
+apiVersion: v2
+name: brain-kafka-connect
+description: >-
+  Kafka Connect worker running the Apache Iceberg sink — the Bronze landing writer (ADR-0010,
+  reinstating ADR-0006 D1). Replaces the sparkBronze CronWorkflow (cronworkflows chart): enable
+  EXACTLY ONE of the two (kafkaConnect here, sparkBronze there) — see
+  docs/runbooks/adr-0010-kafka-connect-bronze.md.
+type: application
+version: 0.1.0
+appVersion: "1.9.2"

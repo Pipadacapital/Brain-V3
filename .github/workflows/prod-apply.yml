@@ -15,7 +15,7 @@ name: prod-apply (M4 turn-on)
 #   - Repo variable AWS_PROD_APPLY_ROLE_ARN = `terraform output github_apply_role_arn` from
 #     envs/prod (role brain-prod-github-apply; OIDC trust = the `production` GitHub Environment
 #     sub, not a branch ref — this job binds to that Environment below).
-#   - prod oidc_github github_org/github_repo = Rishabhporwal/Brain-V4 (must match THIS repo)
+#   - prod oidc_github github_org/github_repo = Pipadacapital/Brain-V3 (must match THIS repo)
 #     with allowed_branches ["master"]. Re-apply oidc_github if the repo ever moves.
 #   - <PROD_ACCOUNT_ID> filled in envs/prod/backend.tf + terraform.tfvars created from the
 #     example (the M4 module set is UN-GATED since AUD-COST-001 — nothing to uncomment). Helm/

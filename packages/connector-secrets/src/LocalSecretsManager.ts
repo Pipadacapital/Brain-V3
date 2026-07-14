@@ -19,7 +19,7 @@ import type {
   SecretWriteResult,
   ConnectorSecretRef,
 } from './ISecretsManager.js';
-import { sanitizeSecretSubKey } from './ISecretsManager.js';
+import { sanitizeSecretSubKey, unwrapShopifyTokenValue } from './ISecretsManager.js';
 import type { Pool } from 'pg';
 
 export class LocalSecretsManager implements ISecretsManager {
@@ -152,6 +152,8 @@ export class LocalSecretsManager implements ISecretsManager {
     // secret_ref is the fake ARN from storeShopifyToken; the name follows `:secret:`.
     // DEV-TOKEN-REACH: L1 in-memory cache → durable dev_secret (survives restart, cross-process).
     const name = secretRef.split(':secret:')[1] ?? secretRef;
-    return this.store.get(name) ?? (await this.devRead(name));
+    const raw = this.store.get(name) ?? (await this.devRead(name));
+    // Bundle-aware: client-credentials connects store a JSON bundle; legacy OAuth stores raw.
+    return raw == null ? null : unwrapShopifyTokenValue(raw);
   }
 }

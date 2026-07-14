@@ -40,6 +40,9 @@ export interface UnmergeResult {
   unmerged: boolean;
   reason?: string;
   brain_id?: string;
+  // SPEC: A.2.4 (WA-19) — reversal audit surface (present when unmerged=true).
+  survivor_brain_id?: string;
+  merge_event_id?: string;
 }
 
 // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR. The merge_review_queue + the
@@ -69,23 +72,52 @@ export async function resolveMergeReview(
   reviewId: string,
   decision: MergeDecision,
   reader: IdentityReader,
+  opts?: { actor?: string },
 ): Promise<MergeResolveResult> {
   if (!UUID_RE.test(reviewId)) {
     return { resolved: false, reason: 'not_found' };
   }
-  const r = await reader.resolveMergeReview(brandId, reviewId, decision === 'merge' ? 'approve' : 'reject');
+  const r = await reader.resolveMergeReview(brandId, reviewId, decision === 'merge' ? 'approve' : 'reject', opts);
   if (!r.resolved) return { resolved: false, reason: r.reason };
   return { resolved: true, decision: decision === 'merge' ? 'merged' : 'rejected' };
 }
 
-/** Split a previously-merged customer back out (reverses a merge). */
+/**
+ * SPEC: A.2.4 (WA-19) — split a previously-merged customer back out (reverses a merge).
+ * Delegates the bi-temporal reversal + audit to the reader; `onUnmerged` (optional) is the
+ * identity.unmerged.v1 emission seam (AMD-08) the route wires — kept as a callback so the identity
+ * application stays free of a Kafka dependency (DIP). Fires ONLY on a real reversal (unmerged=true).
+ */
 export async function unmergeCustomer(
   brandId: string,
   mergedBrainId: string,
   reader: IdentityReader,
+  opts?: {
+    actor?: string;
+    reason?: string;
+    onUnmerged?: (evt: {
+      brandId: string;
+      restoredBrainId: string;
+      survivorBrainId?: string;
+      mergeEventId?: string;
+      actor: string;
+      reason?: string;
+    }) => Promise<void>;
+  },
 ): Promise<UnmergeResult> {
   if (!UUID_RE.test(mergedBrainId)) {
     return { unmerged: false, reason: 'not_found' };
   }
-  return reader.unmergeCustomer(brandId, mergedBrainId);
+  const r = await reader.unmergeCustomer(brandId, mergedBrainId, { actor: opts?.actor, reason: opts?.reason });
+  if (r.unmerged && opts?.onUnmerged) {
+    await opts.onUnmerged({
+      brandId,
+      restoredBrainId: r.brain_id ?? mergedBrainId,
+      survivorBrainId: r.survivor_brain_id,
+      mergeEventId: r.merge_event_id,
+      actor: opts.actor ?? 'system',
+      reason: opts.reason,
+    });
+  }
+  return r;
 }

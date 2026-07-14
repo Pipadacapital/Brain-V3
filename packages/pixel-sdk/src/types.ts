@@ -102,6 +102,26 @@ export interface BrainBootstrap {
   brand_id: string;
   /** Optional collector ingest base (defaults to the script origin). */
   ingest_base_url?: string;
+  /**
+   * SPEC: A.1.1 + A.1.2 (WA-07/WA-08) — per-brand identity-capture config, injected by the
+   * collector's /pixel.js templating pass ONLY when the per-brand `pixel.identify` flag is ON
+   * (default OFF → field absent → the asset behaves exactly as before WA-07).
+   */
+  identity?: BrainIdentityBootstrap;
+}
+
+/** SPEC: A.1.1 + A.1.2 — the WA-07/WA-08 identity-capture bootstrap config (per-brand, flag-gated). */
+export interface BrainIdentityBootstrap {
+  /** True ⇔ the per-brand `pixel.identify` platform flag is ON (the v2 identity system governs). */
+  enabled: boolean;
+  /** tenancy.brand.identity_capture (A.1.2). 'off' → brain.identify() no-ops (and the legacy raw-email submit-bridge is retired). */
+  capture: 'off' | 'explicit_only' | 'autodetect';
+  /** tenancy.brand.consent_source (A.1.2). cmp_signal: __tcfapi + window.brainConsent; no signal → denied. */
+  consent_source: 'cmp_signal' | 'assume_granted';
+  /** True ⇔ the per-brand `pixel.autodetect.enabled` platform flag is ON (form auto-detect may run). */
+  autodetect: boolean;
+  /** Brand default country for the minimal browser E.164 normalizer (tenancy.brand.region_code). */
+  phone_country: string;
 }
 
 // ── Injectable browser environment ────────────────────────────────────────────

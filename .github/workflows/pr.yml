@@ -1,5 +1,10 @@
 name: pr
-on: pull_request
+# RELEASE-LAYER: checks run ONLY on the release → master promotion PR
+# (owner-requested 2026-07-11). Feature → release PRs and release pushes run
+# nothing; the cumulative diff is validated once, at promotion time.
+on:
+  pull_request:
+    branches: [master]
 
 permissions:
   contents: read
@@ -61,6 +66,11 @@ jobs:
           pnpm migrate:up
       - name: Turbo lint + typecheck + unit (affected only)
         run: pnpm turbo run lint typecheck test:unit --affected
+      # AUD-IMPL-016: DB-backed suites moved out of the hermetic test:unit tag into
+      # test:integration — run here (same job = same provisioned Postgres as before),
+      # so CI coverage is unchanged while local `test:unit` no longer needs a live DB.
+      - name: Turbo integration (affected)
+        run: pnpm turbo run test:integration --affected
       # Module-boundary fences (eslint-plugin-boundaries) only classify cross-package imports
       # correctly when eslint runs from the REPO ROOT — the per-package turbo lint above runs
       # from each package dir and cannot (audit RS-1). This dedicated root pass enforces them.
@@ -110,6 +120,15 @@ jobs:
   # brain_silver.), any dbt invocation, permanent feature precompute (feature_customer_daily
   # / brain_feature write), and Gold/Silver reads not via mv_* / rest-Iceberg.
   # See tools/lint/v4-naming-guard.sh (--selftest proves the rules; runs first).
+  # Also runs the serving PII-projection guard (ADR-0007 D6: PII never reaches
+  # serving) — fails if any Trino serving view (db/trino/views/*.sql) PROJECTS
+  # a raw-PII column name (email/phone/first_name/last_name/full_name/address);
+  # hashed/derived forms (email_sha256, *_hash, hashed_*, has_*, email_domain)
+  # are allowed. See tools/lint/serving-pii-guard.sh (self-test runs first).
+  # Also runs the identity-view guard (A.2.2 / AMD-07): the bi-temporal
+  # silver_identity_map may be read ONLY through a sanctioned accessor
+  # (identity_current_v / identity_asof; Spark _identity_views.*). See
+  # tools/lint/identity-view-guard.sh (self-test runs first).
   # ─────────────────────────────────────────────────────────────────────────
   v4-naming-guard:
     name: Brain V4 Naming Guard (no dbt / retired DBs)
@@ -122,6 +141,40 @@ jobs:
         run: tools/lint/v4-naming-guard.sh --selftest
       - name: Run the V4 naming guard over the tree
         run: tools/lint/v4-naming-guard.sh
+      - name: Self-test the serving PII-projection guard (proves catch + allowlist)
+        run: tools/lint/serving-pii-guard-test.sh
+      - name: Run the serving PII-projection guard over db/trino/views (ADR-0007 D6)
+        run: tools/lint/serving-pii-guard.sh
+      # Identity-view guard (A.2.2 / AMD-07) — silver_identity_map is bi-temporal; every read must go
+      # through a sanctioned accessor (Spark identity_current/asof/raw; Trino identity_current_v/asof).
+      # Fails on any direct read outside tools/lint/identity-view-guard-allowlist.txt.
+      - name: Self-test the identity-view guard (proves catch + allowlist)
+        run: tools/lint/identity-view-guard.sh --selftest
+      - name: Run the identity-view guard over the tree (A.2.2)
+        run: tools/lint/identity-view-guard.sh
+      # Deprecation guard (D.4.5 / D.5) — Wave-D semantic layer freezes the legacy Gold/Silver marts for
+      # NEW consumers (they stay live; existing readers migrate route-by-route in D.3). Fails on any NEW
+      # app/BFF/metric-engine reference to a deprecated mart outside tools/lint/deprecation-guard-allowlist.txt.
+      - name: Self-test the deprecation guard (proves catch + allowlist)
+        run: tools/lint/deprecation-guard.sh --selftest
+      - name: Run the deprecation guard over the tree (D.4.5)
+        run: tools/lint/deprecation-guard.sh
+      # Structured-log guard (AUD-OBS-2) — the R-05 console.*→pino sweep must STAY swept:
+      # a raw console.* in deployable service source bypasses levels, correlation bindings,
+      # PII redaction, and Sentry capture. Allowlist: tools/lint/structured-log-guard-allowlist.txt.
+      - name: Self-test the structured-log guard (proves catch + comment-skip + allowlist)
+        run: tools/lint/structured-log-guard.sh --selftest
+      - name: Run the structured-log guard over the service trees (AUD-OBS-2)
+        run: tools/lint/structured-log-guard.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # (REMOVED in the Spark→DuckDB cutover, feat/spark-to-duckdb-cutover) — the
+  # Spark-tier guard/parity suite ran db/iceberg/spark/**/*_test.py via
+  # tools/lint/spark-guard-suite.sh. The Spark tree (jobs + tests + the guard
+  # script) is deleted; the DuckDB transform tier (db/iceberg/duckdb/**) was
+  # parity-validated + dev-e2e GREEN before this cutover PR. If a standing
+  # DuckDB-tier guard suite is wanted later, add it here.
+  # ─────────────────────────────────────────────────────────────────────────
 
   # ─────────────────────────────────────────────────────────────────────────
   # Prod placeholder guard (AUD-COST-007) — renders every prod chart

@@ -131,6 +131,14 @@ export interface TouchpointTimelineRow {
   referrerHost: string | null;
   landingPath: string | null;
   eventType: string;
+  /**
+   * SPEC: B.4 EXPLAINABILITY (AUD-JE-35) — the coarse stitch-provenance basis for this touch,
+   * mirroring the journey-events ledger derivation (journey-events.ts deriveMatchedVia):
+   * 'deterministic' when the touch row carries a stitched_brain_id (the journey deterministically
+   * resolved to a customer), else 'anonymous'. The behavioral timeline projection has no composite
+   * order rows, so 'order' never applies on this surface. NEVER null (honest explainability).
+   */
+  matchedVia: string;
 }
 
 export interface TouchpointTimelineResult {
@@ -140,6 +148,12 @@ export interface TouchpointTimelineResult {
   brainAnonId: string | null;
   /** Whether this journey deterministically stitched to a known order/brain_id. */
   stitched: boolean;
+  /**
+   * SPEC: B.3 — the resolved customer key this journey deterministically stitched to (the first
+   * non-null stitched_brain_id across the touches), or null when anon-only. Additive: existing
+   * callers ignore it; the journey-trace explainability surface reads it for identity_evidence.
+   */
+  stitchedBrainId: string | null;
   /** The ordered touch rows (touch_seq asc). */
   touches: TouchpointTimelineRow[];
 }
@@ -344,7 +358,7 @@ export async function computeTouchpointTimeline(
     if (!deps.pool) {
       // No PG pool reachable → cannot resolve order → anon (the stitch map is PG-native). Degrade to
       // honest no_data rather than silently reading a non-existent brain_ops table over Trino.
-      return { hasData: false, brainAnonId: null, stitched: false, touches: [] };
+      return { hasData: false, brainAnonId: null, stitched: false, stitchedBrainId: null, touches: [] };
     }
     // Deterministic read-back (D-5), brand-scoped by RLS via the GUC inside withBrandTxn.
     const stitchRows = await withBrandTxn(deps.pool, brandId, async (client) => {
@@ -358,7 +372,7 @@ export async function computeTouchpointTimeline(
     });
     anonIds = stitchRows.map((r) => r.stitched_anon_id);
     if (anonIds.length === 0) {
-      return { hasData: false, brainAnonId: null, stitched: false, touches: [] };
+      return { hasData: false, brainAnonId: null, stitched: false, stitchedBrainId: null, touches: [] };
     }
   }
 
@@ -394,7 +408,7 @@ export async function computeTouchpointTimeline(
   });
 
   if (rows.length === 0) {
-    return { hasData: false, brainAnonId: null, stitched: false, touches: [] };
+    return { hasData: false, brainAnonId: null, stitched: false, stitchedBrainId: null, touches: [] };
   }
 
   const touches: TouchpointTimelineRow[] = rows.map((r) => ({
@@ -414,15 +428,19 @@ export async function computeTouchpointTimeline(
     referrerHost: str(r.referrer_host),
     landingPath: str(r.landing_path),
     eventType: String(r.event_type),
+    // SPEC: B.4 (AUD-JE-35) — coarse stitch-provenance basis per touch (see the interface doc).
+    matchedVia: str(r.stitched_brain_id) !== null ? 'deterministic' : 'anonymous',
   }));
 
   const first = rows[0] as TimelineRow;
-  const stitched = rows.some((r) => str(r.stitched_brain_id) !== null);
+  const stitchedRow = rows.find((r) => str(r.stitched_brain_id) !== null);
+  const stitchedBrainId = stitchedRow ? str(stitchedRow.stitched_brain_id) : null;
 
   return {
     hasData: true,
     brainAnonId: String(first.brain_anon_id),
-    stitched,
+    stitched: stitchedBrainId !== null,
+    stitchedBrainId,
     touches,
   };
 }

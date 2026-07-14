@@ -50,6 +50,9 @@ export function registerCollectRoute(
   // to this collector. The browser sends a CORS preflight (OPTIONS /collect) first; without an answer
   // it 404s and the event POST is BLOCKED — so no events ever arrive. We allow any origin (the SDK
   // posts with credentials:"omit", so wildcard is safe) and answer the preflight here, before routing.
+  // NOTE (AUD-INFRA-025): the ACAO header is response plumbing, NOT the access decision — Origin
+  // ENFORCEMENT (EDGE_ORIGIN_ALLOWLIST) and install_token→brand_id binding live in the edge-guard
+  // preHandler, which 403s the actual POST before it reaches the spool.
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
     reply.header('Access-Control-Allow-Origin', '*');
     reply.header('Vary', 'Origin');

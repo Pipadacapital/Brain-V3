@@ -4,21 +4,25 @@
  * Ask Brain result primitives — the honesty UX made visible (Phase 8, requirement §6).
  *
  * The four guarantees rendered here:
- *   1. BINDING — the resolved metric is shown explicitly ("realized_revenue v1"). The model
- *      SELECTED this from the registry; it did not invent it.
+ *   1. BINDING — the resolved metric is shown in PLAIN language ("Realized revenue"). The model
+ *      SELECTED this from the registry; it did not invent it. The raw metric_id/version live
+ *      only inside the "Technical details" disclosure (never leaked as jargon into the headline).
  *   2. CERTIFIED NUMBER — computed by the metric-engine (I-ST01). Money is bigint-minor strings
  *      + currency_code, rendered with formatMoneyDisplay (never /100, never BigInt(undefined)).
- *   3. CONFIDENCE — the Trusted/Estimated/Untrusted banner from Phase 7 (getMetricTrust). It is
- *      NEVER colour-only: icon + text label + an aria-label carrying the full verdict (WCAG 1.4.1).
- *   4. PROVENANCE — metric_id + version + snapshot_id: "computed, not generated." Reproducible.
+ *   3. CONFIDENCE — a PLAIN Trusted/Estimated/Not-yet-reliable banner (icon + text label + an
+ *      aria-label carrying the full verdict; never colour-only, WCAG 1.4.1). The raw grade letter
+ *      is tucked into the disclosure, not shouted in the banner.
+ *   4. PROVENANCE — metric_id + version + data snapshot behind a "Technical details" disclosure:
+ *      "computed, not generated." Reproducible, but not in the shopkeeper's face.
  *
  * A refusal renders NO number — the honest "no certified metric answers this" card.
  */
 
 import * as React from 'react';
-import { CheckCircle2, ShieldAlert, Sparkles, Hash, Database } from 'lucide-react';
+import { CheckCircle2, ShieldAlert, Sparkles, Hash, Database, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { plainConfidence } from '@/lib/format/plain-language';
 import type { CurrencyCode } from '@brain/money';
 import type {
   AskMetricId,
@@ -28,46 +32,72 @@ import type {
   AskBinding,
 } from '@/lib/api/types';
 
-// ── Registry metric_id → human label (display only; the binding string is authoritative) ──
+// ── Registry metric_id → PLAIN human label (no acronyms reach the DOM) ────────
 
 const METRIC_LABELS: Record<AskMetricId, string> = {
   realized_revenue: 'Realized revenue',
   provisional_revenue: 'Provisional revenue',
   ad_spend: 'Ad spend',
-  blended_roas: 'Blended ROAS',
-  cod_rto_rate: 'CoD RTO rate',
-  cod_mix: 'CoD mix',
+  blended_roas: 'Return on ad spend',
+  cod_rto_rate: 'Cash-on-delivery return rate',
+  cod_mix: 'Cash-on-delivery share of orders',
   checkout_funnel: 'Checkout funnel',
   order_status_mix: 'Order-status mix',
   journey_first_touch_mix: 'First-touch channel mix',
-  journey_stitch_rate: 'Journey stitch rate',
+  journey_stitch_rate: 'Journeys we could connect',
   journey_timeline: 'Journey timeline',
   attribution_credit: 'Attributed revenue',
-  attribution_reconciliation_rate: 'Attribution reconciliation rate',
+  attribution_reconciliation_rate: 'Attribution match rate',
   attribution_confidence: 'Attribution confidence',
   cost_confidence: 'Cost confidence',
-  effective_confidence: 'Effective confidence',
+  effective_confidence: 'Overall confidence',
 };
 
-function metricLabel(id: string): string {
+export function metricLabel(id: string): string {
   return METRIC_LABELS[id as AskMetricId] ?? id;
 }
 
-// ── Binding badge — the resolved metric made visible ─────────────────────────
+// ── metric_id → the closest existing drill (records behind the number) ─────────
+
+const METRIC_DRILL: Record<AskMetricId, { href: string; label: string }> = {
+  realized_revenue: { href: '/analytics/revenue', label: 'See the revenue records behind this' },
+  provisional_revenue: { href: '/analytics/revenue', label: 'See the revenue records behind this' },
+  ad_spend: { href: '/analytics/spend', label: 'See the ad-spend records behind this' },
+  blended_roas: { href: '/analytics/spend', label: 'See the spend & revenue behind this' },
+  cod_rto_rate: { href: '/analytics/cod-rto', label: 'See the cash-on-delivery orders behind this' },
+  cod_mix: { href: '/analytics/cod-rto', label: 'See the cash-on-delivery orders behind this' },
+  checkout_funnel: { href: '/analytics/checkout', label: 'See the checkout steps behind this' },
+  order_status_mix: { href: '/analytics/order-status', label: 'See the orders behind this' },
+  journey_first_touch_mix: { href: '/analytics/journey', label: 'See the customer journeys behind this' },
+  journey_stitch_rate: { href: '/analytics/journey', label: 'See the customer journeys behind this' },
+  journey_timeline: { href: '/journeys', label: 'See the customer journeys behind this' },
+  attribution_credit: { href: '/analytics/attribution', label: 'See the attribution breakdown behind this' },
+  attribution_reconciliation_rate: {
+    href: '/analytics/attribution',
+    label: 'See the attribution breakdown behind this',
+  },
+  attribution_confidence: { href: '/analytics/attribution', label: 'See the attribution breakdown behind this' },
+  cost_confidence: { href: '/analytics/spend', label: 'See the ad-spend records behind this' },
+  effective_confidence: { href: '/analytics/attribution', label: 'See the attribution breakdown behind this' },
+};
+
+/** The closest existing records-drill for a metric (never invents an endpoint). */
+export function askMetricDrill(id: string): { href: string; label: string } {
+  return METRIC_DRILL[id as AskMetricId] ?? { href: '/data', label: 'See your data' };
+}
+
+// ── Binding badge — the resolved metric in PLAIN language (no raw code) ────────
 
 export function AskBindingBadge({ binding }: { binding: AskBinding }) {
   const label = metricLabel(binding.metric_id);
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-      aria-label={`Resolved metric: ${label}, binding ${binding.metric_id} ${binding.metric_version}`}
+      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-foreground"
+      aria-label={`Matched to the certified metric: ${label}`}
       data-testid="ask-binding"
     >
-      <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-      <span className="text-foreground">{label}</span>
-      <span className="tabular-nums">
-        {binding.metric_id}&nbsp;{binding.metric_version}
-      </span>
+      <Sparkles className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+      <span>{label}</span>
     </span>
   );
 }
@@ -138,13 +168,13 @@ export function AskCertifiedNumber({ number }: { number: AskComputedNumber }) {
       className="text-sm text-muted-foreground"
       data-testid="ask-number-unavailable"
     >
-      This metric is certified, but its figure isn&apos;t surfaced here yet. The binding and
-      snapshot below let it be computed on demand — no number is invented.
+      This metric is certified, but its full picture lives on its own dashboard rather than as a
+      single number. Open the records below to see it — no number is invented here.
     </p>
   );
 }
 
-// ── Trust banner — Trusted / Estimated / Untrusted (icon + label, NEVER colour-only) ──
+// ── Trust banner — PLAIN Trusted / Estimated / Not-yet-reliable (icon + label) ──
 
 interface AskTrustBannerProps {
   tier: AskTrustTier;
@@ -154,11 +184,12 @@ interface AskTrustBannerProps {
 
 export function AskTrustBanner({ tier, grade, className }: AskTrustBannerProps) {
   if (tier === 'Trusted') {
+    const conf = plainConfidence(grade) || "We're confident";
     return (
       <div
         role="status"
         aria-live="polite"
-        aria-label={`Trusted answer, confidence grade ${grade}`}
+        aria-label={`Trusted answer. ${conf}. Data-quality grade ${grade}.`}
         className={cn(
           'flex items-start gap-2 rounded-lg border border-status-green-700/30 bg-status-green-50 p-3 text-sm text-status-green-700',
           className,
@@ -167,18 +198,19 @@ export function AskTrustBanner({ tier, grade, className }: AskTrustBannerProps) 
       >
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
         <span>
-          <strong className="font-semibold">Trusted (grade {grade}).</strong>{' '}
-          This number is certified by the metric-engine and meets the data-quality bar.
+          <strong className="font-semibold">Trusted.</strong> {conf} — this number is certified
+          from your own data and meets Brain&apos;s quality bar.
         </span>
       </div>
     );
   }
 
   const isUntrusted = tier === 'Untrusted';
+  const conf = plainConfidence(grade) || 'Rough estimate';
   return (
     <div
       role="alert"
-      aria-label={`${isUntrusted ? 'Untrusted' : 'Estimated'} answer, confidence grade ${grade}`}
+      aria-label={`${isUntrusted ? 'Not yet reliable' : 'Estimated'} answer. ${conf}. Data-quality grade ${grade}.`}
       className={cn(
         'flex items-start gap-2 rounded-lg border p-3 text-sm',
         isUntrusted
@@ -190,18 +222,16 @@ export function AskTrustBanner({ tier, grade, className }: AskTrustBannerProps) 
     >
       <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
       <span>
-        <strong className="font-semibold">
-          {isUntrusted ? 'Untrusted' : 'Estimated'} (grade {grade}).
-        </strong>{' '}
-        The metric-engine computed this number, but the underlying data quality is{' '}
-        {isUntrusted ? 'not trustworthy' : 'below the trusted bar'} — treat it as{' '}
-        {isUntrusted ? 'indicative only' : 'an estimate'} until data quality recovers.
+        <strong className="font-semibold">{isUntrusted ? 'Not yet reliable.' : 'Estimated.'}</strong>{' '}
+        Brain calculated this number, but the data behind it is{' '}
+        {isUntrusted ? 'low quality' : 'below the trusted bar'} — treat it as{' '}
+        {isUntrusted ? 'indicative only' : 'an estimate'} until your data quality recovers.
       </span>
     </div>
   );
 }
 
-// ── Provenance footer — "computed, not generated." (metric_id + version + snapshot_id) ──
+// ── Provenance — "computed, not generated." behind a Technical-details disclosure ──
 
 interface AskProvenanceProps {
   binding: AskBinding;
@@ -211,27 +241,39 @@ interface AskProvenanceProps {
 
 export function AskProvenance({ binding, snapshotId, grade }: AskProvenanceProps) {
   return (
-    <div
-      className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"
-      aria-label={`Provenance: metric ${binding.metric_id} version ${binding.metric_version}, snapshot ${snapshotId}${grade ? `, confidence ${grade}` : ''}. Computed, not generated.`}
+    <details
+      className="group rounded-md border border-border bg-muted/40 text-xs text-muted-foreground [&_summary::-webkit-details-marker]:hidden"
       data-testid="ask-provenance"
     >
-      <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="inline-flex items-center gap-1">
-          <Database className="h-3.5 w-3.5" aria-hidden="true" />
-          <span className="font-medium text-foreground">{binding.metric_id}</span>
-          <span className="tabular-nums">{binding.metric_version}</span>
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <Hash className="h-3.5 w-3.5" aria-hidden="true" />
-          snapshot <span className="font-mono tabular-nums" data-testid="ask-snapshot">{snapshotId}</span>
-        </span>
-        {grade && <span>confidence {grade}</span>}
-      </p>
-      <p className="mt-1.5 italic">
-        Computed by the metric-engine from this snapshot — not generated by a model. Re-running
-        this binding at the snapshot reproduces the same number.
-      </p>
-    </div>
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md px-3 py-2 font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronDown
+          className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180"
+          aria-hidden="true"
+        />
+        <span>Technical details — how this was computed</span>
+      </summary>
+      <div className="space-y-1.5 border-t border-border px-3 py-2">
+        <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1">
+            <Database className="h-3.5 w-3.5" aria-hidden="true" />
+            metric{' '}
+            <span className="font-medium text-foreground">{binding.metric_id}</span>
+            <span className="tabular-nums">{binding.metric_version}</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <Hash className="h-3.5 w-3.5" aria-hidden="true" />
+            data snapshot{' '}
+            <span className="font-mono tabular-nums" data-testid="ask-snapshot">
+              {snapshotId}
+            </span>
+          </span>
+          {grade && <span>data-quality grade {grade}</span>}
+        </p>
+        <p className="italic">
+          Computed by Brain&apos;s metric engine from this data snapshot — not written by AI.
+          Re-running this same metric against the same snapshot reproduces the exact number.
+        </p>
+      </div>
+    </details>
   );
 }

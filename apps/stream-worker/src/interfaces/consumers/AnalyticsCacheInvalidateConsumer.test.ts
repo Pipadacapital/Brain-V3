@@ -374,6 +374,48 @@ describe('AnalyticsCacheInvalidateConsumer.processMessage — gold.rewritten.v1'
   });
 });
 
+// SPEC: 0.5 / AMD-23 — durable-config exemption (platform flags survive cache eviction)
+describe('SPEC 0.5 / AMD-23 — {brand_id}:flag:* keys are NEVER evicted', () => {
+  it('scope.all=true deletes cache keys but leaves the brand’s flag keys intact', async () => {
+    const { client, deletedKeys, remainingKeys } = makeFakeRedis([
+      `${BRAND_A}:realized_revenue:abc:v1`,
+      `${BRAND_A}:flag:stitch.v2`, // durable config — must survive the refresh-loop scope.all
+      `${BRAND_A}:flag:pixel.identify`,
+      `${BRAND_B}:flag:stitch.v2`, // other brand — untouchable anyway
+    ]);
+    const result = await buildConsumer(client).processMessage(
+      buildGoldRewrittenBuffer({ scope: { all: true } }), // the actual refresh-loop producer shape
+    );
+    expect(result.outcome).toBe('evicted');
+    expect(deletedKeys()).toEqual([`${BRAND_A}:realized_revenue:abc:v1`]);
+    expect(remainingKeys()).toContain(`${BRAND_A}:flag:stitch.v2`);
+    expect(remainingKeys()).toContain(`${BRAND_A}:flag:pixel.identify`);
+    expect(remainingKeys()).toContain(`${BRAND_B}:flag:stitch.v2`);
+  });
+
+  it('an exact scope.keys entry naming a flag key is refused (defence in depth)', async () => {
+    const { client, remainingKeys } = makeFakeRedis([`${BRAND_A}:flag:stitch.v2`]);
+    const result = await buildConsumer(client).processMessage(
+      buildCacheInvalidateBuffer({ scope: { keys: [`${BRAND_A}:flag:stitch.v2`] } }),
+    );
+    expect(result.outcome).toBe('evicted'); // event processed; flag key skipped
+    expect(remainingKeys()).toContain(`${BRAND_A}:flag:stitch.v2`);
+  });
+
+  it('a key_prefixes scan overlapping the flag namespace still skips flag keys', async () => {
+    const { client, remainingKeys, deletedKeys } = makeFakeRedis([
+      `${BRAND_A}:flag:stitch.v2`,
+      `${BRAND_A}:flags_report:abc:v1`, // a CACHE key that merely resembles the namespace — deletable
+    ]);
+    const result = await buildConsumer(client).processMessage(
+      buildCacheInvalidateBuffer({ scope: { key_prefixes: ['fla'] } }),
+    );
+    expect(result.outcome).toBe('evicted');
+    expect(remainingKeys()).toContain(`${BRAND_A}:flag:stitch.v2`);
+    expect(deletedKeys()).toContain(`${BRAND_A}:flags_report:abc:v1`);
+  });
+});
+
 describe('AnalyticsCacheInvalidateConsumer.processMessage — fail-safe (Redis error)', () => {
   it('Redis error during eviction → returns evicted (fail-safe, does NOT throw)', async () => {
     const { client } = makeFakeRedis([`${BRAND_A}:key:h:v1`], /* failOnDel */ true);

@@ -3,7 +3,7 @@
 **Status:** Decision-grade synthesis deliverable
 **Scope:** The ordered refactor of repo + database + pipelines required to reach the OFFICIAL Brain V4 architecture — grouped into workstreams with explicit dependencies.
 **Rule of adjudication:** When code / migrations / dbt / UI / APIs disagree with V4, **ARCHITECTURE WINS.**
-**Evidence base:** the validated audit bundle (RECON-1 + 8 workstream audits) and the sibling reports [01](./01-architecture-impact-report.md), [02](./02-repository-impact-report.md), [04](./04-database-audit.md), [08](./08-spark-ownership-report.md), [09](./09-starrocks-report.md).
+**Evidence base:** the validated audit bundle (RECON-1 + 8 workstream audits) and the sibling reports [01](./01-architecture-impact-report.md), [02](./02-repository-impact-report.md), [04](./04-database-audit.md), [08](./08-spark-ownership-report.md).
 
 > ⚠️ **HIGH-RISK** callouts mark load-bearing changes (revenue, attribution, billing, identity/PII, tenant isolation) that require explicit stakeholder sign-off **before** execution.
 
@@ -114,7 +114,7 @@ W8 Naming + hygiene + observability (parallelizable throughout)
 > ⚠️ **HIGH-RISK — ATTRIBUTION TRUTH.** `gold_attribution_credit` (StarRocks PRIMARY-KEY) + `gold_marketing_attribution`/`gold_attribution_paths` are the attribution SoR. Byte-exact money math (largest-remainder, recognition rule) must be preserved (ARCH-004/006; SEC-03). **RATIFY before execution.**
 
 ### W3 — StarRocks `mv_*` serving over Iceberg Gold
-**Why:** StarRocks **owns** Gold as base tables in `brain_gold.*`; **zero `mv_*` views exist** anywhere. The one-way `Iceberg→dbt→StarRocks` rule is codified in `db/starrocks/external_iceberg_catalog.sql:3`. V4: StarRocks serves `mv_*` ONLY (09-starrocks-report; Data Eng SPARK-002/003).
+**Why:** StarRocks **owns** Gold as base tables in `brain_gold.*`; **zero `mv_*` views exist** anywhere. The one-way `Iceberg→dbt→StarRocks` rule is codified in `db/starrocks/external_iceberg_catalog.sql:3`. V4: StarRocks serves `mv_*` ONLY (Data Eng SPARK-002/003).
 **Refactor:**
 - Replace `brain_gold.*` base tables with `mv_*` async materialized views over the new **Iceberg Gold** external catalog.
 - Re-home PRIMARY-KEY upsert semantics (e.g. `gold_attribution_credit`) onto Iceberg MERGE upstream; the MV becomes a read-only projection.

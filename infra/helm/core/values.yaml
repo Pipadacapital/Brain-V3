@@ -2,7 +2,7 @@
 replicaCount: 2
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
@@ -28,6 +28,18 @@ probes:
   path: /health           # core exposes a single /health endpoint
   readinessPath: /health
 
+# Prometheus scrape (AUD-INFRA-033). Core serves /metrics on its MAIN Fastify port
+# (apps/core/src/main.ts, next to /health) — the @brain/observability counters it already records
+# (connector_auth_rejected_total in the WebhookPipeline, job counters, …) previously never reached
+# Prometheus. The ServiceMonitor rides the existing `http` Service port; the job relabel pins
+# "brain-core" so BrainTargetDown{job=~"brain-.*"} covers the API/BFF tier.
+# Off by default (kind/staging have no Prometheus Operator CRDs); values-prod enables it.
+metrics:
+  serviceMonitor:
+    enabled: false
+    jobLabel: brain-core
+    interval: 15s
+
 # Secret (External Secrets ← AWS Secrets Manager) with DATABASE_URL, REDIS_URL,
 # STARROCKS_*, KAFKA brokers, AI gateway + connector secrets, etc.
 # P1 pre-scale: DATABASE_URL / BRAIN_APP_DATABASE_URL host:port should point at the PgBouncer
@@ -43,11 +55,12 @@ env:
     value: core
   - name: PORT
     value: "3001"
-  # UNIFIED-BRONZE: app Bronze reads target brain_bronze.events — what the deployed sink
-  # (bronze_landing, prod Argo Bronze cron) writes. The code default is 'legacy' (frozen
-  # pre-cutover tables, rollback-only), so set it explicitly or reads silently split-brain.
-  - name: BRONZE_SOURCE
-    value: events
+
+# AUD-OBS-2: OTel OTLP export flag — empty (default) keeps initObservability() a no-op
+# (no SDK loaded; spans/metrics stay in-process). Set per env to the collector/vendor
+# OTLP endpoint to turn tracing+metrics export ON; auth headers (if the endpoint needs
+# them) belong in the envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS.
+otelExporterOtlpEndpoint: ""
 
 serviceAccount:
   annotations: {}   # IRSA role for AWS Secrets Manager access (set per env)
@@ -87,3 +100,31 @@ autoscaling:
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300   # 5m cooldown — avoid thrashing on bursty BFF traffic
+
+# ── Wave-2 workload hardening (AUD-OPS-001/002/004, AUD-INFRA-022) ────────────
+# AUD-OPS-001: survive node drains / Spot reclaims / Karpenter consolidation.
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# AUD-OPS-002: best-effort zone + node spread (ScheduleAnyway never blocks
+# scheduling on kind/single-pool topologies).
+topologySpread:
+  enabled: true
+  constraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+# AUD-OPS-004: SIGTERM → graceful Fastify close; preStop sleep first so the ALB
+# (target-type=ip) stops routing to the Terminating pod before shutdown begins.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 10
+
+# AUD-INFRA-022: read-only root FS. OFF until verified against the runtime image
+# (tsx/pnpm may write under /tmp — an emptyDir is mounted there when enabled).
+# Flip to true after a staging soak; PSA `restricted` does NOT require it.
+readOnlyRootFilesystem: false

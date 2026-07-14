@@ -2,20 +2,21 @@
 
 /**
  * TrackingHealthPanel — the Tracking Health surface:
- *   - honest status (healthy / waiting / stale) via StatusBadge — never colour-only
- *   - KPIs (events, last-event freshness, consent, quarantine) via MetricCard
+ *   - honest status (healthy / waiting / stale) via StatusPill — never colour-only
+ *   - KPIs (events, last-event freshness, consent, quarantine) via MetricCard, every
+ *     title carrying a plain-language "?" tooltip (MetricTitle)
  *   - events-flowing volume chart (reuses DataHealthVolumeChart)
  *
  * HONESTY: every number comes straight from the tracking-health BFF read. Quarantine
  * volume has no per-brand DB sink (events route to a Kafka `.quarantine` topic, not a
- * table), so it is shown as an explicit "—" with a note — never a fabricated 0.
+ * table), so it is shown as an explicit "—" with a tooltip — never a fabricated 0.
  */
 
 import * as React from 'react';
-import { Activity } from 'lucide-react';
 import { SectionCard } from '@/components/ui/section-card';
-import { StatusBadge, type StatusTone } from '@/components/ui/status-badge';
+import { StatusPill, type StatusPillStatus } from '@/components/ui/status-pill';
 import { MetricCard } from '@/components/ui/metric-card';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { FreshnessIndicator } from '@/components/ui/freshness-indicator';
 import { ErrorCard } from '@/components/ui/error-card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -27,17 +28,24 @@ import {
 import { useTrackingHealth } from '@/lib/hooks/use-tracking-health';
 import { deriveTrackingStatus, type TrackingStatus, STALE_THRESHOLD_MS } from './tracking-status';
 
-const STATUS_CONFIG: Record<TrackingStatus, { tone: StatusTone; label: string; description: string; pulse?: boolean }> = {
-  healthy: { tone: 'success', label: 'Healthy', description: 'Events are flowing into Brain.' },
+const STATUS_CONFIG: Record<
+  TrackingStatus,
+  { status: StatusPillStatus; label: string; description: string }
+> = {
+  healthy: {
+    status: 'healthy',
+    label: 'Receiving events',
+    description: 'Your storefront is sending events to Brain.',
+  },
   waiting: {
-    tone: 'neutral',
-    label: 'No events yet',
+    status: 'waiting',
+    label: 'Waiting for events',
     description: 'No event has reached Brain for this brand yet.',
   },
   stale: {
-    tone: 'warning',
-    label: 'Stale',
-    description: 'Events were flowing but have gone quiet (no event in 24h+).',
+    status: 'waiting',
+    label: 'Gone quiet',
+    description: 'Events were arriving, but none in the last 24 hours.',
   },
 };
 
@@ -98,30 +106,47 @@ export function TrackingHealthPanel() {
 
   return (
     <div className="space-y-6" data-testid="tracking-health-panel">
-      {/* Honest status — StatusBadge pairs a dot with a text label */}
+      {/* Honest status — StatusPill pairs a shaped glyph with a text label */}
       <SectionCard
-        title="Tracking status"
+        title={
+          <MetricTitle
+            label="Tracking status"
+            help="Whether your storefront is sending data to Brain right now."
+          />
+        }
         meta={
-          <StatusBadge tone={cfg.tone} pulse={cfg.pulse} data-status={status} data-testid="tracking-health-status">
-            {cfg.label}
-          </StatusBadge>
+          <StatusPill
+            status={cfg.status}
+            label={cfg.label}
+            data-status={status}
+            data-testid="tracking-health-status"
+          />
         }
       >
         <p className="text-sm text-muted-foreground">{cfg.description}</p>
       </SectionCard>
 
-      {/* KPIs */}
+      {/* KPIs — every title carries a plain-language "?" tooltip */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div data-testid="kpi-total-events">
           <MetricCard
-            label="Events (30d)"
+            label={
+              <MetricTitle
+                label="Events collected (last 30 days)"
+                help="How many events your storefront sent to Brain in the last 30 days."
+              />
+            }
             value={hasData ? formatCount(totalEvents) : undefined}
-            unit="collected"
           />
         </div>
         <div data-testid="kpi-last-event">
           <MetricCard
-            label="Last event"
+            label={
+              <MetricTitle
+                label="Last event"
+                help="When the most recent event arrived from your storefront."
+              />
+            }
             value={lastEventAt ? formatRelativeTime(lastEventAt) : undefined}
             freshness={
               lastEventAt ? (
@@ -135,16 +160,26 @@ export function TrackingHealthPanel() {
         </div>
         <div data-testid="kpi-consent">
           <MetricCard
-            label="Analytics consent"
+            label={
+              <MetricTitle
+                label="Analytics consent"
+                help="How many events came from visitors who agreed to analytics tracking."
+              />
+            }
             value={hasData ? `${formatCount(consentGranted)} / ${formatCount(consentTotal)}` : undefined}
             unit="events"
           />
         </div>
         <div data-testid="kpi-quarantine">
           <MetricCard
-            label="Quarantined"
+            label={
+              <MetricTitle
+                label="Quarantined"
+                help="Events that fail validation are set aside in a shared holding stream for replay, so Brain has no per-brand count to show here."
+              />
+            }
             value="—"
-            unit="not stored per-brand"
+            unit="no per-brand count"
           />
         </div>
       </div>
@@ -152,43 +187,52 @@ export function TrackingHealthPanel() {
       {/* Events-flowing volume chart (reused, keeps its SR table fallback) */}
       <SectionCard
         title={
-          <span className="flex items-center gap-2">
-            <Activity className="size-4 text-muted-foreground" aria-hidden="true" />
-            Events flowing
-          </span>
+          <MetricTitle
+            label="Daily events"
+            help="How many events arrived from your storefront each day over the last 30 days."
+          />
         }
-        description="Daily collected-event volume, last 30 days."
+        description="Events per day, last 30 days."
         data-testid="tracking-health-volume"
       >
         <DataHealthVolumeChart data={volume} isLoading={false} />
       </SectionCard>
 
       {/* Delivery reliability — honest CLIENT-SIDE drop signal (pixel.dropped sum). Shows
-          "Events delivered reliably" at 0, or "N events dropped client-side (queue overflow)"
-          when >0. Never a fabricated 0 chart — it's a single honest tile. */}
+          "All events delivered" at 0, or "N events were lost in visitors' browsers" when >0.
+          Never a fabricated 0 chart — it's a single honest tile. */}
       <SectionCard
-        title="Delivery reliability"
+        title={
+          <MetricTitle
+            label="Delivery reliability"
+            help="Whether every event sent from your visitors' browsers actually reached Brain."
+          />
+        }
         meta={
-          <StatusBadge
-            tone={hasClientLoss ? 'warning' : 'success'}
+          <StatusPill
+            status={hasClientLoss ? 'waiting' : 'healthy'}
+            label={hasClientLoss ? 'Some events lost' : 'Reliable'}
             data-testid="tracking-health-delivery-status"
-          >
-            {hasClientLoss ? 'Client-side drops' : 'Reliable'}
-          </StatusBadge>
+          />
         }
         data-testid="tracking-health-delivery"
       >
         <div data-testid="kpi-client-dropped">
           <MetricCard
-            label="Client-side delivery"
+            label={
+              <MetricTitle
+                label="Browser delivery"
+                help="Counts events a visitor's browser could not send to Brain, usually because the page closed too quickly."
+              />
+            }
             value={
               hasData
                 ? hasClientLoss
-                  ? `${clientDropped.toLocaleString()} events dropped client-side (queue overflow)`
-                  : 'Events delivered reliably'
+                  ? `${clientDropped.toLocaleString()} events were lost in visitors' browsers before reaching Brain`
+                  : 'All events delivered'
                 : undefined
             }
-            unit={hasClientLoss ? undefined : 'no client-side loss'}
+            unit={hasClientLoss ? undefined : 'no events lost'}
           />
         </div>
       </SectionCard>

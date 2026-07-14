@@ -70,16 +70,20 @@ export {
   IdentitySuppressedEventSchema,
   IdentityReviewQueuedPayloadSchema,
   IdentityReviewQueuedEventSchema,
+  IdentityUnmergedPayloadSchema,
+  IdentityUnmergedEventSchema,
   IDENTITY_MINTED_TOPIC_SUFFIX,
   IDENTITY_LINKED_TOPIC_SUFFIX,
   IDENTITY_MERGED_TOPIC_SUFFIX,
   IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
   IDENTITY_REVIEW_QUEUED_TOPIC_SUFFIX,
+  IDENTITY_UNMERGED_TOPIC_SUFFIX,
   IDENTITY_MINTED_AVRO_SUBJECT,
   IDENTITY_LINKED_AVRO_SUBJECT,
   IDENTITY_MERGED_AVRO_SUBJECT,
   IDENTITY_SUPPRESSED_AVRO_SUBJECT,
   IDENTITY_REVIEW_QUEUED_AVRO_SUBJECT,
+  IDENTITY_UNMERGED_JSON_SCHEMA_SUBJECT,
   IDENTITY_EVENT_SCHEMAS,
 } from './events/identity.events.v1.js';
 export type {
@@ -95,6 +99,8 @@ export type {
   IdentitySuppressedEvent,
   IdentityReviewQueuedPayload,
   IdentityReviewQueuedEvent,
+  IdentityUnmergedPayload,
+  IdentityUnmergedEvent,
 } from './events/identity.events.v1.js';
 
 // ── API contracts (Sprint-0 legacy) ──────────────────────────────────────────
@@ -313,6 +319,7 @@ export {
   isBackfillInProgress,
 } from './api/connector.backfill.api.v1.js';
 export type {
+  BackfillTriggerRequest,
   BackfillTriggerResponse,
   BackfillJobProgress,
   BackfillErrorCode,
@@ -357,6 +364,10 @@ export {
   JourneyFirstTouchMixSchema,
   TimelineTouchDtoSchema,
   JourneyTimelineSchema,
+  JourneyEventDtoSchema,
+  JourneyEventsLedgerSchema,
+  IdentityAsOfStateSchema,
+  JourneyReplaySchema,
   JourneyStitchRateSchema,
   OrderStatusMixRowDtoSchema,
   OrderStatusMixSchema,
@@ -402,6 +413,8 @@ export {
   JourneyPathRowDtoSchema,
   JourneyPathLinkDtoSchema,
   JourneyPathsSchema,
+  JourneyListRowDtoSchema,
+  JourneyListSchema,
   RepeatLatencyBucketDtoSchema,
   RepeatLatencySchema,
   CohortUserDtoSchema,
@@ -431,6 +444,10 @@ export type {
   JourneyFirstTouchMix,
   TimelineTouchDto,
   JourneyTimeline,
+  JourneyEventDto,
+  JourneyEventsLedger,
+  IdentityAsOfState,
+  JourneyReplay,
   JourneyStitchRate,
   OrderStatusMixRowDto,
   OrderStatusMix,
@@ -474,6 +491,8 @@ export type {
   JourneyPathRowDto,
   JourneyPathLinkDto,
   JourneyPaths,
+  JourneyListRowDto,
+  JourneyList,
   RepeatLatencyBucketDto,
   RepeatLatency,
   CohortUserDto,
@@ -490,6 +509,22 @@ export type {
   AttributedRevenueTimeseriesBucketDto,
   AttributedRevenueTimeseries,
 } from './api/analytics.api.v1.js';
+
+// ── SPEC: B.3 — Wave-B Journey APIs (customer timeline / trace; AMD-14) ──
+export {
+  CustomerJourneyItemSchema,
+  CustomerJourneyTimelineSchema,
+  TraceTouchSchema,
+  IdentityEvidenceItemSchema,
+  JourneyTraceSchema,
+} from './api/journey-api.v1.js';
+export type {
+  CustomerJourneyItem,
+  CustomerJourneyTimeline,
+  TraceTouch,
+  IdentityEvidenceItem,
+  JourneyTrace,
+} from './api/journey-api.v1.js';
 
 // ── Saved segments (P2) — CRUD + preview over ops.saved_segment (operational state) ──
 export {
@@ -791,28 +826,22 @@ export {
   BrainIdLookupInputSchema,
   PrincipalScopedInputSchema,
   HashPrefix12Schema,
-  Customer360LookupInputSchema,
   Customer360TopCustomerSchema,
   Customer360LookupOutputSchema,
-  JourneyLookupInputSchema,
   JourneyTopRowSchema,
   JourneyLookupOutputSchema,
-  TimelineLookupInputSchema,
   TimelineEntrySchema,
   TimelineLookupOutputSchema,
-  IdentityExplainabilityLookupInputSchema,
   IdentityComboMemberSchema,
   IdentityMergeExplanationSchema,
   IdentityExplainabilityLookupOutputSchema,
   AttributionLookupInputSchema,
   McpChannelRoasSchema,
   AttributionLookupOutputSchema,
-  LtvLookupInputSchema,
   LtvLookupOutputSchema,
   MarketingPerfLookupInputSchema,
   McpCampaignRoasSchema,
   MarketingPerfLookupOutputSchema,
-  RecFeatureLookupInputSchema,
   RecFeatureRowSchema,
   RecFeatureLookupOutputSchema,
   SegmentLookupInputSchema,

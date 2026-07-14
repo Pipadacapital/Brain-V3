@@ -70,7 +70,13 @@ export type MergeResolveResult = z.infer<typeof MergeResolveResultSchema>;
 export const UnmergeResultSchema = z.object({
   unmerged: z.boolean(),
   reason: z.string().optional(),
+  /** The identity split back out (the former absorbed id restored to independent existence). */
   brain_id: z.string().optional(),
+  // SPEC: A.2.4 (WA-19) — additive audit surface for the reversal. Present when unmerged=true.
+  /** The surviving canonical the absorbed id had been folded into (the merge survivor, AMD-09). */
+  survivor_brain_id: z.string().optional(),
+  /** The ORIGINAL merge id this unmerge reversed (identity_merge_event.merge_id / MergeEvent.merge_id). */
+  merge_id: z.string().optional(),
 });
 export type UnmergeResult = z.infer<typeof UnmergeResultSchema>;
 
@@ -149,7 +155,7 @@ export type CustomerList = z.infer<typeof CustomerListSchema>;
  * One order on a customer's profile (the Orders sub-tab — formerly count-only). Money is bigint MINOR
  * units as a string (I-S07; BigInt-safe over JSON) paired with its sibling currency_code — never a float.
  */
-export const Customer360OrderSchema = z.object({
+const Customer360OrderSchema = z.object({
   order_id: z.string(),
   lifecycle_state: z.string(),
   is_terminal: z.boolean(),
@@ -158,7 +164,6 @@ export const Customer360OrderSchema = z.object({
   first_event_at: z.string().nullable(),
   state_effective_at: z.string().nullable(),
 });
-export type Customer360Order = z.infer<typeof Customer360OrderSchema>;
 
 export const Customer360Schema = z.discriminatedUnion('state', [
   z.object({

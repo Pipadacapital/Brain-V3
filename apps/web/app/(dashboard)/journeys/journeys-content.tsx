@@ -3,45 +3,58 @@
 /**
  * JourneysContent — Tab #6 "How do customers move from first visit to purchase?".
  *
- * Composes the BFF metric-engine journey surface (all read over silver_touchpoint via the Trino
- * serving seam, never the lakehouse directly) into the redesigned IA's TabShell frame:
- *   - a REAL aggregate visit→purchase PATH FLOW (the #32a gold_journey_paths Sankey: the top ordered
- *     channel paths with per-path converted-vs-dropped drop-off + the aggregated channel transitions),
- *   - the first-touch channel mix + deterministic cart-stitch rate,
- *   - the per-order touchpoint timeline.
+ * Plain-language slice: every metric title carries a "?" one-sentence tooltip (MetricTitle),
+ * internal event codes never reach the DOM (the trace section renders through the shared
+ * <JourneyTimeline>, which humanizes via lib/event-labels), and estimated/partial data is
+ * marked with the shared SyntheticBadge ("Estimated").
  *
- * REUSE, don't rebuild: the leaf components (FirstTouchMixChart, StitchRateCard, TouchpointTimeline,
- * SyntheticBadge, channelMeta) + the hooks (useJourneyPaths, useJourneyFirstTouchMix,
- * useJourneyStitchRate) are wired pieces — this file composes + frames them.
+ * Composes the BFF metric-engine journey surface (all read over the Trino serving seam,
+ * never the lakehouse directly):
+ *   - "Ranked conversion paths" — the gold_journey_paths aggregate as a table
+ *     (Path as channel chips · Conversions · Conversion rate),
+ *   - "Which channel first brought visitors" — first-touch mix + the Identified-visitors card,
+ *   - "Trace one journey" — order ID → the shared <JourneyTimeline> fed by useJourneyTimeline.
  *
- * The #32a path flow REPLACES the earlier interim storefront-funnel stand-in: it is now a true
- * aggregate path Sankey (ordered channel paths + edges + per-path drop-off), not a stage funnel.
- *
- * The path flow is a brand-wide aggregate (no date range); the date range scopes the first-touch mix
- * and cart-stitch sections; the touchpoint timeline picks a single order for the per-journey trace.
- *
- * Honesty: SyntheticBadge stays visible whenever the BFF returns data_source='synthetic'; FreshnessBadge
- * renders tone='unknown' because the journey/path endpoints expose no served-at timestamp (never a
- * fabricated "just now"); per-path conversion % is the engine's exact integer-basis-point string (never
- * re-divided in the client); empty states explain WHY they're empty + link pixel setup (never a fake zero).
+ * Honesty: SyntheticBadge stays visible whenever the BFF returns data_source='synthetic';
+ * FreshnessBadge renders tone='unknown' because these endpoints expose no served-at timestamp
+ * (never a fabricated "just now"); conversion % is the engine's exact 2dp string (never
+ * re-divided in the client); empty states explain WHY they're empty (never a fake zero).
  */
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Footprints, GitBranch, ArrowRight, Layers, ChevronRight } from 'lucide-react';
+import { Footprints, GitBranch, ArrowRight, Layers, ChevronRight, Route } from 'lucide-react';
 import { TabShell } from '@/components/ui/tab-shell';
 import { SectionCard } from '@/components/ui/section-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { FirstTouchMixChart } from '@/components/analytics/first-touch-mix-chart';
 import { StitchRateCard } from '@/components/analytics/stitch-rate-card';
-import { TouchpointTimeline } from '@/components/analytics/touchpoint-timeline';
+import { JourneyTimeline } from '@/components/analytics/journey-timeline';
+import { RecentJourneysFeed } from '@/components/analytics/recent-journeys-feed';
 import { channelMeta } from '@/components/analytics/channel-meta';
+import { eventLabel } from '@/lib/event-labels';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { plainLabel } from '@/lib/format/plain-language';
+import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { relativeTime } from '@/lib/format/relative-time';
+import type { CurrencyCode } from '@brain/money';
 import {
   DateRangeFilter,
   initialRange,
@@ -52,16 +65,22 @@ import {
   useJourneyFirstTouchMix,
   useJourneyStitchRate,
   useJourneyPaths,
+  useJourneyTimeline,
+  useOrdersList,
 } from '@/lib/hooks/use-analytics';
 import type {
   AnalyticsJourneyFirstTouchMixResponse,
   AnalyticsJourneyStitchRateResponse,
   AnalyticsJourneyPathsResponse,
+  AnalyticsOrdersListResponse,
+  JourneyTouchpointRow,
 } from '@/lib/api/types';
 
 type FirstTouchHasData = Extract<AnalyticsJourneyFirstTouchMixResponse, { state: 'has_data' }>;
 type StitchHasData = Extract<AnalyticsJourneyStitchRateResponse, { state: 'has_data' }>;
 type PathsHasData = Extract<AnalyticsJourneyPathsResponse, { state: 'has_data' }>;
+type OrdersHasData = Extract<AnalyticsOrdersListResponse, { state: 'has_data' }>;
+type OrderPickRow = OrdersHasData['orders'][number];
 
 /** Longer windows than the default 7/30/90 — journeys accrue over months. */
 const JOURNEY_PRESETS: readonly RangePreset[] = [
@@ -77,54 +96,55 @@ function num(s: string): string {
 const EXPLAINER = {
   title: 'Journeys — visit → purchase',
   description:
-    'How customers travel from their first touch to a purchase: the most common channel PATHS (with per-path drop-off), the first-touch channel mix, the deterministic cart-stitch rate, and per-order touchpoint timelines.',
+    'How customers travel from their first touch to a purchase: the channel paths that lead to orders, which channel first brought visitors, how many anonymous browsers we can identify, and a per-order journey trace.',
   metrics: [
     {
-      name: 'Path flow (Sankey)',
-      definition: 'The most-common ordered channel paths customers take to a purchase, ranked by journey count.',
-      howComputed: 'silver_touchpoint pre-aggregated into the gold_journey_paths mart (top paths per brand) via useJourneyPaths. Per-path conversion % is exact integer basis points from the engine — never re-divided in the client.',
+      name: 'Ranked conversion paths',
+      definition:
+        'The channel sequences visitors take before buying, ranked by how many purchases each path produced.',
+      howComputed:
+        'Journeys pre-aggregated into the gold_journey_paths mart (top paths per brand) via useJourneyPaths. Conversion % is exact from the engine — never re-divided in the client.',
     },
     {
-      name: 'Per-path drop-off',
-      definition: 'Of the journeys that took a path, how many converted versus dropped before an order.',
-      howComputed: 'journey_count − converted_count per path (both exact integer counts from the mart). Aggregated channel→channel edges show where journey volume concentrates.',
+      name: 'Which channel first brought visitors',
+      definition: 'The channel that first brought each visitor to your store (count + share).',
+      howComputed:
+        'First touch per journey over the Silver journey tier (useJourneyFirstTouchMix). Shares are exact from the engine — never re-divided in the client.',
     },
     {
-      name: 'First-touch mix',
-      definition: 'Which channel first brought each converting journey (count + share by channel).',
-      howComputed: 'First touch per journey over silver_touchpoint (useJourneyFirstTouchMix). Shares are integer basis points from the engine — never re-divided in the client.',
+      name: 'Identified visitors',
+      definition:
+        'Anonymous browsers we can prove belong to a known customer — linked only by a definitive identifier, never guessed.',
+      howComputed:
+        'Distinct anonymous journeys linked to a known customer (the identifier is read back from the order — never inferred) ÷ all anonymous journeys (useJourneyStitchRate). Honest null when there are no journeys.',
     },
     {
-      name: 'Cart-stitch rate',
-      definition: 'Share of anonymous journeys deterministically linked to a known customer/order.',
-      howComputed: 'Distinct anon journeys stitched to a brain_id (read back from the order — never inferred) ÷ all anon journeys (useJourneyStitchRate). Null when there are no journeys.',
-    },
-    {
-      name: 'Touchpoint timeline',
-      definition: 'The ordered touchpoints leading to one specific order — trace a single journey end-to-end.',
-      howComputed: 'silver_touchpoint touches (touch_seq asc) for the order’s stitched anon journey (useJourneyTimeline).',
+      name: 'Trace one journey',
+      definition: 'Every step one customer took before a specific order — from first visit to purchase.',
+      howComputed:
+        'The ordered touchpoints of the order’s linked anonymous session (useJourneyTimeline), rendered in plain language.',
     },
   ],
   sections: [
     {
-      heading: 'Reading the path flow',
-      body: 'Each row is one ordered channel path (e.g. Paid · Meta → Email → Direct), ranked by how many journeys took it. The split bar shows converted vs dropped journeys on that path — the per-path drop-off. The path flow is a brand-wide aggregate; it does not use the date range.',
+      heading: 'Reading the paths table',
+      body: 'Each row is one ordered channel path (e.g. Paid · Meta → Email → Direct). "Conversions" is how many journeys on that path ended in a purchase; "Conversion rate" is that share of everyone who took the path. The table is a brand-wide aggregate; it does not use the date range.',
     },
     {
       heading: 'Pick a window or an order',
-      body: 'The date range scopes the first-touch mix and cart-stitch sections. To trace one journey, search an order in the Touchpoint timeline — it resolves that order’s stitched anonymous session into its ordered touches.',
+      body: 'The date range scopes the first-touch mix and Identified-visitors sections. To trace one journey, pick one of your recent orders in "Trace one journey" — it shows every tracked step that led to that order.',
     },
     {
-      heading: 'Live vs synthetic',
-      body: 'Journey data carries a data_source flag from the BFF. When real page-view coverage is thin a window may be enriched with clearly-labelled synthetic fixtures; whenever that happens the “Synthetic” badge stays visible and nothing is presented as live.',
+      heading: 'Live vs estimated',
+      body: 'Journey data carries a data_source flag from the BFF. When real tracking coverage is thin a window may be filled in with clearly-labelled estimated data; whenever that happens the "Estimated" badge stays visible and nothing is presented as live.',
     },
   ],
   refreshCadence:
     'Journey + path marts refresh on the Silver→Gold loop. These endpoints expose no served-at timestamp, so freshness reads “unknown” rather than a fabricated time.',
   sources: [
     'silver_touchpoint',
-    'gold_journey_paths / mv_gold_journey_paths (path flow)',
-    'Journey first-touch / stitch marts',
+    'gold_journey_paths / mv_gold_journey_paths (ranked paths)',
+    'Journey first-touch / identified-visitors marts',
   ],
 };
 
@@ -150,7 +170,7 @@ function EmptyPixel({ message }: { message: string }) {
 export function JourneysContent() {
   const [range, setRange] = useState<DateRange>(() => initialRange(JOURNEY_PRESETS, '90'));
 
-  // The path flow is a brand-wide aggregate (gold_journey_paths) — it does NOT use the date range.
+  // The paths table is a brand-wide aggregate (gold_journey_paths) — it does NOT use the date range.
   const pathsQ = useJourneyPaths({ limit: 12 });
   const mixQ = useJourneyFirstTouchMix({ from: range.from, to: range.to });
   const stitchQ = useJourneyStitchRate({ from: range.from, to: range.to });
@@ -159,10 +179,12 @@ export function JourneysContent() {
   const stitch = stitchQ.data;
   const paths = pathsQ.data;
 
-  const synthetic =
+  // Scope the "Estimated" badge to the surface it actually describes — a synthetic paths mart
+  // must not stamp the live first-touch card as estimated (and vice-versa). Each card owns its flag.
+  const pathsSynthetic = paths?.state === 'has_data' && paths.data_source === 'synthetic';
+  const mixSynthetic =
     (mix?.state === 'has_data' && mix.data_source === 'synthetic') ||
-    (stitch?.state === 'has_data' && stitch.data_source === 'synthetic') ||
-    (paths?.state === 'has_data' && paths.data_source === 'synthetic');
+    (stitch?.state === 'has_data' && stitch.data_source === 'synthetic');
 
   return (
     <TabShell
@@ -178,20 +200,26 @@ export function JourneysContent() {
         />
       }
     >
-      {/* ── Visit → purchase PATH flow (real Sankey/path-flow + per-path drop-off) ── */}
+      {/* ── Recent journeys feed (per-visitor complete journeys, plain-language) ── */}
+      <RecentJourneysFeed />
+
+      {/* ── Ranked conversion paths (gold_journey_paths aggregate) ── */}
       <SectionCard
         title={
           <span className="inline-flex items-center gap-2">
             <GitBranch className="size-4 text-muted-foreground" aria-hidden="true" />
-            Visit → purchase paths
+            <MetricTitle
+              label="Ranked conversion paths"
+              help="The sequence of channels a customer interacted with before buying, ranked by how many purchases each path produced."
+            />
           </span>
         }
-        description="The most common ordered channel paths customers take to a purchase, ranked by journeys — with the converted-vs-dropped split per path. Brand-wide aggregate over gold_journey_paths."
+        description="Each row is one channel route customers take on the way to an order — with how many bought and what share that is of everyone who took the path."
         actions={
-          synthetic ? (
+          pathsSynthetic ? (
             <SyntheticBadge
               data-testid="journey-paths-synthetic-badge"
-              reason="Real page-view coverage is thin, so path data is enriched with clearly-labelled synthetic journey fixtures (real shape, synthetic source). Never presented as live."
+              reason="Real tracking coverage is thin, so path data includes clearly-labelled estimated journeys. Never presented as live."
             />
           ) : undefined
         }
@@ -202,54 +230,69 @@ export function JourneysContent() {
           <ErrorCard error={pathsQ.error} retry={pathsQ.refetch} />
         )}
         {!pathsQ.isLoading && !pathsQ.error && paths?.state === 'no_data' && (
-          <EmptyPixel message="The path flow appears once the Brain Pixel captures multi-touch journeys over silver_touchpoint and those journeys are aggregated into the gold_journey_paths mart." />
+          <EmptyPixel message="Conversion paths appear once the Brain Pixel captures visits across more than one channel and those journeys lead to orders." />
         )}
         {!pathsQ.isLoading && !pathsQ.error && paths?.state === 'has_data' && (
-          <PathFlow data={paths} />
+          <RankedPathsTable data={paths} />
         )}
       </SectionCard>
 
-      {/* ── First-touch channel mix + cart-stitch rate ── */}
+      {/* ── First-touch channel mix + identified visitors ── */}
       <SectionCard
         title={
           <span className="inline-flex items-center gap-2">
             <Layers className="size-4 text-muted-foreground" aria-hidden="true" />
-            First-touch mix &amp; cart-stitch rate
+            <MetricTitle
+              label="Which channel first brought visitors"
+              help="The channel that first brought each visitor to your store, before anything else happened."
+            />
           </span>
         }
-        description="Which channel first brought each journey, and how much anonymous traffic we deterministically link to known orders."
+        description="Where journeys begin — and how many anonymous browsers we can prove belong to a known customer."
         actions={
-          synthetic ? (
+          mixSynthetic ? (
             <SyntheticBadge
               data-testid="journey-synthetic-badge"
-              reason="Real page-view coverage is thin in this window, so it is enriched with clearly-labelled synthetic journey fixtures (real shape, synthetic source). Never presented as live."
+              reason="Real tracking coverage is thin in this window, so it includes clearly-labelled estimated journeys. Never presented as live."
             />
           ) : undefined
         }
         meta={<FreshnessBadge timestamp={undefined} />}
       >
+        {/* Always state the window this card covers — "Showing D1 → D2 · N visitor journeys". */}
+        <div className="mb-3">
+          <DataWindowBadge
+            from={range.from}
+            to={range.to}
+            count={mix?.state === 'has_data' ? Number(mix.total) : undefined}
+            label="visitor journeys"
+          />
+        </div>
         {mixQ.isLoading && <MixSkeleton />}
         {!mixQ.isLoading && mixQ.error && <ErrorCard error={mixQ.error} retry={mixQ.refetch} />}
         {!mixQ.isLoading && !mixQ.error && mix?.state === 'no_data' && (
-          <EmptyPixel message="First-touch mix and the cart-stitch rate build from pixel touchpoints with UTM / click-id context in the Silver tier." />
+          <EmptyPixel message="This chart builds from the first tracked visit of each journey — it appears once the Brain Pixel starts capturing visits." />
         )}
         {!mixQ.isLoading && !mixQ.error && mix?.state === 'has_data' && (
           <JourneyMix mix={mix} stitch={stitch?.state === 'has_data' ? stitch : null} />
         )}
       </SectionCard>
 
-      {/* ── Per-order touchpoint timeline (trace one journey) ── */}
+      {/* ── Trace one journey (order → shared JourneyTimeline) ── */}
       <SectionCard
         title={
           <span className="inline-flex items-center gap-2">
             <Footprints className="size-4 text-muted-foreground" aria-hidden="true" />
-            Trace one journey
+            <MetricTitle
+              label="Trace one journey"
+              help="Every tracked step one customer took before a specific order — from first visit to purchase."
+            />
           </span>
         }
-        description="Search an order to see its ordered touchpoints — the anonymous session deterministically stitched into the purchase."
+        description="Pick one of your recent orders to see the visits, ads, and actions that led up to that purchase."
         meta={<FreshnessBadge timestamp={undefined} />}
       >
-        <TouchpointTimeline />
+        <TraceOneJourney />
       </SectionCard>
     </TabShell>
   );
@@ -279,82 +322,109 @@ function PathChips({ channels }: { channels: string[] }) {
 }
 
 /**
- * The aggregate journey-path flow: KPI headline + the top ordered channel paths, each with its
- * journey count, conversion %, and a converted-vs-dropped split bar (the per-path drop-off).
- * Integer counts; conversion % is the engine's exact 2dp string (never re-divided in the client).
+ * Ranked conversion paths — KPI headline + a table of the top ordered channel paths
+ * (Path chips · Conversions · Conversion rate), ranked by conversions. Integer counts;
+ * conversion % is the engine's exact 2dp string (never re-divided in the client).
  */
-function PathFlow({ data }: { data: PathsHasData }) {
-  // Scale path bars by the busiest path's journey count (visual geometry only; counts are exact).
-  const maxJourneys = data.paths.reduce((m, p) => {
-    const v = Number(BigInt(p.journey_count));
-    return v > m ? v : m;
-  }, 0);
-  const scale = maxJourneys || 1;
+function RankedPathsTable({ data }: { data: PathsHasData }) {
+  const [query, setQuery] = useState('');
+
+  // Rank by purchases (exact integer compare — no float math).
+  const ranked = [...data.paths].sort((a, b) =>
+    BigInt(b.converted_count) > BigInt(a.converted_count)
+      ? 1
+      : BigInt(b.converted_count) < BigInt(a.converted_count)
+        ? -1
+        : 0,
+  );
+
+  // Search across the human-meaningful column: the friendly channel labels making up each path
+  // (e.g. "Meta" matches "Paid · Meta → Email"). Never exposes the raw channel code.
+  const rows = filterRows(ranked, query, (p) =>
+    p.channels.map((ch) => channelMeta(ch).label).join(' '),
+  );
 
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
           label="Distinct paths"
+          help="How many different channel routes customers took on the way to your store."
           value={data.total_paths.toLocaleString('en-IN')}
           sublabel="unique channel routes"
           data-testid="journey-paths-kpi-paths"
         />
         <KpiTile
           label="Journeys"
+          help="How many visitor journeys we tracked across all paths."
           value={num(data.total_journeys)}
           sublabel="across all paths"
           data-testid="journey-paths-kpi-journeys"
         />
         <KpiTile
           label="Overall conversion"
-          value={data.overall_conversion_pct != null ? `${data.overall_conversion_pct}%` : '—'}
-          sublabel="journeys that converted"
+          help="Of all tracked journeys, the share that ended in a purchase."
+          value={data.overall_conversion_pct != null ? `${data.overall_conversion_pct}%` : null}
+          sublabel="journeys that ended in a purchase"
           data-testid="journey-paths-kpi-conversion"
         />
       </div>
 
-      <ul className="space-y-4" aria-label="Top visit → purchase channel paths">
-        {data.paths.map((p) => {
-          const journeys = Number(BigInt(p.journey_count));
-          const converted = Number(BigInt(p.converted_count));
-          const dropped = Number(BigInt(p.dropped_count));
-          const widthPct = Math.max(journeys > 0 ? 6 : 0, Math.min(100, (journeys / scale) * 100));
-          // Converted share of the journey bar (visual split only; the counts beside it are exact).
-          const convFillPct = journeys > 0 ? Math.min(100, (converted / journeys) * 100) : 0;
-          return (
-            <li key={p.path_signature} className="space-y-1.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search a channel (e.g. Meta, Email)…"
+          aria-label="Search conversion paths by channel"
+        />
+        <VerifyLink
+          href="/analytics/orders"
+          label="See the orders behind these conversions"
+        />
+      </div>
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Path</TableHead>
+            <TableHead numeric>Conversions</TableHead>
+            <TableHead numeric>Conversion rate</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={3} className="text-sm text-muted-foreground">
+                No paths match “{query}”. Clear the search to see every conversion path.
+              </TableCell>
+            </TableRow>
+          )}
+          {rows.map((p) => (
+            <TableRow key={p.path_signature}>
+              <TableCell>
                 <PathChips channels={p.channels} />
-                <span className="tabular-nums text-sm text-muted-foreground">
-                  {journeys.toLocaleString('en-IN')} journeys
-                  {p.conversion_pct != null && (
-                    <span className="ml-2 text-foreground">{p.conversion_pct}% conv.</span>
-                  )}
+              </TableCell>
+              <TableCell numeric className="tabular-nums">
+                {num(p.converted_count)}
+                <span className="ml-1 text-xs text-muted-foreground">
+                  of {num(p.journey_count)}
                 </span>
-              </div>
-              {/* Journey-volume bar with a converted (solid) vs dropped (muted) split. */}
-              <div
-                className="h-3 overflow-hidden rounded bg-muted"
-                style={{ width: `${widthPct}%` }}
-                aria-hidden="true"
-              >
-                <div className="h-full bg-foreground/70" style={{ width: `${convFillPct}%` }} />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                <span className="text-foreground">{converted.toLocaleString('en-IN')}</span> converted
-                {' · '}
-                <span className="text-foreground">{dropped.toLocaleString('en-IN')}</span> dropped
-              </p>
-            </li>
-          );
-        })}
-      </ul>
+              </TableCell>
+              <TableCell numeric className="tabular-nums">
+                {p.conversion_pct != null ? `${p.conversion_pct}%` : '—'}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
 
       {data.links.length > 0 && (
         <div>
           <p className="mb-2 text-sm font-medium text-muted-foreground">
-            Where journeys flow (channel transitions)
+            <MetricTitle
+              label="Where journeys flow next"
+              help="For visitors who touched more than one channel, the most common channel-to-channel hand-offs."
+            />
           </p>
           <ul className="space-y-1.5" aria-label="Aggregated channel transitions">
             {data.links.slice(0, 8).map((l, i) => (
@@ -379,11 +449,13 @@ function PathFlow({ data }: { data: PathsHasData }) {
 
 function JourneyMix({ mix, stitch }: { mix: FirstTouchHasData; stitch: StitchHasData | null }) {
   const total = BigInt(mix.total);
+  const estimated = mix.data_source === 'synthetic';
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
-          label="Distinct journeys"
+          label="Visitor journeys"
+          help="How many distinct visitor journeys started in the selected period."
           value={Number(total).toLocaleString('en-IN')}
           sublabel={`${mix.from} → ${mix.to}`}
           data-testid="journey-kpi-total"
@@ -393,27 +465,32 @@ function JourneyMix({ mix, stitch }: { mix: FirstTouchHasData; stitch: StitchHas
             hitPct={stitch.hit_pct}
             stitched={stitch.stitched}
             total={stitch.total}
+            href="/customers"
+            linkLabel="See the identified customers"
             data-testid="journey-kpi-stitch"
           />
         ) : (
           <KpiTile
-            label="Cart-stitch hit-rate"
+            label="Identified visitors"
+            help="We only link an anonymous visitor to a known customer when we see a definitive identifier (like an email used at checkout)."
             value={null}
-            sublabel="deterministic anon → order"
+            sublabel="anonymous browsers linked to known customers"
             data-testid="journey-kpi-stitch"
           />
         )}
         <KpiTile
           label="Data source"
-          value={mix.data_source === 'synthetic' ? 'Synthetic-enriched' : 'Live'}
-          sublabel={mix.data_source === 'synthetic' ? 'dev preview data' : 'from your pixel'}
+          help="Whether these numbers come from your live tracking pixel or include estimated data."
+          value={estimated ? 'Estimated' : 'Live'}
+          estimated={estimated}
+          sublabel={estimated ? 'includes estimated data' : 'from your tracking pixel'}
           data-testid="journey-kpi-coverage"
         />
       </div>
 
       <div>
         <p className="mb-2 text-sm font-medium text-muted-foreground">
-          Journeys by first-touch channel
+          Journeys by the channel that first brought them
         </p>
         <FirstTouchMixChart rows={mix.by_channel} />
       </div>
@@ -421,9 +498,178 @@ function JourneyMix({ mix, stitch }: { mix: FirstTouchHasData; stitch: StitchHas
   );
 }
 
+// ── Trace one journey — order ID → shared <JourneyTimeline> ──────────────────
+
+/** Plain-language phrase per channel, for "Landed on the homepage (Meta ad)"-style sentences. */
+const CHANNEL_PHRASE: Record<string, string> = {
+  paid: 'a paid ad',
+  paid_meta: 'a Meta ad',
+  paid_google: 'a Google ad',
+  paid_tiktok: 'a TikTok ad',
+  email: 'an email link',
+  organic_social: 'social media',
+  referral: 'a link on another site',
+  direct: 'a direct visit',
+};
+
+/** Human page name from a landing path ('/' → 'the homepage', '/products/x' → 'products/x'). */
+function pageName(path: string | null): string | null {
+  if (!path) return null;
+  if (path === '/' || path === '') return 'the homepage';
+  return path.replace(/^\//, '');
+}
+
+/**
+ * Compose a plain-language sentence for one touchpoint — "Landed on the homepage (a Meta ad)"
+ * style — from the channel + humanized event label + page/campaign context on the row.
+ * Never renders the raw event code (eventLabel humanizes internally).
+ */
+function describeTouch(t: JourneyTouchpointRow): string {
+  const phrase = CHANNEL_PHRASE[t.channel];
+  const page = pageName(t.landing_path);
+  const via = phrase ? ` (${phrase})` : '';
+
+  let base: string;
+  if (t.is_first_touch) {
+    base = page ? `Landed on ${page}${via}` : `Arrived at the store${via}`;
+  } else if (page) {
+    base = `Visited ${page}${via}`;
+  } else {
+    base = `${eventLabel(t.event_type).description}${via}`;
+  }
+
+  const campaign = t.utm_campaign ? ` — campaign “${t.utm_campaign}”` : '';
+  const referrer = !t.utm_campaign && t.referrer_host ? ` — came from ${t.referrer_host}` : '';
+  return `${base}${campaign}${referrer}`;
+}
+
+/** One plain-language option for the recent-orders picker — no raw code stands alone. */
+function orderPickLabel(o: OrderPickRow): string {
+  const when = relativeTime(o.occurred_at).label;
+  const amount = formatMoneyDisplay(o.amount_minor, o.currency_code as CurrencyCode);
+  const status = o.financial_status ? plainLabel(o.financial_status) : 'Order';
+  return `${status} · ${amount} · ${when} · #${o.order_id}`;
+}
+
+/**
+ * TraceOneJourney — pick a RECENT ORDER from a plain-language dropdown → the shared
+ * <JourneyTimeline>, fed by the EXISTING useJourneyTimeline hook (which resolves the order to
+ * its stitched session, D-5). Replaces the old free-text order-ID box (a non-technical owner
+ * has no order IDs memorised) with a browsable picker of the brand's latest orders
+ * (useOrdersList). Oldest-first steps: the story reads top-to-bottom from first visit to
+ * purchase. Honest empty states when there are no orders yet, or the order has no linked
+ * session — never a fabricated step.
+ */
+function TraceOneJourney() {
+  const [orderId, setOrderId] = useState<string | null>(null);
+
+  const ordersQ = useOrdersList(1, 25);
+  const orders: OrderPickRow[] = ordersQ.data?.state === 'has_data' ? ordersQ.data.orders : [];
+
+  const { data, isLoading, error, refetch } = useJourneyTimeline(orderId);
+
+  const hasData = data?.state === 'has_data';
+
+  return (
+    <div className="space-y-3" data-testid="journey-timeline-section">
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="journey-order-pick" className="text-xs font-medium text-muted-foreground">
+            Pick a recent order to trace
+          </label>
+          {ordersQ.isLoading ? (
+            <Skeleton className="h-9 w-72" />
+          ) : ordersQ.error ? (
+            <ErrorCard error={ordersQ.error} retry={ordersQ.refetch} />
+          ) : orders.length === 0 ? (
+            <p className="max-w-md text-sm text-muted-foreground">
+              No recent orders to trace yet — orders show up here as they come in, and each one can be
+              traced back to the visit that led to it.
+            </p>
+          ) : (
+            <select
+              id="journey-order-pick"
+              value={orderId ?? ''}
+              onChange={(e) => setOrderId(e.target.value ? e.target.value : null)}
+              data-testid="journey-order-picker"
+              className="h-9 w-72 max-w-full rounded-md border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">Choose a recent order…</option>
+              {orders.map((o) => (
+                <option key={o.order_id} value={o.order_id}>
+                  {orderPickLabel(o)}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      </div>
+
+      {orderId === null && orders.length > 0 && (
+        <EmptyState
+          compact
+          icon={<Route />}
+          title="Trace a customer's journey"
+          description="Pick one of your recent orders above to see every tracked step that led to that purchase — from first visit onwards."
+        />
+      )}
+
+      {orderId !== null && isLoading && <JourneyTimeline events={[]} loading />}
+
+      {orderId !== null && !isLoading && error && <ErrorCard error={error} retry={refetch} />}
+
+      {orderId !== null && !isLoading && !error && data?.state === 'no_data' && (
+        <EmptyState
+          compact
+          icon={<Footprints />}
+          title="No linked visit history for this order"
+          description={`We couldn't connect order ${orderId} to a browsing session. We only make that link when the session is definitively tied to the order at checkout — we never guess.`}
+        />
+      )}
+
+      {orderId !== null && !isLoading && !error && hasData && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-foreground">
+              Journey for order <span className="font-mono">{orderId}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              · {data.touches.length} step{data.touches.length === 1 ? '' : 's'}
+            </span>
+            {data.data_source === 'synthetic' && (
+              <SyntheticBadge
+                data-testid="journey-timeline-synthetic-badge"
+                reason="This journey is built from clearly-labelled estimated data so the timeline is demoable — live tracking replaces it as coverage grows."
+              />
+            )}
+          </div>
+
+          {data.touches.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">
+              This order is linked to a session, but no steps were recorded for it.
+            </p>
+          ) : (
+            <JourneyTimeline
+              events={[...data.touches]
+                .sort((a, b) => a.touch_seq - b.touch_seq)
+                .map((t) => ({
+                  id: String(t.touch_seq),
+                  occurredAt: t.occurred_at,
+                  eventType: t.event_type,
+                  channel: t.channel,
+                  description: describeTouch(t),
+                }))}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PathsSkeleton() {
   return (
-    <div className="space-y-3" aria-busy="true" aria-label="Loading visit → purchase paths…">
+    <div className="space-y-3" aria-busy="true" aria-label="Loading conversion paths…">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Skeleton className="h-24 w-full" />
         <Skeleton className="h-24 w-full" />

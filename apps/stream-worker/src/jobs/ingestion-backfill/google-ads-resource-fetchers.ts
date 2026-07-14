@@ -40,7 +40,7 @@ import type {
   ResourceDescriptor,
   CanonicalEventDraft,
 } from '@brain/connector-core';
-import { mapGoogleRowToEvent, uuidV5FromSpendRow } from '@brain/ad-spend-mapper';
+import { mapGoogleRowToEvent, uuidV5FromSpendRow, googleBreakdownKey } from '@brain/ad-spend-mapper';
 import {
   GoogleAdsSearchStreamClient,
   type GoogleAdsCredentials,
@@ -51,6 +51,12 @@ import type { Pool } from 'pg';
 const GOOGLE_LEVELS: ReadonlyArray<'campaign' | 'adset' | 'ad'> = ['campaign', 'adset', 'ad'];
 /** Date-window chunk size (days). 30 keeps each chunk under Google's daily ops-quota footprint. */
 const CHUNK_DAYS = 30;
+
+/** FIREHOSE date-window views onboarded as their own backfill resources (each one GAQL view). */
+const FIREHOSE_RESOURCES: ReadonlySet<string> = new Set([
+  'spend_by_device', 'ad_schedule', 'keyword', 'search_term', 'geo',
+  'age_range', 'gender', 'shopping_product', 'click', 'conversion_action',
+]);
 
 interface BuildGoogleAdsResourceFetcherArgs {
   pool: Pool;
@@ -69,21 +75,22 @@ interface BuildGoogleAdsResourceFetcherArgs {
 export function buildGoogleAdsResourceFetcher(
   args: BuildGoogleAdsResourceFetcherArgs,
 ): IResourcePageFetcher {
-  switch (args.resource) {
-    case 'spend':
-      return new GoogleAdsSpendFetcher(args.secrets, args.brandId);
-    default:
-      throw new Error(
-        `[ingestion-backfill] google_ads resource "${args.resource}" has no fetcher here`,
-      );
+  if (args.resource === 'spend') {
+    return new GoogleAdsSpendFetcher(args.secrets, args.brandId);
   }
+  if (FIREHOSE_RESOURCES.has(args.resource)) {
+    return new GoogleAdsFirehoseFetcher(args.secrets, args.brandId, args.resource);
+  }
+  throw new Error(
+    `[ingestion-backfill] google_ads resource "${args.resource}" has no fetcher here`,
+  );
 }
 
 /**
  * GoogleAdsSpendFetcher — date-window backfill of daily spend via GAQL SearchStream. One framework
  * page == one date-window chunk (all three GAQL levels), walked from the anchor back toward floorAt.
  */
-export class GoogleAdsSpendFetcher implements IResourcePageFetcher {
+class GoogleAdsSpendFetcher implements IResourcePageFetcher {
   private readonly client: GoogleAdsSearchStreamClient;
   private authed = false;
 
@@ -146,9 +153,11 @@ export class GoogleAdsSpendFetcher implements IResourcePageFetcher {
         records.push({
           // BYTE-EXACT cross-lane id parity: call the SAME id fn the live repull uses
           // (google-ads-spend-repull/run.ts emitRows) with the SAME args — brandId, the
-          // 'google_ads' platform literal, stat_date, level, level_id. Carried as providerId so the
-          // driver's passthrough deriver emits it verbatim as the Bronze event_id (== live id).
-          providerId: uuidV5FromSpendRow(this.brandId, 'google_ads', statDate, props.level, levelId),
+          // 'google_ads' platform literal, stat_date, level, level_id + breakdownKey. Base spend rows
+          // carry no segment dims → googleBreakdownKey === '' → byte-identical to the live base id.
+          providerId: uuidV5FromSpendRow(
+            this.brandId, 'google_ads', statDate, props.level, levelId, googleBreakdownKey(props),
+          ),
           events: [draft],
         });
 
@@ -162,6 +171,84 @@ export class GoogleAdsSpendFetcher implements IResourcePageFetcher {
     const nextCursor = reachedFloor ? null : isoDate(addDays(parseIsoDate(chunkFrom), -1));
     // Floor the reachedAt to the chunk's oldest date so the driver's floor check advances even when a
     // chunk returns no rows (an empty spend day must still move the cursor older).
+    const oldestOccurredAt = oldest ?? parseIsoDate(chunkFrom);
+
+    return { records, nextCursor, oldestOccurredAt };
+  }
+}
+
+/**
+ * GoogleAdsFirehoseFetcher — date-window backfill of a single FIREHOSE view (device/keyword/search-
+ * term/geo/demo/shopping/click/conversion-action) via GAQL SearchStream. One framework page == one
+ * date-window chunk of that one view. Identical resumable/checkpoint contract to the base spend
+ * fetcher; the ONLY difference is it streams `streamResource(view)` and folds the view's segment dims
+ * into the breakdownKey seed → a distinct, collision-free Bronze event_id per breakdown row.
+ */
+class GoogleAdsFirehoseFetcher implements IResourcePageFetcher {
+  private readonly client: GoogleAdsSearchStreamClient;
+  private authed = false;
+
+  constructor(
+    secrets: GoogleAdsCredentials,
+    private readonly brandId: string,
+    private readonly viewResource: string,
+  ) {
+    this.client = new GoogleAdsSearchStreamClient(secrets);
+  }
+
+  async fetchPage(args: {
+    resource: ResourceDescriptor;
+    cursor: string | null;
+    floorAt: Date;
+  }): Promise<ResourcePage> {
+    if (!this.authed) {
+      await this.client.authenticate();
+      this.authed = true;
+    }
+
+    const floorDate = isoDate(args.floorAt);
+    const chunkTo = args.cursor ?? isoDate(new Date());
+    if (chunkTo < floorDate) {
+      return { records: [], nextCursor: null };
+    }
+    const chunkFrom = maxDate(isoDate(addDays(parseIsoDate(chunkTo), -(CHUNK_DAYS - 1))), floorDate);
+
+    const records: FetchedRecord[] = [];
+    let oldest: Date | undefined;
+
+    // streamResource THROWS on auth / account-disabled / quota exhaustion — let it propagate so the
+    // driver fails the run and preserves the cursor (resume from this same chunk next run).
+    const rows = await this.client.streamResource(this.viewResource, chunkFrom, chunkTo);
+    for (const raw of rows) {
+      const accountCurrency = raw.currency_code ?? 'USD';
+      const mapped = mapGoogleRowToEvent(raw, accountCurrency, null);
+      const props = mapped.properties;
+      const statDate = props.stat_date;
+      const levelId = props.level_id;
+      if (!statDate || !levelId) continue;
+
+      const draft: CanonicalEventDraft = {
+        event_name: mapped.event_name,
+        occurred_at: mapped.occurred_at,
+        provenance: { brand_id: this.brandId, source: 'google_ads' }, // MT-1 — never from the API
+        properties: props as unknown as Record<string, unknown>,
+      };
+
+      records.push({
+        // The breakdownKey folds this view's segment dims → a distinct id from base spend + every
+        // other breakdown row. SAME id fn as live → backfill↔live parity within the view.
+        providerId: uuidV5FromSpendRow(
+          this.brandId, 'google_ads', statDate, props.level, levelId, googleBreakdownKey(props),
+        ),
+        events: [draft],
+      });
+
+      const occ = new Date(mapped.occurred_at);
+      if (!Number.isNaN(occ.getTime()) && (!oldest || occ < oldest)) oldest = occ;
+    }
+
+    const reachedFloor = chunkFrom <= floorDate;
+    const nextCursor = reachedFloor ? null : isoDate(addDays(parseIsoDate(chunkFrom), -1));
     const oldestOccurredAt = oldest ?? parseIsoDate(chunkFrom);
 
     return { records, nextCursor, oldestOccurredAt };

@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka-connect-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/kafka-connect
+  labels:
+    project: brain
+    environment: prod
+    service: kafka-connect
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
+    targetRevision: master
+    path: infra/helm/kafka-connect
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  # NO automated sync for prod — manual promotion gate. ADR-0010: this Deployment is the
+  # SOLE Bronze landing writer (the bronze-landing CronWorkflow no longer exists). Sync
+  # AFTER strimzi-kafka (broker up) + iceberg-rest (catalog up); the post-install hook Job
+  # registers all 10 connectors idempotently (PUT = create-or-update).
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

@@ -101,6 +101,13 @@ export interface WebhookStrategyContext {
   saltHex: string;
   /** Region code (e.g. 'IN'). */
   regionCode: string;
+  /**
+   * SPEC: A.1.4 (WA-09) — per-brand `connector.identity_fields` flag state, resolved by the
+   * pipeline (fail-closed: absent/undefined = OFF = today's envelope byte-identical). When true,
+   * strategies pass { emitInteropIdentifiers: true } to the mappers → AMD-01 interop dual-write
+   * (email_sha256 / phone_sha256) + checkout_session_id where the provider carries it.
+   */
+  identityFieldsEnabled?: boolean;
   /** Correlation ID for the request. */
   correlationId: string;
   /** Request ID for logging. */
@@ -130,7 +137,18 @@ export interface IWebhookStrategy {
   signatureVerify(
     rawBody: Buffer,
     headers: FastifyRequest['headers'],
-    getSecret: (lookupKey: string) => Promise<{ webhookSecret: string; connectorLookupKey: string }>,
+    getSecret: (lookupKey: string) => Promise<{
+      webhookSecret: string;
+      connectorLookupKey: string;
+      /**
+       * Optional per-instance provenance of the webhook secret, read from the credential bundle's
+       * `webhook_secret_origin` marker: 'minted' = Brain generated it at connect (the merchant never
+       * entered one — they may be UNABLE to configure it in the provider UI, e.g. Shopflo), 'merchant'
+       * = the merchant supplied their own (signatures are expected → strict verify). Absent for
+       * legacy bundles / providers that don't stamp it — strategies MUST treat absent as strict.
+       */
+      webhookSecretOrigin?: string;
+    }>,
   ): Promise<SignatureVerifyResult>;
 
   /**

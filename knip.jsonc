@@ -6,7 +6,13 @@
   // roots are not flagged as dead.
   // (jsonc, not json: knip@5 rejects the old "//" comment-key workaround as an unrecognized key.)
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "ignoreBinaries": ["docker", "docker compose", "trino", "spark-submit"],
+  // Types/interfaces exported next to the functions whose signatures use them are the
+  // function's NAMED signature (and required for declaration emit in packages/*) —
+  // stripping `export` there is churn, not cleanup. Functions/consts stay strictly reported.
+  "ignoreExportsUsedInFile": { "interface": true, "type": true },
+  // cloudflared is an OS-level binary (brew/apt), invoked by package.json dev:tunnel and
+  // tools/dev/*-tunnel.sh — not an npm dependency.
+  "ignoreBinaries": ["docker", "docker compose", "trino", "spark-submit", "cloudflared"],
   "ignoreDependencies": [
     "@brain/.*",
     // NEVER remove: loaded via a dynamic import in packages/pii-vault/src/index.ts — removing
@@ -17,10 +23,7 @@
     // Load-bearing root devDep: tools/dev/v4-refresh-loop.sh runs `pnpm exec tsx`.
     "tsx",
     // Configured via .prettierrc.
-    "prettier",
-    // apps/stream-worker e2e helper still asserts the legacy Bronze table over mysql2;
-    // removable only after the AUD-CODE-002 Trino port lands.
-    "mysql2"
+    "prettier"
   ],
   "ignore": [
     "**/dist/**",
@@ -34,7 +37,24 @@
     // Negative-control fixtures for the custom eslint rules — intentionally "dead".
     "tools/eslint-rules/fixtures/**",
     // Shopify-CLI-built web pixel extension (shopify.extension.toml owns its entrypoint).
-    "extensions/**"
+    "extensions/**",
+    // Workflow-tool script launched dynamically by path (cleanup-plan §3.11: orchestrator
+    // invocation is out-of-graph) — not imported anywhere by design.
+    "tools/dev/e2e-gate.wf.js",
+    // Manual ops fixture, a documented runbook step (docs/runbooks/RB-4-local-lakehouse.md).
+    "tools/pixel-fixture/seed-touchpoints.mjs",
+    // AUD-IMPL-022 decision: KEEP generating. Part of the D.2 semantic-metrics codegen set
+    // (views/preaggs/catalog.json/metric-ids.ts), snapshot-tested against a fresh compile —
+    // the compile-time metric-id enum awaiting consumers, not an orphan to delete piecemeal.
+    "packages/semantic-metrics/src/generated/metric-ids.ts",
+    // Workflow-tool scripts launched by path (PR_BODY.md documents the reproducible
+    // blueprint workflow; v4-naming-guard carves the dir out for the same reason).
+    ".eos-workflows/**",
+    // Boundary-seam barrel: eslint.config.mjs bans cross-module reach-around past index.ts,
+    // so this file is the connector module's only legal cross-module import point. The
+    // composition root (main.ts/bootstrap) is the sanctioned deep-import exception, hence
+    // knip sees no importers today (AUD-CODE-011).
+    "apps/core/src/modules/connector/index.ts"
   ],
   "workspaces": {
     "apps/core": { "entry": ["src/main.ts", "src/index.ts"] },
@@ -63,6 +83,15 @@
       "ignore": ["components/ui/**", "e2e/**"]
     },
     "packages/*": { "entry": ["src/index.ts"] },
-    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] }
+    "packages/pixel-sdk": {
+      // src/asset/entry.ts is the esbuild entrypoint of the served /pixel.js IIFE bundle
+      // (tools/pixel-asset-bundle.mjs entryPoints) — out-of-path for knip's import graph, so
+      // without this it false-positives entry.ts + auto-instrument.ts as unused (AUD-IMPL-022).
+      "entry": ["src/index.ts", "src/asset/entry.ts"]
+    },
+    "tools/*": { "entry": ["src/index.ts", "src/main.ts", "*.config.ts"] },
+    // Operator-run DPDP drill harness (AUD-OPS-040): launched via `pnpm --filter
+    // @brain/tool-privacy drill`, never imported — the script IS the entrypoint.
+    "tools/privacy": { "entry": ["src/rtbf-drill.ts"] }
   }
 }

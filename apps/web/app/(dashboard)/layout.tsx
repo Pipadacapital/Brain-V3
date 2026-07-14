@@ -1,12 +1,12 @@
 /**
  * Dashboard shell layout — sidebar navigation + main content area.
  *
- * Redesigned IA: a FLAT sidebar of 8 user-goal tabs (Home, Customers, Marketing,
- * Behaviour, Journeys, Retention, Identity, Settings), each answering ONE business
- * question. Customer Profile is a sub-route of Customers (customers/[id]), not a nav item.
- * Deep tools (insights, recommendations, ml, ask, billing, revenue, orders, finance &
- * fulfilment analytics, data health/quality) stay as working routes linked from within
- * these tabs — removed from the nav, never lost.
+ * IA: a GROUPED sidebar organised into labelled sections (Overview, Customers, Marketing,
+ * Behaviour & Journeys, Revenue & Orders, Data & Ops, Settings). Every important center is
+ * surfaced here — the deep tools previously linked only from within tabs (insights, ask,
+ * recommendations, ml, attribution, revenue/orders/finance & fulfilment analytics, data
+ * health/quality, connectors, pixel, consent, members, billing) now appear under their
+ * natural section. Detail/drill-down routes (customers/[id], products/[id]) stay sub-routes.
  *
  * feat-multi-brand (B4): BrandSwitcher is mounted in the sidebar below the logo,
  * above the nav links. It is always rendered even for single-brand users (MA-15).
@@ -40,6 +40,33 @@ import {
   ShoppingCart,
   ShoppingBag,
   Lock,
+  Lightbulb,
+  Sparkles,
+  Wand2,
+  GitMerge,
+  Split,
+  TrendingUp,
+  Filter,
+  Heart,
+  MessageSquare,
+  IndianRupee,
+  Receipt,
+  Percent,
+  Landmark,
+  Truck,
+  PackageCheck,
+  MapPin,
+  HeartPulse,
+  ShieldCheck,
+  Boxes,
+  Plug,
+  ScanLine,
+  FileCheck,
+  UserCog,
+  CreditCard,
+  Route,
+  Coins,
+  Ruler,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -63,35 +90,103 @@ interface NavItem {
   centerKey?: string;
 }
 
+interface NavSection {
+  /** Section header (a decorative, aria-hidden label). null → no header (the top/Overview group). */
+  title: string | null;
+  items: NavItem[];
+}
+
 /**
- * Redesigned IA — EIGHT user-goal top-level tabs, each answering ONE business question
- * (Customer Profile is a sub-route of Customers, not a nav item). Ordered by usage.
+ * Grouped IA — every important center is reachable from the sidebar, organised into labelled
+ * sections so the (now ~40-item) nav stays scannable. Previously-hidden deep tools (insights, ask,
+ * recommendations, ml, attribution, revenue/orders/finance & fulfilment analytics, data
+ * health/quality, connectors, pixel, consent, members, billing) are surfaced here under their
+ * natural section instead of only being linked from within tabs.
  *
- * Progressive-unlock gating is PRESERVED via item.centerKey: a gated tab locks (never
- * navigates into an empty/not-ready center) until the brand's data foundation supports it.
- * The deep tools that left the nav (insights, recommendations, ml, ask, billing, revenue,
- * orders, settlements, cod-rto, logistics, margin, data health/quality) stay reachable as
- * working routes linked from inside these tabs — nothing was lost.
+ * Progressive-unlock gating is PRESERVED via item.centerKey: a gated item locks (never navigates
+ * into an empty/not-ready center) until the brand's data foundation supports it.
  */
-const NAV_ITEMS: NavItem[] = [
-  { href: '/home', label: 'Home', icon: LayoutDashboard },
-  { href: '/customers', label: 'Customers', icon: Users, centerKey: 'identity' },
-  { href: '/segments', label: 'Segments', icon: SlidersHorizontal, centerKey: 'identity' },
-  { href: '/marketing', label: 'Marketing', icon: Megaphone, centerKey: 'attribution' },
-  { href: '/marketing/campaigns', label: 'Campaigns', icon: Target, centerKey: 'attribution' },
-  { href: '/marketing/utm', label: 'UTM Sources', icon: Compass, centerKey: 'attribution' },
-  { href: '/analytics/products', label: 'Products', icon: Package },
-  { href: '/behaviour', label: 'Behaviour', icon: MousePointerClick },
-  { href: '/analytics/search', label: 'Search & Forms', icon: Search },
-  { href: '/analytics/checkout', label: 'Checkout', icon: ShoppingCart },
-  { href: '/cart-abandonment', label: 'Cart Abandonment', icon: ShoppingBag },
-  { href: '/journeys', label: 'Journeys', icon: Footprints, centerKey: 'journey' },
-  { href: '/retention', label: 'Retention', icon: Repeat },
-  { href: '/retention/churn', label: 'Churn risk', icon: HeartCrack, centerKey: 'identity' },
-  { href: '/identity', label: 'Identity', icon: Fingerprint, centerKey: 'identity' },
-  { href: '/operations', label: 'Operations', icon: Activity },
-  { href: '/data', label: 'Data', icon: Database },
-  { href: '/settings', label: 'Settings', icon: Settings },
+const NAV_SECTIONS: NavSection[] = [
+  {
+    title: null,
+    items: [
+      { href: '/home', label: 'Home', icon: LayoutDashboard },
+      { href: '/insights', label: 'Insights', icon: Lightbulb },
+      { href: '/ask', label: 'Ask Brain', icon: Sparkles },
+      { href: '/recommendations', label: 'Recommendations', icon: Wand2 },
+    ],
+  },
+  {
+    title: 'Customers',
+    items: [
+      { href: '/customers', label: 'Customers', icon: Users, centerKey: 'identity' },
+      { href: '/segments', label: 'Segments', icon: SlidersHorizontal, centerKey: 'identity' },
+      { href: '/identity', label: 'Identity', icon: Fingerprint, centerKey: 'identity' },
+      { href: '/identity/merge-review', label: 'Merge Review', icon: GitMerge, centerKey: 'identity' },
+      { href: '/retention', label: 'Retention', icon: Repeat },
+      { href: '/retention/churn', label: 'Churn Risk', icon: HeartCrack, centerKey: 'identity' },
+    ],
+  },
+  {
+    title: 'Marketing',
+    items: [
+      { href: '/marketing', label: 'Marketing', icon: Megaphone, centerKey: 'attribution' },
+      { href: '/marketing/campaigns', label: 'Campaigns', icon: Target, centerKey: 'attribution' },
+      { href: '/marketing/utm', label: 'UTM Sources', icon: Compass, centerKey: 'attribution' },
+      { href: '/analytics/attribution', label: 'Attribution', icon: Split, centerKey: 'attribution' },
+      { href: '/analytics/spend', label: 'Ad Spend & ROAS', icon: TrendingUp, centerKey: 'attribution' },
+    ],
+  },
+  {
+    title: 'Behaviour & Journeys',
+    items: [
+      { href: '/behaviour', label: 'Behaviour', icon: MousePointerClick },
+      { href: '/journeys', label: 'Journeys', icon: Footprints, centerKey: 'journey' },
+      { href: '/journeys/explorer', label: 'Journey Explorer', icon: Route, centerKey: 'journey' },
+      { href: '/analytics/products', label: 'Products', icon: Package },
+      { href: '/analytics/search', label: 'Search & Forms', icon: Search },
+      { href: '/analytics/checkout', label: 'Checkout', icon: ShoppingCart },
+      { href: '/cart-abandonment', label: 'Cart Abandonment', icon: ShoppingBag },
+      { href: '/analytics/funnel', label: 'Funnel', icon: Filter },
+      { href: '/analytics/engagement', label: 'Engagement', icon: Heart },
+      { href: '/analytics/conversion-feedback', label: 'Conversion Feedback', icon: MessageSquare },
+    ],
+  },
+  {
+    title: 'Revenue & Orders',
+    items: [
+      { href: '/analytics/revenue', label: 'Revenue', icon: IndianRupee },
+      { href: '/analytics/orders', label: 'Orders', icon: Receipt },
+      { href: '/analytics/margin', label: 'Margin & Costs', icon: Percent },
+      { href: '/analytics/profit', label: 'Profit & Margin', icon: Coins },
+      { href: '/analytics/settlements', label: 'Settlements', icon: Landmark },
+      { href: '/analytics/cod-rto', label: 'CoD / RTO', icon: Truck },
+      { href: '/analytics/order-status', label: 'Order Status', icon: PackageCheck },
+      { href: '/analytics/logistics', label: 'Logistics', icon: MapPin },
+    ],
+  },
+  {
+    title: 'Data & Ops',
+    items: [
+      { href: '/data', label: 'Data', icon: Database },
+      { href: '/data/health', label: 'Data Health', icon: HeartPulse },
+      { href: '/data/quality', label: 'Data Quality', icon: ShieldCheck },
+      { href: '/operations', label: 'Operations', icon: Activity },
+      { href: '/ml', label: 'Models', icon: Boxes },
+      { href: '/metrics', label: 'Metrics Catalog', icon: Ruler },
+    ],
+  },
+  {
+    title: 'Settings',
+    items: [
+      { href: '/settings', label: 'Settings', icon: Settings },
+      { href: '/settings/connectors', label: 'Integrations', icon: Plug },
+      { href: '/settings/pixel', label: 'Brain Pixel', icon: ScanLine },
+      { href: '/settings/consent', label: 'Consent', icon: FileCheck },
+      { href: '/settings/members', label: 'Members', icon: UserCog },
+      { href: '/billing', label: 'Billing', icon: CreditCard },
+    ],
+  },
 ];
 
 const NAV_LINK_BASE =
@@ -194,13 +289,25 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <BrandSwitcher />
 
         <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Navigation links">
-          <ul className="space-y-0.5" role="list">
-            {NAV_ITEMS.map((item) => (
-              <li key={item.label}>
-                <NavLink item={item} />
-              </li>
-            ))}
-          </ul>
+          {NAV_SECTIONS.map((section, i) => (
+            <div key={section.title ?? 'overview'} className={cn(i > 0 && 'mt-4')}>
+              {section.title && (
+                <p
+                  className="px-2.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60"
+                  aria-hidden="true"
+                >
+                  {section.title}
+                </p>
+              )}
+              <ul className="space-y-0.5" role="list">
+                {section.items.map((item) => (
+                  <li key={item.label}>
+                    <NavLink item={item} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </nav>
 
         <UserMenu />

@@ -119,6 +119,82 @@ describe('identity readers over the Neo4j SoR (live)', () => {
     expect(found!.identifier_count).toBe(1);
   });
 
+  // ── SPEC: A.2.4 (WA-19) — unmerge reversal over the real Neo4j graph + PG audit ──────────────────
+  it('unmerge — closes the merge interval, restores the node, writes an UnmergeEvent + PG audit', async () => {
+    if (!available) return;
+    const SURV = 'baaaa032-0032-0032-0032-0000000000c1'; // survivor
+    const ABS = 'baaaa032-0032-0032-0032-0000000000c2';  // absorbed
+    const MERGE = 'caaaa032-0032-0032-0032-0000000000c3';
+    const ABS_HASH = '2'.repeat(64);
+    const now = 1_700_000_100_000;
+
+    // Seed a committed merge: ABS merged INTO SURV (ALIAS_OF carries the merge_id, valid_to null = live).
+    const s = driver.session();
+    try {
+      await s.run(
+        `MERGE (surv:Customer {brand_id:$b, brain_id:$surv})
+           SET surv.lifecycle_state='active', surv.created_at=$now
+         MERGE (abs:Customer {brand_id:$b, brain_id:$abs})
+           SET abs.lifecycle_state='merged', abs.merged_into=$surv, abs.created_at=$now
+         MERGE (i:Identifier {brand_id:$b, type:'email', hash:$h})
+         MERGE (i)-[r:IDENTIFIES]->(abs) SET r.tier='strong', r.is_active=true, r.created_at=$now
+         MERGE (abs)-[al:ALIAS_OF]->(surv)
+           ON CREATE SET al.merge_id=$merge, al.rule_version='v1-admin', al.valid_from=$now, al.valid_to=null`,
+        { b: BRAND, surv: SURV, abs: ABS, h: ABS_HASH, merge: MERGE, now },
+      );
+    } finally {
+      await s.close();
+    }
+
+    const res = await reader.unmergeCustomer(BRAND, ABS, { actor: USER, reason: 'distinct people' });
+    expect(res.unmerged).toBe(true);
+    expect(res.brain_id).toBe(ABS);
+    expect(res.survivor_brain_id).toBe(SURV);
+    expect(res.merge_event_id).toBe(MERGE);
+
+    // GRAPH: interval CLOSED (valid_to set, edge preserved), node restored, UnmergeEvent audit kept.
+    const g = driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      const q = await g.run(
+        `MATCH (abs:Customer {brand_id:$b, brain_id:$abs})
+         OPTIONAL MATCH (abs)-[al:ALIAS_OF]->(:Customer)
+         OPTIONAL MATCH (ue:UnmergeEvent {brand_id:$b, absorbed_brain_id:$abs})
+         RETURN abs.lifecycle_state AS life, abs.merged_into AS merged_into,
+                al.valid_to AS valid_to, ue.merge_event_id AS ue_merge, ue.actor AS ue_actor`,
+        { b: BRAND, abs: ABS },
+      );
+      const row = q.records[0]!;
+      expect(row.get('life')).toBe('split');
+      expect(row.get('merged_into')).toBeNull();
+      expect(row.get('valid_to')).not.toBeNull(); // interval bi-temporally closed, not deleted
+      expect(row.get('ue_merge')).toBe(MERGE);
+      expect(row.get('ue_actor')).toBe(USER);
+    } finally {
+      await g.close();
+    }
+
+    // PG: the reversible-decision-log row (action='unmerge', actor + reason in detail). identity_audit
+    // is FORCE-RLS (0017) — read inside a tx with the brand GUC set (mirrors the reader's own write).
+    const client = await appPool.connect();
+    let auditRows: Array<{ merge_id: string; detail: { actor: string; survivor_brain_id: string } }>;
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [BRAND]);
+      const audit = await client.query(
+        `SELECT action, merge_id, detail FROM identity_audit WHERE brand_id=$1 AND brain_id=$2 AND action='unmerge' ORDER BY occurred_at DESC LIMIT 1`,
+        [BRAND, ABS],
+      );
+      auditRows = audit.rows;
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+    expect(auditRows.length).toBe(1);
+    expect(auditRows[0]!.merge_id).toBe(MERGE);
+    expect(auditRows[0]!.detail.actor).toBe(USER);
+    expect(auditRows[0]!.detail.survivor_brain_id).toBe(SURV);
+  });
+
   it('GDPR erase — tombstones the identifier edge + marks erased; 360 reflects it', async () => {
     if (!available) return;
     const e = await eraseCustomer(BRAND, BRAIN, reader);

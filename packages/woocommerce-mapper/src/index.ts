@@ -25,8 +25,11 @@
  * brandId is ALWAYS passed by the caller (from the connector row — MT-1), NEVER from the payload.
  */
 
-import { hashToUuidShaped } from '@brain/connector-core';
+import { hashToUuidShaped, type IdentityFieldsOptions } from '@brain/connector-core';
 import { hashIdentifier, normalizePhone } from '@brain/identity-core';
+// SPEC: A.1.4 — WA-09 interop-space dual-write (AMD-01): plain-sha256 of the SAME normalized
+// values, so pixel identify hashes become joinable with connector identities.
+import { emailInteropHash, phoneInteropHash } from '@brain/identity-normalization';
 import { minorUnitDigits } from '@brain/money';
 
 // ── Canonical event name (MUST equal shopify-mapper's — the shared contract) ──
@@ -149,6 +152,11 @@ export interface OrderProperties {
   hashed_customer_email?: string;
   hashed_customer_phone?: string;
   storefront_customer_id?: string;
+  // ── SPEC: A.1.4 (WA-09, AMD-01 dual-write) — INTEROP-space plain-sha256 identifiers,
+  // emitted ONLY when the caller passes emitInteropIdentifiers (flag connector.identity_fields).
+  // Salted fields above are unchanged; platform_customer_id = storefront_customer_id (AMD-02).
+  email_sha256?: string;
+  phone_sha256?: string;
   line_items?: OrderLineItem[];
   tax_total_minor?: string;
   tax_lines?: OrderTaxLine[];
@@ -274,6 +282,8 @@ function str(v: unknown): string | null {
  * @param saltHex     Per-brand 64-char hex salt for PII hashing
  * @param regionCode  Region for phone normalization (e.g. 'IN')
  * @param dataSource  'real' shape; dev fixture source → 'synthetic' (DEV-HONESTY)
+ * @param identityFields SPEC: A.1.4 (WA-09) — optional dual-write knob; ABSENT = byte-identical
+ *                       pre-Wave-A output (flag connector.identity_fields OFF).
  */
 export function mapWooOrderToEvent(
   order: WooOrderShape,
@@ -281,6 +291,7 @@ export function mapWooOrderToEvent(
   saltHex: string,
   regionCode: string,
   dataSource: DataSource = 'real',
+  identityFields?: IdentityFieldsOptions,
 ): MappedOrderEvent {
   const orderId = String(order.id ?? '').trim();
   if (!orderId) {
@@ -313,14 +324,23 @@ export function mapWooOrderToEvent(
   // ── PII boundary: hash billing email/phone; raw DROPPED here ──
   let hashedEmail: string | undefined;
   let hashedPhone: string | undefined;
+  // SPEC: A.1.4 — INTEROP-space dual-write (AMD-01), flag-gated by the caller. undefined when OFF.
+  let emailSha256: string | undefined;
+  let phoneSha256: string | undefined;
   const billing = order.billing;
   if (billing) {
     if (billing.email) {
       hashedEmail = hashIdentifier(billing.email, 'email', saltHex, regionCode);
+      if (identityFields?.emitInteropIdentifiers === true) {
+        emailSha256 = emailInteropHash(billing.email) ?? undefined;
+      }
     }
     if (billing.phone) {
       const { normalized } = normalizePhone(billing.phone, regionCode);
       hashedPhone = hashIdentifier(normalized, 'phone', saltHex, regionCode);
+      if (identityFields?.emitInteropIdentifiers === true) {
+        phoneSha256 = phoneInteropHash(billing.phone, regionCode) ?? undefined;
+      }
     }
   }
   const storefrontCustomerId =
@@ -387,6 +407,9 @@ export function mapWooOrderToEvent(
     ...(hashedEmail ? { hashed_customer_email: hashedEmail } : {}),
     ...(hashedPhone ? { hashed_customer_phone: hashedPhone } : {}),
     ...(storefrontCustomerId ? { storefront_customer_id: storefrontCustomerId } : {}),
+    // SPEC: A.1.4 — interop dual-write (present ONLY when connector.identity_fields is ON).
+    ...(emailSha256 ? { email_sha256: emailSha256 } : {}),
+    ...(phoneSha256 ? { phone_sha256: phoneSha256 } : {}),
     ...(lineItems.length ? { line_items: lineItems } : {}),
     ...(order.total_tax ? { tax_total_minor: (tryDecimalToMinor(order.total_tax, currencyCode) ?? 0n).toString() } : {}),
     ...(taxLines.length ? { tax_lines: taxLines } : {}),
@@ -415,6 +438,11 @@ export {
   WOOCOMMERCE_CUSTOMERS_RESOURCE,
   WOOCOMMERCE_COUPONS_RESOURCE,
   WOOCOMMERCE_REFUNDS_RESOURCE,
+  // Historical-depth policy cap (WOOCOMMERCE_MAX_HISTORY_YEARS env-overridable, default 5y):
+  WOOCOMMERCE_DEFAULT_MAX_HISTORY_YEARS,
+  WOOCOMMERCE_MAX_BACKFILL_WINDOW_MS,
+  resolveWooMaxHistoryYears,
+  wooMaxBackfillWindowMs,
 } from './manifest.js';
 
 export {

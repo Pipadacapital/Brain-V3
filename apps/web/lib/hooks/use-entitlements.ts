@@ -12,7 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 import { analyticsApi } from '@/lib/api/client';
 import type { EntitlementEntry } from '@/lib/api/types';
 
-export const ENTITLEMENTS_QUERY_KEY = ['entitlements'] as const;
+const ENTITLEMENTS_QUERY_KEY = ['entitlements'] as const;
 
 export function useEntitlements() {
   return useQuery({

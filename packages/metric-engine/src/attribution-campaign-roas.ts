@@ -19,6 +19,7 @@
 
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+import { spendView } from './measurement-migration.js';
 import type { AttributionModelId } from './attribution-models.js';
 
 /** Format an exact BIGINT ratio to a fixed-precision decimal string (no float). */
@@ -61,7 +62,7 @@ interface CampaignSpendRow { campaign_id: string | null; campaign_name: string |
 export async function computeCampaignRoas(
   brandId: string,
   params: { model: AttributionModelId; fromDate: Date; toDate: Date },
-  deps: { srPool: SilverPool },
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<CampaignRoasRow[]> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string; // Date-formatted → injection-safe
   const toStr = params.toDate.toISOString().split('T')[0] as string;
@@ -83,7 +84,7 @@ export async function computeCampaignRoas(
     // Spend per (campaign, currency) — carries campaign_name for the label.
     const spendRows = await scope.runScoped<CampaignSpendRow>(
       `SELECT campaign_id, MAX(campaign_name) AS campaign_name, currency_code, SUM(spend_minor) AS spend_minor
-         FROM brain_serving.mv_silver_marketing_spend
+         FROM ${spendView(deps.measurementMartsMigration)}
         WHERE campaign_id IS NOT NULL
           AND stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           AND ${BRAND_PREDICATE}

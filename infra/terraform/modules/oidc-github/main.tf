@@ -75,9 +75,7 @@ resource "aws_iam_openid_connect_provider" "github" {
   thumbprint_list = [data.tls_certificate.github.certificates[0].sha1_fingerprint]
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    purpose     = "github-actions-oidc"
+    purpose = "github-actions-oidc"
   }
 }
 
@@ -119,9 +117,7 @@ resource "aws_iam_role" "github_plan" {
   assume_role_policy = data.aws_iam_policy_document.github_plan_trust.json
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    purpose     = "github-actions-terraform-plan"
+    purpose = "github-actions-terraform-plan"
   }
 }
 
@@ -264,9 +260,7 @@ resource "aws_iam_role" "github_ecr_push" {
   assume_role_policy = data.aws_iam_policy_document.github_ecr_push_trust[0].json
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    purpose     = "github-actions-ecr-push"
+    purpose = "github-actions-ecr-push"
   }
 }
 
@@ -315,9 +309,7 @@ resource "aws_iam_role" "github_apply" {
   assume_role_policy = data.aws_iam_policy_document.github_apply_trust[0].json
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    purpose     = "github-actions-terraform-apply"
+    purpose = "github-actions-terraform-apply"
   }
 }
 

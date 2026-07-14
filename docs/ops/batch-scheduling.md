@@ -38,7 +38,7 @@ cosmetic `icon is recommended` INFO).
 
 | CronWorkflow | Schedule (IST) | Cadence | `concurrencyPolicy` | `activeDeadlineSeconds` | Enabled | What it runs |
 |---|---|---|---|---|---|---|
-| `bronze-materialize` | `*/15 * * * *` | every 15 min (:00/:15/:30/:45) | **Forbid** | 1800 (30 min) | `sparkBronze.enabled: true` | `bronze_materialize.py` — `TRIGGER_MODE=availableNow` drains the collector + backfill Kafka lanes → Iceberg Bronze (`MERGE … WHEN NOT MATCHED`, idempotent on `(brand_id, event_id)`). |
+| *(bronze landing — not a cron)* | — | streaming-continuous | — | — | `infra/helm/kafka-connect` chart | Bronze landing is the always-on Kafka Connect Iceberg sink (ADR-0010, cutover 2026-07-05; commits every 30s). The former `bronze-materialize` 15-min Spark cron is removed — only `bronze-maintenance` below is scheduled for Bronze. |
 | `bronze-maintenance` | `0 3 * * *` | daily 03:00 | **Forbid** | 1800 | `sparkBronze.enabled: true` | `bronze_maintenance.py MODE=maintain` — small-file compaction + 24-month snapshot-expiry TTL. |
 | `v4-silver` | `5 * * * *` | hourly :05 | **Forbid** | **2400 (40 min)** | `sparkV4.enabled: true` | `silver_order_state.py` (the brain_id spine) **first**, then `silver_*.py` (the rest of Silver, incl. an initial `silver_touchpoint` pass). |
 | `v4-gold` | `25 * * * *` | hourly :25 | **Forbid** | **2400 (40 min)** | `sparkV4.enabled: true` | `gold_revenue_ledger.py` → `gold_attribution_credit.py` → `gold_marketing_attribution.py` → `gold_attribution_paths.py` (these four forced first), then the rest of `gold_*.py` / `snap_*.py` in shell-glob (alphabetical) order — `gold_customer_360`, segments/cohorts/scores, funnel/engagement/health/retention/recommendation, executive/cac. |

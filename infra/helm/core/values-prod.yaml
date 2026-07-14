@@ -1,42 +1,81 @@
-replicaCount: 3
+replicaCount: 2
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
+  digest: "sha256:5360302eace91f234b7070571bc5a4973e3729b41376ef7d877e1722e6db2f5e"
 
 envSecretName: core-env
+
+# AUD-INFRA-033: scrape the API/BFF tier (job brain-core → BrainTargetDown coverage +
+# the WebhookPipeline/job counters core already records).
+metrics:
+  serviceMonitor:
+    enabled: true
+
+# The core Service (and the api.brain ingress backend, which reuses service.port)
+# must expose 3001 — the container port AND the port every consumer targets
+# (web BFF_BASE_URL/CORE_API_URL, seed-prod-secrets.sh). The chart default of 80
+# left the Service on a port nothing dials: the web proxy to
+# core.core.svc.cluster.local:3001 hit a closed service port and hung → the
+# registration/BFF 500→timeout. Nothing references core on :80.
+service:
+  port: 3001
 
 # AUD-COST-003: BFF/API + connector webhooks on the shared brain-prod ALB
 # (host-routed, ACM TLS).
 ingress:
   enabled: true
-  host: REPLACE_WITH_CORE_HOSTNAME   # e.g. api.<apex-domain>
+  host: api.brain.pipadacapital.com   # e.g. api.<apex-domain>
   groupName: brain-prod
-  certificateArn: REPLACE_WITH_ACM_CERT_ARN
+  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/684f6184-f357-46ca-8ef9-3be62239c220
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-core
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-core
 
 # AUD-COST-011: migrations run as a PreSync hook before every core sync.
 # core-env must carry DATABASE_URL_DIRECT (Aurora endpoint, NOT pgbouncer) —
 # see infra/helm/external-secrets-config/README.md.
 migrations:
-  enabled: true
+  # DISABLED for this single-account prod: the PreSync hook runs `pnpm migrate:up`
+  # as brain_app over DATABASE_URL_DIRECT, which cannot work by design — (1) the
+  # Brain migrations are owner-only DDL that REVOKE from brain_app + own the
+  # pgmigrations meta-table as role `brain`, and (2) DATABASE_URL_DIRECT uses
+  # sslmode=require (pg verify-full) against Aurora's Amazon-RDS-CA cert that is
+  # absent from Node's trust store. Migrations are applied OUT-OF-BAND via
+  # tools/deploy/run-migrations.sh (ROUTINE, non-destructive: brainadmin +
+  # `-c role=brain` + TLS-skip; schema is current through 0126). The destructive
+  # first-boot reset lives ONLY in tools/deploy/reset-and-migrate.sh (guarded —
+  # refuses to run if any user table has rows). AUD-OPS-017.
+  # Re-enable only once the hook is reworked to run as a privileged owner role.
+  enabled: false
   appEnv: prod
   databaseUrlFromKey: DATABASE_URL_DIRECT
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 47m / max 60m, mem p95 ~278Mi / max 281Mi per pod. Was 500m/1Gi —
+# ~10x over p95 (HPA read 2%/70% → dead). New: cpu 150m (HPA fires at 105m ≈
+# 1.75x max seen), mem 384Mi (80% target = 307Mi > observed max 281Mi).
+# LIMITS UNCHANGED (burst/OOM budget untouched). Revert = restore old requests.
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 150m
+    memory: 384Mi
   limits:
     cpu: "2"
     memory: 2Gi
 
-# P2.5: HPA on in prod. minReplicas matches replicaCount (3) so enabling never scales below baseline.
+# P2.5: HPA on in prod. minReplicas matches replicaCount (2) so enabling never scales below baseline.
+# AUD-COST (2026-07-13): warm baseline 3 → 2 (matches replicaCount above) — right-sized for current
+# low traffic. 2 keeps HA + safe rolling updates; the HPA still bursts to maxReplicas=12 on real load.
+# Raise back toward max as sustained traffic grows. Rollback: minReplicas/replicaCount 3.
 autoscaling:
   enabled: true
-  minReplicas: 3
+  minReplicas: 2
   maxReplicas: 12
+
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in core-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""

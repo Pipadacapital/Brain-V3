@@ -48,6 +48,11 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
   SHOPIFY_CLIENT_ID: z.string().optional(),
   META_APP_ID: z.string().optional(),
   GOOGLE_ADS_CLIENT_ID: z.string().optional(),
+  // Google Ads shared-app fallbacks: the OAuth callback resolves the brand's BYO app creds first
+  // and falls back to these (HandleGoogleAdsOAuthCallbackCommand / resolveGoogleCredentials).
+  // SECRET-TIER values — env-injected from the secret store in prod, never logged (I-S09).
+  GOOGLE_ADS_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_ADS_DEVELOPER_TOKEN: z.string().optional(),
   /** Shopify Admin API version (ShopifyAdminClient default). */
   SHOPIFY_API_VERSION: z.string().optional(),
 
@@ -98,6 +103,21 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
    * serving-view rebuild invalidates every cached read without flushing Redis.
    */
   SERVING_VERSION: z.string().default('v1'),
+
+  // ── SPEC: §1.11.3 / D.3 — per-brand Trino interactive query gate ────────────────
+  // A per-brand admission gate at the single serving chokepoint (the TrinoPool): one runaway
+  // brand (a dashboard fan-out, a BAI storm) must not exhaust the shared coordinator's slots and
+  // starve every other tenant. ADDITIVE + DEFAULT-PERMISSIVE — with these defaults it wraps the
+  // pool without changing behavior under normal load; it only bites under genuine per-brand
+  // overload (a full queue / acquire-timeout REJECTS fail-loud rather than growing memory).
+  /** Force-disable the gate (pass the pool through untouched). Default on (non-behavior-changing). */
+  TRINO_BRAND_GATE_ENABLED: z.enum(['true', 'false']).default('true'),
+  /** Max simultaneously-running Trino queries per brand_id. Default 8 (> a dashboard's panel fan-out). */
+  TRINO_BRAND_GATE_MAX_CONCURRENT: z.coerce.number().int().positive().default(8),
+  /** Max queued (waiting) queries per brand once max-concurrent is saturated. Beyond → REJECT. Default 64. */
+  TRINO_BRAND_GATE_MAX_QUEUE: z.coerce.number().int().positive().default(64),
+  /** Max ms a query waits in the FIFO queue for a slot before REJECTING. Default 15s (p95<10s + headroom). */
+  TRINO_BRAND_GATE_ACQUIRE_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
 });
 
 export type CoreEnv = z.infer<typeof CoreEnvSchema>;

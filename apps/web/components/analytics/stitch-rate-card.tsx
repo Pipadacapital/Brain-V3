@@ -1,98 +1,124 @@
 'use client';
 
 /**
- * StitchRateCard — the deterministic cart-stitch HIT-RATE KPI (Silver-tier journey).
+ * StitchRateCard — the "Identified visitors" KPI (§14.1 plain-language rename of the
+ * deterministic cart-stitch hit-rate; export name unchanged — the identity page consumes it).
  *
- * Stitch-rate = distinct anon journeys deterministically linked to a known brain_id
- * (read BACK from the order's note_attributes — NEVER inferred, D-5) ÷ all distinct
- * anon journeys. Computed in the metric-engine journey seam (integer basis-point share,
- * I-ST01 — the UI never queries StarRocks). hit_pct is a 2dp string from the engine or
- * null when the denominator is 0 — never a fabricated 0%.
+ * Identified visitors = distinct anonymous browsers deterministically linked to a known
+ * customer (the identifier is read BACK from the order — NEVER inferred, D-5), out of all
+ * distinct anonymous browsers. Computed in the metric-engine journey seam (I-ST01).
+ * hit_pct is a 2dp string from the engine or null when the denominator is 0 — the card
+ * then shows an honest "No visitors identified yet", never a fabricated 0%.
  *
  * A11y (accessibility skill §status-never-colour-only):
- *   - the coverage signal is an icon (Link2 / Unlink) + text label, never colour alone.
+ *   - the linkage signal is a StatusPill (glyph shape differs per state, never colour alone).
  *   - the card is a labelled region carrying the full verdict for screen readers.
- *   - a visually-hidden line states stitched / total so the ratio is auditable by SR.
+ *   - the "?" help tooltip comes from MetricTitle (hover + keyboard focus).
  * Counts: bigint strings (BigInt-parsed); rendered with toLocaleString — no float math.
  */
 
-import { Link2, Unlink, FlaskConical } from 'lucide-react';
+import Link from 'next/link';
+import { ArrowRight } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { MetricTitle } from '@/components/ui/metric-title';
+import { StatusPill } from '@/components/ui/status-pill';
 import { cn } from '@/lib/utils';
 
 interface StitchRateCardProps {
   /** 2dp string from the engine (e.g. '37.50'), or null when total = 0 (honest). */
   hitPct: string | null;
-  /** bigint string — distinct anon journeys stitched to a known brain_id. */
+  /** bigint string — distinct anonymous browsers linked to a known customer. */
   stitched: string;
-  /** bigint string — distinct anon journeys (the denominator). */
+  /** bigint string — all distinct anonymous browsers (the denominator). */
   total: string;
+  /**
+   * Optional drill-through: when set, the card shows a "See who they are →" link to the identified
+   * people (e.g. /customers). Only rendered when at least one visitor has been identified.
+   */
+  href?: string;
+  linkLabel?: string;
   className?: string;
   'data-testid'?: string;
 }
+
+const HELP =
+  'We only link an anonymous visitor to a known customer when we see a definitive identifier (like an email used at checkout).';
+
+const SUBTEXT =
+  'This number grows as visitors log in or make a purchase. It reflects the fraction of anonymous browsers we can prove belong to a known customer — we never guess.';
 
 export function StitchRateCard({
   hitPct,
   stitched,
   total,
+  href,
+  linkLabel = 'See who they are',
   className,
   'data-testid': testId = 'journey-stitch-rate-card',
 }: StitchRateCardProps) {
   const stitchedN = Number(BigInt(stitched));
   const totalN = Number(BigInt(total));
   const anyStitched = stitchedN > 0;
+  const noJourneys = hitPct === null; // denominator 0 — honest null state
 
-  const valueText = hitPct === null ? 'No journeys yet' : `${hitPct}%`;
-  const StatusIcon = anyStitched ? Link2 : Unlink;
-  const statusLabel = anyStitched ? 'Stitched to known orders' : 'No deterministic stitches yet';
+  const valueLine = `${stitchedN.toLocaleString('en-IN')} identified visitor${
+    stitchedN === 1 ? '' : 's'
+  } (out of ${totalN.toLocaleString('en-IN')} total anonymous browser${totalN === 1 ? '' : 's'})`;
 
   return (
     <Card
       className={cn('p-5', className)}
       data-testid={testId}
       role="region"
-      aria-label={`Cart-stitch hit-rate: ${valueText}. ${stitchedN.toLocaleString(
-        'en-IN',
-      )} of ${totalN.toLocaleString('en-IN')} anonymous journeys deterministically linked to a known order. ${statusLabel}.`}
+      aria-label={
+        noJourneys
+          ? 'Identified visitors: no visitors identified yet.'
+          : `Identified visitors: ${valueLine}.`
+      }
     >
       <CardContent className="p-0 space-y-1">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Cart-stitch hit-rate
+          <MetricTitle label="Identified visitors" help={HELP} />
         </p>
 
-        {hitPct === null ? (
+        {noJourneys ? (
           <p className="text-sm text-muted-foreground italic" aria-live="polite">
-            No journeys yet
+            No visitors identified yet
           </p>
         ) : (
-          <p
-            className="text-2xl font-bold text-foreground tabular-nums leading-tight"
-            aria-live="polite"
-          >
-            {hitPct}%
-          </p>
+          <>
+            <p
+              className="text-2xl font-bold text-foreground tabular-nums leading-tight"
+              aria-live="polite"
+            >
+              {stitchedN.toLocaleString('en-IN')}
+              <span className="ml-1.5 text-sm font-medium text-muted-foreground">
+                identified visitor{stitchedN === 1 ? '' : 's'}
+              </span>
+            </p>
+            <p className="text-xs text-muted-foreground tabular-nums">
+              out of {totalN.toLocaleString('en-IN')} total anonymous browser
+              {totalN === 1 ? '' : 's'}
+            </p>
+          </>
         )}
 
-        <p className="text-xs text-muted-foreground tabular-nums">
-          {stitchedN.toLocaleString('en-IN')} of {totalN.toLocaleString('en-IN')} anon journeys
-        </p>
+        {/* Non-colour-only linkage signal: glyph shape differs per state. */}
+        <StatusPill
+          status={anyStitched ? 'healthy' : 'waiting'}
+          label={anyStitched ? 'Linked to known customers' : 'No visitors identified yet'}
+        />
 
-        {/* Non-colour-only status: icon + text label (never colour alone). */}
-        <div
-          className={cn(
-            'flex items-center gap-1 text-xs font-medium',
-            anyStitched ? 'text-status-green-700' : 'text-muted-foreground',
-          )}
-        >
-          <StatusIcon className="h-3 w-3" aria-hidden="true" />
-          <span>{statusLabel}</span>
-        </div>
+        {href && anyStitched && (
+          <Link
+            href={href}
+            className="inline-flex items-center gap-1 pt-0.5 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+          >
+            {linkLabel} <ArrowRight className="size-3" aria-hidden="true" />
+          </Link>
+        )}
 
-        {/* Deterministic-provenance note: read BACK from the order, never inferred. */}
-        <p className="flex items-center gap-1 text-[11px] text-muted-foreground/80 pt-0.5">
-          <FlaskConical className="h-2.5 w-2.5" aria-hidden="true" />
-          Deterministic — brain_anon_id read back from the order (never inferred).
-        </p>
+        <p className="text-[11px] text-muted-foreground/80 pt-0.5">{SUBTEXT}</p>
       </CardContent>
     </Card>
   );

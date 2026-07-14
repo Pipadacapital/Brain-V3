@@ -106,11 +106,13 @@ export class ProcessEventUseCase {
     private readonly enforceTenantDerivation = true,
     /**
      * DB-AUDIT C4: the PG Bronze write switch is now FALSE by default — the dual-sink RETIREMENT is
-     * complete. Spark→Iceberg (db/iceberg/spark/bronze_materialize.py) is the sole Bronze system-of-
-     * record; data_plane.bronze_events is dropped (migration 0070). All prerequisites are met:
+     * complete. The Kafka Connect Iceberg sink (ADR-0010) is the sole Bronze landing writer
+     * (append-only, truly raw); data_plane.bronze_events is dropped (migration 0070). All
+     * prerequisites are met:
      *   1. ✓ operational reads + the DQ subsystem are on Iceberg;
-     *   2. ✓ the Spark writer enforces the SAME R2 install_token tenant-derivation + R3 consent gate
-     *      (gate_and_map), so Iceberg holds the SAME admission set PG Bronze did;
+     *   2. ✓ the SAME R2 install_token tenant-derivation + R3 consent gate is enforced at the
+     *      Silver admission gate (silver_collector_event.py, ADR-0010), so Silver holds the SAME
+     *      admission set PG Bronze did (Bronze itself is now ungated raw history);
      *   3. ✓ parity proven by the Iceberg-flip epic.
      * Set BRONZE_PG_WRITE_ENABLED=true to re-enable (legacy/escape only — the PG table no longer exists).
      * NOTE: R2 brand-derivation (this.bronze.resolveBrandByInstallToken — a pixel_installation read) and

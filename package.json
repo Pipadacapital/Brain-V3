@@ -15,11 +15,10 @@
     "test:isolation": "turbo run test:isolation",
     "test:parity": "turbo run test:parity",
     "dev:up": "bash tools/dev/dev-up.sh",
-    "dev": "docker compose --profile core --profile ai up -d --wait && (bash tools/dev/dev-bronze-streaming.sh > /tmp/bronze-sink.log 2>&1 &) && APP_ENV=local-prod turbo run dev --filter=@brain/core --filter=@brain/web --filter=@brain/collector --filter=@brain/stream-worker",
+    "dev": "bash tools/dev/compose-up-healthy.sh --profile core --profile ai && APP_ENV=local-prod turbo run dev --filter=@brain/core --filter=@brain/web --filter=@brain/collector --filter=@brain/stream-worker",
     "dev:core": "docker compose --profile core up -d --wait && APP_ENV=local-prod turbo run dev --filter=@brain/core --filter=@brain/web",
     "dev:ingest": "docker compose --profile core up -d --wait && APP_ENV=local-prod turbo run dev --filter=@brain/collector --filter=@brain/stream-worker",
     "dev:full": "docker compose --profile core --profile full-obs --profile debug --profile ai up -d --wait",
-    "dev:bronze-sink": "bash tools/dev/dev-bronze-streaming.sh",
     "bootstrap": "bash tools/seed/prod-local-aws-bootstrap.sh",
     "dev:tunnel": "cloudflared tunnel --url http://localhost:3001",
     "dev:pixel-tunnel": "bash tools/dev/pixel-tunnel.sh",
@@ -27,7 +26,7 @@
     "dev:pixel-named-tunnel": "bash tools/dev/pixel-named-tunnel.sh",
     "dev:tunnels": "bash tools/dev/tunnels.sh",
     "dev:secrets-snapshot": "bash tools/dev/secrets-snapshot.sh",
-    "dev:v4-refresh": "bash tools/dev/v4-refresh-loop.sh",
+    "dev:v4-refresh": "bash tools/dev/duckdb-refresh.sh",
     "dev:down": "bash tools/dev/dev-down.sh",
     "down": "docker compose down",
     "migrate": "node scripts/migrate.mjs up",
@@ -41,15 +40,18 @@
     }
   },
   "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.61.0",
     "@typescript-eslint/parser": "^8.61.0",
     "eslint": "^9.10.0",
     "eslint-import-resolver-typescript": "^3.6.3",
     "eslint-plugin-boundaries": "^5.0.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "node-pg-migrate": "^8.0.4",
     "prettier": "^3.3.0",
     "tsx": "^4.22.4",
     "turbo": "^2.1.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "vitest": "^2.1.0",
+    "wait-on": "^8.0.3"
   }
 }

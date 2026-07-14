@@ -1,0 +1,9 @@
+# Prod overrides for the Brain network-policy set (AUD-INFRA-021/022).
+# The defaults in values.yaml ARE the prod flow inventory; only the
+# environment-specific facts live here.
+
+# infra/terraform/envs/prod/terraform.tfvars vpc_cidr — the ALB (target-type=ip)
+# source range for the public-edge allows.
+vpcCidr: "10.0.0.0/16"
+
+monitoringNamespace: monitoring

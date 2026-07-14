@@ -1,0 +1,21 @@
+{
+  "name": "@brain/identity-normalization",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test:unit": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@brain/identity-core": "workspace:*",
+    "libphonenumber-js": "^1.12.10"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3"
+  }
+}

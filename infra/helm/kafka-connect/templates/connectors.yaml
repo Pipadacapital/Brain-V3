@@ -1,0 +1,63 @@
+{{- if .Values.enabled }}
+{{/*
+Connector registration (ADR-0010). Each entry in .Values.connectors is merged with the shared
+.Values.icebergCatalog + .Values.sinkDefaults maps and rendered as one JSON file in the ConfigMap.
+The post-install/post-upgrade hook Job PUTs every config to /connectors/<name>/config — PUT is
+create-OR-update, so a helm upgrade that changes a connector's values reconfigures it in place
+(unlike the local compose one-shot, which only POSTs/creates).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-kafka-connect-connectors
+  labels:
+    app.kubernetes.io/name: kafka-connect
+    app.kubernetes.io/part-of: brain
+data:
+{{- range $name, $cfg := .Values.connectors }}
+  {{ $name }}.json: |
+{{ merge (deepCopy $cfg) $.Values.icebergCatalog $.Values.sinkDefaults | toPrettyJson | indent 4 }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-kafka-connect-register
+  labels:
+    app.kubernetes.io/name: kafka-connect
+    app.kubernetes.io/part-of: brain
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: register
+          image: curlimages/curl:8.8.0
+          volumeMounts:
+            - name: connectors
+              mountPath: /config
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              REST="http://{{ .Release.Name }}-kafka-connect:8083"
+              echo "Waiting for Kafka Connect REST ($REST)..."
+              until curl -fsS "$REST/connectors" >/dev/null 2>&1; do sleep 5; done
+              fail=0
+              for f in /config/*.json; do
+                name=$(basename "$f" .json)
+                code=$(curl -s -o /tmp/resp -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+                  --data @"$f" "$REST/connectors/$name/config")
+                case "$code" in 200|201) echo "  $name: OK ($code)";; *) echo "  $name: FAILED ($code)"; cat /tmp/resp; echo; fail=1;; esac
+              done
+              exit $fail
+      volumes:
+        - name: connectors
+          configMap:
+            name: {{ .Release.Name }}-kafka-connect-connectors
+{{- end }}

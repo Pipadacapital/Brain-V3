@@ -1,0 +1,239 @@
+# brain-kafka-connect — the ADR-0010 Bronze landing writer.
+#
+# This chart is the SOLE Bronze landing writer (collector_events_connect + the <lane>_raw_connect
+# tables). The cronworkflows sparkBronze block now runs ONLY bronze-maintenance (compaction/
+# snapshot-expiry) — the Spark-SS landing path was removed 2026-07-05 (rollback = git revert).
+# See docs/runbooks/adr-0010-kafka-connect-bronze.md.
+enabled: true
+
+# KIP-392: at pod start, resolve this pod's AZ from IMDSv2 and export CONNECT_CONSUMER_CLIENT_RACK so
+# the Iceberg sink consumers read a SAME-AZ replica (brokers must run RackAwareReplicaSelector — see
+# infra/helm/strimzi-kafka kafka.rack) instead of the cross-AZ leader → cuts DataTransfer-Regional
+# spend. Best-effort + reversible: unresolved AZ (or disabled) = today's leader-fetch behaviour.
+rackAwareness:
+  enabled: true
+
+image:
+  repository: confluentinc/cp-kafka-connect
+  tag: "7.6.1"
+  pullPolicy: IfNotPresent
+
+# Apache Iceberg Kafka Connect runtime — MUST stay version-locked to the platform Iceberg version
+# (iceberg-rest fixture / iceberg-spark-runtime are 1.9.2). Downloaded at pod start (cached in an
+# emptyDir; bake into a custom image for air-gapped clusters).
+icebergConnectVersion: "1.9.2"
+pluginZipUrl: "https://hub-downloads.confluent.io/api/plugins/iceberg/iceberg-kafka-connect/versions/1.9.2/iceberg-iceberg-kafka-connect-1.9.2.zip"
+
+replicas: 1                # single worker is correct at current scale; the commit coordinator is singular anyway
+heapOpts: "-Xms256M -Xmx1G"
+resources:
+  requests:
+    cpu: 250m
+    memory: 1280Mi
+  limits:
+    cpu: "1"
+    memory: 1792Mi
+
+worker:
+  bootstrapServers: "REPLACE_WITH_MSK_OR_STRIMZI_BOOTSTRAP:9092"
+  groupId: brain-bronze-connect
+  configStorageTopic: _connect-configs
+  offsetStorageTopic: _connect-offsets
+  statusStorageTopic: _connect-status
+  storageReplicationFactor: "3"     # prod RF; local compose uses 1
+
+# Iceberg catalog properties shared by EVERY connector below (prod: real S3 + IRSA credential chain —
+# omit the s3.access-key/secret keys entirely and grant the pod's service account; local-dev values
+# shown in infra/kafka-connect/*.json).
+icebergCatalog:
+  iceberg.catalog.type: "rest"
+  iceberg.catalog.uri: "REPLACE_WITH_ICEBERG_REST_URI"
+  iceberg.catalog.warehouse: "s3://REPLACE_BRONZE_BUCKET/"
+  iceberg.catalog.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
+  iceberg.catalog.client.region: "ap-south-1"
+
+# Common sink props merged into every connector (control topic must exist — broker auto-create off).
+sinkDefaults:
+  "iceberg.tables.auto-create-enabled": "true"
+  "iceberg.tables.evolve-schema-enabled": "true"
+  "iceberg.tables.schema-force-optional": "true"
+  "iceberg.tables.auto-create-props.write.parquet.compression-codec": "zstd"
+  "iceberg.control.topic": "control-iceberg"
+  "iceberg.control.commit.interval-ms": "30000"
+  "iceberg.control.commit.timeout-ms": "60000"
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}            # IRSA role for S3/Glue access goes here
+
+# ── Prometheus JMX exporter (AUD-INFRA-028) ─────────────────────────────────────────────────────
+# The Bronze landing writer previously emitted ZERO metrics in-cluster — BronzeConnectTaskFailed /
+# BronzeConnectLagHigh / BrainIngestStale could never fire while a FAILED sink task silently
+# stopped its lane. Mirrors the local compose wiring (jmx-exporter-init + KAFKA_OPTS javaagent):
+# the startup script fetches the agent jar next to the connect plugin zip and attaches it; the
+# mapping ConfigMap is a VERBATIM copy of infra/observe/kafka-connect-jmx-exporter.yml (that file
+# stays canonical — KEEP IN LOCKSTEP). GRACEFUL DEGRADATION: if the jar download fails the worker
+# STARTS WITHOUT the agent (loud log line) — detection must never take down the SOLE Bronze
+# landing writer; the then-unscraped target trips BrainTargetDown{job="kafka-connect-jmx"}.
+# Off by default (kind/staging have no Prometheus Operator CRDs); values-prod enables it.
+metrics:
+  enabled: false
+  # Same agent + version as the local compose jmx-exporter-init and the Strimzi broker path.
+  jmxExporterJarUrl: "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/1.0.1/jmx_prometheus_javaagent-1.0.1.jar"
+  # :9404 (broker convention). Local compose uses :9405 only because Connect shares the broker's
+  # netns there; an in-cluster pod has its own network namespace.
+  port: 9404
+  podMonitor:
+    # The job relabel pins the EXACT job name the brain-slo rules + the local compose Prometheus
+    # use ('kafka-connect-jmx') — without it the job label defaults to "<ns>/<name>" and
+    # BronzeConnectTaskFailed / BronzeConnectLagHigh / BrainIngestStale / BrainTargetDown all
+    # go silent.
+    jobLabel: kafka-connect-jmx
+    interval: 15s
+
+# The 10 Bronze lanes — keep in LOCKSTEP with infra/kafka-connect/*.json (the local-dev copies).
+# `config` carries only the per-connector fields; icebergCatalog + sinkDefaults are merged in by the
+# template. Collector: raw payload preserved verbatim (StringConverter + HoistField) + kafka coords.
+# Raw lanes: schemaless JsonConverter → exploded envelope into a FRESH <lane>_raw_connect table
+# (never a Spark-written *_raw — its required columns NPE the Parquet writer; ADR-0010).
+connectors:
+  iceberg-bronze-collector:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "2"
+    topics: "prod.collector.event.v1,prod.collector.order.backfill.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.storage.StringConverter
+    transforms: "hoist,coords"
+    transforms.hoist.type: org.apache.kafka.connect.transforms.HoistField$Value
+    transforms.hoist.field: payload
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    transforms.coords.timestamp.field: kafka_timestamp
+    iceberg.tables: brain_bronze.collector_events_connect
+    # AUD-IMPL-025: partition NEW auto-creates of the collector table by day(kafka_timestamp) — the
+    # sink's PHYSICAL InsertField column — so Spark's incremental watermark AND the Trino health
+    # reads get partition pruning from day one in a fresh env. AUTO-CREATE ONLY: the already-created
+    # prod table is migrated by the one-time db/iceberg/spark/bronze_collector_partition_migrate.py
+    # (metadata-only ALTER + parity check; runbook-gated). Collector-lane only — the raw lanes carry
+    # NO kafka_timestamp (no InsertField transform), a default-partition-by would break their creates.
+    iceberg.table.brain_bronze.collector_events_connect.partition-by: "day(kafka_timestamp)"
+  iceberg-bronze-shopify-orders:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.shopify.orders.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.shopify_orders_raw_connect
+  iceberg-bronze-woocommerce-orders:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.woocommerce.orders.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.woocommerce_orders_raw_connect
+  iceberg-bronze-meta-spend:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.meta.spend.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.meta_spend_raw_connect
+  iceberg-bronze-google-spend:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.google.spend.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.google_spend_raw_connect
+  iceberg-bronze-ga4-rows:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.ga4.rows.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.ga4_rows_raw_connect
+  iceberg-bronze-shiprocket-shipments:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.shiprocket.shipments.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.shiprocket_shipments_raw_connect
+  iceberg-bronze-gokwik-events:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.gokwik.events.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.gokwik_events_raw_connect
+  iceberg-bronze-shopflo-checkout:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.shopflo.checkout.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.shopflo_checkout_raw_connect
+  iceberg-bronze-razorpay-settlement:
+    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
+    tasks.max: "1"
+    topics: "prod.razorpay.settlement.raw.v1"
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "false"
+    transforms: "coords"
+    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.coords.topic.field: kafka_topic
+    transforms.coords.partition.field: kafka_partition
+    transforms.coords.offset.field: kafka_offset
+    iceberg.tables: brain_bronze.razorpay_settlement_raw_connect

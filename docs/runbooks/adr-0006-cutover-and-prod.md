@@ -1,6 +1,14 @@
 # ADR-0006 cutover + prod runbook — raw Bronze, Silver-side gate+normalize
 
-> **UPDATE (2026-06-28, task K2b) — the Bronze WRITER reverted from Kafka Connect to Spark Structured Streaming (ADR-0006 D1 withdrawn).** The raw `*.raw.v1` connector lanes are now landed by the generic Spark-SS job `db/iceberg/spark/bronze_raw_landing.py` (compose service `spark-bronze-raw-sink`; run script `db/iceberg/spark/run-bronze-raw-landing.sh`) — one query subscribes to all nine lanes and appends verbatim → `brain_bronze.<lane>_raw`, offset-after-Iceberg-commit, idempotent on `(topic,partition,offset)`. **Kafka Connect is retired**: `infra/kafka-connect/iceberg-bronze-*.json`, the `kafka-connect` + `kafka-connect-init` services, and the `brain-connect-plugins` volume are removed. Wherever this runbook says "stand up the raw Connect connector / register `iceberg-bronze-<lane>.json`", instead **add the lane to the `LANES` config table in `bronze_raw_landing.py`** (it auto-creates `brain_bronze.<lane>_raw` on first land). The raw-Bronze table contract, the Silver gate+normalize design (P2–P4), and the D4 compliance gate below are **unchanged** — only the writer mechanism flipped. For prod, run the Spark-SS landing job (Argo cron / long-lived Spark-on-EKS) against Glue + S3 instead of MSK Connect.
+> **SUPERSEDED by ADR-0010 (2026-07-05): Kafka Connect REINSTATED as the sole Bronze landing
+> writer, and the Spark landing path (`bronze_materialize.py` / `bronze_raw_landing.py` /
+> `bronze_landing.py`) was REMOVED from the codebase at the executed cutover.** The K2b note
+> below records the intermediate 2026-06-28 revert to Spark-SS and is kept as history — do not
+> follow its writer instructions. Current operational shape:
+> `docs/runbooks/adr-0010-kafka-connect-bronze.md`. The Silver gate+normalize design and the D4
+> compliance gate in this runbook still stand.
+
+> **UPDATE (2026-06-28, task K2b — itself reversed by ADR-0010 above) — the Bronze WRITER reverted from Kafka Connect to Spark Structured Streaming (ADR-0006 D1 withdrawn).** The raw `*.raw.v1` connector lanes are now landed by the generic Spark-SS job `db/iceberg/spark/bronze_raw_landing.py` (compose service `spark-bronze-raw-sink`; run script `db/iceberg/spark/run-bronze-raw-landing.sh`) — one query subscribes to all nine lanes and appends verbatim → `brain_bronze.<lane>_raw`, offset-after-Iceberg-commit, idempotent on `(topic,partition,offset)`. **Kafka Connect is retired**: `infra/kafka-connect/iceberg-bronze-*.json`, the `kafka-connect` + `kafka-connect-init` services, and the `brain-connect-plugins` volume are removed. Wherever this runbook says "stand up the raw Connect connector / register `iceberg-bronze-<lane>.json`", instead **add the lane to the `LANES` config table in `bronze_raw_landing.py`** (it auto-creates `brain_bronze.<lane>_raw` on first land). The raw-Bronze table contract, the Silver gate+normalize design (P2–P4), and the D4 compliance gate below are **unchanged** — only the writer mechanism flipped. For prod, run the Spark-SS landing job (Argo cron / long-lived Spark-on-EKS) against Glue + S3 instead of MSK Connect.
 
 Covers **P5** (per-lane cutover + retiring the Spark Bronze sink) and **P6** (prod + raw-Bronze retention + the D4 Security-Reviewer sign-off that GATES the prod flip). The build + per-connector byte-exact verification is DONE (see the PR); this runbook is the operational flip.
 
@@ -8,7 +16,7 @@ Covers **P5** (per-lane cutover + retiring the Spark Bronze sink) and **P6** (pr
 - **Bronze writer**: Kafka Connect Iceberg sink writing raw topic → `brain_bronze.*_raw` (P1 merged; collector lane live; per-connector configs in `infra/kafka-connect/iceberg-bronze-*.json`).
 - **Gate in Silver**: `silver_collector_event` (R2/R3 + dedup over the raw collector lane) — parity-exact vs the Spark sink; the pixel lane is already cut over (`silver_touchpoint`).
 - **Normalizers**: `silver_<connector>_normalize.py` for all 8 connectors, each **byte-exact-verified** against its real TS mapper via golden vectors (`_p4_golden/`). Shopify additionally proven **end-to-end** (raw→Connect→Spark→parity).
-- **NOT yet flipped**: the connectors still EMIT canonical events; `silver_order_state`/spend/etc still read the canonical lane; the Spark sink (`bronze_materialize.py`) still writes `collector_events` for those canonical lanes.
+- **NOT yet flipped**: the connectors still EMIT canonical events; `silver_order_state`/spend/etc still read the canonical lane; the Spark sink (`bronze_materialize.py` — since removed by ADR-0010; the collector lane now lands via Kafka Connect → `collector_events_connect`) still wrote `collector_events` for those canonical lanes at the time of writing.
 
 ## D4 — the compliance gate (BLOCKS the prod flip; Security-Reviewer sign-off)
 Raw Bronze now holds **un-hashed PII** (email/phone) and, for the razorpay lane, **PCI `card.*`** fields, transiently, before the Silver gate hashes/drops them. Required before prod:
@@ -26,9 +34,9 @@ Do ONE connector at a time, lowest-risk first (the proven order: shopify → woo
 4. **Flip**: point the lane's Silver readers at the normalized output (set `TARGET_TABLE=silver_collector_event` so the normalizer writes the live gated table, or source-scope `silver_order_state`/etc to read the normalized rows). For multi-source marts (silver_order_state/line = shopify+woo; silver_shipment_event = shiprocket+gokwik; silver_checkout_signal = shopflo+gokwik) flip BOTH legs only after BOTH pass parity, source-scoped, so no double-count.
 5. **Retire the canonical emit**: turn off the canonical event emission for that lane; retire that lane's TS mapper (per the design's `mappers_to_retire` — keep load-bearing side-effects: shopify `projectOrderStitch`, razorpay MB-1 `mapPaymentWebhookToMapRow`).
 
-## Retire the Spark Bronze sink (end of P5)
+## Retire the Spark Bronze sink (end of P5) — DONE via ADR-0010 (2026-07-05)
 Once EVERY lane (incl. the multiplexed collector lane's order.live.v1/spend.live.v1/… server-trusted events) is on the Connect→raw→normalize path:
-- Remove `bronze_materialize.py`, the `spark-bronze-sink` compose service, and its Argo cron.
+- Remove `bronze_materialize.py`, the `spark-bronze-sink` compose service, and its Argo cron. *(Executed 2026-07-05 — the entire Spark landing family, incl. the unified `bronze_landing.py`, is removed; see ADR-0010.)*
 - The `brain_bronze.collector_events` (Spark-sink) table becomes read-only history, then drops after a grace window.
 - The checkpoint-corruption class of bug is gone with it.
 

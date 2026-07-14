@@ -41,7 +41,7 @@ import type {
   SecretWriteResult,
   ConnectorSecretRef,
 } from './ISecretsManager.js';
-import { sanitizeSecretSubKey } from './ISecretsManager.js';
+import { sanitizeSecretSubKey, unwrapShopifyTokenValue } from './ISecretsManager.js';
 
 export class AwsSecretsManager implements ISecretsManager {
   private readonly client: SecretsManagerClient;
@@ -251,8 +251,9 @@ export class AwsSecretsManager implements ISecretsManager {
       const response = await this.client.send(
         new GetSecretValueCommand({ SecretId: secretRef }),
       );
-      // Value is NEVER logged (I-S09).
-      return response.SecretString ?? null;
+      // Value is NEVER logged (I-S09). Bundle-aware: the client-credentials connect path stores a
+      // JSON bundle ({ access_token, ... }); legacy OAuth connects store the raw token string.
+      return response.SecretString == null ? null : unwrapShopifyTokenValue(response.SecretString);
     } catch (err) {
       throw new Error(
         `[AwsSecretsManager] Failed to fetch Shopify token: ${err instanceof Error ? err.message : String(err)}`,

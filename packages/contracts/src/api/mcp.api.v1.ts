@@ -66,7 +66,7 @@ export type HashPrefix12 = z.infer<typeof HashPrefix12Schema>;
 
 // ── 1. customer360_lookup → getCustomer360Summary (intelligence aggregate; money) ──
 
-export const Customer360LookupInputSchema = PrincipalScopedInputSchema;
+const Customer360LookupInputSchema = PrincipalScopedInputSchema;
 
 export const Customer360TopCustomerSchema = z.object({
   brain_id: z.string().uuid(),
@@ -92,7 +92,7 @@ export type Customer360LookupOutput = z.infer<typeof Customer360LookupOutputSche
 
 // ── 2. journey_lookup → getCustomerJourneySummary (NO money) ───────────────────
 
-export const JourneyLookupInputSchema = PrincipalScopedInputSchema;
+const JourneyLookupInputSchema = PrincipalScopedInputSchema;
 
 export const JourneyTopRowSchema = z.object({
   brain_anon_id: z.string(),
@@ -122,7 +122,7 @@ export type JourneyLookupOutput = z.infer<typeof JourneyLookupOutputSchema>;
 
 // ── 3. timeline_lookup → getIdentityTimeline (identity decision history; no money) ──
 
-export const TimelineLookupInputSchema = BrainIdLookupInputSchema;
+const TimelineLookupInputSchema = BrainIdLookupInputSchema;
 
 export const TimelineEntrySchema = z.object({
   sequence: z.number().int(),
@@ -148,7 +148,7 @@ export type TimelineLookupOutput = z.infer<typeof TimelineLookupOutputSchema>;
 
 // ── 4. identity_explainability_lookup → explain a merge (identity graph; hash-only) ──
 
-export const IdentityExplainabilityLookupInputSchema = BrainIdLookupInputSchema;
+const IdentityExplainabilityLookupInputSchema = BrainIdLookupInputSchema;
 
 /** One hash-only member of the identifier combination that produced a merge verdict (I-S02). */
 export const IdentityComboMemberSchema = z.object({
@@ -207,7 +207,7 @@ export type AttributionLookupOutput = z.infer<typeof AttributionLookupOutputSche
 
 // ── 6. ltv_lookup → getCustomerScore / getCustomer360Summary (lifetime value; money) ──
 
-export const LtvLookupInputSchema = BrainIdLookupInputSchema;
+const LtvLookupInputSchema = BrainIdLookupInputSchema;
 
 export const LtvLookupOutputSchema = z.object({
   has_data: z.boolean(),
@@ -254,7 +254,7 @@ export type MarketingPerfLookupOutput = z.infer<typeof MarketingPerfLookupOutput
 
 // ── 8. recfeature_lookup → getRecommendationFeatures (RFM features; money) ─────────
 
-export const RecFeatureLookupInputSchema = PrincipalScopedInputSchema;
+const RecFeatureLookupInputSchema = PrincipalScopedInputSchema;
 
 export const RecFeatureRowSchema = z.object({
   brain_id: z.string().uuid(),

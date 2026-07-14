@@ -144,9 +144,9 @@ export function Sankey({
   const colorFor = (id: string): string => {
     const meta = nodeMeta.get(id);
     if (meta?.color) return meta.color;
-    // Stable per-id hue by first-seen order.
+    // Stable per-id hue by first-seen order. The modulo keeps the index in bounds.
     const idx = [...referenced].indexOf(id);
-    return CHART_VARS[idx % CHART_VARS.length];
+    return CHART_VARS[idx % CHART_VARS.length]!;
   };
 
   // ---- Assign a column (depth) to each node via longest-path relaxation ---------
@@ -178,7 +178,7 @@ export function Sankey({
 
   // ---- Group by column ---------------------------------------------------------
   const columns: string[][] = Array.from({ length: maxDepth + 1 }, () => []);
-  referenced.forEach((id) => columns[depth.get(id) ?? 0].push(id));
+  referenced.forEach((id) => columns[depth.get(id) ?? 0]?.push(id));
   // Stable vertical order within a column: highest value on top.
   columns.forEach((col) => col.sort((a, b) => nodeValue(b) - nodeValue(a)));
 

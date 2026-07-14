@@ -23,6 +23,12 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
+    # AUD-INFRA-003: the app syncs with ServerSideApply=true but diffs
+    # client-side, so API-server-defaulted StatefulSet fields (port protocol,
+    # probe defaults, …) showed as permanent false OutOfSync right after a
+    # Succeeded sync. ServerSideDiff predicts the post-apply object via an SSA
+    # dry-run, so defaulted fields stop registering as drift.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   labels:
     project: brain
     environment: prod
@@ -37,16 +43,38 @@ spec:
         releaseName: neo4j
         valueFiles:
           - $values/infra/helm/neo4j/values-prod.yaml
-    - repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    - repoURL: https://github.com/Pipadacapital/Brain-V3.git
       targetRevision: master
       ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: neo4j
+  # AUD-INFRA-003: StatefulSet.spec.volumeClaimTemplates is IMMUTABLE after
+  # creation, and the API server injects defaults into the live entries
+  # (apiVersion/kind: PersistentVolumeClaim, volumeMode: Filesystem,
+  # status.phase: Pending) that the rendered chart never carries — an
+  # un-actionable, permanent diff.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: neo4j
+      namespace: neo4j
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      # AUD-COST/PERF (2026-07-13): RespectIgnoreDifferences so the ignored vct is
+      # EXCLUDED from the SSA apply. The prior "let the API server reject vct
+      # mutations" guard also BLOCKED legitimate spec.template changes: with
+      # ServerSideApply, ArgoCD's apply/dry-run includes the whole StatefulSet, so
+      # even a mutable-field change (e.g. resources cpu 2→3) is rejected because the
+      # desired vct lacks the API-injected defaults → "updates to statefulset spec
+      # for fields other than [template,...] are forbidden" ComparisonError, no sync.
+      # Respecting ignoreDifferences omits vct from the apply → template changes sync
+      # cleanly; vct stays immutable (the API server is still the guard for it).
+      - RespectIgnoreDifferences=true
     retry:
       limit: 2
       backoff:

@@ -30,6 +30,11 @@ export { resolveConsent, defaultConsentReader } from './consent.js';
 export type { ConsentReader } from './consent.js';
 export { Transport } from './transport.js';
 export { COLLECTOR_VERSION } from './browser-entry.js';
+// SPEC: A.1.1 (WA-03 pixel build unification) — the BUILT served /pixel.js asset (esbuild IIFE
+// bundle of src/asset/*; regenerate via `pnpm --filter @brain/pixel-sdk build:asset`). The
+// collector serves THIS string; the hand-maintained IIFE divergence is over.
+export { PIXEL_ASSET_JS } from './asset/generated/pixel-asset.built.js';
+export { PIXEL_ASSET_VERSION } from './asset/constants.js';
 export type {
   CollectorEventV1,
   ConsentFlags,
@@ -39,5 +44,18 @@ export type {
   EventProperties,
   BrowserEnv,
   BrainBootstrap,
+  BrainIdentityBootstrap,
   MinimalStorage,
 } from './types.js';
+// SPEC: A.1.1 (WA-07) — browser normalizers for pixel.identify.v1 (parity-tested vs
+// @brain/identity-normalization; phone is the documented minimal E.164 with Silver re-validation).
+export {
+  normalizeEmailBrowser,
+  normalizePhoneBrowser,
+  stripEdgeWhitespaceBrowser,
+  PHONE_COUNTRY_CC,
+} from './asset/identify-normalize.js';
+export { autodetectKind, isPasswordAdjacent } from './asset/identify-autodetect.js';
+// AUD-IMPL-004: the typed seam + helper element shape (types-only — no runtime surface change).
+export type { AutodetectElementLike } from './asset/identify-autodetect.js';
+export type { BrainAssetRuntime } from './asset/runtime.js';

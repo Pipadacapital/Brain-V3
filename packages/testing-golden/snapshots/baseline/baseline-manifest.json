@@ -1,0 +1,15 @@
+{
+  "spec": "WA.1.10",
+  "capturedAt": "2026-07-06T10:48:58.195Z",
+  "topicPrefix": "prod",
+  "datasetChecksum": "bbb2a9ede01651ad945742d3dfd9ca147fa1a7d99fb221cf120972c1588447bf",
+  "exports": [
+    "silver_collector_event",
+    "silver_touchpoint",
+    "gold_revenue_ledger",
+    "gold_attribution_credit",
+    "journey_events",
+    "gold_customer_360",
+    "_counts"
+  ]
+}

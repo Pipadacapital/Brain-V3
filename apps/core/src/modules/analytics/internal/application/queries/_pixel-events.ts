@@ -10,7 +10,7 @@
  * (apps/collector/src/interfaces/rest/pixel-asset.route.ts). NB: the pixel's client-side `order.placed`
  * is intentionally distinct from the connector's server-trusted `order.live.v1`.
  */
-export const PIXEL_EVENT_TYPES = [
+const PIXEL_EVENT_TYPES = [
   'page.viewed', 'product.viewed', 'collection.viewed', 'search.submitted',
   'cart.item_added', 'cart.item_removed', 'cart.updated', 'cart.viewed',
   'checkout.started', 'checkout.step_viewed', 'checkout.shipping_selected',

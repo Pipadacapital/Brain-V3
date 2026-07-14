@@ -10,10 +10,7 @@
  *   strategyHooks        — merge / split / cross-device (deterministic, LIVE) + disabled hooks
  *   resolverBridge       — grade the existing IdentityResolver's decision (wrap, don't replace)
  */
-export {
-  ConfidenceEngine,
-  DEFAULT_CONFIDENCE_CONFIG,
-} from './ConfidenceEngine.js';
+export { ConfidenceEngine } from './ConfidenceEngine.js';
 export type {
   ConfidenceBandThresholds,
   TenantConfidenceConfig,
@@ -23,14 +20,6 @@ export type {
   ConfidenceEngineOptions,
 } from './ConfidenceEngine.js';
 
-export {
-  DeterministicMergeHook,
-  DeterministicSplitHook,
-  DeterministicCrossDeviceHook,
-  DisabledStrategyHook,
-  IDENTITY_STRATEGY_HOOK_REGISTRY,
-  createDefaultStrategyHooks,
-} from './strategyHooks.js';
 export type {
   StrategyHookKind,
   StrategyEvidence,
@@ -39,7 +28,4 @@ export type {
   StrategyHookDescriptor,
 } from './strategyHooks.js';
 
-export {
-  evidenceFromResolver,
-  gradeResolverOutcome,
-} from './resolverBridge.js';
+export { gradeResolverOutcome } from './resolverBridge.js';

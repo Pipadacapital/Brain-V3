@@ -1,16 +1,21 @@
 name: deploy
 on:
   push:
-    branches: [master]   # default branch — CD/gitops/prod-promote fire on real merges to master
-                         # (AUD-PROD-022: file renamed main.yml → deploy.yml for spec alignment;
-                         # trigger stays [master] — the repo default branch. Do NOT flip to [main].)
+    branches: [master]   # RELEASE-LAYER v2 (owner-requested 2026-07-11): NOTHING runs on
+                         # feature pushes or feature→release merges. Checks run on the
+                         # release→master promotion PR (pr/integration/infra/knip), and
+                         # THIS full chain (build → staging bump → prod promote) runs when
+                         # the owner merges release → master. master = production.
+                         # (AUD-PROD-022: file renamed main.yml → deploy.yml. Do NOT flip
+                         # trigger to [main].)
 
 # CI/CD identity (AUD-COST-002) — repo variables ↔ terraform (envs/prod, module
 # oidc_github with create_cicd_roles = true; first apply is LOCAL — see
 # infra/terraform/README.md "Prod go-live" + docs/runbooks/GO-LIVE.md):
 #   vars.AWS_ECR_PUSH_ROLE_ARN  = `terraform output github_ecr_push_role_arn`
 #                                 (role brain-prod-github-ecr-push; OIDC trust =
-#                                 push to master on Rishabhporwal/Brain-V4).
+#                                 push to master OR release on Pipadacapital/Brain-V3
+#                                 — envs/prod bootstrap.tf allowed_branches).
 #   vars.ENVIRONMENT            = prod — MUST be "prod": the push role is scoped
 #                                 to the brain-*-prod ECR repositories (modules/
 #                                 eks creates brain-{collector,stream-worker,core,
@@ -38,7 +43,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-push:
     name: Build, Sign, Push ECR (affected)
-    runs-on: ubuntu-latest
+    # NATIVE arm64 runner (GitHub-hosted ubuntu-24.04-arm): the images target the
+    # Graviton nodes, and QEMU-emulated builds on amd64 runners NEVER completed
+    # for the spark image (75+ min → cancelled, twice). Native = minutes.
+    runs-on: ubuntu-24.04-arm
     strategy:
       matrix:
         app: [collector, stream-worker, core, web]
@@ -59,24 +67,42 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Check if ${{ matrix.app }} is affected
+      - name: Check if ${{ matrix.app }} is affected (path-based)
         id: affected
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          # FAIL-CLOSED: a broken affected-set computation must fail the job, not
-          # silently skip build/push/sign. (Previously `|| echo ""` swallowed any
-          # error → empty set → skip=true → the image was never built or pushed while
-          # the pipeline reported success, and gitops would promote a nonexistent tag.)
-          if ! AFFECTED=$(pnpm turbo run build --affected --dry-run=json \
-                | jq -r '[.tasks[].packageName] | map(select(. != null)) | unique | .[]'); then
-            echo "::error::Could not compute the affected set — failing closed (refusing to skip image build/push/sign)."
-            exit 1
+          # PATH-BASED (matches build-data-images). `turbo run build --affected` was
+          # unreliable here for TWO reasons: (1) on a push to master it defaulted its
+          # base to the default branch = master-vs-master = empty diff = everything
+          # skipped; (2) even when computed, packageName is "@brain/<app>" but the
+          # matrix leg is the unscoped "<app>", so `grep -qx` never matched → skip.
+          # Build this app if its own dir, ANY shared workspace package, or the root
+          # dependency/build config changed. Coarser but never misses a needed build.
+          # Fail-OPEN to building on unknown range / diff failure (never silently skip).
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable before-SHA — building ${{ matrix.app }}"
+            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if echo "$AFFECTED" | grep -qx "${{ matrix.app }}"; then
+          CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" || echo "__diff_failed__")
+          if [ "$CHANGED" = "__diff_failed__" ]; then
+            echo "diff failed — building ${{ matrix.app }} (fail-open)"
+            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if echo "$CHANGED" | grep -qE "^apps/${{ matrix.app }}/|^packages/|^pnpm-lock.yaml|^package.json|^tsconfig|^turbo.json"; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
+          # DB migrations ship INSIDE the core image and run via the migrate Job /
+          # PreSync hook (pnpm migrate:up, scripts/migrate.mjs). A migration change
+          # that doesn't touch apps/core must STILL rebuild core, or the corrected
+          # migration never reaches the running image (the 0127 stale-core-digest
+          # incident). Only `core` is affected by these paths.
+          elif [ "${{ matrix.app }}" = "core" ] && echo "$CHANGED" | grep -qE "^db/migrations/|^scripts/migrate\.mjs"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "migration/migrate-runner change — rebuilding core"
           else
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Skipping ${{ matrix.app }} — not in affected set"
+            echo "no changes affecting ${{ matrix.app }} — skip"
           fi
 
       # OIDC short-lived credentials — never static keys (PLAYBOOK-deploy + NN-3)
@@ -93,27 +119,31 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
-        if: steps.affected.outputs.skip == 'false'
-        run: |
-          docker build \
-            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:${{ github.sha }} \
-            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}:latest \
-            --label "git.sha=${{ github.sha }}" \
-            --label "git.ref=${{ github.ref }}" \
-            -f apps/${{ matrix.app }}/Dockerfile \
-            .
+      # arm64 images build NATIVELY on the ubuntu-24.04-arm runner (no QEMU).
 
-      - name: Push to ECR (immutable digest — PLAYBOOK-deploy §Artifact promotion)
+      - name: Set up Docker Buildx
+        if: steps.affected.outputs.skip == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push arm64 image (immutable digest — PLAYBOOK-deploy §Artifact promotion)
         if: steps.affected.outputs.skip == 'false'
         id: push
         run: |
           set -euo pipefail
           REPO="${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.app }}-${{ vars.ENVIRONMENT }}"
-          docker push "${REPO}:${{ github.sha }}"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${REPO}:${{ github.sha }}" | cut -d@ -f2)
+          docker buildx build \
+            --platform linux/arm64 \
+            --provenance=false \
+            -t "${REPO}:${{ github.sha }}" \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref }}" \
+            -f apps/${{ matrix.app }}/Dockerfile \
+            --push \
+            --metadata-file /tmp/meta.json \
+            .
           # Pinned, immutable reference: <registry>/<repo>@sha256:<...> — consumed by the
           # gitops job to bump the Helm chart values (image.repository + image.digest).
+          DIGEST=$(jq -r '."containerimage.digest"' /tmp/meta.json)
           mkdir -p /tmp/imgref
           echo "${REPO}@${DIGEST}" > "/tmp/imgref/${{ matrix.app }}"
 
@@ -141,25 +171,31 @@ jobs:
           cosign sign --yes "${REPO}@${DIGEST}"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # 1b. Build + push the DATA-PLANE job images (spark-bronze)
+  # 1b. Build + push the DATA-PLANE job image (duckdb — the DuckDB transform tier for the
+  #     V4 Silver/Gold mart crons + the Trino client for Bronze/medallion maintenance + erasure;
+  #     Bronze LANDING is the kafka-connect chart, ADR-0010 — no Spark landing job anymore)
   # ─────────────────────────────────────────────────────────────────────────
   # These are NOT pnpm packages, so the turbo --affected check can't see them. They change rarely,
   # so we use PATH-BASED change detection (git diff of the push range). Same OIDC/ECR/cosign posture
   # as build-and-push; each leg uploads imgref-<image> for the gitops job to digest-pin into the
   # cronworkflows chart. Additive — does not touch the 4-app build above.
-  # NOTE: the dbt-runner image was retired in Brain V4 (Phase 6b) — dbt is removed; the transform is
-  # Spark-on-Iceberg + brain_serving mv_* (the spark-bronze image + the Spark Silver/Gold jobs).
+  # CUTOVER (feat/spark-to-duckdb-cutover): the Spark image (brain-spark-bronze, db/iceberg/spark) is
+  # REPLACED by the DuckDB image (brain-duckdb, db/iceberg/duckdb/Dockerfile). It carries db/iceberg/
+  # duckdb/** (the ~96 Silver/Gold jobs) + db/iceberg/trino/** (the 4 maintenance/erasure scripts); the
+  # cronworkflows chart's sparkV4 / sparkBronze image blocks now point at brain-duckdb. dbt was already
+  # removed in Brain V4 (Phase 6b); Spark is now removed too.
   build-data-images:
-    name: Build, Sign, Push data images (spark-bronze)
-    runs-on: ubuntu-latest
+    name: Build, Sign, Push data images (duckdb)
+    # NATIVE arm64 runner — the image targets the arm64 Karpenter pools (no QEMU).
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
         include:
-          - image: spark-bronze
-            dockerfile: db/iceberg/spark/Dockerfile
-            context: db/iceberg/spark
-            paths: '^db/iceberg/spark/'
+          - image: duckdb
+            dockerfile: db/iceberg/duckdb/Dockerfile
+            context: db/iceberg
+            paths: '^db/iceberg/(duckdb|trino)/'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -198,23 +234,28 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
-        if: steps.affected.outputs.skip == 'false'
-        run: |
-          docker build \
-            -t ${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.image }}-${{ vars.ENVIRONMENT }}:${{ github.sha }} \
-            --label "git.sha=${{ github.sha }}" \
-            --label "git.ref=${{ github.ref }}" \
-            -f ${{ matrix.dockerfile }} \
-            ${{ matrix.context }}
+      # arm64 images build NATIVELY on the ubuntu-24.04-arm runner (no QEMU).
 
-      - name: Push to ECR (immutable digest)
+      - name: Set up Docker Buildx
+        if: steps.affected.outputs.skip == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push arm64 image (immutable digest)
         if: steps.affected.outputs.skip == 'false'
         run: |
           set -euo pipefail
           REPO="${{ steps.login-ecr.outputs.registry }}/brain-${{ matrix.image }}-${{ vars.ENVIRONMENT }}"
-          docker push "${REPO}:${{ github.sha }}"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${REPO}:${{ github.sha }}" | cut -d@ -f2)
+          docker buildx build \
+            --platform linux/arm64 \
+            --provenance=false \
+            -t "${REPO}:${{ github.sha }}" \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref }}" \
+            -f ${{ matrix.dockerfile }} \
+            --push \
+            --metadata-file /tmp/meta.json \
+            ${{ matrix.context }}
+          DIGEST=$(jq -r '."containerimage.digest"' /tmp/meta.json)
           mkdir -p /tmp/imgref
           echo "${REPO}@${DIGEST}" > "/tmp/imgref/${{ matrix.image }}"
 
@@ -286,7 +327,7 @@ jobs:
             echo "bumped ${app}: ${REPO}@${DIGEST}"
           done
 
-      - name: Bump cronworkflows chart image digests (core/stream-worker/spark-bronze)
+      - name: Bump cronworkflows chart image digests (core/stream-worker/duckdb)
         run: |
           set -euo pipefail
           # The cronworkflows chart has distinct image blocks at distinct yaml paths, so a blanket sed
@@ -302,11 +343,13 @@ jobs:
           }
           bump core          .image
           bump stream-worker .streamWorkerImage
-          bump spark-bronze  .sparkBronze.image
-          # sparkV4 (silver/gold/mv-refresh CronWorkflows) reuses the SAME brain-spark-bronze image
-          # (its Dockerfile carries the V4 marts) — pin .sparkV4.image with the spark-bronze digest so
-          # the now-enabled V4 crons deploy (an empty .sparkV4.image.digest fail-closes the template).
-          bump spark-bronze  .sparkV4.image
+          # CUTOVER: the single brain-duckdb image now backs BOTH cron image blocks — .sparkBronze.image
+          # (bronze/medallion maintenance + erasure, run via the Trino client the image carries) and
+          # .sparkV4.image (the DuckDB Silver/Gold transform crons). One image, two blocks (the block
+          # names are retained to keep the chart values diff minimal; an empty digest fail-closes each
+          # template). Both are pinned from the same `duckdb` imgref.
+          bump duckdb .sparkBronze.image
+          bump duckdb .sparkV4.image
 
       - name: Commit + push staging values bump
         run: |
@@ -326,20 +369,27 @@ jobs:
           echo "Manual verification: argocd app get brain-staging --server \$ARGOCD_SERVER"
           echo "Staging bake window: 5 min; auto-rollback armed on health probe failures."
 
+
   # ─────────────────────────────────────────────────────────────────────────
-  # 3. Manual prod promotion gate (requires GitHub Environment approval)
+  # 3. Prod promotion — runs in the same master-push chain (the owner's merge to master IS the approval)
   # ─────────────────────────────────────────────────────────────────────────
   prod-promote:
     name: Promote to Production (manual gate)
     runs-on: ubuntu-latest
     needs: gitops-staging
-    # GitHub Environment 'production' requires manual approval from VP Eng
-    environment: production
+
+
 
     steps:
+      # Check out the LATEST master, not the triggering SHA: gitops-staging (a
+      # prior job in THIS run) just committed the staging digests to master, and
+      # promote reads them from values-staging. Without ref: master this job
+      # checks out the pre-staging-bump commit → empty staging digests → promotes
+      # nothing (prod digests never pinned).
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: master
           token: ${{ secrets.GITOPS_TOKEN }}
 
       # Same as gitops-staging: no AWS call in this job — skip while unset.
@@ -416,8 +466,3 @@ jobs:
           echo "Auto-rollback signals (see PLAYBOOK-deploy.md §Auto-Rollback):"
           echo "  - Collector accept+ack rate < 99.95% for 5min → ROLLBACK"
           echo "  - Analytics API error rate > 1% for 5min → ROLLBACK"
-          echo "  - Analytics API p95 latency > 2s for 5min → ROLLBACK"
-          echo "  - K8s health probe failing 2 consecutive probes → ROLLBACK"
-          echo "  - Cross-brand isolation breach (any occurrence) → IMMEDIATE ROLLBACK + SEV1"
-          echo ""
-          echo "Grafana Cloud bake dashboard: https://grafana.brain-platform.io/d/bake-window"

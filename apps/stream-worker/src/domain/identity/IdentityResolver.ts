@@ -22,6 +22,50 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export const RULE_VERSION = 'v1-deterministic';
 
+// SPEC: A.1.5 — per-brand ORDERED identity priority (WA-12, mParticle-style IDSync).
+//
+// A "priority class" is a named precedence bucket in the per-brand ordered config; each class maps
+// to one or more concrete identity_link identifier_types (AMD-02 names: platform_customer_id =
+// storefront_customer_id; email covers its pre_hashed twin; phone covers its pre_hashed twin;
+// anonymous_id = anon_id). Resolution walks the order highest→lowest: the highest-priority matching
+// identifier wins; a LOWER-priority identifier matching a DIFFERENT brain_id is a conflict → routed
+// to review (A.2.3), NEVER a silent overwrite/merge. Behind flag `identity.priority_config` — when
+// no config is threaded in (flag OFF) resolve() runs the legacy fixed-tier union-find byte-identically.
+export type IdentityPriorityClass =
+  | 'platform_customer_id'
+  | 'email'
+  | 'phone'
+  | 'anonymous_id';
+
+/** The spec default order (A.1.5): platform id, then email, then phone, then anonymous id. */
+export const DEFAULT_IDENTITY_PRIORITY: readonly IdentityPriorityClass[] = [
+  'platform_customer_id',
+  'email',
+  'phone',
+  'anonymous_id',
+] as const;
+
+/**
+ * Priority-class → identity_link identifier_type(s). A class matches an existing link when ANY of
+ * its types + the event hash + is_active line up. email/phone each subsume their connector
+ * pre-hashed twin so the same person resolves identically whether the hash arrived salted
+ * (first-party pixel) or pre-hashed (connector) — see AMD-01/AMD-02.
+ */
+const PRIORITY_CLASS_TO_TYPES: Record<IdentityPriorityClass, readonly string[]> = {
+  platform_customer_id: ['storefront_customer_id'],
+  email: ['email', 'pre_hashed_email'],
+  phone: ['phone', 'pre_hashed_phone'],
+  anonymous_id: ['anon_id'],
+};
+
+/** Per-brand versioned priority config (read from ops.brand_identity_priority; version 0 = default). */
+export interface IdentityPriorityConfig {
+  /** Monotonic per-brand config version. 0 = the implicit default (no stored row). */
+  version: number;
+  /** Ordered priority classes, highest precedence first. Empty ⇒ DEFAULT_IDENTITY_PRIORITY. */
+  order: readonly IdentityPriorityClass[];
+}
+
 /** An identifier extracted from the Bronze event payload. */
 export interface ExtractedIdentifier {
   // C2: device_id + anon_id (brain_anon_id) are RESOLUTION INPUTS in addition to the strong PII
@@ -109,6 +153,10 @@ export interface ResolveOutcome {
     raw_value: string;
     identifier_hash: string;
   }>;
+  // SPEC: A.1.5 — the per-brand priority config version this outcome was resolved under. Present ONLY
+  // when the ordered-priority path ran (flag `identity.priority_config` ON); undefined on the legacy
+  // fixed-tier path so flag-OFF outcomes stay byte-identical. Stamped onto the identity_audit detail.
+  priorityConfigVersion?: number;
 }
 
 export class IdentityResolver {
@@ -123,6 +171,11 @@ export class IdentityResolver {
    * @param brandConfig        Brand phone_guard_threshold + suppression_window_days.
    * @param aliasChain         Set of already-merged brain_ids (for cycle detection).
    * @param now                Current timestamp.
+   * @param priorityConfig     SPEC A.1.5 — OPTIONAL per-brand ordered priority config. When present
+   *                           (flag `identity.priority_config` ON) resolution walks the brand's order
+   *                           (highest-priority match wins; lower-priority conflict → review, never
+   *                           silent overwrite). When ABSENT (flag OFF / not wired) the legacy
+   *                           fixed-tier union-find below runs byte-identically (§0.5 default OFF).
    */
   resolve(
     brandId: string,
@@ -133,6 +186,8 @@ export class IdentityResolver {
     brandConfig: BrandPhoneGuardConfig,
     aliasChain: Set<string>,              // all live alias observed_brain_ids
     now: Date = new Date(),
+    priorityConfig?: IdentityPriorityConfig,
+    strongOwnedBrainIds?: Set<string>,   // SPEC A.2.3.4 — brains already owning a strong id (guard input)
   ): ResolveOutcome {
     // ── 1. Separate strong identifiers from medium/weak ───────────────────────
     const strongIds = identifiers.filter(
@@ -211,11 +266,36 @@ export class IdentityResolver {
     //     medium contribution entirely (strong wins; a shared device never triggers a merge).
     // This preserves the deterministic union-find: merges are decided exclusively by strong keys.
     const mediumIds = identifiers.filter((i) => i.tier === 'medium');
+
+    // SPEC: A.2.3.4 shared-device guard (active only when strongOwnedBrainIds is supplied — flag
+    // identity.shared_device_guard ON). A medium (anon/device) signal may ADOPT a brain to continue an
+    // anonymous session, but it must NEVER pull a NEW strong identifier on THIS event into a brain ALREADY
+    // OWNED by a DIFFERENT strong identity — that is the shared_device_family merge (two family emails, one
+    // device → wrongly one person). We suppress the medium adoption exactly when (a) this event carries a
+    // strong id that matched no existing brain (a genuinely new person signal) and (b) the medium's brain is
+    // already strong-owned. The new strong id then MINTs its own brain, and the shared medium stays with its
+    // first owner. Guard inert when strongOwnedBrainIds is absent (flag OFF) → byte-identical legacy path.
+    const matchedStrongHashes = new Set(
+      eligibleStrongIds
+        .filter((id) =>
+          existingLinks.some(
+            (l) => l.is_active && l.identifier_type === id.type && l.identifier_value === id.hash,
+          ),
+        )
+        .map((id) => `${id.type}:${id.hash}`),
+    );
+    const hasUnmatchedNewStrong = eligibleStrongIds.some(
+      (id) => !matchedStrongHashes.has(`${id.type}:${id.hash}`),
+    );
+
     if (matchedBrainIds.size <= 1 && mediumIds.length > 0) {
       const mediumMatched = new Set<string>();
       for (const id of mediumIds) {
         for (const link of existingLinks) {
           if (link.identifier_type === id.type && link.identifier_value === id.hash && link.is_active) {
+            // Shared-device guard: don't let this medium adopt a strong-owned brain when the event carries
+            // its own NEW (unmatched) strong id — the new strong id defines a (possibly different) person.
+            if (strongOwnedBrainIds?.has(link.brain_id) && hasUnmatchedNewStrong) continue;
             mediumMatched.add(link.brain_id);
           }
         }
@@ -245,14 +325,45 @@ export class IdentityResolver {
       }
     }
 
+    // ── 4b. SPEC A.1.5 — per-brand ORDERED priority path (flag ON) ────────────
+    // When a versioned priority config is threaded in, resolution is decided by the brand's ordered
+    // precedence instead of the tier-symmetric union-find above: the highest-priority matching class
+    // wins, and any lower-priority class matching a DIFFERENT brain_id routes to review rather than
+    // silently overwriting/merging. The shared prep (phone-guard filter, contact_pii, mediumIds) is
+    // reused; the legacy decision below is skipped. Flag OFF ⇒ this branch never runs ⇒ byte-identical.
+    if (priorityConfig) {
+      return this.resolveByPriority(
+        eligibleStrongIds,
+        identifiers,
+        existingLinks,
+        priorityConfig,
+        phoneGuardUpdates,
+        contactPiiWrites,
+      );
+    }
+
     if (matchedBrainIds.size === 0) {
       // MINT new brain_id
       const brainId = randomUUID();
+      // SPEC A.2.3.4: under the shared-device guard, a medium (anon/device) identifier already ACTIVELY
+      // owned by another brain must NOT be re-linked onto this freshly minted brain — the shared device
+      // stays with its first owner; only the strong id(s) (+ unowned mediums) found the new person. Without
+      // the guard (strongOwnedBrainIds absent) every identifier links to the mint (byte-identical legacy).
+      const ownedElsewhere = strongOwnedBrainIds
+        ? new Set(
+            existingLinks
+              .filter((l) => l.is_active)
+              .map((l) => `${l.identifier_type}:${l.identifier_value}`),
+          )
+        : new Set<string>();
+      const newLinks = identifiers.filter(
+        (id) => !(id.tier === 'medium' && ownedElsewhere.has(`${id.type}:${id.hash}`)),
+      );
       const filled = contactPiiWrites.map((p) => ({ ...p, brain_id: brainId }));
       return {
         action: 'minted',
         brainId,
-        newLinks: identifiers,  // all identifiers go to new customer
+        newLinks,  // all identifiers (minus shared-device mediums owned elsewhere) go to the new customer
         phoneGuardUpdates,
         routeToReview: false,
         contactPiiWrites: filled,
@@ -313,6 +424,149 @@ export class IdentityResolver {
       phoneGuardUpdates,
       routeToReview: false,
       contactPiiWrites: filled,
+    };
+  }
+
+  /**
+   * SPEC: A.1.5 — resolve by the brand's ORDERED identity priority (flag `identity.priority_config`).
+   *
+   * Semantics (mParticle IDSync-style):
+   *   • Walk the brand's priority order highest→lowest. Each priority CLASS maps to identifier
+   *     types (PRIORITY_CLASS_TO_TYPES). The FIRST class (in order) with any active-link match is the
+   *     WINNER; its brain_id is the resolution.
+   *   • A lower-priority class matching a DIFFERENT brain_id is a CONFLICT → routeToReview=true with
+   *     action='skipped' and NO new links written — the higher-priority winner is NEVER silently
+   *     overwritten/merged (A.2.3 disambiguation). The outcome brain_id is the winner (a stable anchor).
+   *   • Top-tier ambiguity (the winning class itself matches ≥2 distinct people) also routes to review;
+   *     the anchor is the deterministic lowest-UUID so the outcome stays replay-stable.
+   *   • No match anywhere → MINT (this event founds a new brain_id).
+   *   • All classes agree on a single brain_id → LINK the event's new identifiers to it.
+   *
+   * candidates = phone-guard-filtered strong ids (eligibleStrongIds) ∪ medium ids (anon_id). Weak
+   * ids are never consulted (consistent with the legacy path). The config version is stamped on the
+   * outcome (`priorityConfigVersion`) for audit.
+   */
+  private resolveByPriority(
+    eligibleStrongIds: ExtractedIdentifier[],
+    identifiers: ExtractedIdentifier[],
+    existingLinks: ExistingLink[],
+    priorityConfig: IdentityPriorityConfig,
+    phoneGuardUpdates: ResolveOutcome['phoneGuardUpdates'],
+    contactPiiWrites: ResolveOutcome['contactPiiWrites'],
+  ): ResolveOutcome {
+    const version = priorityConfig.version;
+    const order =
+      priorityConfig.order.length > 0 ? priorityConfig.order : DEFAULT_IDENTITY_PRIORITY;
+
+    // Candidate identifiers: strong (phone-guard-filtered) + medium (anon_id). Medium ids gain a
+    // priority class here (anonymous_id, lowest by default) so a shared-device conflict against a
+    // higher-priority strong identifier surfaces as review instead of being silently dropped.
+    const mediumIds = identifiers.filter((i) => i.tier === 'medium');
+    const candidateIds = [...eligibleStrongIds, ...mediumIds];
+
+    // For each priority class, the distinct brain_ids its identifier types actively match.
+    const classMatches = new Map<IdentityPriorityClass, Set<string>>();
+    for (const cls of order) {
+      const types = PRIORITY_CLASS_TO_TYPES[cls] ?? [];
+      const bids = new Set<string>();
+      for (const id of candidateIds) {
+        if (!types.includes(id.type)) continue;
+        for (const link of existingLinks) {
+          if (
+            link.identifier_type === id.type &&
+            link.identifier_value === id.hash &&
+            link.is_active
+          ) {
+            bids.add(link.brain_id);
+          }
+        }
+      }
+      if (bids.size > 0) classMatches.set(cls, bids);
+    }
+
+    // No class matched any existing customer → MINT a new brain_id (this event founds it).
+    if (classMatches.size === 0) {
+      const brainId = randomUUID();
+      const filled = contactPiiWrites.map((p) => ({ ...p, brain_id: brainId }));
+      return {
+        action: 'minted',
+        brainId,
+        newLinks: identifiers,
+        phoneGuardUpdates,
+        routeToReview: false,
+        contactPiiWrites: filled,
+        priorityConfigVersion: version,
+      };
+    }
+
+    // The highest-priority class (first in order) that matched anything is the winner.
+    let winnerClass: IdentityPriorityClass | undefined;
+    for (const cls of order) {
+      if (classMatches.has(cls)) {
+        winnerClass = cls;
+        break;
+      }
+    }
+    const winnerBids = classMatches.get(winnerClass!)!;
+
+    // Top-tier ambiguity: the winning class itself resolves to ≥2 distinct people (e.g. the same
+    // storefront id shared by two brain_ids). Never silent-overwrite → review; anchor lowest-UUID.
+    if (winnerBids.size > 1) {
+      const anchor = [...winnerBids].sort()[0]!;
+      const filled = contactPiiWrites.map((p) => ({ ...p, brain_id: anchor }));
+      return {
+        action: 'skipped',
+        brainId: anchor,
+        newLinks: [],
+        phoneGuardUpdates,
+        routeToReview: true,
+        reviewReason: `priority-conflict: highest-priority class '${winnerClass}' matched ${winnerBids.size} distinct brain_ids (config v${version})`,
+        contactPiiWrites: filled,
+        priorityConfigVersion: version,
+      };
+    }
+
+    const winner = [...winnerBids][0]!;
+
+    // Any LOWER-priority class matching a DIFFERENT brain_id → conflict (never silent overwrite).
+    // (Every class in classMatches other than the winner is lower-priority: the winner is the first
+    // matching class in the order.)
+    const conflictingClasses: string[] = [];
+    for (const [cls, bids] of classMatches) {
+      if (cls === winnerClass) continue;
+      if ([...bids].some((b) => b !== winner)) conflictingClasses.push(cls);
+    }
+
+    if (conflictingClasses.length > 0) {
+      const filled = contactPiiWrites.map((p) => ({ ...p, brain_id: winner }));
+      return {
+        action: 'skipped',
+        brainId: winner,
+        newLinks: [],
+        phoneGuardUpdates,
+        routeToReview: true,
+        reviewReason: `priority-conflict: lower-priority class(es) [${conflictingClasses.join(', ')}] matched a different brain_id than the '${winnerClass}' winner (config v${version}) — routed to review, NOT overwritten`,
+        contactPiiWrites: filled,
+        priorityConfigVersion: version,
+      };
+    }
+
+    // Consensus on a single brain_id → LINK the event's not-yet-linked identifiers to the winner.
+    const existingHashes = new Set(
+      existingLinks
+        .filter((l) => l.brain_id === winner && l.is_active)
+        .map((l) => `${l.identifier_type}:${l.identifier_value}`),
+    );
+    const newLinks = identifiers.filter((id) => !existingHashes.has(`${id.type}:${id.hash}`));
+    const filled = contactPiiWrites.map((p) => ({ ...p, brain_id: winner }));
+    return {
+      action: 'linked',
+      brainId: winner,
+      newLinks,
+      phoneGuardUpdates,
+      routeToReview: false,
+      contactPiiWrites: filled,
+      priorityConfigVersion: version,
     };
   }
 

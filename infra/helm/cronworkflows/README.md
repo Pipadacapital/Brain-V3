@@ -23,50 +23,89 @@ run never double-applies and never piles up. Schedules are IST (`Asia/Kolkata`).
 Ordered by **staggered schedule + idempotency**, not an Argo DAG (matching this chart's
 one-container-per-CronWorkflow convention). The time gaps sequence the steps; each is idempotent so a
 missed/retried run is safe (`concurrencyPolicy: Forbid` + `startingDeadlineSeconds`). Under Brain V4 the
-recognition + attribution-gold rebuilds are **Spark** jobs (the `v4-silver`/`v4-gold` CronWorkflows
+recognition + attribution-gold rebuilds are **DuckDB** jobs (the `v4-silver`/`v4-gold` CronWorkflows
 below), not dbt — dbt and StarRocks are removed:
 
-1. **identity-export** (:02) — Neo4j identity graph → `silver_identity_link`, so the Spark Silver order
+1. **identity-export** (:02) — Neo4j identity graph → `silver_identity_link`, so the DuckDB Silver order
    spine resolves order `brain_id`. Runs BEFORE `v4-silver`.
-2. **v4-silver** (:05, Spark) — Bronze → `silver_order_state` (recognition incl. prepaid finalization
+2. **v4-silver** (:05, DuckDB) — Bronze → `silver_order_state` (recognition incl. prepaid finalization
    after horizon + COD delivery/RTO) + the rest of Silver.
 3. **journey-stitch-from-identity** (:15) — `silver_touchpoint` anon → `identity_link(anon_id)`→brain_id
    ∩ the recognized order ledger, unambiguous-only → `connector_journey_stitch_map`.
-4. **v4-gold** (:25, Spark) — `gold_revenue_ledger` → `gold_attribution_credit` →
+4. **v4-gold** (:25, DuckDB) — `gold_revenue_ledger` → `gold_attribution_credit` →
    `gold_marketing_attribution` (incl. the data_driven model) + customer/gap/executive marts, served by
    the `brain_serving.mv_*` Trino views over Iceberg.
 5. **attribution-reconcile** (:30) — credit recognized orders (`finalization ∪ cod_delivery_confirmed`)
    to their journeys under all 4 per-journey models + the global data-driven (Markov) model; clawbacks.
 
-## Brain V4 Spark Silver/Gold (`templates/spark-v4.yaml`)
+## Brain V4 DuckDB Silver/Gold (`templates/v4-transform.yaml`)
 
-Under **Brain V4** Spark is the sole compute and dbt is gone: the Iceberg medallion
-(`brain_bronze`/`brain_silver`/`brain_gold`) is built by Spark jobs and is the system of record; the
-`brain_serving.mv_*` Trino views are thin projections straight over the Iceberg Gold/Silver marts
-(StarRocks is removed). These CronWorkflows `spark-submit` the mart jobs the Spark image now **carries**
-(`db/iceberg/spark/{silver,gold}/*.py`, COPYed into `/opt/brain` by the Dockerfile). They mirror the
-`spark-bronze.yaml` pattern (one `spark-submit --master local[*]` pod, no Spark Operator/cluster).
+**Spark→DuckDB cutover** (`feat/spark-to-duckdb-cutover`): the transform tier is DuckDB-on-Iceberg now
+(Spark is removed; dbt/StarRocks were already gone). The Iceberg medallion
+(`brain_bronze`/`brain_silver`/`brain_gold`) is built by the DuckDB jobs and is the system of record; the
+`brain_serving.mv_*` Trino views are thin projections straight over the Iceberg Gold/Silver marts. These
+CronWorkflows invoke `python /opt/brain/duckdb/<layer>/<job>.py` — the mart jobs the `brain-duckdb` image
+**carries** (`db/iceberg/duckdb/{silver,gold}/*.py`, COPYed into `/opt/brain/duckdb` by the Dockerfile).
+Each job self-imports its `_base`/`_catalog` via `sys.path.insert` (no `--py-files`). One python pod per
+cron, no JVM.
 
 | Job | Schedule (IST) | Image | Purpose |
 |---|---|---|---|
-| v4-silver | `5 * * * *` hourly :05 | spark-v4 | `silver_order_state` (brain_id spine) + the rest of Silver |
-| v4-gold | `25 * * * *` hourly :25 | spark-v4 | `gold_revenue_ledger` → attribution → customer/gap/executive marts |
+| v4-silver | `5 * * * *` hourly :05 | brain-duckdb | keystone `silver_collector_event` + `silver_order_state` (brain_id spine) + the rest of Silver (×2 convergence passes) |
+| v4-gold | `25 * * * *` hourly :25 | brain-duckdb | `gold_revenue_ledger` → attribution → customer/gap/executive marts |
 
-There is **no `v4-mv-refresh` leg**: once a Spark job commits the new Iceberg snapshot, the Trino `mv_*`
-views resolve it directly (no StarRocks `REFRESH MATERIALIZED VIEW` / mysql-client step). The dev mirror
-that runs the same Silver→Gold→mv SYNC sequence is `tools/dev/v4-refresh-loop.sh` (`pnpm dev:v4-refresh`).
+There is **no `v4-mv-refresh` leg**: once a DuckDB job commits the new Iceberg snapshot, the Trino `mv_*`
+views resolve it directly. The dev mirror that runs the same keystone→Silver→Gold sequence is
+`tools/dev/duckdb-refresh.sh` (`pnpm dev:v4-refresh`).
 
 **Dependency order** is enforced by staggered schedule + idempotency (not an Argo DAG), and interleaves
 with the node `.Values.jobs`: `identity-export` (:02) → **v4-silver** (:05) → `journey-stitch-from-identity`
 + `journey-stitch-export` (:15/:16) → **v4-gold** (:25). That is the full V4 attribution chain — identity
 → order-state → silver → stitch → gold — so the customer + attribution marts populate instead of
-computing 0.
+computing 0. The v4-silver cron runs the keystone first, then the order_state spine, then the rest of
+Silver twice (a pass-1 sibling miss converges on pass 2), mirroring `duckdb-refresh.sh`.
 
-**ENABLED** (`sparkV4.enabled: true`): the V4 Spark crons run the medallion refresh. They share the same
-external gate as `sparkBronze` — the CI-built, digest-pinned V4 spark image (the template fail-closes on a
-missing digest, B3) and a cluster. Each `spark-submit` runs an idempotent Iceberg MERGE wrapped in a
-bounded in-pod retry (`SPARK_MAX_RETRIES`, via `_retry.sh`) on top of the Argo `backoffLimit` — a
-transient blip is safe to re-run.
+**ENABLED** (`sparkV4.enabled: true`, value block kept for chart compatibility): the V4 crons run the
+medallion refresh. They need the CI-built, digest-pinned `brain-duckdb` image (the template fail-closes on
+a missing digest, B3) and a cluster. Each job is an idempotent Iceberg MERGE, wrapped in the Argo
+`backoffLimit` — a transient blip is safe to re-run. Placement: the **streaming** Karpenter pool
+(values-prod; the dedicated Spark `batch` pool was removed — DuckDB crons are lightweight python).
+
+## Bronze/medallion maintenance (`templates/bronze-maintenance.yaml`, `templates/v4-maintenance.yaml`)
+
+Iceberg maintenance (compaction / `expire_snapshots` / `remove_orphan_files`) is the one thing DuckDB
+can't do — it runs via the **Trino client** the `brain-duckdb` image carries (`ALTER TABLE … EXECUTE …`):
+`python /opt/brain/trino/bronze_maintenance.py` (daily 03:00, `bronze-maintenance`),
+`bronze_raw_retention.py` (daily 03:40, `bronze-raw-retention`, the D4 raw-PII window), and
+`medallion_maintenance.py` (weekly Sun 04:45, `v4-maintenance`, Silver/Gold sweep).
+
+## Bronze raw-PII erasure (`templates/bronze-erasure.yaml`, AUD-OPS-037)
+
+**Not a cron** — a `WorkflowTemplate` (`bronze-raw-erasure`) wrapping
+`db/iceberg/trino/erasure_raw_delete.py` (run via the Trino client), the RTBF subject hard-delete across the raw Bronze
+Iceberg tables (`*_raw_connect` column-equality DELETEs + the payload-path sweep of
+`collector_events_connect`). The stream-worker **erasure orchestrator** (STEP 4 of the ordered
+crypto-shred sequence, `EraseSubjectUseCase`) submits a Workflow from it per erasure signal:
+prod runs the argo-workflows app controller-only (no REST server), so the submit is a
+Kubernetes-API Workflow create (`workflowTemplateRef`) authorized by the
+`bronze-raw-erasure-submitter` Role/RoleBinding this chart renders (create+get on `workflows`
+in ns `argo`, bound to the stream-worker ServiceAccount — configure via
+`sparkBronze.erasure.submitter`).
+
+Parameters mirror the job's env contract: `brand-id` (UUID, tenant-isolation key — always
+the first DELETE predicate), `identifier-hash` (64-hex per-brand-salted SHA-256),
+`anon-ids`/`device-ids` (comma-separated RAW payload ids). `brand-id`/`identifier-hash` have no
+defaults — an incomplete submit is rejected (fail-closed). Idempotent: a replayed erasure
+deletes 0 rows. Erasure is **physically complete after the `bronze-maintenance` snapshot-expiry
+pass** ages out the pre-delete snapshots (D4 posture). Completed Workflow CRs are TTL'd
+(`sparkBronze.erasure.ttlSecondsAfterCompletion`, 7d default).
+
+Manual submit (ops / verification):
+
+```bash
+argo submit -n argo --from workflowtemplate/bronze-raw-erasure \
+  -p brand-id=<uuid> -p identifier-hash=<64-hex> [-p anon-ids=a1,a2] [-p device-ids=d1]
+```
 
 ## C4 — partition maintenance (CRITICAL)
 

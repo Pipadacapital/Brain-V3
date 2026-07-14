@@ -14,10 +14,10 @@
  */
 import { Package } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
+import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { useTopProducts } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
@@ -34,7 +34,7 @@ export function TopProductsCard() {
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle className="flex items-center gap-2"><Package className="h-4 w-4" /> Top products</CardTitle>
         {data?.state === 'has_data' && data.data_source === 'synthetic' && (
-          <Badge variant="outline" className="text-amber-600">Synthetic</Badge>
+          <SyntheticBadge data-testid="top-products-synthetic-badge" />
         )}
       </CardHeader>
       <CardContent className="p-0">

@@ -11,7 +11,9 @@
  *  6. no-pci-card-fields: ban card-network field names outside the mapper boundary (C4 / PCI SAQ-A / ADR-RZ-10).
  */
 import boundaries from 'eslint-plugin-boundaries';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tsParser from '@typescript-eslint/parser';
+import tsPlugin from '@typescript-eslint/eslint-plugin';
 import noFloatMoney from './tools/eslint-rules/no-float-money.mjs';
 import noRawRedisKey from './tools/eslint-rules/no-raw-redis-key.mjs';
 import noPciCardFields from './tools/eslint-rules/no-pci-card-fields.mjs';
@@ -34,6 +36,13 @@ export default [
     files: ['**/*.ts', '**/*.tsx'],
     plugins: {
       boundaries,
+      // Registered so rule NAMES resolve: files carry
+      // `eslint-disable @typescript-eslint/no-explicit-any` comments, and an
+      // unregistered plugin makes ESLint 9 hard-error "Definition for rule
+      // not found" on every such comment (broke lint tree-wide on the first
+      // post-migration CI run). No @typescript-eslint rules are ENABLED —
+      // registration is name-resolution only.
+      '@typescript-eslint': tsPlugin,
       'brain-money': { rules: { 'no-float-money': noFloatMoney } },
       'brain-redis': { rules: { 'no-raw-redis-key': noRawRedisKey } },
       'brain-pci':   { rules: { 'no-pci-card-fields': noPciCardFields } },
@@ -60,6 +69,10 @@ export default [
         { type: 'core-module', pattern: 'apps/core/src/modules/*', capture: ['module'] },
         // The metric engine — more specific than the generic package pattern.
         { type: 'metric-engine', pattern: 'packages/metric-engine', capture: [] },
+        // Hexagonal DOMAIN packages (Commerce-OS program, SPEC: 0.5) — pure domain logic with
+        // ports only. More specific than the generic package pattern. Wave B's domain-journey
+        // is the first occupant; every future packages/domain-* lands inside this zone.
+        { type: 'domain', pattern: 'packages/domain-*', capture: ['domain'] },
         // Each deployable app — captured by the top-level directory name.
         { type: 'app', pattern: 'apps/*', capture: ['app'] },
         // Shared packages.
@@ -95,9 +108,22 @@ export default [
             },
             // Tools may not be imported by apps or packages
             {
-              from: ['app', 'package', 'core-module', 'metric-engine'],
+              from: ['app', 'package', 'core-module', 'metric-engine', 'domain'],
               disallow: ['tool'],
               message: 'Tools must not be imported from application or package code.',
+            },
+            // HEXAGONAL RULE (SPEC: 0.5): domain packages hold pure domain logic + ports; all
+            // datastore access arrives through injected adapters. They may not import the
+            // in-repo infrastructure adapter packages: @brain/db (the PG client wrapper) or
+            // @brain/metric-engine (the Trino serving seam). External driver imports (kafkajs,
+            // ioredis, neo4j-driver, pg, …) are banned by boundaries/external below.
+            {
+              from: ['domain'],
+              disallow: ['metric-engine', ['package', { pkg: 'db' }]],
+              message:
+                'Hexagonal boundary (SPEC: 0.5): packages/domain-* must not import infrastructure ' +
+                'adapters (@brain/db, @brain/metric-engine). Define a port in the domain package and ' +
+                'inject the adapter at the composition root.',
             },
             // metric-engine is fenced to the MEASUREMENT TIER — the modules that legitimately
             // consume the metric registry/engine: measurement, analytics, attribution (credit
@@ -115,6 +141,40 @@ export default [
                 'packages/metric-engine is fenced to the measurement tier (measurement, analytics, ' +
                 'attribution, data-quality, ai, frontend-api) — I-ST03, D-6. This module must not ' +
                 'import the metric engine directly; go through the analytics module instead.',
+            },
+          ],
+        },
+      ],
+
+      // ── HEXAGONAL RULE (SPEC: 0.5) — external infrastructure clients ─────
+      // Domain packages (packages/domain-*) must not import infrastructure driver
+      // libraries directly: Kafka (kafkajs), Redis (ioredis/redis), Neo4j
+      // (neo4j-driver), PostgreSQL (pg), Trino (trino-client / presto-client —
+      // Trino access in this repo is the @brain/metric-engine seam, banned above).
+      // Domain code programs against its own PORT interfaces; the composition root
+      // injects the concrete adapter.
+      'boundaries/external': [
+        'error',
+        {
+          default: 'allow',
+          rules: [
+            {
+              from: ['domain'],
+              disallow: [
+                'kafkajs',
+                'ioredis',
+                'redis',
+                'neo4j-driver',
+                'pg',
+                'pg-pool',
+                'pg-cursor',
+                'trino-client',
+                'presto-client',
+              ],
+              message:
+                'Hexagonal boundary (SPEC: 0.5): packages/domain-* must not import infrastructure ' +
+                'clients (kafka/redis/neo4j/pg/trino). Define a port in the domain package and inject ' +
+                'the adapter at the composition root.',
             },
           ],
         },
@@ -170,6 +230,41 @@ export default [
       // assert on domain entities. The reach-around guard protects PRODUCTION boundaries
       // (consistent with boundaries/ignore, which already excludes tests).
       'no-restricted-imports': 'off',
+    },
+  },
+
+  // ── AUD-IMPL-002: promise safety for the Fastify/KafkaJS services ─────────
+  // tsc strict does NOT flag un-awaited promises; a dropped promise in an ingest/consumer
+  // loop silently swallows failures (event-loss risk). Type-aware, so scoped to the three
+  // service src trees to keep lint fast. projectService resolves each file's real tsconfig.
+  {
+    files: [
+      'apps/core/src/**/*.ts',
+      'apps/collector/src/**/*.ts',
+      'apps/stream-worker/src/**/*.ts',
+    ],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+    },
+  },
+
+  // ── AUD-IMPL-002: react-hooks correctness for the Next.js app ─────────────
+  // Catches conditional hook calls (rules-of-hooks) and stale-closure dependency bugs
+  // (exhaustive-deps) that tsc cannot see.
+  {
+    files: ['apps/web/**/*.ts', 'apps/web/**/*.tsx'],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'error',
     },
   },
 ];

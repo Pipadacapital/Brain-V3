@@ -61,7 +61,7 @@ spec:
         serviceAccount:
           name: karpenter
           annotations:
-            eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-karpenter-controller
+            eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-karpenter-controller
         settings:
           # MUST equal aws_eks_cluster.main.name (project-environment).
           clusterName: brain-prod
@@ -102,7 +102,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "0"
     # Only reconcile when the NodePool intent changes.
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/karpenter
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/karpenter
   labels:
     project: brain
     environment: prod
@@ -110,7 +110,7 @@ metadata:
 spec:
   project: brain-prod
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/helm/karpenter
     helm:

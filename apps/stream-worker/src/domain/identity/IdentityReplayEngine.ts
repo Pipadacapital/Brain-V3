@@ -110,7 +110,7 @@ export async function replayIdentity(events: ReplayEvent[], opts: ReplayOptions)
  * keys that ever appeared together (transitively). That partition is a pure function of the event
  * multiset (never of order), and MUST equal the streaming resolver's `merged_into` partition.
  */
-export function batchStrongSignature(events: ReplayEvent[]): string {
+function batchStrongSignature(events: ReplayEvent[]): string {
   // (event_key → identifier_key) edges: computeConnectedComponents unions identifier_keys that share
   // an event_key (i.e. co-occurred), exactly mirroring why the resolver merges co-present identities.
   const edges: IdentifierBrainEdge[] = [];

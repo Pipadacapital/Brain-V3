@@ -1,0 +1,23 @@
+# SPEC:D.2 — certified metric definition (metrics-as-code). Change ONLY via PR + recompile.
+name: aov
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [day, week, month, all]
+dimensions_allowed: [channel]
+currency_handling: ratio_same_currency
+identity_basis: deterministic_only
+interactive: true
+owner: measurement-team
+description: >-
+  Average order value per period, per currency: gross order value divided by distinct order count.
+  A same-currency ratio of integer money over an integer count (§1.2). Deterministic order spine
+  only (§1.4). Null when there are zero orders (never divide-by-zero).
+measures:
+  - name: gross_revenue_minor
+    agg: SUM(order_value_minor)
+  - name: order_count
+    agg: COUNT(DISTINCT order_id)
+expression: CAST(gross_revenue_minor AS double) / NULLIF(order_count, 0)
+examples:
+  - "AOV in INR at grain=month."

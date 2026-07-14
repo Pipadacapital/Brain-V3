@@ -68,6 +68,40 @@ export interface ReconcileDeps {
    * gold_attribution_credit, touches = silver_touchpoint). No PostgreSQL.
    */
   srPool: SilverPool;
+  /**
+   * SPEC:B — B.5.4 / AMD-13: OPTIONAL per-brand flag reader. When `journey.engine` is ON (or the global
+   * ATTRIBUTION_SOURCE=journey env is set), the journey-key resolve reads the Journey-domain serving view
+   * (mv_journey_events_current) INSTEAD of mv_silver_touchpoint. DEFAULT OFF → silver_touchpoint,
+   * byte-identical pre-wave. Structural type (not the concrete FlagService) to avoid a package coupling —
+   * a @brain/platform-flags FlagService is assignable here. Absent → the env-only switch (still default OFF).
+   */
+  flags?: { isFlagEnabled(brandId: string, flag: 'journey.engine'): Promise<boolean> };
+}
+
+/**
+ * SPEC:B — B.5.4: which touchpoint input the attribution reconcile reads for a brand.
+ *   'silver_touchpoint' — DEFAULT (byte-identical pre-wave).
+ *   'journey'           — the Journey-domain output (mv_journey_events_current), deterministic-only.
+ */
+export type AttributionTouchpointSource = 'silver_touchpoint' | 'journey';
+
+/**
+ * SPEC:B — B.5.4 / AMD-13: resolve the touchpoint SOURCE for a brand. ON when the per-brand
+ * `journey.engine` flag is enabled OR the global ATTRIBUTION_SOURCE=journey env is set; else the legacy
+ * silver_touchpoint source. FAIL-CLOSED: a flag-read error → 'silver_touchpoint' (default OFF, pre-wave).
+ * This is the TS-driver twin of the Spark job's ATTRIBUTION_SOURCE env (gold_attribution_credit.py).
+ */
+async function resolveAttributionTouchpointSource(
+  brandId: string,
+  deps: ReconcileDeps,
+): Promise<AttributionTouchpointSource> {
+  if ((process.env.ATTRIBUTION_SOURCE ?? '').trim().toLowerCase() === 'journey') return 'journey';
+  try {
+    if (deps.flags && (await deps.flags.isFlagEnabled(brandId, 'journey.engine'))) return 'journey';
+  } catch {
+    // FAIL-CLOSED — a flag store error keeps the legacy source (never throw into the reconcile path).
+  }
+  return 'silver_touchpoint';
 }
 
 interface FinalizedOrderRow {
@@ -124,7 +158,7 @@ async function readUncreditedRecognized(
   const inList = RECOGNITION_EVENT_TYPES.map((t) => `'${t}'`).join(',');
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<FinalizedOrderRow>(
-      `SELECT order_id, brain_id, CAST(amount_minor AS CHAR) AS amount_minor, currency_code, occurred_at
+      `SELECT order_id, brain_id, CAST(amount_minor AS VARCHAR) AS amount_minor, currency_code, occurred_at
          FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],
@@ -146,7 +180,7 @@ async function readReversalsOnCredited(
   const inList = REVERSAL_EVENT_TYPES.map((t) => `'${t}'`).join(',');
   const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
     scope.runScoped<ReversalRow>(
-      `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS CHAR) AS amount_minor, occurred_at
+      `SELECT order_id, event_type, ledger_event_id, CAST(amount_minor AS VARCHAR) AS amount_minor, occurred_at
          FROM brain_serving.mv_gold_revenue_ledger
         WHERE ${BRAND_PREDICATE} AND event_type IN (${inList})`,
       [],
@@ -157,12 +191,38 @@ async function readReversalsOnCredited(
     .map((r) => ({ ...r, occurred_at: new Date(r.occurred_at) }));
 }
 
-/** Resolve the journey key (brain_anon_id) stitched to an order's brain_id, via Silver. */
+/**
+ * Resolve the journey key (brain_anon_id) stitched to an order's brain_id.
+ *
+ * SPEC:B — B.5.4: the touchpoint input is flag-selected. Default `silver_touchpoint` (byte-identical
+ * pre-wave). When `source === 'journey'` the resolve reads the Journey-domain serving view
+ * mv_journey_events_current: brain_anon_id/touch_seq are recovered from source_event_ref
+ * (brand_id||brain_anon_id||touch_seq) and the resolved brain_id equals the legacy stitched_brain_id when
+ * identity is held constant (journey.engine OFF at construction) → identical resolution. Deterministic-only
+ * (§1.4 / invariant 5). Both branches order by touch_seq ASC and pick the earliest anon → byte-identical.
+ */
 async function resolveBrainAnonId(
   srPool: SilverPool,
   brandId: string,
   brainId: string,
+  source: AttributionTouchpointSource = 'silver_touchpoint',
 ): Promise<string | null> {
+  if (source === 'journey') {
+    const rows = await withSilverBrand(srPool, brandId, async (scope) =>
+      scope.runScoped<{ brain_anon_id: string }>(
+        `SELECT split_part(source_event_ref, '||', 2) AS brain_anon_id
+           FROM brain_serving.mv_journey_events_current
+          WHERE brain_id = ?
+            AND identity_basis = 'deterministic'
+            AND substr(brain_id, 1, 10) <> 'anonymous_'
+            AND ${BRAND_PREDICATE}
+          ORDER BY CAST(split_part(source_event_ref, '||', 3) AS integer) ASC
+          LIMIT 1`,
+        [brainId],
+      ),
+    );
+    return rows[0]?.brain_anon_id ?? null;
+  }
   const rows = await withSilverBrand(srPool, brandId, async (scope) =>
     scope.runScoped<{ brain_anon_id: string }>(
       `SELECT brain_anon_id
@@ -197,9 +257,11 @@ export async function reconcileAttribution(
   model?: AttributionModelId,
 ): Promise<ReconcileResult> {
   const models: readonly AttributionModelId[] = model ? [model] : ATTRIBUTION_MODEL_IDS;
+  // SPEC:B — B.5.4: resolve the touchpoint source ONCE per brand (default OFF → silver_touchpoint).
+  const source = await resolveAttributionTouchpointSource(brandId, deps);
   const total: ReconcileResult = { credited: 0, clawed_back: 0, unattributed: 0 };
   for (const m of models) {
-    const r = await reconcileOneModel(brandId, correlationId, deps, m);
+    const r = await reconcileOneModel(brandId, correlationId, deps, m, source);
     total.credited += r.credited;
     total.clawed_back += r.clawed_back;
     total.unattributed += r.unattributed;
@@ -225,6 +287,8 @@ export async function reconcileDataDrivenAttribution(
 ): Promise<ReconcileResult> {
   const writer = new AttributionCreditWriter(deps.srPool);
   const model: AttributionModelId = 'data_driven';
+  // SPEC:B — B.5.4: resolve the touchpoint source ONCE for this brand (default OFF → silver_touchpoint).
+  const source = await resolveAttributionTouchpointSource(brandId, deps);
   let credited = 0;
   let clawedBack = 0;
   let unattributed = 0;
@@ -244,7 +308,7 @@ export async function reconcileDataDrivenAttribution(
       unattributed += 1;
       continue;
     }
-    const brainAnonId = await resolveBrainAnonId(deps.srPool, brandId, order.brain_id);
+    const brainAnonId = await resolveBrainAnonId(deps.srPool, brandId, order.brain_id, source);
     if (!brainAnonId) {
       unattributed += 1;
       continue;
@@ -288,6 +352,7 @@ async function reconcileOneModel(
   correlationId: string,
   deps: ReconcileDeps,
   model: AttributionModelId,
+  source: AttributionTouchpointSource = 'silver_touchpoint', // SPEC:B — B.5.4 flag-selected touchpoint input
 ): Promise<ReconcileResult> {
   const writer = new AttributionCreditWriter(deps.srPool);
   let credited = 0;
@@ -304,7 +369,7 @@ async function reconcileOneModel(
       unattributed += 1;
       continue;
     }
-    const brainAnonId = await resolveBrainAnonId(deps.srPool, brandId, order.brain_id);
+    const brainAnonId = await resolveBrainAnonId(deps.srPool, brandId, order.brain_id, source);
     if (!brainAnonId) {
       unattributed += 1; // no journey stitched → realized revenue is unattributed (honest)
       continue;

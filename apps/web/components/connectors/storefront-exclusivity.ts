@@ -11,34 +11,32 @@
  */
 
 import type { MarketplaceTile } from '@/lib/api/types';
+// DE-DUPED (was a hand-copied provider list that had to be kept in lock-step by comment): the
+// SINGLE source of truth for "which providers have a backfill runner" is
+// @brain/connector-core/domain/backfill-providers — the SAME module the stream-worker claimer and
+// the server reject (RequestConnectorBackfillCommand) read. Imported via the LEAF module path (it
+// imports nothing) so the client bundle never pulls the connector-core barrel (node:crypto etc.).
+import { supportsHistoricalBackfill as providerSupportsHistoricalBackfill } from '@brain/connector-core/src/domain/backfill-providers';
 
 /** Storefront providers that are mutually exclusive per brand (mirrors apps/core STOREFRONT_PROVIDERS). */
 export const STOREFRONT_PROVIDERS = ['shopify', 'woocommerce'] as const;
 
 /**
- * Providers whose "Import history" / backfill control should render — i.e. those with an actual
- * backfill runner. UI mirror of @brain/connector-core supportsHistoricalBackfill, i.e. the union of
- * BACKFILL_QUEUE_PROVIDERS (bespoke shopify runner) + INGESTION_BACKFILL_PROVIDERS (the generic
- * ingestion framework: meta/google_ads/razorpay/shiprocket/ga4). Shared with the stream-worker
- * claimer + the server reject in RequestConnectorBackfillCommand — keep in lock-step.
+ * A tile whose provider has a historical-backfill runner (the "Import history" control). This is a
+ * pure UI mirror of @brain/connector-core supportsHistoricalBackfill (imported above) — the union of
+ * BACKFILL_QUEUE_PROVIDERS (the bespoke shopify queue runner) + INGESTION_BACKFILL_PROVIDERS (the
+ * generic ingestion framework: meta/google_ads/razorpay/shiprocket/ga4/woocommerce). It delegates to
+ * that single source of truth (no hand-copied list), so it stays in lock-step by construction with
+ * the stream-worker claimer + the server reject in RequestConnectorBackfillCommand.
  *
- * WooCommerce is intentionally absent: it re-pulls history through the SYNC lane (the Sync-now
- * control), NOT the backfill queue, so it has no claimer for a backfill_job row. GoKwik is excluded
- * (webhook-first, no REST backfill surface). Showing the button for an unsupported provider would
- * enqueue an orphan job that sits `queued` forever and looks broken.
+ * WooCommerce's queue runner drives its NON-ORDER resources (products/customers/coupons/refunds);
+ * historical ORDERS pull through the sync lane at full manifest depth — together the button delivers
+ * the same uniform "Pull historical data" UX. GoKwik is webhook-first (no REST backfill surface) and
+ * therefore returns false. Showing the button for an unsupported provider would enqueue an orphan job
+ * that sits `queued` forever and looks broken.
  */
-export const BACKFILL_PROVIDERS = [
-  'shopify',
-  'meta',
-  'google_ads',
-  'razorpay',
-  'shiprocket',
-  'ga4',
-] as const;
-
-/** A tile whose provider has a historical-backfill queue runner (the "Import history" control). */
 export function supportsHistoricalBackfill(tile: Pick<MarketplaceTile, 'id'>): boolean {
-  return (BACKFILL_PROVIDERS as readonly string[]).includes(tile.id);
+  return providerSupportsHistoricalBackfill(tile.id);
 }
 
 type StorefrontTile = Pick<MarketplaceTile, 'id' | 'category' | 'display_name' | 'instance' | 'instances'>;

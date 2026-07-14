@@ -34,16 +34,18 @@
  * without flushing all keys.
  */
 
+import { createHash } from 'node:crypto';
+
 // ── BigInt-safe JSON (the serving DTOs carry bigint money/counts) ───────────────
 // JSON.stringify THROWS on bigint and JSON.parse can't restore it, so the cache must encode bigints as
 // a tagged token on write and reconstruct them on read — keeping the round-trip type-preserving.
 const BIGINT_TAG = '__brain_bigint__';
 
-export function bigintReplacer(_key: string, value: unknown): unknown {
+function bigintReplacer(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString() } : value;
 }
 
-export function bigintReviver(_key: string, value: unknown): unknown {
+function bigintReviver(_key: string, value: unknown): unknown {
   if (
     value !== null &&
     typeof value === 'object' &&
@@ -74,6 +76,39 @@ export function buildCacheKey(
 ): string {
   // Enforce brand_id-leading by construction — callers cannot reorder args.
   return `${brandId}:${metricId}:${paramsHash}:${servingVersion}`;
+}
+
+// ── SPEC: D.3 / §1.11.2 — BAI-query-shaped result cache key ─────────────────────
+// The natural-language / structured BAI ask path does not have a single (metricId, params)
+// tuple like a dashboard read — it has a QUERY. §1.11.2 specifies a query-result cache keyed
+// `{brand_id}:q:{normalized_query_hash}` so two syntactically-different-but-semantically-identical
+// asks ("revenue last 7 days" vs "  Revenue Last 7 Days ") share one cached answer. The key stays
+// brand_id-LEADING so the SAME `${brandId}:*` SCAN invalidation (and the crypto-shred cache bust)
+// covers it, and any cross-brand leak is detectable from the key alone. The `q` namespace segment
+// keeps it disjoint from the metric-serving keyspace (which uses the metricId as segment 2).
+
+/**
+ * Canonicalize a BAI query string for cache-key hashing: trim, lowercase, and collapse all
+ * internal whitespace runs to a single space. Two asks that differ only in case / spacing hash
+ * identically → one cached answer. Intentionally conservative (no stemming / token reordering):
+ * a stronger normalizer can be layered later without changing the key SHAPE.
+ */
+export function normalizeQuery(query: string): string {
+  return query.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Stable, collision-resistant hash of a normalized BAI query for the cache key. */
+export function hashQuery(query: string): string {
+  return createHash('sha256').update(normalizeQuery(query)).digest('hex').slice(0, 16);
+}
+
+/**
+ * Build the brand_id-LEADING BAI query-result cache key: `${brandId}:q:${normalized_query_hash}`.
+ * brand_id leads (isolation invariant + `${brandId}:*` SCAN invalidation); the `q` segment keeps
+ * BAI answers disjoint from the metric-serving keyspace built by buildCacheKey().
+ */
+export function buildQueryCacheKey(brandId: string, query: string): string {
+  return `${brandId}:q:${hashQuery(query)}`;
 }
 
 // ── PORT ──────────────────────────────────────────────────────────────────────

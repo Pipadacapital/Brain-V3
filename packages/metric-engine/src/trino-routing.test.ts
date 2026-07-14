@@ -178,8 +178,8 @@ describe('routeKnownMetric — NEVER returns trino_adhoc', () => {
     expect(routeKnownMetric(true)).toBe(QueryRoute.cache_hit);
   });
 
-  it('returns starrocks_serving when cacheHit=false', () => {
-    expect(routeKnownMetric(false)).toBe(QueryRoute.starrocks_serving);
+  it('returns trino_serving when cacheHit=false', () => {
+    expect(routeKnownMetric(false)).toBe(QueryRoute.trino_serving);
   });
 
   it('never returns trino_adhoc (checked exhaustively)', () => {
@@ -189,9 +189,9 @@ describe('routeKnownMetric — NEVER returns trino_adhoc', () => {
     }
   });
 
-  it('the string values are exactly cache_hit and starrocks_serving (not trino_adhoc)', () => {
+  it('the string values are exactly cache_hit and trino_serving (not trino_adhoc)', () => {
     expect(routeKnownMetric(true)).toBe('cache_hit');
-    expect(routeKnownMetric(false)).toBe('starrocks_serving');
+    expect(routeKnownMetric(false)).toBe('trino_serving');
   });
 });
 
@@ -202,8 +202,8 @@ describe('routeAiAdHocTrino — AI-ad-hoc-Trino DISABLED seam', () => {
     expect(() => routeAiAdHocTrino()).toThrow(NotImplementedYet);
   });
 
-  it('throws with a message that names StarRocks as the correct serving path', () => {
-    expect(() => routeAiAdHocTrino('SELECT 1')).toThrow(/StarRocks/);
+  it('throws with a message that names Trino serving as the correct serving path', () => {
+    expect(() => routeAiAdHocTrino('SELECT 1')).toThrow(/Trino serving \(brain_serving\.mv_\*\)/);
   });
 
   it('throws with DISABLED in the message (registered, not silently absent)', () => {

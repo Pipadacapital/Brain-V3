@@ -42,7 +42,9 @@ export interface InsightDto {
   direction: 'up' | 'down' | 'flat' | null;
   delta_pct: string | null;
   confidence: 'high' | 'medium' | 'low';
-  evidence: Record<string, string | number | null>;
+  // Values are string|number|boolean only (NO null) — persisted verbatim and read back against the
+  // BFF evidence contract (record(string, string|number|boolean)), which rejects null.
+  evidence: Record<string, string | number | boolean>;
   /**
    * Set by the BFF after the insight is materialized as a recommendation (the audited decision loop).
    * null when the recommendation bridge is unavailable. status ∈ open|dismissed|expired.
@@ -132,24 +134,32 @@ function totalImpactMinor(insights: Insight[], ccy: string | null): string | nul
  * Best-effort: a mart that does not yet expose the column degrades to 'live' for that mart, never
  * throwing (the briefing is still honest about the marts that DO report synthetic).
  */
-async function resolveBriefingDataSource(
+export async function resolveBriefingDataSource(
   brandId: string,
   deps: { srPool: SilverPool },
 ): Promise<'synthetic' | 'live'> {
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
-    for (const mart of INSIGHT_GOLD_MARTS) {
-      try {
-        const rows = await scope.runScoped<{ has_synthetic: number }>(
-          `SELECT 1 AS has_synthetic FROM ${mart}
-            WHERE ${BRAND_PREDICATE} AND data_source = 'synthetic' LIMIT 1`,
-          [],
-        );
-        if (rows.length > 0) return 'synthetic';
-      } catch {
-        // Mart not yet exposing data_source (or absent) — skip it; do not fail the briefing.
-      }
-    }
-    return 'live';
+    // AUD-IMPL-029: probe the 4 marts CONCURRENTLY (Promise.all) instead of awaiting each in a
+    // for-loop — each probe is an independent ~100–300 ms Trino POST+poll, so the serial form
+    // added up to ~1 s to every cold/expired briefing read. The Trino adapter is stateless HTTP
+    // per statement, so concurrent runScoped calls on one scope are safe. Per-mart degradation
+    // is preserved: a mart not yet exposing data_source (or absent) reads as non-synthetic for
+    // that mart — never fails the briefing.
+    const probes = await Promise.all(
+      INSIGHT_GOLD_MARTS.map(async (mart) => {
+        try {
+          const rows = await scope.runScoped<{ has_synthetic: number }>(
+            `SELECT 1 AS has_synthetic FROM ${mart}
+              WHERE ${BRAND_PREDICATE} AND data_source = 'synthetic' LIMIT 1`,
+            [],
+          );
+          return rows.length > 0;
+        } catch {
+          return false; // mart not yet exposing data_source (or absent) — skip it
+        }
+      }),
+    );
+    return probes.some(Boolean) ? 'synthetic' : 'live';
   });
 }
 
@@ -191,8 +201,11 @@ export async function getInsightsBriefing(
     return { state: 'no_data' };
   }
 
-  const dataSource = await resolveBriefingDataSource(brandId, deps);
-  const freshness = await resolveBriefingFreshness(brandId, deps);
+  // AUD-IMPL-029: the provenance + freshness probes are independent serving reads — fan out.
+  const [dataSource, freshness] = await Promise.all([
+    resolveBriefingDataSource(brandId, deps),
+    resolveBriefingFreshness(brandId, deps),
+  ]);
 
   const { insights, primaryCurrency, window } = result;
   const risks = insights.filter((i) => i.kind === 'risk');

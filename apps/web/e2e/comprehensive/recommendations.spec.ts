@@ -2,7 +2,7 @@
  * Recommendations / decision-engine (Morning Brief) E2E — /recommendations
  *
  * Surface under test: apps/web/app/(dashboard)/recommendations/recommendations-content.tsx
- *   - BFF-only read of GET /api/v1/recommendations; POST /api/v1/recommendations/refresh on "Run detectors".
+ *   - BFF-only read of GET /api/v1/recommendations; POST /api/v1/recommendations/refresh on "Scan for recommendations".
  *   - Recommend-only: nothing is auto-executed.
  *
  * Honest-empty: a FRESH onboarded brand has no open recommendations, so the page renders the
@@ -14,7 +14,7 @@
  *
  * Grounded selectors (read from the component + EmptyState + middleware):
  *   - Heading: role=heading name "Recommendations".
- *   - Run-detectors button: role=button, accessible name "Run detectors" (idle) / "Running…" (pending).
+ *   - Scan button: role=button, accessible name "Scan for recommendations" (idle) / "Scanning…" (pending).
  *   - Empty state: testid `empty-state`, role=status, aria-label "No open recommendations".
  *   - A recommendation card exposes: title, "Risk"/"Opportunity" tag (uppercased text),
  *     a confidence badge (Trusted/Estimated/Insufficient), a "Recommended action:" block,
@@ -50,7 +50,7 @@ async function expectSettled(page: Page): Promise<'empty' | 'data'> {
 }
 
 test.describe('recommendations — decision engine (Morning Brief)', () => {
-  test('[positive] renders the header, description, and a Run-detectors button', async ({ page }) => {
+  test('[positive] renders the header, description, and a Scan button', async ({ page }) => {
     await onboardToDashboard(page, 'rec_pos');
     await gotoRecommendations(page);
 
@@ -59,7 +59,7 @@ test.describe('recommendations — decision engine (Morning Brief)', () => {
     await expect(page.getByText(/Recommend-only: nothing is changed automatically/i)).toBeVisible();
 
     // The top-bar Run-detectors action.
-    const runBtn = page.getByRole('button', { name: 'Run detectors' }).first();
+    const runBtn = page.getByRole('button', { name: 'Scan for recommendations' }).first();
     await expect(runBtn).toBeVisible();
     await expect(runBtn).toBeEnabled();
   });
@@ -113,8 +113,8 @@ test.describe('recommendations — decision engine (Morning Brief)', () => {
       await expect(empty).toContainText('No open recommendations');
       await expect(empty).toContainText(/Run the detectors to scan your latest data/i);
 
-      // The CTA inside the empty state is itself a Run-detectors button.
-      await expect(empty.getByRole('button', { name: 'Run detectors' })).toBeVisible();
+      // The CTA inside the empty state is itself a Scan button.
+      await expect(empty.getByRole('button', { name: 'Scan for recommendations' })).toBeVisible();
     } else {
       // If the brand somehow has data, the list (not the empty state) is shown.
       await expect(page.getByTestId('empty-state')).toHaveCount(0);
@@ -122,33 +122,33 @@ test.describe('recommendations — decision engine (Morning Brief)', () => {
     }
   });
 
-  test('[positive] clicking Run detectors shows the running state and resolves back to a stable surface', async ({
+  test('[positive] clicking Scan for recommendations shows the running state and resolves back to a stable surface', async ({
     page,
   }) => {
     await onboardToDashboard(page, 'rec_run');
     await gotoRecommendations(page);
     await expectSettled(page);
 
-    // Click whichever Run-detectors button is present (top-bar, or the empty-state CTA).
-    const runBtn = page.getByRole('button', { name: 'Run detectors' }).first();
+    // Click whichever Scan button is present (top-bar, or the empty-state CTA).
+    const runBtn = page.getByRole('button', { name: 'Scan for recommendations' }).first();
     await expect(runBtn).toBeEnabled();
     await runBtn.click();
 
     // Running state: the button flips to "Running…" and is disabled while the POST is in flight.
     // This is fast; poll for either the running label OR an already-resolved stable surface.
-    const running = page.getByRole('button', { name: 'Running…' });
+    const running = page.getByRole('button', { name: 'Scanning…' });
     const settledAgain = page.getByTestId('empty-state').or(cardTitles(page).first());
     await expect(running.or(settledAgain)).toBeVisible({ timeout: 15_000 });
 
     // It must resolve: no button is left stuck in the pending label, and the surface is stable.
-    await expect(page.getByRole('button', { name: 'Running…' })).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Scanning…' })).toHaveCount(0, { timeout: 30_000 });
     await expectSettled(page);
 
     // The Run-detectors action is enabled again (re-runnable / idempotent — recommend-only).
-    await expect(page.getByRole('button', { name: 'Run detectors' }).first()).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Scan for recommendations' }).first()).toBeEnabled();
   });
 
-  test('[edge] Run detectors is idempotent — re-running keeps the surface stable, never crashes', async ({
+  test('[edge] Scanning is idempotent — re-scanning keeps the surface stable, never crashes', async ({
     page,
   }) => {
     await onboardToDashboard(page, 'rec_idem');
@@ -156,10 +156,10 @@ test.describe('recommendations — decision engine (Morning Brief)', () => {
     await expectSettled(page);
 
     for (let i = 0; i < 2; i++) {
-      const runBtn = page.getByRole('button', { name: 'Run detectors' }).first();
+      const runBtn = page.getByRole('button', { name: 'Scan for recommendations' }).first();
       await expect(runBtn).toBeEnabled();
       await runBtn.click();
-      await expect(page.getByRole('button', { name: 'Running…' })).toHaveCount(0, { timeout: 30_000 });
+      await expect(page.getByRole('button', { name: 'Scanning…' })).toHaveCount(0, { timeout: 30_000 });
       await expectSettled(page);
     }
 

@@ -140,8 +140,9 @@ describe('AC-1: rotateRefreshToken — rotation and replay detection', () => {
 
     expect(result.accessToken).toBeTruthy();
     expect(result.refreshToken).toBeTruthy();
-    // Access-token lifetime is 1 hour (3600s) since the token-time change.
-    expect(result.expiresIn).toBe(3600);
+    // Access-token lifetime is 7 days (604800s) — user decision 2026-07-06 (refresh token is 30d).
+    // Pinned to the shared constant so a drift between auth/shared.ts and this contract fails loudly.
+    expect(result.expiresIn).toBe(7 * 24 * 60 * 60);
 
     // Verify the old row was marked rotated (used_at + revoked_at).
     const sqlCalls = getSqlCalls(rawClient.query);

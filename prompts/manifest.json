@@ -1,0 +1,12 @@
+{
+  "version": "1",
+  "templates": [
+    {
+      "id": "copilot.system",
+      "version": "1",
+      "path": "prompts/copilot/system.v1.md",
+      "taskClass": "conversational",
+      "description": "Base system prompt for the Brain copilot: read-only MCP tools over certified metrics + Journey/Feature APIs; never authors numbers or SQL."
+    }
+  ]
+}

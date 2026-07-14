@@ -26,15 +26,15 @@ import { BRAND_PREDICATE, BRONZE_COLLECTOR_PREDICATE, ICEBERG_BRONZE, type Silve
 import { log } from "../../log.js";
 
 /** Frozen reconciliation tolerance: max tolerated |bronze - silver| order-count delta. */
-export const MAX_ROW_DELTA = 100;
+const MAX_ROW_DELTA = 100;
 
 export async function reconciliationCheck(
   _pool: Pool,
   silver: SilverReader | null,
   brandId: string,
 ): Promise<DqCheckRow[]> {
-  // DB-AUDIT C4: both tiers now read StarRocks — Bronze from the Iceberg SoR (collector_events),
-  // Silver from brain_silver. No StarRocks → cannot measure either side → honest D.
+  // DB-AUDIT C4: both tiers read Trino — Bronze from the ADR-0010 connect lift view, Silver from
+  // the brain_serving views. No serving reader → cannot measure either side → honest D.
   if (silver === null) {
     return [
       {
@@ -50,9 +50,9 @@ export async function reconciliationCheck(
     ];
   }
 
-  // ── Bronze order count (Iceberg Bronze via StarRocks, brand-scoped at the seam) ──
+  // ── Bronze order count (the connect lift view over Trino, brand-scoped at the seam) ──
   // order_id lives at payload.properties.order_id on order.* events (COALESCE the top-level form
-  // for legacy/synthetic payloads). collector_events.payload is a JSON string → get_json_string.
+  // for legacy/synthetic payloads). The view's payload is a JSON string → json_extract_scalar.
   let bronzeOrders = 0;
   try {
     const br = await silver.scopedQuery<{ n: string | number }>(
@@ -87,7 +87,8 @@ export async function reconciliationCheck(
   try {
     const sr = await silver.scopedQuery<{ n: string | number }>(
       brandId,
-      // BRONZE_COLLECTOR_PREDICATE is Bronze-only (`connector` column) — not valid on Silver views.
+      // BRONZE_COLLECTOR_PREDICATE is Bronze-only and now a constant no-op TRUE (ADR-0010:
+      // the single-lane connect lift view) — still never applied to Silver views.
       `SELECT COUNT(DISTINCT order_id) AS n
          FROM brain_serving.mv_silver_order_state
         WHERE ${BRAND_PREDICATE}`,

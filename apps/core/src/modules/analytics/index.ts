@@ -63,7 +63,7 @@ export type { RecentEventsResult, RecentEventRow } from './internal/application/
 export { getOrdersList } from './internal/application/queries/get-orders-list.js';
 export type { OrdersListResult, OrderListItemDto } from './internal/application/queries/get-orders-list.js';
 // FX conversion for the "show amounts in the brand's primary currency" dashboard view (display-only).
-export { fxRateService, createFxRateService } from './internal/infrastructure/fx-rate-service.js';
+export { fxRateService } from './internal/infrastructure/fx-rate-service.js';
 export type { FxRateService } from './internal/infrastructure/fx-rate-service.js';
 export { resolveBrandPrimaryCurrency, blendToPrimary, roasFromMinor } from './internal/infrastructure/fx-blend.js';
 // Contribution margin (CM1/CM2) + cost inputs (feat-cm2-cost-inputs).
@@ -71,6 +71,22 @@ export { getContributionMargin } from './internal/application/queries/get-contri
 export type { ContributionMarginResult, ContributionMarginDto } from './internal/application/queries/get-contribution-margin.js';
 export { listCostInputs, upsertCostInput } from './internal/application/queries/cost-inputs.js';
 export type { CostInputDto, UpsertCostInputInput, CostScope, CostType } from './internal/application/queries/cost-inputs.js';
+// SPEC:C.2.4 — per-SKU cost-sheet CSV ingest → gold_product_costs (versioned COGS source).
+export {
+  parseCostSheetCsv,
+  validateRows as validateProductCostRows,
+  ingestProductCosts,
+  listProductCosts,
+} from './internal/application/queries/product-costs.js';
+export type {
+  ProductCostRow,
+  ProductCostDto,
+  IngestResult as ProductCostIngestResult,
+  CostRowError as ProductCostRowError,
+} from './internal/application/queries/product-costs.js';
+// SPEC:C.5.1 — measurement-lineage endpoint (every executive metric → its Measurement facts).
+export { getMetricLineage } from './internal/application/queries/get-metric-lineage.js';
+export type { MetricLineageResult } from './internal/application/queries/get-metric-lineage.js';
 // Top products — per-SKU rollup over Silver order-line (feat-shopify-order-depth).
 export { getTopProducts } from './internal/application/queries/get-top-products.js';
 export type { TopProductsResult, TopProductDto } from './internal/application/queries/get-top-products.js';
@@ -152,6 +168,26 @@ export { getJourneyStitchRate } from './internal/application/queries/get-journey
 export type { JourneyStitchRateResult, JourneyStitchRateParams } from './internal/application/queries/get-journey-stitch-rate.js';
 export { getJourneyTimeline } from './internal/application/queries/get-journey-timeline.js';
 export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } from './internal/application/queries/get-journey-timeline.js';
+// Versioned journey ledger (mv_journey_events_current over iceberg.brain_gold.journey_events) —
+// one resolved customer's canonical timeline, newest-first, keyset-paginated (opaque cursor).
+export { getJourneyEvents } from './internal/application/queries/get-journey-events.js';
+export type { JourneyEventsResult, JourneyEventDto, JourneyEventsQueryParams } from './internal/application/queries/get-journey-events.js';
+// SPEC: B.3 — Wave-B Journey APIs (AMD-14): per-customer timeline (cache→Trino fallback), per-order
+// trace (explainability). Tenant from session (D-1). (The two-journey compare surface was removed
+// in the Wave-3 cleanup — AUD-IMPL-020: zero consumers end-to-end.)
+export { getCustomerJourney } from './internal/application/queries/get-customer-journey.js';
+export type { CustomerJourneyParams } from './internal/application/queries/get-customer-journey.js';
+export { getJourneyTrace } from './internal/application/queries/get-journey-trace.js';
+export type { JourneyTraceParams } from './internal/application/queries/get-journey-trace.js';
+// SPEC: B.4 — Journey Replay (?as_of=) + Explainability: the same customer's journey AS KNOWN AT
+// as_of (retained version history, AMD-10) + identity_asof evidence. Batch-only, replayed:true.
+export { getJourneyReplay } from './internal/application/queries/get-journey-replay.js';
+export type {
+  JourneyReplayResult,
+  JourneyReplayQueryParams,
+  IdentityAsOfStateDto,
+  IdentityEvidenceDto,
+} from './internal/application/queries/get-journey-replay.js';
 // #32a — aggregate journey-path Sankey (top-N ordered channel paths + edges + drop-off) over
 // gold_journey_paths via the metric-engine seam. NO money (paths are behavioral).
 export { getJourneyPaths } from './internal/application/queries/get-journey-paths.js';
@@ -161,6 +197,12 @@ export type {
   JourneyPathLinkDto,
   JourneyPathsParams,
 } from './internal/application/queries/get-journey-paths.js';
+export { getJourneyList } from './internal/application/queries/get-journey-list.js';
+export type {
+  JourneyListResult,
+  JourneyListRowDto,
+  JourneyListParams,
+} from './internal/application/queries/get-journey-list.js';
 
 // D13 Consent / Compliance surface (feat-d13-consent-cancontact Track C) — the four
 // brand-scoped reads behind /settings/consent. Counts + hashes only (NO raw PII);
@@ -288,3 +330,32 @@ export type {
   BriefingDto,
   InsightDto,
 } from './internal/application/queries/get-insights-briefing.js';
+
+// ── Measurement-tier facade (WA-02, SPEC: 0.5) ──────────────────────────────────────────────
+// packages/metric-engine is fenced to the measurement tier (I-ST03, D-6): non-measurement core
+// modules (billing, ml, notification, recommendation, workspace-access) must NOT import the
+// engine directly — the ESLint boundary fence rejects it and points HERE. This section is the
+// SANCTIONED route: analytics (a measurement-tier module) re-exports exactly the narrow seam
+// surface those modules legitimately consume. Nothing else from the engine is re-exported —
+// in particular NOT withSilverBrand/BRAND_PREDICATE, so non-measurement modules cannot write
+// ad-hoc serving SQL; every Gold read below is a purpose-named engine function.
+//
+// SilverPool is the driver-agnostic Trino serving-pool PORT type — deps typing only; the
+// concrete adapter is injected by the composition root (apps/core/src/main.ts).
+export type { SilverPool } from '@brain/metric-engine';
+// billing — the billing meter + inspectable-bill Gold seams (D-3: money math lives in the engine).
+export { computeRealizedGmvForPeriod, computeRealizedGmvCompositionForPeriod } from '@brain/metric-engine';
+// ml — the Gold customer-score read (I-ST01: the engine is the SOLE Gold reader).
+export { getCustomerScore } from '@brain/metric-engine';
+// recommendation — the detector signal seams (RTO / realization / CM2 halves).
+export {
+  computeRtoRiskSignal,
+  computeRealizationSignal,
+  computeCm2RevenueSignal,
+  computeCm2MarketingSignal,
+} from '@brain/metric-engine';
+// workspace-access — MA-11 currency_code immutability probe (any Gold ledger rows?).
+export { brandHasRealizedLedgerRows } from '@brain/metric-engine';
+// notification — the CAPI passback SOURCE window (finalized positive-amount purchases).
+export { computeFinalizedPurchasesForWindow } from '@brain/metric-engine';
+export type { FinalizedPurchaseWindowRow } from '@brain/metric-engine';

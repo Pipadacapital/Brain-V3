@@ -38,7 +38,7 @@ interface DataHealthVolumeChartProps {
 }
 
 const CHART_CONFIG: ChartConfig = {
-  count: { label: 'Events ingested', color: 'hsl(var(--chart-1))' },
+  count: { label: 'Events', color: 'hsl(var(--chart-1))' },
 };
 
 function useReducedMotion(): boolean {
@@ -82,8 +82,8 @@ export function DataHealthVolumeChart({
     return (
       <div className={className}>
         <EmptyState
-          title="No ingestion yet"
-          description="Event volume will appear once your connector starts sending data."
+          title="No events yet"
+          description="This chart fills in once your data sources start sending events."
           icon={<Activity className="h-8 w-8" />}
         />
       </div>
@@ -97,12 +97,12 @@ export function DataHealthVolumeChart({
   }));
 
   const srTable = (
-    <table className="sr-only" aria-label="Event ingestion volume data table">
-      <caption>Bronze event ingestion — daily, last 30 days</caption>
+    <table className="sr-only" aria-label="Events received per day data table">
+      <caption>Events received per day — last 30 days</caption>
       <thead>
         <tr>
           <th scope="col">Date</th>
-          <th scope="col">Events ingested</th>
+          <th scope="col">Events</th>
         </tr>
       </thead>
       <tbody>
@@ -123,7 +123,7 @@ export function DataHealthVolumeChart({
       <ChartContainer
         config={CHART_CONFIG}
         className="h-64 w-full"
-        aria-label="Bronze event ingestion volume — daily bar chart, last 30 days"
+        aria-label="Events received per day — bar chart, last 30 days"
       >
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -157,11 +157,11 @@ export function DataHealthVolumeChart({
             />
             <Bar
               dataKey="count"
-              name="Events ingested"
+              name="Events"
               fill="var(--color-count)"
               radius={[2, 2, 0, 0]}
               isAnimationActive={!reducedMotion}
-              aria-label="Events ingested"
+              aria-label="Events"
             />
           </BarChart>
         </ResponsiveContainer>

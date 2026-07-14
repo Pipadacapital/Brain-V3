@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pixelApi } from '@/lib/api/client';
 
-export const PIXEL_QUERY_KEY = ['pixel'] as const;
+const PIXEL_QUERY_KEY = ['pixel'] as const;
 
 export function usePixelInstallation() {
   // Read-only (SEC-0009-M01). Returns { installed: false } until provisioned.
@@ -49,35 +49,6 @@ export function useVerifyPixel() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => pixelApi.verify(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
-    },
-  });
-}
-
-/**
- * Production install path: auto-inject the pixel onto the connected Shopify storefront
- * (no manual snippet paste). On success the installation + health queries refresh, flipping
- * the status to installed/connected.
- */
-export function useInstallPixelShopify() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => pixelApi.installShopify(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
-    },
-  });
-}
-
-/**
- * Removal path: delete the Brain ScriptTag from the connected Shopify storefront and clear install
- * state. On success the installation + health queries refresh, flipping the status to not-installed.
- */
-export function useUninstallPixelShopify() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => pixelApi.uninstallShopify(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: PIXEL_QUERY_KEY });
     },

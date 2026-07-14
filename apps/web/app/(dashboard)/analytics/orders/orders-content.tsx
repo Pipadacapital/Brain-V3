@@ -138,7 +138,7 @@ function EmptyConnectCard() {
           <p className="font-medium text-foreground">No order data yet</p>
           <p className="text-sm text-muted-foreground mt-1 max-w-md">
             Connect a commerce source to see your order-status mix and fulfillment funnel.
-            The breakdown appears once orders flow into the Silver tier.
+            The breakdown appears once your orders start syncing.
           </p>
         </div>
         <Link href="/settings/connectors">
@@ -169,18 +169,21 @@ function OrderStatusData({ data }: { data: OrderStatusMixHasData }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
           label="Total Orders"
+          help="All orders placed in the selected period."
           value={Number(total).toLocaleString('en-IN')}
           sublabel={`${data.from} → ${data.to}`}
           data-testid="order-status-kpi-total"
         />
         <KpiTile
-          label="Terminal Share"
+          label="Reached Final Status"
+          help="The share of orders whose journey has finished — delivered, cancelled, returned, or refunded."
           value={terminalPct === null ? null : `${terminalPct}%`}
-          sublabel="reached a final state"
+          sublabel="delivered, cancelled, or returned"
           data-testid="order-status-kpi-terminal"
         />
         <KpiTile
           label="Delivered"
+          help="Orders that reached the customer."
           value={deliveredCount.toLocaleString('en-IN')}
           sublabel="successfully fulfilled"
           data-testid="order-status-kpi-delivered"
@@ -190,7 +193,7 @@ function OrderStatusData({ data }: { data: OrderStatusMixHasData }) {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            Orders by lifecycle state
+            Orders by status
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -248,13 +251,15 @@ function OverviewTab() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <KpiTile
               label="Orders"
+              help="How many orders were placed, including ones whose payment hasn't settled yet."
               value={ordersValue}
               isLoading={statsLoading}
-              sublabel="settled + provisional"
+              sublabel="includes orders awaiting settlement"
               data-testid="orders-kpi-count"
             />
             <KpiTile
               label="AOV"
+              help="Average order value — how much a customer spends per order on average."
               value={aovValue}
               isLoading={statsLoading}
               sublabel="average order value"
@@ -262,6 +267,7 @@ function OverviewTab() {
             />
             <KpiTile
               label="RTO Rate"
+              help="The share of shipped orders that came back undelivered (returned to origin) — lower is better."
               value={rtoValue}
               isLoading={statsLoading}
               lowerIsBetter
@@ -395,7 +401,7 @@ function StatusTab() {
           {data?.state === 'has_data' && data.data_source === 'synthetic' && (
             <SyntheticBadge
               data-testid="order-status-synthetic-badge"
-              reason="Order lifecycle is derived from the realized-revenue ledger; the cod_* delivery/RTO rows are synthetic in dev (real shape, synthetic source). A real partner sandbox is a platform follow-up."
+              reason="Some delivery and RTO outcomes here come from sample data used during setup — they are replaced as real courier updates arrive."
             />
           )}
         </div>
@@ -430,14 +436,14 @@ export function OrdersContent() {
     <div className="space-y-6">
       <PageHeader
         title="Orders"
-        description="Order volume, average order value, RTO rate, and lifecycle status mix."
+        description="Order volume, average order value, RTO rate, and the status mix of your orders."
         meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title="Status tab reads from the Silver analytics tier (dbt → StarRocks) via the metric-engine."
+            title="Built from the order updates your store connectors send."
           >
             <Layers className="h-3 w-3" aria-hidden="true" />
-            Powered by the Silver tier
+            Powered by your store data
           </span>
         }
       />

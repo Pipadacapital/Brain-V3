@@ -26,9 +26,12 @@
  *   - The marketplace UI only renders the backfill control for supportsHistoricalBackfill providers
  *     (web mirror: apps/web/components/connectors/storefront-exclusivity.ts).
  *
- * NOTE — WooCommerce's history re-pull runs through the SYNC lane (RequestConnectorSyncCommand → the
- * woocommerce-orders-repull job, which also drives its non-order resources onto the SAME generic
- * driver), NOT through the `jobs.backfill_job` queue, so it is intentionally absent from both sets.
+ * NOTE — WooCommerce is in the INGESTION set for the uniform "Pull historical data" UX, but its
+ * queue runner drives ONLY the NON-ORDER resources (products/customers/coupons/refunds): orders flow
+ * on the live lane via woocommerce-orders-repull (uuidV5FromOrderLive event ids, full manifest-window
+ * depth), and driving them through the framework too would mint DIFFERENT deterministic ids and
+ * double-count them in Bronze. The queue lane shares jobs.resource_backfill_state cursors with the
+ * scheduled per-tick lane, so the two never duplicate work.
  * GoKwik is webhook-first (no REST backfill surface) and is intentionally excluded.
  */
 
@@ -45,6 +48,7 @@ export function supportsBackfillQueue(provider: string): provider is BackfillQue
  * Providers whose "Import history" backfill is drained by the GENERIC ingestion framework
  * (jobs/ingestion-backfill → runResumableBackfill over the provider's <UPPER>_INGESTION_MANIFEST).
  * GoKwik is excluded (webhook-first, no REST backfill surface).
+ * woocommerce: NON-ORDER resources only (orders stay on the sync/live lane — see header NOTE).
  */
 export const INGESTION_BACKFILL_PROVIDERS = [
   'meta',
@@ -52,6 +56,7 @@ export const INGESTION_BACKFILL_PROVIDERS = [
   'razorpay',
   'shiprocket',
   'ga4',
+  'woocommerce',
 ] as const;
 export type IngestionBackfillProvider = (typeof INGESTION_BACKFILL_PROVIDERS)[number];
 

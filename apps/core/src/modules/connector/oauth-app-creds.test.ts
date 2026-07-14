@@ -59,6 +59,33 @@ describe('resolveBrandOAuthAppCreds', () => {
     const r = await resolveBrandOAuthAppCreds(sm, 'meta', BRAND, { clientId: 'env-id', clientSecret: 'env-secret' });
     expect(r).toEqual({ clientId: 'env-id', clientSecret: 'env-secret' });
   });
+
+  it('carries the brand-stored developer_token alongside the brand app creds (google_ads BYO)', async () => {
+    const sm = mockSecrets({ client_id: 'brand-id', client_secret: 'brand-secret', developer_token: 'brand-dev-tok' });
+    const r = await resolveBrandOAuthAppCreds(sm, 'google_ads', BRAND, {
+      clientId: 'env-id',
+      clientSecret: 'env-secret',
+      developerToken: 'env-dev-tok',
+    });
+    expect(r).toEqual({ clientId: 'brand-id', clientSecret: 'brand-secret', developerToken: 'brand-dev-tok' });
+  });
+
+  it('brand app creds WITHOUT a developer_token inherit the env fallback developer token', async () => {
+    const sm = mockSecrets({ client_id: 'brand-id', client_secret: 'brand-secret' });
+    const r = await resolveBrandOAuthAppCreds(sm, 'google_ads', BRAND, {
+      clientId: 'env-id',
+      clientSecret: 'env-secret',
+      developerToken: 'env-dev-tok',
+    });
+    expect(r).toEqual({ clientId: 'brand-id', clientSecret: 'brand-secret', developerToken: 'env-dev-tok' });
+  });
+
+  it('no developer token anywhere → the key is simply absent (no undefined leakage)', async () => {
+    const sm = mockSecrets({ client_id: 'brand-id', client_secret: 'brand-secret' });
+    const r = await resolveBrandOAuthAppCreds(sm, 'meta', BRAND, { clientId: 'env-id', clientSecret: 'env-secret' });
+    expect(r).toEqual({ clientId: 'brand-id', clientSecret: 'brand-secret' });
+    expect(r && 'developerToken' in r).toBe(false);
+  });
 });
 
 describe('resolveBrandOAuthClientId', () => {
@@ -98,6 +125,20 @@ describe('storeBrandOAuthAppCreds', () => {
       BRAND,
       { connectorType: 'shopify_app' },
       { client_id: 'cid', client_secret: 'csec' },
+    );
+  });
+
+  it('includes developer_token in the bundle when supplied (google_ads BYO)', async () => {
+    const sm = mockSecrets(null);
+    await storeBrandOAuthAppCreds(sm, 'google_ads', BRAND, {
+      clientId: 'cid',
+      clientSecret: 'csec',
+      developerToken: 'dev-tok',
+    });
+    expect(sm.storeSecret).toHaveBeenCalledWith(
+      BRAND,
+      { connectorType: 'google_ads_app' },
+      { client_id: 'cid', client_secret: 'csec', developer_token: 'dev-tok' },
     );
   });
 });

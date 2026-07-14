@@ -58,7 +58,7 @@ export type AttributionModelId =
   | 'data_driven';
 
 /** The PER-JOURNEY closed-form models — the set reconcileAttribution's per-order loop computes. */
-export const PER_JOURNEY_MODEL_IDS: readonly AttributionModelId[] = [
+const PER_JOURNEY_MODEL_IDS: readonly AttributionModelId[] = [
   'first_touch',
   'last_touch',
   'linear',

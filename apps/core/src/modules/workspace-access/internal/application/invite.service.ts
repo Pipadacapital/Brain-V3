@@ -16,7 +16,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { DbPool, QueryContext } from '@brain/db';
 import { beginRlsTxn } from '@brain/db';
 import type { AuditWriter } from '@brain/audit';
-import type { NotificationService } from '../../../notification/service.js';
+import type { NotificationService } from '../../../notification/index.js';
 import type { Invite } from '../domain/invite/entities.js';
 import type { Membership } from '../domain/membership/entities.js';
 import type { RoleCode } from '../domain/membership/entities.js';

@@ -29,8 +29,9 @@ import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext } from '@brain/observability';
+import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import {
@@ -44,6 +45,7 @@ import {
   META_AUTH_ERROR,
   META_RATE_LIMITED,
   type MetaApiCredentials,
+  type MetaBreakdownName,
 } from './meta-insights-client.js';
 import { log } from "../../log.js";
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
@@ -88,6 +90,20 @@ function backfillChunksPerRun(): number {
 
 /** The hierarchy levels to pull (Meta Insights level param). */
 const META_LEVELS: Array<'campaign' | 'adset' | 'ad'> = ['campaign', 'adset', 'ad'];
+
+/**
+ * FIREHOSE breakdown passes. `null` = the base grain (no `breakdowns=` param → base event_ids stay
+ * byte-identical, zero re-dedup churn). Each non-null family runs as its OWN insights pass tagging each
+ * row with its dimension value(s); the mapper folds those into breakdown_key so the dedup event_id keeps
+ * base + every breakdown row distinct (never collide). The emit loop below is level × breakdown.
+ */
+const META_BREAKDOWN_PASSES: Array<MetaBreakdownName | null> = [
+  null,
+  'demographic',
+  'geo',
+  'placement',
+  'hourly',
+];
 
 interface AdConnectorRow {
   connector_instance_id: string;
@@ -217,44 +233,51 @@ async function repullConnector(params: RepullParams): Promise<void> {
   let totalEmitted = 0;
   let maxStatDate: string | null = null;
 
-  for (const level of META_LEVELS) {
-    const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
-    try {
-      let pageUrlResult = await client.fetchInsightsFirstPage(level, since, until);
-      while (true) {
-        const { emitted, maxDate } = await emitPage({
-          rows: pageUrlResult.rows,
-          brandId,
-          ciId,
-          canonicalLevel,
-          accountCurrency: accountMeta.currencyCode,
-          accountTz: accountMeta.timezoneName,
-          producer,
-        });
-        totalEmitted += emitted;
-        if (maxDate && (maxStatDate === null || maxDate > maxStatDate)) maxStatDate = maxDate;
+  // FIREHOSE: pull EVERY breakdown as its own insights pass (plus the base pass), across all levels.
+  // The mapper tags each row with its breakdown dims + folds them into breakdown_key so the dedup
+  // event_id keeps base + every breakdown distinct. A per-(breakdown,level) error is non-fatal.
+  for (const breakdown of META_BREAKDOWN_PASSES) {
+    for (const level of META_LEVELS) {
+      const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
+      try {
+        let pageUrlResult = await client.fetchInsightsFirstPage(level, since, until, { breakdown });
+        while (true) {
+          const { emitted, maxDate } = await emitPage({
+            rows: pageUrlResult.rows,
+            brandId,
+            ciId,
+            canonicalLevel,
+            breakdown,
+            accountCurrency: accountMeta.currencyCode,
+            accountTz: accountMeta.timezoneName,
+            producer,
+            pool,
+          });
+          totalEmitted += emitted;
+          if (maxDate && (maxStatDate === null || maxDate > maxStatDate)) maxStatDate = maxDate;
 
-        // Checkpoint cursor after each page (high-water stat_date).
-        if (maxStatDate) await upsertCursorValue(pool, brandId, ciId, CURSOR_RESOURCE, maxStatDate);
+          // Checkpoint cursor after each page (high-water stat_date).
+          if (maxStatDate) await upsertCursorValue(pool, brandId, ciId, CURSOR_RESOURCE, maxStatDate);
 
-        if (!pageUrlResult.nextUrl) break;
-        pageUrlResult = await client.fetchInsightsByUrl(pageUrlResult.nextUrl, level);
+          if (!pageUrlResult.nextUrl) break;
+          pageUrlResult = await client.fetchInsightsByUrl(pageUrlResult.nextUrl, level);
+        }
+      } catch (err) {
+        if (String(err).includes(META_RATE_LIMITED)) {
+          log.error(`connector=${ciId} RateLimited — aborting run (retry next)`);
+          await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
+          return;
+        }
+        if (String(err).includes(META_AUTH_ERROR)) {
+          recordConnectorAuthRejected('meta'); // P2.6: make the silent token-expiry death loud
+          await setSyncState(pool, brandId, ciId, 'error', 'meta auth error — RECONNECT_REQUIRED');
+          await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
+          return;
+        }
+        log.error(`connector=${ciId} level=${level} breakdown=${breakdown ?? 'base'} page error`, { err: err });
+        // Non-fatal per (breakdown,level) — continue to the next pass.
       }
-    } catch (err) {
-      if (String(err).includes(META_RATE_LIMITED)) {
-        log.error(`connector=${ciId} RateLimited — aborting run (retry next)`);
-        await setSyncState(pool, brandId, ciId, 'error', 'RateLimited — retry next run');
-        await updateConnectorInstanceHealth(pool, brandId, ciId, 'rate_limited');
-        return;
-      }
-      if (String(err).includes(META_AUTH_ERROR)) {
-        recordConnectorAuthRejected('meta'); // P2.6: make the silent token-expiry death loud
-        await setSyncState(pool, brandId, ciId, 'error', 'meta auth error — RECONNECT_REQUIRED');
-        await updateConnectorInstanceHealth(pool, brandId, ciId, 'token_expired');
-        return;
-      }
-      log.error(`connector=${ciId} level=${level} page error`, { err: err });
-      // Non-fatal per level — continue to next level.
     }
   }
 
@@ -271,15 +294,17 @@ interface EmitPageParams {
   brandId: string;
   ciId: string;
   canonicalLevel: AdSpendLevel;
+  breakdown: MetaBreakdownName | null;
   accountCurrency: string;
   accountTz: string | null;
   producer: Producer;
+  pool: Pool;
 }
 
 async function emitPage(p: EmitPageParams): Promise<{ emitted: number; maxDate: string | null }> {
   if (p.rows.length === 0) return { emitted: 0, maxDate: null };
 
-  const messages = [];
+  const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
   let maxDate: string | null = null;
 
   for (const raw of p.rows) {
@@ -287,8 +312,12 @@ async function emitPage(p: EmitPageParams): Promise<{ emitted: number; maxDate: 
     const props = mapped.properties;
     if (!props.stat_date || !props.level_id) continue; // skip rows missing the dedup grain
 
+    // FIREHOSE: fold the row's breakdown dims (the mapper already canonicalized them into
+    // props.breakdown_key — '' for the base pass) into the dedup event_id, so a base row and every
+    // breakdown row at the same (brand,platform,statDate,level,levelId) mint DISTINCT ids and an
+    // idempotent re-pull of the same breakdown row re-mints the same id → Silver MERGE dedups.
     const eventId = uuidV5FromSpendRow(
-      p.brandId, 'meta', props.stat_date, props.level, props.level_id,
+      p.brandId, 'meta', props.stat_date, props.level, props.level_id, props.breakdown_key ?? '',
     );
 
     const envelope = CollectorEventV1Schema.parse({
@@ -302,19 +331,46 @@ async function emitPage(p: EmitPageParams): Promise<{ emitted: number; maxDate: 
       properties: props as unknown as Record<string, unknown>,
     });
 
-    messages.push({ key: buildPartitionKey(p.brandId, eventId), value: Buffer.from(JSON.stringify(envelope)) });
+    messages.push({ eventId, key: buildPartitionKey(p.brandId, eventId), value: Buffer.from(JSON.stringify(envelope)) });
     if (maxDate === null || props.stat_date > maxDate) maxDate = props.stat_date;
   }
 
+  let emitted = 0;
   if (messages.length > 0) {
-    // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-    // message so the bronze-bridge consumer resumes this repull's trace.
-    const traceHeaders: Record<string, Buffer | string> = {};
-    injectKafkaTraceContext(traceHeaders);
-    await p.producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
-    log.info(`connector=${p.ciId} level=${p.canonicalLevel} emitted=${messages.length}`);
+    // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
+    // so a re-pull/backfill overlap never re-floods Bronze. brand GUC set on a short pooled client,
+    // then filter+mark. ORDER IS CRITICAL: produce FIRST, mark AFTER (a crash between at worst
+    // re-produces a dup on retry, which Silver backstops — never loses an event).
+    const dedupClient = await p.pool.connect();
+    try {
+      await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+      const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
+
+      const toSend = messages.filter((m) => unseen.has(m.eventId));
+      const dropped = messages.length - toSend.length;
+      if (dropped > 0) {
+        incrementCounter('ingest_dedup_dropped_total', { provider: 'meta' });
+        log.info(`connector=${p.ciId} level=${p.canonicalLevel} dedup: dropped ${dropped} already-ingested events`);
+      }
+
+      if (toSend.length > 0) {
+        // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+        // message so the bronze-bridge consumer resumes this repull's trace.
+        const traceHeaders: Record<string, Buffer | string> = {};
+        injectKafkaTraceContext(traceHeaders);
+        await p.producer.send({
+          topic: LIVE_TOPIC,
+          messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+        });
+        await markEventIdsSeen(dedupClient, p.brandId, toSend.map((m) => m.eventId));
+        emitted = toSend.length;
+      }
+    } finally {
+      dedupClient.release();
+    }
+    log.info(`connector=${p.ciId} level=${p.canonicalLevel} emitted=${emitted}`);
   }
-  return { emitted: messages.length, maxDate };
+  return { emitted, maxDate };
 }
 
 // ── A2: 2-year historical backfill lane (resumable, chunked, async, dedup-by-event_id) ──
@@ -402,23 +458,31 @@ async function backfillConnector(params: RepullParams): Promise<void> {
     const chunkSince = candidateSince < floor ? floor : candidateSince;
 
     try {
-      for (const level of META_LEVELS) {
-        const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
-        // Force the async ad_report_run path — historical month-wide pulls are large.
-        let page = await client.fetchInsightsFirstPage(level, chunkSince, chunkUntil, { asyncMode: true });
-        while (true) {
-          const { emitted } = await emitPage({
-            rows: page.rows,
-            brandId,
-            ciId,
-            canonicalLevel,
-            accountCurrency: accountMeta.currencyCode,
-            accountTz: accountMeta.timezoneName,
-            producer,
+      // FIREHOSE: backfill covers base + every breakdown pass identically to the live repull (extra loop).
+      for (const breakdown of META_BREAKDOWN_PASSES) {
+        for (const level of META_LEVELS) {
+          const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
+          // Force the async ad_report_run path — historical month-wide pulls are large.
+          let page = await client.fetchInsightsFirstPage(level, chunkSince, chunkUntil, {
+            asyncMode: true,
+            breakdown,
           });
-          totalEmitted += emitted;
-          if (!page.nextUrl) break;
-          page = await client.fetchInsightsByUrl(page.nextUrl, level);
+          while (true) {
+            const { emitted } = await emitPage({
+              rows: page.rows,
+              brandId,
+              ciId,
+              canonicalLevel,
+              breakdown,
+              accountCurrency: accountMeta.currencyCode,
+              accountTz: accountMeta.timezoneName,
+              producer,
+              pool,
+            });
+            totalEmitted += emitted;
+            if (!page.nextUrl) break;
+            page = await client.fetchInsightsByUrl(page.nextUrl, level);
+          }
         }
       }
     } catch (err) {

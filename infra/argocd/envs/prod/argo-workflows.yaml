@@ -7,9 +7,14 @@
 # CronWorkflow CRs into ns `argo` — without this controller the sync fails on
 # an unknown CRD and the entire Spark compute tier has no prod execution path.
 #
-# sync-wave -2: lands before strimzi (-… n/a) and before cronworkflows (0) at
+# sync-wave -3: lands before strimzi (-… n/a) and before cronworkflows (0) at
 # bring-up. Server (UI) disabled — `argo submit --from cronworkflow/...` talks
 # to the k8s API directly; no extra exposure surface.
+# Moved -2 → -3 (2026-07-13): this app creates the `argo` namespace (destination
+# + CreateNamespace=true), which external-secrets-config-prod (-2) needs to exist
+# before it lands the argo/core-env ExternalSecret. -3 guarantees that ordering
+# (was a same-wave race). Sits alongside external-secrets-prod (-3, the ESO
+# operator) — independent, no dependency between them.
 # MANUAL promotion gate (matches trino/karpenter prod) — no automated sync.
 ################################################################################
 apiVersion: argoproj.io/v1alpha1
@@ -18,7 +23,7 @@ metadata:
   name: argo-workflows-prod
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-wave: "-3"
   labels:
     project: brain
     environment: prod
@@ -52,6 +57,18 @@ spec:
           # be scale-to-zero Spot; the cron controller must always be up).
           nodeSelector:
             role: system
+          # ── AUD-IMPL-027 / AUD-OPS-029: per-run Spark wall-time telemetry ──
+          # The spark-v4 CronWorkflows emit custom workflow metrics
+          # (brain_spark_workflow_duration_seconds / _failed_total) — the
+          # CONTROLLER serves them; this flips its /metrics endpoint on and
+          # ships a ServiceMonitor. kube-prometheus-stack selects ALL
+          # ServiceMonitors (serviceMonitorSelectorNilUsesHelmValues: false),
+          # so no release label is needed. The scale-tripwire alert rules
+          # (infra/observe/alerts/scale-tripwires.rules.yml) read these series.
+          metricsConfig:
+            enabled: true
+          serviceMonitor:
+            enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: argo

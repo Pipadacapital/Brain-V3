@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1
 #
+# build-trigger: first build on Pipadacapital/Brain-V3 — rebuild web with the
+# baked in-cluster BFF proxy URL (#380) that never landed on the old repo (CI
+# quota + local build stall). Safe to remove on any later app change.
+#
 # @brain/web — Next.js 15 dashboard (port 3000).
 # Build context MUST be the repo root:  docker build -f apps/web/Dockerfile .
 #
@@ -54,13 +58,22 @@ COPY packages/tenant-context/package.json packages/tenant-context/package.json
 COPY packages/woocommerce-mapper/package.json packages/woocommerce-mapper/package.json
 COPY tools/data-quality/package.json tools/data-quality/package.json
 COPY tools/isolation-fuzz/package.json tools/isolation-fuzz/package.json
-COPY tools/parity-oracle/package.json tools/parity-oracle/package.json
 COPY tools/pixel-fixture/package.json tools/pixel-fixture/package.json
 COPY tools/seed/package.json tools/seed/package.json
 RUN pnpm install --frozen-lockfile --prod=false
 
 # Bring in the full source — the install layer above stays cached.
 COPY . .
+# next.config.js rewrites() bakes the BFF/core proxy target into the routes
+# manifest at BUILD time — runtime env (the web-env secret) CANNOT override it.
+# Without this the deployed image freezes the 'http://localhost:3001' dev
+# fallback and every /api/bff/* and /api/v1/* call ECONNREFUSEs in-cluster.
+# Provide the in-cluster core Service URL here so `next build` bakes the real
+# target (overridable per-env via --build-arg).
+ARG BFF_BASE_URL=http://core.core.svc.cluster.local:3001
+ARG CORE_API_URL=http://core.core.svc.cluster.local:3001
+ENV BFF_BASE_URL=${BFF_BASE_URL} \
+    CORE_API_URL=${CORE_API_URL}
 # Build only the web app (and its workspace deps via turbo's ^build).
 RUN pnpm --filter @brain/web build
 
@@ -69,7 +82,7 @@ FROM base AS runtime
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
-RUN groupadd -r brain && useradd -r -g brain -m brain
+RUN groupadd -r -g 1001 brain && useradd -r -u 1001 -g brain -m brain
 COPY --from=builder --chown=brain:brain /repo /repo
 WORKDIR /repo/apps/web
 USER brain

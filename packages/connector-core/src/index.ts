@@ -81,6 +81,8 @@ export type {
   CanonicalProvenance,
   CanonicalPreHashedIdentifiers,
 } from './contracts/CanonicalEvent.js';
+// SPEC: A.1.4 — WA-09 dual-write knob (connector.identity_fields flag projection)
+export type { IdentityFieldsOptions } from './contracts/IdentityFields.js';
 
 // ── Ingestion framework: manifest (resource registry) ────────────────────────────
 export {
@@ -147,6 +149,7 @@ export {
   META_PROVIDER,
   META_INSIGHTS_RESOURCE,
   META_INGESTION_MANIFEST,
+  THIRTY_SEVEN_MONTHS_MS,
 } from './manifests/meta.manifest.js';
 export {
   RAZORPAY_PROVIDER,
@@ -158,3 +161,16 @@ export {
 
 // ── Shared utils ───────────────────────────────────────────────────────────────
 export { hashToUuidShaped } from './util/hash-to-uuid-shaped.js';
+
+// ── Google service-account JWT-bearer auth (shared by GA4 connect + repull) ─────
+export {
+  GOOGLE_SA_AUTH_ERROR,
+  GOOGLE_OAUTH_TOKEN_URL,
+  parseServiceAccountKeyJson,
+  signServiceAccountAssertion,
+  mintServiceAccountAccessToken,
+} from './auth/google-service-account.js';
+export type {
+  GoogleServiceAccountKey,
+  MintServiceAccountTokenResult,
+} from './auth/google-service-account.js';

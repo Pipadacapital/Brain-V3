@@ -18,8 +18,9 @@
  */
 
 import type { DbPool, QueryContext } from '@brain/db';
-import type { SilverPool } from '@brain/metric-engine';
-import { computeRealizedGmvForPeriod } from '@brain/metric-engine';
+// WA-02 (SPEC: 0.5): metric-engine is fenced to the measurement tier — consume via the analytics facade.
+import type { SilverPool } from '../../../analytics/index.js';
+import { computeRealizedGmvForPeriod } from '../../../analytics/index.js';
 
 const PERIOD_RE = /^\d{4}-\d{2}$/;
 

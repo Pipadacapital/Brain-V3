@@ -504,6 +504,7 @@
               "last_touch",
               "linear",
               "position_based",
+              "time_decay",
               "data_driven"
             ]
           },
@@ -533,6 +534,7 @@
               "last_touch",
               "linear",
               "position_based",
+              "time_decay",
               "data_driven"
             ]
           },
@@ -691,6 +693,7 @@
               "last_touch",
               "linear",
               "position_based",
+              "time_decay",
               "data_driven"
             ]
           },
@@ -720,6 +723,7 @@
               "last_touch",
               "linear",
               "position_based",
+              "time_decay",
               "data_driven"
             ]
           },

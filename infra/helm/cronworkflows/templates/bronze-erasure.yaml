@@ -1,0 +1,144 @@
+{{- /*
+Bronze raw-PII SUBJECT erasure (was spark-erasure.yaml — Spark→DuckDB cutover).
+AUD-OPS-037 — RTBF / DPDP / I-S05.
+
+This is a WorkflowTemplate, NOT a CronWorkflow: subject erasure is ON-DEMAND. The stream-worker
+erasure orchestrator (EraseSubjectUseCase STEP 4) submits a Workflow from this template via the
+Kubernetes API (workflowTemplateRef — the prod argo-workflows app runs controller-only,
+server.enabled=false) after the subject DEK is crypto-shredded. The wrapped job is
+db/iceberg/trino/erasure_raw_delete.py, run via the Trino client the brain-duckdb image carries
+(DuckDB can't DELETE-and-compact Iceberg; Trino runs the format-v2 delete + optimize + expire_snapshots).
+Its CLI contract is env-driven (UNCHANGED from the Spark job):
+
+  BRAND_ID          (required)  UUID — tenant isolation key, ALWAYS the first DELETE predicate.
+  IDENTIFIER_HASH   (required)  64-hex per-brand-salted SHA-256 of the subject's email/phone.
+  ANON_IDS          (optional)  comma-separated RAW brain_anon_ids (payload-path predicates).
+  DEVICE_IDS        (optional)  comma-separated RAW device_ids (payload-path predicates).
+
+The job hard-deletes the subject's rows across all `*_raw_connect` lanes (column-equality) and
+collector_events_connect (payload-path predicates). Idempotent: a re-submitted erasure affects 0 rows.
+Erasure is PHYSICALLY complete after the erase-mode compaction + expire_snapshots the job performs.
+
+Image/secret/placement mirror bronze-maintenance.yaml (same digest-pinned brain-duckdb image, same
+envSecretName for TRINO_HOST/ICEBERG_REST_URI/AWS_*, same streaming-pool nodeSelector via values-prod).
+
+The Role/RoleBinding grant the stream-worker ServiceAccount EXACTLY create+get on Workflows in this
+namespace (least privilege) so the orchestrator can submit from this template and read back the name.
+*/ -}}
+{{- if and .Values.sparkBronze.enabled .Values.sparkBronze.erasure.enabled }}
+{{- $img := .Values.sparkBronze.image -}}
+{{- $ref := "" -}}
+{{- if $img.digest -}}
+  {{- $ref = printf "%s@%s" $img.repository $img.digest -}}
+{{- else if and $img.tag (ne $img.tag "latest") -}}
+  {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
+{{- else -}}
+  {{- fail "sparkBronze.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- $envFrom := .Values.envSecretName -}}
+{{- $sa := .Values.serviceAccount.name -}}
+{{- $erasure := .Values.sparkBronze.erasure -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: bronze-raw-erasure
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-raw-erasure
+spec:
+  serviceAccountName: {{ $sa }}
+  entrypoint: run
+  # brand-id / identifier-hash have NO default value: a submit that omits them is rejected by the
+  # workflow controller (fail-closed — an erasure can never silently run against the wrong subject).
+  # anon-ids / device-ids default empty (the hash-path sweep still runs; see the job docstring).
+  arguments:
+    parameters:
+      - name: brand-id
+      - name: identifier-hash
+      - name: anon-ids
+        value: ""
+      - name: device-ids
+        value: ""
+  {{- /* AUD-PROD-006: erasure pods follow the same placement as the maintenance crons (streaming pool
+       in prod). A Spot bounce mid-run is replay-safe: Argo retry + idempotent DELETEs. */}}
+  {{- with .Values.sparkBronze.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.sparkBronze.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  activeDeadlineSeconds: {{ $erasure.activeDeadlineSeconds }}
+  podGC:
+    strategy: OnWorkflowSuccess
+  # Submitted Workflows are one-shot (no CronWorkflow history limits apply) — TTL the completed CRs
+  # so on-demand erasures never accumulate unboundedly. Failed workflows keep the same window: long
+  # enough for the DLQ/pii_erasure_log investigation trail, bounded all the same.
+  ttlStrategy:
+    secondsAfterCompletion: {{ $erasure.ttlSecondsAfterCompletion }}
+  templates:
+    - name: run
+      retryStrategy:
+        limit: {{ .Values.defaults.backoffLimit | quote }}
+        retryPolicy: OnError
+      container:
+        image: {{ $ref | quote }}
+        imagePullPolicy: {{ $img.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -euo pipefail
+            exec python /opt/brain/trino/erasure_raw_delete.py
+        env:
+          # erasure_raw_delete.py env contract ← workflow parameters (validated in-job:
+          # BRAND_ID must be a UUID, IDENTIFIER_HASH a 64-hex digest — the job exits 1 otherwise).
+          - name: BRAND_ID
+            value: {{ `{{workflow.parameters.brand-id}}` | quote }}
+          - name: IDENTIFIER_HASH
+            value: {{ `{{workflow.parameters.identifier-hash}}` | quote }}
+          - name: ANON_IDS
+            value: {{ `{{workflow.parameters.anon-ids}}` | quote }}
+          - name: DEVICE_IDS
+            value: {{ `{{workflow.parameters.device-ids}}` | quote }}
+          {{- with .Values.sparkBronze.env }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+        {{- if $envFrom }}
+        envFrom:
+          - secretRef:
+              name: {{ $envFrom }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.sparkBronze.resources | nindent 10 }}
+---
+# Least-privilege submit grant: the stream-worker erasure orchestrator creates Workflows (from the
+# WorkflowTemplate above) in THIS namespace via the Kubernetes API, and reads back the created CR.
+# No update/delete/watch — submit-and-observe only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bronze-raw-erasure-submitter
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bronze-raw-erasure-submitter
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $erasure.submitter.serviceAccountName }}
+    namespace: {{ $erasure.submitter.serviceAccountNamespace }}
+roleRef:
+  kind: Role
+  name: bronze-raw-erasure-submitter
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

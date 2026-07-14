@@ -32,8 +32,9 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext } from '@brain/observability';
+import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import {
@@ -264,14 +265,17 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
   log.info(`connector=${ciId} cursor=${resource} from=${fromTs} to=${toTs} (${label})`);
 
   // ── Page loop ─────────────────────────────────────────────────────────────
-  let skip = 0;
+  // fetchReconWindowPages walks the DOCUMENTED recon query shape (year/month calendar buckets
+  // across the window — see razorpay-settlements-client.ts) and yields only in-window items.
+  let pageIndex = 0;
   let recordsProcessed = 0;
   let maxSettledAt: number | null = null;
 
+  const pages = apiClient.fetchReconWindowPages(fromTs, toTs);
   while (true) {
-    let page;
+    let next;
     try {
-      page = await apiClient.fetchReconPage(fromTs, toTs, skip);
+      next = await pages.next();
     } catch (err) {
       const msg = String(err);
       if (msg.startsWith('RAZORPAY_AUTH_ERROR')) {
@@ -285,10 +289,13 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
       throw err;
     }
 
-    if (page.items.length === 0) break;
+    if (next.done) break;
+    const page = next.value;
+    pageIndex += 1;
+    if (page.items.length === 0) continue;
 
     // ── Per-item: map → settlement.live.v1 → emit ────────────────────────────
-    const messages = [];
+    const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
     for (const rawItem of page.items) {
       const mapped = mapSettlementItemToEvent(rawItem as RazorpaySettlementItem, brandId, saltHex);
 
@@ -319,6 +326,7 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
       });
 
       messages.push({
+        eventId,
         key: buildPartitionKey(brandId, eventId),
         value: Buffer.from(JSON.stringify(envelope)),
       });
@@ -337,20 +345,46 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
       recordsProcessed++;
     }
 
-    // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-    // message so the bronze-bridge consumer resumes this repull's trace.
-    const traceHeaders: Record<string, Buffer | string> = {};
-    injectKafkaTraceContext(traceHeaders);
-    await producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
-    log.info(`connector=${ciId} cursor=${resource} skip=${skip} emitted=${messages.length} total=${recordsProcessed}`);
+    // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
+    // so a re-pull/backfill overlap never re-floods Bronze. brand GUC set on a short pooled client,
+    // then filter+mark. ORDER IS CRITICAL: produce FIRST, mark AFTER (a crash between at worst
+    // re-produces a dup on retry, which Silver backstops — never loses an event).
+    let emittedThisPage = 0;
+    if (messages.length > 0) {
+      const dedupClient = await pool.connect();
+      try {
+        await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+        const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
+
+        const toSend = messages.filter((m) => unseen.has(m.eventId));
+        const dropped = messages.length - toSend.length;
+        if (dropped > 0) {
+          incrementCounter('ingest_dedup_dropped_total', { provider: 'razorpay' });
+          log.info(`connector=${ciId} cursor=${resource} dedup: dropped ${dropped} already-ingested events`);
+        }
+
+        if (toSend.length > 0) {
+          // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+          // message so the bronze-bridge consumer resumes this repull's trace.
+          const traceHeaders: Record<string, Buffer | string> = {};
+          injectKafkaTraceContext(traceHeaders);
+          await producer.send({
+            topic: LIVE_TOPIC,
+            messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+          });
+          await markEventIdsSeen(dedupClient, brandId, toSend.map((m) => m.eventId));
+          emittedThisPage = toSend.length;
+        }
+      } finally {
+        dedupClient.release();
+      }
+    }
+    log.info(`connector=${ciId} cursor=${resource} page=${pageIndex} emitted=${emittedThisPage} total=${recordsProcessed}`);
 
     // ── Advance cursor after each page (checkpoint) ──────────────────────────
     if (maxSettledAt !== null) {
       await upsertCursorValue(pool, brandId, ciId, resource, String(maxSettledAt));
     }
-
-    if (!page.hasMore) break;
-    skip += 100;   // PAGE_SIZE from razorpay-settlements-client
   }
 
   log.info(`connector=${ciId} cursor=${resource} DONE records=${recordsProcessed}`);

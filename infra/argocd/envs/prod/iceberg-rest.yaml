@@ -4,7 +4,7 @@ metadata:
   name: iceberg-rest-prod
   namespace: argocd
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/iceberg-rest
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/iceberg-rest
   labels:
     project: brain
     environment: prod
@@ -12,7 +12,7 @@ metadata:
 spec:
   project: brain-prod
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/helm/iceberg-rest
     helm:

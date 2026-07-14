@@ -1,0 +1,68 @@
+# One-shot DB migration (GO-LIVE step 11) — the ROUTINE out-of-band path,
+# applied by tools/deploy/run-migrations.sh: pnpm migrate:up against Aurora
+# DIRECT as brainadmin (advisory lock). DATABASE_URL comes from the
+# short-lived migrate-admin-dburl secret — no password on the command line.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-once
+  namespace: stream-worker
+spec:
+  # AUD-INFRA-007: one-shot Jobs are unmanaged by any ArgoCD app — a finished
+  # Job lingering as Complete is imperative-deploy residue that pollutes the
+  # cluster inventory. Self-delete 24h after finishing (run-migrations.sh
+  # tails the logs synchronously; 24h leaves a generous inspection window).
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      # PodSecurity Admission `restricted` compliant (permanent — was patched
+      # ad-hoc at runtime): pod- and container-level fields the profile requires.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # PLACEHOLDER DIGEST — run-migrations.sh substitutes the LIVE core Deployment's
+          # digest at apply time (the image + db/migrations ship together, so migrations
+          # must run on the currently-deployed image). Do NOT rely on this pinned value;
+          # applying this file directly (without the sed in run-migrations.sh) risks
+          # migrating from a stale image that silently skips new migrations.
+          image: "380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod@sha256:955cbeda468e3fbb6175748ce2d6bcfff2e42195eec9760f57fcb245a9aa044d"
+          # NOTE: readOnlyRootFilesystem is deliberately NOT set — `pnpm migrate:up`
+          # writes to the workdir. Everything else is restricted-compliant.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+          # migrate:up is a ROOT script; the image WORKDIR is /repo/apps/core, so
+          # run from /repo like the real PreSync hook does.
+          workingDir: /repo
+          command:
+            - sh
+            - -c
+            - |
+              # DATABASE_URL comes from the migrate-admin-dburl secret (brainadmin —
+              # the migrations REVOKE from brain_app + GRANT it least-priv, so they must
+              # run as the privileged owner, not brain_app). TLS on, skip CA verify
+              # for this in-VPC one-shot.
+              export NODE_TLS_REJECT_UNAUTHORIZED=0
+              # Migration-set bug (0024 vs 0087): 0024 RAISEs if app.env=production
+              # (blocks dev_secret) but 0087 RAISEs if dev_secret is missing. Run the
+              # migration with app.env!=production so the (empty, unused-in-prod)
+              # dev_secret table is created and 0087 is satisfied. Runtime app.env is
+              # unaffected (set per-connection by the app; no DB default is written).
+              export APP_ENV=staging
+              # Run the migration session AS role `brain` (objects owned by it, so
+              # ALTER DEFAULT PRIVILEGES FOR ROLE brain applies). migrate.mjs appends
+              # `-c app.env=...` to PGOPTIONS, so both settings take effect.
+              export PGOPTIONS="-c role=brain"
+              pnpm migrate:up
+          envFrom:
+            - secretRef:
+                name: migrate-admin-dburl

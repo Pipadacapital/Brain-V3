@@ -15,15 +15,25 @@
  *   - Emits on the SAME collector.event.v1 live lane (NO new topic/envelope). ad.entity.updated is
  *     connector-derived (no install_token / no consent) → it MUST ride the SERVER_TRUSTED lane,
  *     exactly like spend.live.v1, or the pixel-lane install_token join silently drops it.
- *     >>> Admission slice must add the literal "ad.entity.updated" to the SERVER_TRUSTED sets in
- *         bronze_materialize.py + silver_collector_event.py (byte-identical). <<<
+ *     >>> Admission slice must add the literal "ad.entity.updated" to the SERVER_TRUSTED set in
+ *         the Silver admission gate (silver_collector_event.py, ADR-0010 — Bronze is ungated
+ *         append-only under the Kafka Connect sink). <<<
  *
- * Idempotency (deterministic event_id): uuid5(brandId:platform:level:entityId:syncDate:ad.entity.updated).
- *   - The syncDate (UTC day) bucket means intra-day re-runs DEDUP in the Bronze MERGE (idempotent),
- *     while a NEW day produces a fresh row → silver_campaign's latest-by-occurred_at picks up status/
- *     name changes (a constant per-grain id would let MERGE drop every update — wrong for an SCD).
- *   - occurred_at = entity_updated_at = the sync timestamp.
- *   - This event_id scheme + payload shape MUST MATCH Meta's entity-sync (the shared lane).
+ * Idempotency (CONTENT-deterministic event_id, ADR-0012): Google Ads exposes no per-entity
+ * change-clock, so the event_id version is a CONTENT HASH over EVERY meaningful field of the entity
+ * row (name/status/channel-type/bidding/budgets/dates/RSA text/...). It is NEVER a sync-DATE bucket:
+ *   - an UNCHANGED re-pull re-mints the SAME event_id → the ADR-0012 dedup gate drops it (no churn);
+ *   - ANY real change to ANY hashed field advances the version → a NEW event whose occurred_at lets
+ *     silver_campaign's latest-by-occurred_at pick up the status/name/budget change (keep-latest via a
+ *     safe drop — NEVER an event loss). A wall-clock bucket would instead have re-minted the SAME id
+ *     for a real same-day change → the gate would DROP it = event loss (why the gate was skipped).
+ *   - occurred_at = entity_updated_at = the sync timestamp (ordering only; NOT part of the event_id).
+ *   - This event_id scheme + payload shape MUST MATCH Meta's entity-sync (the shared lane): both use a
+ *     content hash over the full meaningful payload as the version, keyed by brand:platform:level:id.
+ *
+ * Dedup gate (ADR-0012): at the produce site we filter event_ids already ingested for the brand
+ * (data_plane.ingest_dedup), produce ONLY the unseen ones, then mark-after-produce (produce-first,
+ * mark-after — a crash never loses an event). Mirrors meta-spend-repull / shiprocket-shipment-repull.
  *
  * Tokens NEVER logged (I-S09). Throttle reuses the client's ADR-AD-7 two-error branch.
  */
@@ -31,13 +41,15 @@
 import { Pool } from 'pg';
 import { Kafka, type Producer } from 'kafkajs';
 import { hashToUuidShaped } from '@brain/connector-core';
+import { microsToMinorString } from '@brain/ad-spend-mapper';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext } from '@brain/observability';
+import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import {
   GoogleAdsSearchStreamClient,
   GOOGLE_AUTH_ERROR,
@@ -126,10 +138,9 @@ async function syncConnector(params: SyncParams): Promise<void> {
     return;
   }
 
-  // syncDate bucket → daily idempotency (intra-day re-runs dedup; a new day re-states the dim).
-  const now = new Date();
-  const syncIso = now.toISOString();
-  const syncDate = syncIso.slice(0, 10);
+  // occurred_at/entity_updated_at is the sync timestamp — it orders Silver's latest-by-occurred_at
+  // pick, but it is NEVER part of the CONTENT-deterministic event_id (which depends only on payload).
+  const syncIso = new Date().toISOString();
 
   let totalEmitted = 0;
 
@@ -157,7 +168,7 @@ async function syncConnector(params: SyncParams): Promise<void> {
       continue; // non-fatal per level
     }
 
-    totalEmitted += await emitEntities({ rows, brandId, ciId, producer, syncIso, syncDate });
+    totalEmitted += await emitEntities({ rows, brandId, ciId, producer, pool, syncIso });
   }
 
   // entity sync is a metadata feed — it deliberately does NOT touch connector_sync_status (the spend
@@ -170,34 +181,66 @@ interface EmitEntityParams {
   brandId: string;
   ciId: string;
   producer: Producer;
+  pool: Pool;
   syncIso: string;
-  syncDate: string;
+}
+
+/**
+ * Build the canonical `properties` payload for one Google Ads entity row. Factored out so the content
+ * hash (entityEventId) and the emitted envelope read from ONE source of truth — the hash provably
+ * covers exactly the meaningful fields that land in the payload (no field can change unhashed).
+ * `entity_updated_at` (= syncIso) is added by the caller: it is ordering-only, NOT part of the hash.
+ */
+function buildEntityProperties(row: GoogleAdsEntityRow): Record<string, unknown> {
+  return {
+    platform: PLATFORM,
+    level: row.level,
+    entity_id: row.entity_id,
+    campaign_id: row.campaign_id,
+    parent_id: row.parent_id,
+    name: row.name,
+    status: row.status,
+    objective: null, // Meta-only attribute; null for Google
+    advertising_channel_type: row.advertising_channel_type,
+    bidding_strategy: row.bidding_strategy,
+    // ── FIREHOSE entity depth (additive/nullable; only the fields present at this level are set).
+    //    campaign_budget/cpc_bid are MICROS → minor via the shared money port (I-S07, no float). ──
+    advertising_channel_sub_type: row.advertising_channel_sub_type,
+    bidding_strategy_type: row.bidding_strategy, // alias for canonical entity col naming
+    campaign_status: row.level === 'campaign' ? row.status : null,
+    campaign_start_date: row.start_date,
+    campaign_end_date: row.end_date,
+    campaign_budget_amount_minor:
+      row.campaign_budget_amount_micros != null
+        ? microsToMinorString(row.campaign_budget_amount_micros)
+        : null,
+    ad_group_type: row.ad_group_type,
+    ad_group_status: row.level === 'adset' ? row.status : null,
+    ad_group_cpc_bid_minor:
+      row.ad_group_cpc_bid_micros != null ? microsToMinorString(row.ad_group_cpc_bid_micros) : null,
+    ad_type: row.ad_type,
+    ad_final_urls: row.ad_final_urls != null ? JSON.stringify(row.ad_final_urls) : null,
+    ad_headlines: row.ad_headlines != null ? JSON.stringify(row.ad_headlines) : null,
+    ad_descriptions: row.ad_descriptions != null ? JSON.stringify(row.ad_descriptions) : null,
+  };
 }
 
 async function emitEntities(p: EmitEntityParams): Promise<number> {
   if (p.rows.length === 0) return 0;
 
-  const messages = [];
+  const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
   for (const row of p.rows) {
     if (!row.entity_id) continue;
 
-    const eventId = entityEventId(p.brandId, row.level, row.entity_id, p.syncDate);
+    // CONTENT-deterministic event_id (ADR-0012): hash the full meaningful payload — NOT a sync date.
+    const eventId = entityEventId(p.brandId, row);
 
     // Payload shape MUST MATCH Meta's entity-sync (the shared ad.entity.updated lane). silver_campaign
     // reads: platform, level, entity_id, campaign_id, parent_id, name, status, advertising_channel_type
     // (Google) / objective (Meta), plus entity_updated_at.
     const properties: Record<string, unknown> = {
-      platform: PLATFORM,
-      level: row.level,
-      entity_id: row.entity_id,
-      campaign_id: row.campaign_id,
-      parent_id: row.parent_id,
-      name: row.name,
-      status: row.status,
-      objective: null, // Meta-only attribute; null for Google
-      advertising_channel_type: row.advertising_channel_type,
-      bidding_strategy: row.bidding_strategy,
-      entity_updated_at: p.syncIso,
+      ...buildEntityProperties(row),
+      entity_updated_at: p.syncIso, // ordering only (occurred_at) — deliberately NOT in the event_id
     };
 
     const envelope = CollectorEventV1Schema.parse({
@@ -211,30 +254,80 @@ async function emitEntities(p: EmitEntityParams): Promise<number> {
       properties,
     });
 
-    messages.push({ key: buildPartitionKey(p.brandId, eventId), value: Buffer.from(JSON.stringify(envelope)) });
+    messages.push({
+      eventId,
+      key: buildPartitionKey(p.brandId, eventId),
+      value: Buffer.from(JSON.stringify(envelope)),
+    });
   }
 
-  if (messages.length > 0) {
-    const traceHeaders: Record<string, Buffer | string> = {};
-    injectKafkaTraceContext(traceHeaders);
-    await p.producer.send({ topic: LIVE_TOPIC, messages: messages.map((m) => ({ ...m, headers: traceHeaders })) });
-    log.info(`entity-sync connector=${p.ciId} emitted=${messages.length}`);
+  if (messages.length === 0) return 0;
+
+  // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing, so an
+  // unchanged re-pull never re-floods Bronze (Silver dedup is now only a backstop). Because the version
+  // is content-deterministic, a real change mints a NEW id and is NEVER dropped here (no event loss).
+  // brand GUC set on a short pooled client, then filter+mark. ORDER IS CRITICAL: produce FIRST, mark
+  // AFTER (a crash between at worst re-produces a dup on retry, which Silver backstops).
+  const dedupClient = await p.pool.connect();
+  let emitted = 0;
+  try {
+    await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [p.brandId]);
+    const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
+
+    const toSend = messages.filter((m) => unseen.has(m.eventId));
+    const dropped = messages.length - toSend.length;
+    if (dropped > 0) {
+      incrementCounter('ingest_dedup_dropped_total', { provider: 'google_ads' });
+      log.info(`entity-sync connector=${p.ciId} dedup: dropped ${dropped} already-ingested events`);
+    }
+
+    if (toSend.length > 0) {
+      const traceHeaders: Record<string, Buffer | string> = {};
+      injectKafkaTraceContext(traceHeaders);
+      await p.producer.send({
+        topic: LIVE_TOPIC,
+        messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+      });
+      await markEventIdsSeen(dedupClient, p.brandId, toSend.map((m) => m.eventId));
+      emitted = toSend.length;
+    }
+  } finally {
+    dedupClient.release();
   }
-  return messages.length;
+
+  log.info(`entity-sync connector=${p.ciId} emitted=${emitted}`);
+  return emitted;
 }
 
 /**
- * Deterministic ad.entity.updated event_id (A3). Daily bucket → intra-day idempotency in the MERGE,
- * fresh row per day so silver picks up metadata changes. Provably non-colliding with spend.live.v1
- * (':ad.entity.updated' discriminator appears in no spend seed). MUST MATCH Meta's scheme.
+ * CONTENT-hash version for a Google Ads entity (ADR-0012). Google Ads has no per-entity change-clock,
+ * so the version is a hash over EVERY meaningful field that lands in the emitted `properties` — built
+ * from the SAME buildEntityProperties() the envelope uses, so the hash provably covers the full payload
+ * (no field can change unhashed = no event loss). `entity_updated_at`/occurred_at is EXCLUDED (it is the
+ * wall-clock sync timestamp — hashing it would defeat dedup). platform/level/entity_id are re-keyed in
+ * the prefix. Same philosophy as Meta's contentHashVersion (the shared lane).
  */
-export function entityEventId(
-  brandId: string,
-  level: 'campaign' | 'adset' | 'ad',
-  entityId: string,
-  syncDate: string,
-): string {
-  return hashToUuidShaped(`${brandId}:${PLATFORM}:${level}:${entityId}:${syncDate}:ad.entity.updated`);
+function contentHashVersion(row: GoogleAdsEntityRow): string {
+  // Deterministic canonical JSON over the payload keys in a FIXED sorted order (order-independent of
+  // object literal ordering), each value JSON-encoded so null/''/values can never smear together.
+  const props = buildEntityProperties(row);
+  const canonical = Object.keys(props)
+    .sort()
+    .map((k) => `${k}=${JSON.stringify(props[k] ?? null)}`)
+    .join('|');
+  return hashToUuidShaped(`google:entity-content:${row.level}:${row.entity_id}:${canonical}`);
+}
+
+/**
+ * Deterministic ad.entity.updated event_id (A3), CONTENT-deterministic (ADR-0012). The version is a
+ * content hash over the full meaningful payload (NOT a date), so an unchanged re-pull re-mints the same
+ * id (gate drops it) and any real change mints a new one (silver picks it up — no event loss). Provably
+ * non-colliding with spend.live.v1 (':ad.entity.updated' discriminator appears in no spend seed). MUST
+ * MATCH Meta's scheme (both key brand:platform:level:id and use a full-payload content hash version).
+ */
+export function entityEventId(brandId: string, row: GoogleAdsEntityRow): string {
+  const version = contentHashVersion(row);
+  return hashToUuidShaped(`${brandId}:${PLATFORM}:${row.level}:${row.entity_id ?? ''}:${version}:ad.entity.updated`);
 }
 
 if (process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js')) {

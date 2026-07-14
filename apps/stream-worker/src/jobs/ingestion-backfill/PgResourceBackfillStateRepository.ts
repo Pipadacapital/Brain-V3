@@ -22,8 +22,6 @@ import {
   type IResourceBackfillStateRepository,
 } from '@brain/connector-core';
 
-const NIL_UUID = '00000000-0000-0000-0000-000000000000';
-
 interface BackfillStateRow {
   id: string;
   brand_id: string;
@@ -191,5 +189,3 @@ export class PgResourceBackfillStateRepository implements IResourceBackfillState
     }
   }
 }
-
-export { NIL_UUID as RESOURCE_BACKFILL_NIL_UUID };

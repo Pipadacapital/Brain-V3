@@ -105,7 +105,7 @@ Driver jobs that invoke this compute:
 
 **Rule violated:** Principles 3 & 4 (Silver/Gold built by Spark).
 
-**Finding:** Only **4 Spark jobs** exist, all Bronze-only: `db/iceberg/spark/{bronze_materialize,validate_bronze,bronze_maintenance,bronze_parity_check}.py`. There is **NO Spark Silver job and NO Spark Gold job**. V4's compute model is entirely absent above Bronze.
+**Finding:** Only **4 Spark jobs** exist, all Bronze-only: `db/iceberg/spark/{bronze_materialize,validate_bronze,bronze_maintenance,bronze_parity_check}.py` *(as of this audit; `bronze_materialize.py` was later replaced by the Kafka Connect sink, ADR-0010)*. There is **NO Spark Silver job and NO Spark Gold job**. V4's compute model is entirely absent above Bronze.
 
 **Disposition:** **BUILD.** This is the net-new engineering that V-CODE-01/02/03 all depend on. It is the single largest lift in the migration.
 

@@ -239,4 +239,75 @@
     animation-duration: 150ms;
     animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
   }
+
+  /* ------------------------------------------------------------------ *
+   * Landing hero decoration. Token-referenced only (no hard-coded hex);
+   * purely presentational and masked to fade at the edges so it never
+   * competes with foreground content.
+   * ------------------------------------------------------------------ */
+
+  /* Faint square grid, radially masked so it dissolves toward the edges. */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--foreground) / 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--foreground) / 0.045) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  }
+
+  /* Soft indigo aurora bloom behind the headline. */
+  .bg-hero-glow {
+    background:
+      radial-gradient(60% 55% at 50% -8%, hsl(var(--primary) / 0.22), transparent 70%),
+      radial-gradient(38% 40% at 82% 8%, hsl(var(--chart-2) / 0.16), transparent 70%),
+      radial-gradient(40% 45% at 14% 18%, hsl(var(--chart-5) / 0.14), transparent 72%);
+  }
+
+  /* Accent-word gradient for a single emphasised keyword in the headline. */
+  .text-gradient-brand {
+    background-image: linear-gradient(
+      100deg,
+      hsl(var(--primary)) 0%,
+      hsl(var(--chart-6)) 48%,
+      hsl(var(--chart-2)) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Gentle vertical float for the preview panel — respects reduced-motion. */
+  @keyframes brain-float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-8px);
+    }
+  }
+  .animate-float {
+    animation: brain-float 7s ease-in-out infinite;
+  }
+
+  /* Sheen sweep on the announcement pill. */
+  @keyframes brain-sheen {
+    100% {
+      transform: translateX(180%);
+    }
+  }
+  .animate-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-180%);
+    background: linear-gradient(
+      100deg,
+      transparent 20%,
+      hsl(var(--foreground) / 0.08) 50%,
+      transparent 80%
+    );
+    animation: brain-sheen 4.5s ease-in-out infinite;
+  }
 }

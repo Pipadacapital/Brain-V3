@@ -5,7 +5,7 @@ metadata:
   namespace: argocd
   annotations:
     # Selective deploy: only syncs when trino manifests change
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/trino
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/trino
   labels:
     project: brain
     environment: prod
@@ -13,7 +13,7 @@ metadata:
 spec:
   project: brain-prod
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/helm/trino
     helm:

@@ -22,8 +22,10 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PageHeader } from '@/components/ui/page-header';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { MetricTitle } from '@/components/ui/metric-title';
 import { useConnectorRecords } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
+import { humanize } from '@/lib/format/humanize';
 import type { CurrencyCode } from '@brain/money';
 import type { AnalyticsRecordColumn, RecordEntity } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -42,9 +44,58 @@ function isoToday(): string {
   return new Date().toISOString().split('T')[0] as string;
 }
 
+/**
+ * Plain-language DISPLAY names for server-declared columns (front-end only — the API keys and
+ * labels are untouched; we rename only the rendered string). Keys not listed keep the server label.
+ */
+const COLUMN_LABEL_OVERRIDES: Record<string, string> = {
+  first_event_at: 'Date',
+  stat_date: 'Date',
+  occurred_at: 'Date',
+  order_id: 'Order ID',
+  brain_id: 'Customer',
+  order_value_minor: 'Amount',
+  spend_minor: 'Amount',
+  recognised_revenue_minor: 'Confirmed revenue',
+  lifecycle_state: 'Status',
+  current_status: 'Status',
+  terminal_class: 'Outcome',
+  line_count: 'Items',
+  is_terminal: 'Final status?',
+  is_delivered: 'Delivered?',
+  is_rto: 'Returned to seller?',
+  is_synthetic: 'Sample data?',
+  awb_number_hash: 'Tracking ID (masked)',
+  state_effective_at: 'Status changed',
+  last_status_at: 'Last status',
+  updated_at: 'Last updated',
+  payment_method: 'Payment method',
+  account_timezone: 'Ad account timezone',
+};
+
+/** The rendered column heading — the plain-language override, else the server's label. */
+function displayLabel(col: AnalyticsRecordColumn): string {
+  return COLUMN_LABEL_OVERRIDES[col.key] ?? col.label;
+}
+
+/** Columns whose raw enum-ish values ('cod_delivery_confirmed') should render humanized. */
+const HUMANIZED_VALUE_KEYS = new Set(['lifecycle_state', 'current_status', 'terminal_class', 'source', 'level', 'platform']);
+/** Boolean-ish text columns ('true'/'false') → Yes/No. */
+const YES_NO_KEYS = new Set(['is_terminal', 'is_delivered', 'is_rto', 'is_synthetic']);
+
+/** Truncate a long id for the cell (full value stays in the title tooltip). */
+function truncateId(value: string, max = 18): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
 /** Format one cell from its server-declared type. Robust to nulls; money stays bigint-minor-safe. */
 function formatCell(value: string | null, col: AnalyticsRecordColumn, row: Record<string, string | null>): string {
+  // A record with no resolved customer is an anonymous shopper — say so, honestly.
+  if (col.key === 'brain_id') return value ? truncateId(value) : 'Visitor';
   if (value === null || value === '') return '—';
+  if (col.key === 'order_id') return truncateId(value);
+  if (HUMANIZED_VALUE_KEYS.has(col.key)) return humanize(value);
+  if (YES_NO_KEYS.has(col.key)) return value === 'true' ? 'Yes' : value === 'false' ? 'No' : value;
   switch (col.type) {
     case 'money': {
       const ccy = (col.currencyKey ? row[col.currencyKey] : null) ?? 'INR';
@@ -91,7 +142,18 @@ export function DataContent() {
 
   const total = data?.total ?? 0;
   const limit = data?.limit ?? 20;
-  const columns = data?.columns ?? [];
+  const serverColumns = data?.columns ?? [];
+  // Orders rows already carry brain_id (it's in the detail field set) — surface it in the list as
+  // "Customer" / "Visitor" (display-only; no API change). Inserted after the Order ID column.
+  const columns: AnalyticsRecordColumn[] =
+    entity === 'orders' && serverColumns.length > 0 && !serverColumns.some((c) => c.key === 'brain_id')
+      ? (() => {
+          const withCustomer = [...serverColumns];
+          const orderIdx = withCustomer.findIndex((c) => c.key === 'order_id');
+          withCustomer.splice(orderIdx + 1, 0, { key: 'brain_id', label: 'Customer', type: 'text' });
+          return withCustomer;
+        })()
+      : serverColumns;
   const detailColumns = data?.detailColumns ?? [];
   const rows = data?.rows ?? [];
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -179,7 +241,10 @@ export function DataContent() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            {total.toLocaleString()} record{total === 1 ? '' : 's'}
+            <MetricTitle
+              label={`${total.toLocaleString()} record${total === 1 ? '' : 's'}`}
+              help="How many records match the current record type, date range and search."
+            />
             {isFetching && !isLoading ? <span className="ml-2 text-xs opacity-60">updating…</span> : null}
           </CardTitle>
         </CardHeader>
@@ -201,7 +266,7 @@ export function DataContent() {
                   <tr className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
                     {columns.map((c) => (
                       <th key={c.key} className={cn('px-4 py-2.5 font-medium', (c.type === 'money' || c.type === 'number') && 'text-right')}>
-                        {c.label}
+                        {displayLabel(c)}
                       </th>
                     ))}
                   </tr>
@@ -224,7 +289,7 @@ export function DataContent() {
                           )}
                           title={row[c.key] ?? undefined}
                         >
-                          {formatCell(row[c.key], c, row)}
+                          {formatCell(row[c.key] ?? null, c, row)}
                         </td>
                       ))}
                     </tr>
@@ -263,7 +328,7 @@ export function DataContent() {
             <dl className="divide-y">
               {detailColumns.map((c) => (
                 <div key={c.key} className="flex items-start justify-between gap-4 py-2">
-                  <dt className="shrink-0 text-sm text-muted-foreground">{c.label}</dt>
+                  <dt className="shrink-0 text-sm text-muted-foreground">{displayLabel(c)}</dt>
                   <dd
                     className={cn(
                       'min-w-0 break-words text-right text-sm text-foreground',
@@ -271,7 +336,7 @@ export function DataContent() {
                       c.type === 'text' && 'font-mono text-xs',
                     )}
                   >
-                    {formatCell(selectedRow[c.key], c, selectedRow)}
+                    {formatCell(selectedRow[c.key] ?? null, c, selectedRow)}
                   </dd>
                 </div>
               ))}

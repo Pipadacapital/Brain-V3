@@ -62,7 +62,7 @@ describe('[unit] withTrinoBrand — predicate injection (no live Trino)', () => 
       withTrinoBrand(pool, BRAND_A, (scope) =>
         scope.runScoped(
           // Missing ${BRAND_PREDICATE} — would run cross-brand without the guard.
-          'SELECT brand_id FROM iceberg.brain_bronze.collector_events WHERE 1=1',
+          'SELECT brand_id FROM iceberg.brain_bronze.collector_events_connect_lifted WHERE 1=1',
         ),
       ),
     ).rejects.toThrow(/BRAND_PREDICATE/);
@@ -88,14 +88,14 @@ describe('[unit] withTrinoBrand — predicate injection (no live Trino)', () => 
 
     await withTrinoBrand(pool, BRAND_A, (scope) =>
       scope.runScoped(
-        `SELECT event_type FROM iceberg.brain_bronze.collector_events WHERE ts > ? AND ${BRAND_PREDICATE}`,
+        `SELECT event_type FROM iceberg.brain_bronze.collector_events_connect_lifted WHERE ts > ? AND ${BRAND_PREDICATE}`,
         ['2024-01-01'],
       ),
     );
 
     // Sentinel replaced with parameterized predicate.
     expect(capturedSql).toBe(
-      'SELECT event_type FROM iceberg.brain_bronze.collector_events WHERE ts > ? AND brand_id = ?',
+      'SELECT event_type FROM iceberg.brain_bronze.collector_events_connect_lifted WHERE ts > ? AND brand_id = ?',
     );
     // brandId appended as the last param.
     expect(capturedParams).toEqual(['2024-01-01', BRAND_A]);
@@ -124,14 +124,14 @@ describe('[unit] withTrinoBrand — predicate injection (no live Trino)', () => 
       BRAND_A,
       (scope) =>
         scope.runScoped(
-          `SELECT brand_id FROM iceberg.brain_bronze.collector_events WHERE ${BRAND_PREDICATE}`,
+          `SELECT brand_id FROM iceberg.brain_bronze.collector_events_connect_lifted WHERE ${BRAND_PREDICATE}`,
         ),
       { __unsafeDisableBrandPredicate: true },
     );
 
     // The sentinel was replaced with `1 = 1` (cross-brand, no filtering).
     expect(capturedSql).toBe(
-      'SELECT brand_id FROM iceberg.brain_bronze.collector_events WHERE 1 = 1',
+      'SELECT brand_id FROM iceberg.brain_bronze.collector_events_connect_lifted WHERE 1 = 1',
     );
     // No brandId appended to params (predicate injection disabled).
     expect(capturedParams).toEqual([]);
@@ -264,7 +264,7 @@ let livePool: TrinoPool | null = null;
 let trinoAvailable = false;
 let icelandAvailable = false; // 'iceberg catalog + test table available'
 
-const LIVE_TABLE = 'iceberg.brain_bronze.collector_events';
+const LIVE_TABLE = 'iceberg.brain_bronze.collector_events_connect_lifted';
 const SEED_ROW_A = `'iso-fuzz-trino-brand-a-1'`;
 const SEED_ROW_B = `'iso-fuzz-trino-brand-b-1'`;
 
@@ -280,7 +280,7 @@ beforeAll(async () => {
   trinoAvailable = true;
 
   // Check the table + seed rows exist. We cannot INSERT via Trino (read-only REST API),
-  // so live tests require the table to be pre-populated by the Spark Bronze sink.
+  // so live tests require the table to be pre-populated by the Kafka Connect Bronze sink (ADR-0010 — the compose kafka-connect service, the ONLY Bronze writer).
   try {
     // Just verify the table is queryable — we don't need seed rows for the seam proof
     // (the seam proof only needs the table to exist and have at least one row per brand).
@@ -292,7 +292,7 @@ beforeAll(async () => {
   } catch {
     console.warn(
       `[isolation-fuzz/trino] ${LIVE_TABLE} not found or empty for test brands — ` +
-      'live tests PENDING. Run the Spark Bronze sink to populate data.',
+      'live tests PENDING. Produce collector events with the kafka-connect sink running to populate data.',
     );
   }
 });
@@ -305,7 +305,7 @@ describe('[live] Trino seam — per-brand isolation (NN-2 / I-TR01, withTrinoBra
 
   it('SKIP_IF_UNAVAILABLE: PENDING when Trino or the Iceberg table is not reachable', () => {
     if (!trinoAvailable || !icelandAvailable) {
-      console.warn('[isolation-fuzz/trino] Trino or brain_bronze.collector_events unavailable — live isolation assertions PENDING.');
+      console.warn('[isolation-fuzz/trino] Trino or brain_bronze.collector_events_connect_lifted unavailable — live isolation assertions PENDING.');
     }
     expect(true).toBe(true);
   });

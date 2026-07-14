@@ -33,7 +33,12 @@ import type {
 import type { BffDeps } from './_shared.js';
 
 export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, rawPool, srPool } = deps;
+  const { bffProtectedPreHandler, rawPool, srPool, flagService } = deps;
+
+  // SPEC:C.4 — resolve the per-brand marts-migration flag for a request (default OFF, fail-closed).
+  // ON → ROAS spend reads switch to the Wave-C measurement spend view (parity-safe alias; AMD-16).
+  const martsMigrationEnabled = (brandId: string): Promise<boolean> =>
+    flagService ? flagService.isFlagEnabled(brandId, 'measurement.marts_migration') : Promise.resolve(false);
 
   /**
    * POST /api/v1/attribution/reconcile — drive the attribution write pipeline (Phase 5).
@@ -215,7 +220,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
           toStr,
           dataSource: 'synthetic',
         },
-        { srPool },
+        { srPool, measurementMartsMigration: await martsMigrationEnabled(auth.brandId) },
       );
       return reply.send({ request_id: requestId, data: result });
     },
@@ -258,7 +263,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
           fromStr,
           toStr,
         },
-        { srPool },
+        { srPool, measurementMartsMigration: await martsMigrationEnabled(auth.brandId) },
       );
       return reply.send({ request_id: requestId, data: result });
     },

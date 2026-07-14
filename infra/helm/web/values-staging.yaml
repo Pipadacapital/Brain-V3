@@ -1,15 +1,15 @@
 replicaCount: 1
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-web-staging
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-web-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
+  digest: "sha256:255866c74fcbe6af67bcf5304374d3788d296cd15f392caa890f51aaebc8b574"
 
 envSecretName: web-env
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-staging-web
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-staging-web
 
 resources:
   requests:

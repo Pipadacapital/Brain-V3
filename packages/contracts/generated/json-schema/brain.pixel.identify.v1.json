@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brain.pixel.identify.v1",
+  "title": "pixel.identify.v1",
+  "description": "SPEC A.1.1 (WA-07) — the pixel identify envelope. Registered in Apicurio as brain/pixel.identify.v1 (JSON Schema artifact under the FULL_TRANSITIVE rule, per AMD-03). WIRE MAPPING: the event rides the standard collector.event.v1 envelope with event_name='pixel.identify.v1'; the spec envelope fields map as brand_id → envelope.brand_id, anonymous_id → properties.brain_anon_id, session_id → properties.session_id, ts → envelope.occurred_at, and identifiers/source/consent_state → properties.*. This schema describes that LOGICAL identify envelope. Hashes are CLIENT-SIDE plain (unsalted) sha256 of the normalized identifier — the AMD-01 INTEROP space (joinable with connector pre_hashed_* dual-writes); email normalization = trim/lowercase/NFC, phone = E.164 including '+' (browser-minimal, Silver re-validates). properties additionally carries hashed_customer_email / hashed_customer_phone interop aliases for the live identity extractor (AMD-02 back-compat).",
+  "type": "object",
+  "required": ["brand_id", "anonymous_id", "session_id", "ts", "identifiers", "source", "consent_state"],
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Tenant key — brand_id-first on every event (I-S01)."
+    },
+    "anonymous_id": {
+      "type": "string",
+      "description": "Client-side brain_anon_id (localStorage uuid — NOT a PII identifier)."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "The 30-min rolling client session id."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC occurrence time (envelope occurred_at)."
+    },
+    "identifiers": {
+      "type": "object",
+      "description": "Client-hashed identifiers — AMD-01 INTEROP space (plain sha256 of the normalized value). At least one member present.",
+      "properties": {
+        "email_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256(normalizeEmail(email)) — trim/lowercase/NFC, hex lowercase."
+        },
+        "phone_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256(E.164 including '+') — browser-minimal normalization, Silver re-validates."
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "source": {
+      "type": "string",
+      "enum": ["explicit_api", "form_autodetect", "login_hook"],
+      "description": "How the identify was captured. explicit_api = brain.identify(); form_autodetect = the A.1.1 MutationObserver+blur detector (flag pixel.autodetect.enabled, consent-granted only); login_hook = platform login integration."
+    },
+    "consent_state": {
+      "type": "string",
+      "enum": ["granted", "denied"],
+      "description": "A.1.2 consent verdict at capture time (per-brand consent_source: cmp_signal reads __tcfapi + window.brainConsent, no signal → denied; assume_granted → granted). Silver DROPS denied identifies into silver_consent_rejected (AMD-04 denied-VALUE gate)."
+    }
+  },
+  "additionalProperties": true
+}

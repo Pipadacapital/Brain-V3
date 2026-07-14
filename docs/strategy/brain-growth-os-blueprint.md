@@ -5,6 +5,11 @@
 
 **Run:** `wf_bde95738-b11` · 29 agents · ~4.1M subagent tokens · grounded in 58 catalogued real capabilities.
 
+> **Snapshot note:** the technical grounding appendices describe the repo AS OF the run date and are
+> kept verbatim. Several platform facts have since changed (dbt/StarRocks removed — Spark+Trino;
+> Bronze landing is the Kafka Connect sink, not `bronze_materialize.py` — ADR-0010, 2026-07-05).
+> Treat CLAUDE.md as the current-architecture source of truth.
+
 ---
 
 ## Contents

@@ -3,32 +3,39 @@
 /**
  * CheckoutContent — the checkout-step analytics surface (Shopflo Track C).
  *
- * Three sections:
- *   1. Checkout-step funnel — /api/v1/analytics/checkout-funnel (Shopflo, REAL).
- *      Reuses the existing useCheckoutFunnel hook + CheckoutFunnelChart component
- *      (sole-read via the BFF metric-engine — NO ad-hoc SUM/COUNT in the client).
- *   2. Abandonment reasons       — honest-empty (no Gold mart yet).
- *   3. Device / browser breakdown — honest-empty (no Gold mart yet).
+ * ONE built section: the checkout-step funnel — /api/v1/analytics/checkout-funnel
+ * (Shopflo, REAL). Reuses the existing useCheckoutFunnel hook + CheckoutFunnelChart
+ * component (sole-read via the BFF metric-engine — NO ad-hoc SUM/COUNT in the client).
+ *
+ * Unbuilt breakdowns (abandonment reasons, device/browser mix) have NO Gold mart, so —
+ * per the audit — they are HIDDEN rather than rendered as permanent "coming soon" empties.
+ * When Shopflo is not connected the page shows a SINGLE honest empty (connect Shopflo),
+ * never a fabricated zero.
+ *
+ * Data window (I honest-window): the funnel is a fixed rolling LAST-30-DAY aggregate (the
+ * metric-engine window is a constant — the endpoint takes no from/to), so we surface a
+ * <DataWindowBadge> stating "Showing D1 → D2" rather than a DateRangeFilter that couldn't
+ * actually re-scope the read.
  *
  * Money discipline (I-S07 / D-7): every amount is a bigint-serialized minor-unit string
  * rendered via formatMoneyDisplay(minorString, currency_code) — NO /100, NO parseFloat.
  *
- * Honest states: skeletons (aria-busy), ErrorCard with request_id on error, and honest
- * EmptyState surfaces — never a fabricated zero. Sections without a mart yet say so
- * plainly (what unlocks them) rather than rendering an empty chart as success.
+ * Proof (capture-truth → build-trust): each KPI carries a MetricTitle "how computed" tooltip,
+ * and a <VerifyLink> drills the abandoned-cart figures through to the recoverable-carts list.
  *
  * A11y: every section is a labelled region; the funnel chart carries an SR-table
  * fallback + role=img (via CheckoutFunnelChart); the synthetic indicator is icon+label.
  */
 
 import Link from 'next/link';
-import { ShoppingBag, MessageSquareWarning, MonitorSmartphone, ArrowRight } from 'lucide-react';
+import { ShoppingBag, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
-import { EmptyState } from '@/components/ui/empty-state';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
 import { KpiTile } from '@/components/analytics/kpi-tile';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { CheckoutFunnelChart } from '@/components/analytics/checkout-funnel-chart';
@@ -38,6 +45,9 @@ import type { CurrencyCode } from '@brain/money';
 import type { AnalyticsCheckoutFunnelResponse } from '@/lib/api/types';
 
 type CheckoutFunnelHasData = Extract<AnalyticsCheckoutFunnelResponse, { state: 'has_data' }>;
+
+/** The metric-engine funnel window is a fixed rolling 30 days (checkout-funnel.ts constant). */
+const FUNNEL_WINDOW_DAYS = 30;
 
 function SectionSkeleton({ label }: { label: string }) {
   return (
@@ -53,12 +63,10 @@ export function CheckoutContent() {
     <div className="space-y-8">
       <PageHeader
         title="Checkout"
-        description="Where checkouts convert — and where they leak. The Shopflo checkout-step funnel, plus abandonment reasons and device mix as those marts come online."
+        description="Where checkouts leak — the Shopflo abandoned-checkout funnel over the last 30 days, and the cart value you could still recover."
       />
 
       <CheckoutFunnelSection />
-      <AbandonmentReasonsSection />
-      <DeviceBreakdownSection />
     </div>
   );
 }
@@ -68,12 +76,25 @@ export function CheckoutContent() {
 function CheckoutFunnelSection() {
   const { data, isLoading, error, refetch } = useCheckoutFunnel();
 
+  // Fixed rolling 30-day window (the endpoint takes no from/to — see FUNNEL_WINDOW_DAYS).
+  const windowTo = new Date();
+  const windowFrom = new Date(windowTo.getTime() - FUNNEL_WINDOW_DAYS * 86_400_000);
+
   return (
     <section aria-label="Checkout-step funnel" data-testid="checkout-funnel-section">
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
         <h2 className="text-lg font-semibold text-foreground">Checkout-step funnel</h2>
         {data?.state === 'has_data' && data.data_source === 'synthetic' && (
           <SyntheticBadge data-testid="checkout-funnel-synthetic-badge" />
+        )}
+        {data?.state === 'has_data' && (
+          <DataWindowBadge
+            from={windowFrom.toISOString()}
+            to={windowTo.toISOString()}
+            count={Number(BigInt(data.abandoned_count))}
+            label="abandoned checkouts"
+            data-testid="checkout-funnel-window"
+          />
         )}
       </div>
 
@@ -89,7 +110,7 @@ function CheckoutFunnelSection() {
             <div>
               <p className="font-medium text-foreground">No checkout data yet</p>
               <p className="text-sm text-muted-foreground mt-1 max-w-md">
-                Connect Shopflo and configure the checkout_abandoned webhook to see your
+                Connect Shopflo and turn on its abandoned-checkout updates to see your
                 checkout-step funnel and discount leakage.
               </p>
             </div>
@@ -115,20 +136,23 @@ function CheckoutFunnelData({ data }: { data: CheckoutFunnelHasData }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiTile
           label="Checkouts Abandoned"
+          help="How many shoppers started checkout but left without paying."
           value={Number(BigInt(data.abandoned_count)).toLocaleString('en-IN')}
           sublabel="last 30 days"
           data-testid="checkout-funnel-kpi-abandoned"
         />
         <KpiTile
           label="Discount Applied"
+          help="Abandoned checkouts where the shopper had already applied a discount code."
           value={Number(BigInt(data.discount_applied_count)).toLocaleString('en-IN')}
           sublabel="abandoned with a discount"
           data-testid="checkout-funnel-kpi-discount"
         />
         <KpiTile
           label="Cart Value at Risk"
+          help="The total value of the carts left behind — sales you could still recover."
           value={formatMoneyDisplay(data.abandoned_value_minor, ccy)}
-          sublabel="recoverable GMV"
+          sublabel="value you could still recover"
           data-testid="checkout-funnel-kpi-value"
         />
       </div>
@@ -147,52 +171,13 @@ function CheckoutFunnelData({ data }: { data: CheckoutFunnelHasData }) {
           />
         </CardContent>
       </Card>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+        <p>
+          Counted from Shopflo&rsquo;s abandoned-checkout signal over the last {FUNNEL_WINDOW_DAYS} days.
+        </p>
+        <VerifyLink href="/cart-abandonment" label="See recoverable carts" />
+      </div>
     </div>
-  );
-}
-
-// ── 2. Abandonment reasons (no mart yet — honest empty) ────────────────────────
-
-function AbandonmentReasonsSection() {
-  return (
-    <section aria-label="Abandonment reasons" data-testid="checkout-reasons-section">
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-foreground">Abandonment reasons</h2>
-      </div>
-      <Card data-testid="checkout-reasons-empty">
-        <CardContent className="py-4">
-          <EmptyState
-            title="Abandonment reasons aren't broken out yet"
-            description="Why checkouts drop — payment failure, shipping cost, RTO-risk decline, coupon error — needs a dedicated Gold mart over the Shopflo checkout signal. It isn't built yet, so we show nothing rather than a fabricated split."
-            icon={<MessageSquareWarning className="h-8 w-8" />}
-            hint="Unlocks when the checkout-reason Gold mart lands."
-            compact
-          />
-        </CardContent>
-      </Card>
-    </section>
-  );
-}
-
-// ── 3. Device / browser breakdown (no mart yet — honest empty) ─────────────────
-
-function DeviceBreakdownSection() {
-  return (
-    <section aria-label="Device and browser breakdown" data-testid="checkout-device-section">
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-foreground">Device &amp; browser breakdown</h2>
-      </div>
-      <Card data-testid="checkout-device-empty">
-        <CardContent className="py-4">
-          <EmptyState
-            title="Device & browser mix isn't broken out yet"
-            description="Checkout conversion by device class and browser needs a dedicated Gold mart over the pixel/checkout signal. It isn't built yet, so we show nothing rather than an empty chart."
-            icon={<MonitorSmartphone className="h-8 w-8" />}
-            hint="Unlocks when the checkout device-mix Gold mart lands."
-            compact
-          />
-        </CardContent>
-      </Card>
-    </section>
   );
 }

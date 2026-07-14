@@ -2,7 +2,7 @@
 
 The complete ordered path from an empty AWS account to Brain serving real
 traffic. This is the execution script for the AUD-COST go-live chain
-(AUD-COST-001..013 — see `audit/BRAIN-AUDIT-REPORT.md` §4.5); each step names
+(AUD-COST-001..013); each step names
 the finding(s) it closes and its rollback. Companion docs:
 `infra/terraform/README.md` ("Prod go-live"), `docs/runbooks/prod-m4-turn-on.md`
 (module-level detail), `infra/helm/PLACEHOLDERS.md` (canonical fill list),
@@ -221,8 +221,9 @@ Wiring facts you need for the JSON values:
 (AUD-COST-016: the ONE warehouse root; Bronze/Silver/Gold are namespaces),
 `CHECKPOINT_LOCATION=s3a://<warehouse_bucket_name>/_checkpoints` (the Spark
 jobs IRSA policy covers the `_checkpoints/` prefix), leave `S3_ENDPOINT` UNSET
-(real S3 + IRSA — a set value means MinIO-style static-key addressing),
-`BRONZE_SOURCE` is already `events` in the chart values (see step 12).
+(real S3 + IRSA — a set value means MinIO-style static-key addressing). There is
+no `BRONZE_SOURCE` env anymore — Bronze landing is connect-only (ADR-0010, see
+step 12).
 
 **Iceberg catalog DB (AUD-COST-012 — REST/JDBC on Aurora, NOT Glue):** Aurora is
 private-only; run once from inside the VPC (e.g. `kubectl run psql --rm -it --image=postgres:16 -- bash`)
@@ -279,14 +280,30 @@ argocd app sync trino-prod                     # serving engine; iceberg.s3.regi
 **Rollback (any app):** `argocd app rollback <app>` to the previous synced
 revision — every app is a discrete manual gate, so blast radius is one app.
 
-## 11. Migrations + serving views (AUD-COST-011)
+## 11. Migrations + serving views (AUD-COST-011, AUD-OPS-017)
 
-Migrations run automatically as the core chart's **PreSync hook Job**
-(`migrations.enabled: true` in values-prod): syncing `core-prod` in step 12
-runs `pnpm migrate:up` (all `db/migrations`) against `DATABASE_URL_DIRECT`
-(direct Aurora — the advisory lock breaks through pgbouncer) **before** the
-Deployment rolls. Nothing to run by hand; on failure inspect the hook Job:
-`kubectl -n core logs jobs/<release>-migrate`.
+The core chart's PreSync migration hook is **DISABLED** in prod
+(`migrations.enabled: false` in values-prod — the Brain migrations are
+owner-only DDL that REVOKE from brain_app, so they cannot run as brain_app).
+Migrations are applied **out-of-band as brainadmin**. Two scripts; only one
+is routine:
+
+- **ROUTINE (this step, and every later deploy that ships new
+  `db/migrations`):** `bash tools/deploy/run-migrations.sh` — NON-DESTRUCTIVE
+  and idempotent. It creates a short-lived `migrate-admin-dburl` secret from
+  the RDS-managed master secret, applies `tools/deploy/db-migrate-job.yaml`
+  (`pnpm migrate:up` against Aurora direct, as brainadmin with
+  `-c role=brain`, advisory-locked), tails the Job log, and deletes the
+  secret.
+- **FIRST BOOT ONLY (fresh, EMPTY database):**
+  `bash tools/deploy/reset-and-migrate.sh` — **DESTRUCTIVE**: drops every
+  user schema, recreates the public schema + the `brain` owner-role
+  scaffolding, then runs the routine path. It **refuses to run if any user
+  table has rows**; overriding the guard requires
+  `FORCE_DESTRUCTIVE_RESET=yes-i-mean-it` and permanently destroys all
+  tenant data. Never part of a routine deploy.
+
+On failure inspect the Job: `kubectl -n stream-worker logs job/db-migrate-once`.
 
 Trino serving views are NOT in any sync wave — apply once after `trino-prod`
 is up (idempotent, `CREATE OR REPLACE VIEW`):
@@ -301,18 +318,23 @@ views are replaceable/droppable with no data impact.
 
 ## 12. App tier + Bronze cutover + refresh crons (AUD-COST-013)
 
-`BRONZE_SOURCE=events` is already the deployed posture — set explicitly in
-`infra/helm/{core,stream-worker}/values.yaml` env and defaulted in the
-`cronworkflows` sparkV4 templates (the code default is `legacy`, rollback-only;
-never remove the explicit env or reads split-brain).
+Bronze landing is connect-only (ADR-0010, cutover executed 2026-07-05): the
+`BRONZE_SOURCE`/`BRONZE_LANDING` envs no longer exist — nothing to set on
+core/stream-worker or the sparkV4 templates. Enable the `infra/helm/kafka-connect`
+chart (the always-on landing writer); `sparkBronze` in `cronworkflows` is
+maintenance-only (bronze-maintenance / raw-retention / erasure — there is no
+bronze-landing cron).
 
 ```bash
-argocd app sync core-prod                       # runs the migration PreSync Job first (step 11)
+argocd app sync core-prod                       # migrations already applied out-of-band in step 11
+                                                # (the PreSync hook is disabled in prod)
 argocd app sync web-prod collector-prod stream-worker-prod
-argocd app sync cronworkflows-prod              # CronWorkflows: bronze-landing (*/15), bronze-maintenance,
+# Bronze landing writer (ADR-0010): deploy the infra/helm/kafka-connect chart
+# (fill worker.bootstrapServers etc. per its values.yaml; add an ArgoCD app for it
+# alongside the app tier if not already declared).
+argocd app sync cronworkflows-prod              # CronWorkflows: bronze-maintenance,
                                                 # v4-silver, v4-gold, v4-maintenance (weekly, AUD-COST-013), connector crons
 # Seed the medallion once instead of waiting for the schedules:
-argo submit -n argo --from cronworkflow/bronze-landing --wait
 argo submit -n argo --from cronworkflow/v4-silver --wait
 argo submit -n argo --from cronworkflow/v4-gold --wait
 ```
@@ -322,9 +344,11 @@ behind the `production` Environment). The B3 fail-closed templates refuse to
 render an unpinned image, and the strict placeholder gate refuses an unfilled
 promotion — both failing loud is the designed behavior.
 
-**Rollback:** `argocd app rollback <app>`; Bronze cutover rollback =
-`BRONZE_SOURCE=legacy` on core/stream-worker (values change + sync) — Bronze
-`brain_bronze.events` keeps landing either way (no event loss).
+**Rollback:** `argocd app rollback <app>`. Bronze landing rollback is NOT an env
+flip anymore (the Spark landing code is deleted): `git revert` the ADR-0010
+removal commits + redeploy, then replay the Kafka topics into the restored Spark
+sink — loss-free only within the 7-day topic retention window (see
+`docs/runbooks/adr-0010-kafka-connect-bronze.md`).
 
 ## 13. Smoke checks (the acceptance gate)
 
@@ -335,9 +359,9 @@ In order — each proves the layer below it:
 2. **Collector accepts (2xx):**
    `curl -si https://px.<domain>/v1/events -H 'content-type: application/json' -d '<pixel envelope>'`
    → 2xx (accept-before-validate spool; anything else is an event-loss bug).
-3. **Event lands in Bronze:** after the next bronze-landing run (≤15 min or the
-   manual `argo submit` above):
-   `SELECT count(*) FROM iceberg.brain_bronze.events WHERE ingest_date = current_date` (Trino) — must include your test event.
+3. **Event lands in Bronze:** within ~1 min (the Kafka Connect sink commits every
+   30s — ADR-0010):
+   `SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect` (Trino) — must include your test event.
 4. **mv_* views serve:**
    `SELECT * FROM iceberg.brain_serving.mv_gold_revenue_ledger LIMIT 1` — a
    result set (honest-empty on a cold brand is a PASS; a 5xx/table-not-found is

@@ -12,6 +12,7 @@ import type {
   SharedUtilityState,
   BrandPhoneGuardConfig,
   ResolveOutcome,
+  IdentityPriorityConfig,
 } from './IdentityResolver.js';
 
 export interface IdentityReadState {
@@ -20,6 +21,11 @@ export interface IdentityReadState {
   phoneCount: Map<string, number>; // phone hash → windowed distinct brain_id count
   aliasChain: Set<string>;
   brandConfig: BrandPhoneGuardConfig;
+  // SPEC: A.2.3.4 — brain_ids (among the brains the event's identifiers resolve to) that ALREADY own an
+  // active STRONG identifier. Feeds the resolver's shared-device guard: a medium (anon/device) signal may
+  // not pull a NEW strong id into a brain already owned by a DIFFERENT strong identity. OPTIONAL —
+  // populated only by stores that support it; when absent the resolver guard is inert (byte-identical).
+  strongOwnedBrainIds?: Set<string>;
 }
 
 /** A review-queue item (probabilistic weak-signal pair routed to human review — NEVER auto-merged). */
@@ -68,4 +74,11 @@ export interface IdentityStore {
    * Store; this is the additional graph-side queue surface when the store provides one.
    */
   enqueueReview?(brandId: string, item: ReviewQueueItem): Promise<void>;
+  /**
+   * SPEC: A.1.5 (WA-12) — read the brand's CURRENT (highest-version) ordered identity priority config
+   * from the versioned store (ops.brand_identity_priority). Returns null when the brand has never
+   * customized its order (⇒ caller uses DEFAULT_IDENTITY_PRIORITY). Only consulted when the
+   * `identity.priority_config` flag is ON. Optional: a store without the table may omit it.
+   */
+  readPriorityConfig?(brandId: string): Promise<IdentityPriorityConfig | null>;
 }

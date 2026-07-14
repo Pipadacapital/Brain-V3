@@ -35,6 +35,9 @@ import { Sparkline } from '@/components/analytics/sparkline';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
 import { DateRangeFilter, initialRange, type DateRange } from '@/components/ui/date-range-filter';
 import { TableSearch, matchesQuery } from '@/components/ui/table-search';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { plainLabel } from '@/lib/format/plain-language';
 import {
   useSearchBehavior,
   useFormConversion,
@@ -63,6 +66,15 @@ function normalizeTab(tab?: string): SubTabKey {
 
 function num(s: string): string {
   return Number(s).toLocaleString('en-IN');
+}
+
+/**
+ * Friendly, human-readable name for a raw storefront form id (e.g. 'newsletter_signup_footer'
+ * → 'Newsletter Signup Footer') so a merchant never sees the raw code. Reuses the shared
+ * plain-language humanizer; falls back to the raw id only if it can't be humanized.
+ */
+function formName(formId: string): string {
+  return plainLabel(formId) || formId;
 }
 
 // ── Shared honest states ──────────────────────────────────────────────────────
@@ -186,7 +198,8 @@ function TopSearchesCard({ data }: { data: BehaviorHasData | undefined }) {
 
 function SearchTrendCard({ data }: { data: SearchHasData }) {
   const series = data.days.map((d) => Number(d.searches));
-  const trending = series.length >= 2 && series[series.length - 1] >= series[0] ? 'up' : 'down';
+  const trending =
+    series.length >= 2 && (series[series.length - 1] ?? 0) >= (series[0] ?? 0) ? 'up' : 'down';
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -240,19 +253,38 @@ function SearchTab() {
           testid="search-empty"
           icon={<Search className="h-8 w-8" />}
           title="No search activity yet"
-          body="On-site search appears once the Brain Pixel captures search events. Volume, reach, and the
-            top terms build from those touchpoints in the behaviour mart."
+          body="On-site search appears once the Brain Pixel captures searches on your storefront. Volume,
+            reach, and the top terms are built from that activity."
         />
       )}
       {!q.isLoading && !q.error && data?.state === 'has_data' && (
         <div className="space-y-4">
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <DataWindowBadge from={data.from} to={data.to} count={Number(data.searches)} label="searches" />
             <DataSourceBadge source={data.data_source} />
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <KpiTile label="Searches" value={num(data.searches)} sublabel={`${data.from} → ${data.to}`} />
-            <KpiTile label="Sessions that searched" value={num(data.sessions)} sublabel="distinct sessions" />
-            <KpiTile label="Shoppers" value={num(data.journeys)} sublabel="distinct journeys" />
+            <KpiTile
+              label="Searches"
+              help="How many searches shoppers ran on your store in the selected period."
+              value={num(data.searches)}
+              sublabel={`${data.from} → ${data.to}`}
+            />
+            <KpiTile
+              label="Visits that searched"
+              help="How many separate visits included at least one search."
+              value={num(data.sessions)}
+              sublabel="distinct visits"
+            />
+            <KpiTile
+              label="Shoppers"
+              help="How many distinct shoppers were behind those searches."
+              value={num(data.journeys)}
+              sublabel="distinct shoppers"
+            />
+          </div>
+          <div className="flex justify-end">
+            <VerifyLink href="/analytics/behavior" label="See the storefront events behind these numbers" />
           </div>
           <SearchTrendCard data={data} />
           <TopSearchesCard
@@ -268,7 +300,8 @@ function SearchTab() {
 
 function FormsTrendCard({ data }: { data: FormHasData }) {
   const subs = data.days.map((d) => Number(d.submissions));
-  const trending = subs.length >= 2 && subs[subs.length - 1] >= subs[0] ? 'up' : 'down';
+  const trending =
+    subs.length >= 2 && (subs[subs.length - 1] ?? 0) >= (subs[0] ?? 0) ? 'up' : 'down';
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -303,7 +336,8 @@ function FormsTrendCard({ data }: { data: FormHasData }) {
 
 function FormsTable({ rows }: { rows: FormHasData['forms'] }) {
   const [query, setQuery] = useState('');
-  const filtered = rows.filter((r) => matchesQuery(query, r.form_id));
+  // Search by the friendly name a merchant sees, not just the raw form id.
+  const filtered = rows.filter((r) => matchesQuery(query, formName(r.form_id), r.form_id));
   return (
     <Card data-testid="forms-per-form">
       <CardHeader className="pb-2">
@@ -341,8 +375,8 @@ function FormsTable({ rows }: { rows: FormHasData['forms'] }) {
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.form_id} className="border-b border-border/50 last:border-0">
-                  <td className="py-1.5 text-foreground truncate max-w-[18rem]" title={r.form_id}>
-                    {r.form_id}
+                  <td className="py-1.5 text-foreground truncate max-w-[18rem]" title={formName(r.form_id)}>
+                    {formName(r.form_id)}
                   </td>
                   <td className="py-1.5 text-right tabular-nums">{num(r.submissions)}</td>
                   <td className="py-1.5 text-right tabular-nums">{num(r.sessions)}</td>
@@ -354,6 +388,11 @@ function FormsTable({ rows }: { rows: FormHasData['forms'] }) {
             </tbody>
           </table>
         )}
+        <p className="mt-3 text-xs text-muted-foreground">
+          What this means: each form name is a friendly version of the form&apos;s id on your storefront.
+          We record which form was used and whether it was submitted — never what a shopper typed into it.
+          &ldquo;Submission rate&rdquo; is submissions ÷ the visits that used that form.
+        </p>
       </CardContent>
     </Card>
   );
@@ -379,23 +418,43 @@ function FormsTab() {
           icon={<FileText className="h-8 w-8" />}
           title="No form activity yet"
           body="Form performance appears once the Brain Pixel captures lead-form submissions. Submission
-            counts, rates, and payment reach build from those touchpoints — structural form ids only, PII-safe."
+            counts and rates are built from that activity — we record which form was used, never what was typed."
         />
       )}
       {!q.isLoading && !q.error && data?.state === 'has_data' && (
         <div className="space-y-4">
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <DataWindowBadge from={data.from} to={data.to} count={Number(data.submissions)} label="submissions" />
             <DataSourceBadge source={data.data_source} />
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-            <KpiTile label="Submissions" value={num(data.submissions)} sublabel={`${data.from} → ${data.to}`} />
-            <KpiTile label="Sessions" value={num(data.sessions)} sublabel="distinct sessions" />
+            <KpiTile
+              label="Submissions"
+              help="How many times shoppers submitted a form on your store."
+              value={num(data.submissions)}
+              sublabel={`${data.from} → ${data.to}`}
+            />
+            <KpiTile
+              label="Visits"
+              help="How many separate visits interacted with a form."
+              value={num(data.sessions)}
+              sublabel="distinct visits"
+            />
             <KpiTile
               label="Submission rate"
+              help="Of the visits that used a form, the share that submitted it."
               value={data.submission_rate_pct !== null ? `${data.submission_rate_pct}%` : '—'}
-              sublabel="submissions ÷ sessions"
+              sublabel={data.submission_rate_pct !== null ? 'submissions ÷ visits' : 'Not enough data yet'}
             />
-            <KpiTile label="Payments succeeded" value={num(data.payments_succeeded)} sublabel="same-day reach" />
+            <KpiTile
+              label="Payments succeeded"
+              help="Successful payments on the same day as a form submission — a rough sign forms lead to sales."
+              value={num(data.payments_succeeded)}
+              sublabel="same-day payments"
+            />
+          </div>
+          <div className="flex justify-end">
+            <VerifyLink href="/analytics/behavior" label="See the storefront events behind these numbers" />
           </div>
           <FormsTrendCard data={data} />
           <FormsTable rows={data.forms} />
@@ -427,41 +486,40 @@ export function SearchContent({ initialTab }: { initialTab?: string }) {
       explainer={{
         title: 'Search & Forms — intent signals from the storefront',
         description:
-          'On-site search and lead-form behaviour in one place. Every metric here is built from Brain Pixel touchpoints folded into the Gold behaviour/conversion marts — read via the metric-engine seam, never raw SQL. With no pixel installed these surfaces honestly show an empty state, never a fabricated zero.',
+          'On-site search and lead-form behaviour in one place. Every number here is built from what the Brain Pixel records on your storefront. With no pixel installed these surfaces honestly show an empty state, never a made-up zero.',
         sections: [
           {
             heading: 'Sub-sections',
-            body: 'Search (how much shoppers search, how many sessions/shoppers reach search, the daily trend, and the top search terms) · Forms (lead-form submissions, the submission rate, same-day payment reach, the daily trend, and per-form performance).',
+            body: 'Search (how much shoppers search, how many visits/shoppers reach search, the daily trend, and the top search terms) · Forms (lead-form submissions, the submission rate, same-day payments, the daily trend, and per-form performance).',
           },
         ],
         metrics: [
           {
-            name: 'Searches / sessions / shoppers',
-            definition: 'Total on-site searches, the distinct sessions that searched, and the distinct shoppers (journeys) behind them.',
-            howComputed: 'Aggregated from the search slice of the Gold behaviour mart over the selected range (useSearchBehavior).',
+            name: 'Searches / visits / shoppers',
+            definition: 'Total on-site searches, the distinct visits that searched, and the distinct shoppers behind them.',
+            howComputed: 'Added up from the searches the Brain Pixel recorded over the selected range.',
           },
           {
             name: 'Top search terms',
             definition: 'The most-run search terms with their search and shopper counts.',
-            howComputed: 'From the storefront-behaviour overview term breakdown (useBehaviorOverview.top_searches) — the term-level source.',
+            howComputed: 'Counted per term from the same recorded searches.',
           },
           {
             name: 'Submission rate',
-            definition: 'Of the sessions that engaged a lead form, the share that submitted it.',
-            howComputed: 'Submissions ÷ sessions from the Gold conversion mart (useFormConversion). A 2dp string from the engine — null when the denominator is 0 (honest em-dash, never 0/∞).',
+            definition: 'Of the visits that used a lead form, the share that submitted it.',
+            howComputed: 'Submissions ÷ visits. Shows an em-dash when there were no form visits yet — never a made-up 0.',
           },
           {
             name: 'Payments succeeded',
-            definition: 'Same-day payment reach following form submissions — an honest proxy for downstream conversion.',
-            howComputed: 'Counted in the per-day series of the Gold conversion mart (useFormConversion).',
+            definition: 'Successful payments on the same day as form submissions — a rough sign forms lead to sales.',
+            howComputed: 'Counted from the daily payment activity the pixel records.',
           },
         ],
         refreshCadence:
-          'Behaviour/conversion marts refresh on the Silver/Gold loop. These endpoints do not stamp a served-at time, so freshness is shown honestly as unknown rather than fabricated. Each surface tags its own provenance (live vs synthetic) via data_source.',
+          'These numbers refresh on the regular analytics cycle (roughly every 15 minutes). They do not carry an exact served-at time, so freshness is shown honestly as unknown rather than made up.',
         sources: [
-          'Brain Pixel events → Gold behaviour mart (search slice)',
-          'Brain Pixel events → Gold conversion mart (lead forms)',
-          'metric-engine search-behavior / form-conversion / storefront-behavior seams',
+          'Brain Pixel searches on your storefront',
+          'Brain Pixel form submissions and payments',
         ],
       }}
     >

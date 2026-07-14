@@ -6,15 +6,18 @@ image:
 
 coordinator:
   replicaCount: 1
-  # AUD-PROD-006/-011: the single coordinator (discovery + the BFF's HTTP/JDBC endpoint —
-  # the SOLE serving entry) must not ride Spot. NOT `role: system` despite the spec: the
-  # system MNG is t4g.medium (4 GiB) and the coordinator's RATIFIED memory bound below
-  # (6Gi request / 7Gi limit, measured OOM evidence) can never schedule there — so it pins
-  # to the tainted ON-DEMAND Karpenter pool (t4g.xlarge, AUD-COST-018 — same on-demand
-  # stability guarantee, fits the bound; Neo4j precedent). Selector + toleration both
-  # required (the pool is tainted).
+  # AUD-OPS-006 revisit (Wave-3): coordinator+worker co-located on ONE Spot node
+  # meant a single reclaim took the SOLE serving engine down entirely (~30-120s,
+  # measured). Now that the Wave-3 cost levers land (EKS 1.33 −$360/mo, endpoint
+  # trim −$95/mo), pin the coordinator to the `ondemand` pool instead — it
+  # BIN-PACKS onto the EXISTING on-demand t4g.xlarge that Neo4j holds
+  # (Neo4j 2cpu/4Gi + coordinator 1cpu/6Gi fit the ~3.9cpu/~14.5Gi allocatable),
+  # so the expected marginal cost is ~$0; worst case Karpenter adds a second
+  # on-demand node (~$35-60/mo, pool limit cpu:8). Workers stay on Spot — losing
+  # a worker only re-runs in-flight queries; losing the coordinator loses the
+  # discovery service + HTTP endpoint. cpu request stays 1 (go-live trim).
   nodeSelector:
-    brain.platform/pool: ondemand
+    karpenter.sh/nodepool: ondemand
   tolerations:
     - key: brain.platform/pool
       operator: Equal
@@ -22,10 +25,10 @@ coordinator:
       effect: NoSchedule
   resources:
     requests:
-      cpu: "2"
+      cpu: "1"
       memory: 6Gi
     limits:
-      cpu: "4"
+      cpu: "2"
       memory: 7Gi
 
 workers:
@@ -57,7 +60,10 @@ workers:
 
 # Real AWS S3 Iceberg buckets reached via the pod IRSA role — no static keys, no MinIO endpoint.
 iceberg:
-  restUri: "http://iceberg-rest.iceberg.svc.cluster.local:8181"
+  # The Iceberg REST catalog is the chart-fullname service in ns `iceberg-rest`
+  # (NOT a plain `iceberg-rest` in ns `iceberg`). Wrong DNS = Trino can't read any
+  # Iceberg mart → the sole serving engine 500s at go-live.
+  restUri: "http://brain-prod-iceberg-rest.iceberg-rest.svc.cluster.local:8181"
   s3:
     # AUD-COST-008: MUST be ap-south-1 — every bucket/VPC/endpoint lives there; a SigV4
     # region mismatch 400s (AuthorizationHeaderMalformed) every S3 read through the sole
@@ -69,4 +75,10 @@ iceberg:
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-trino
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-trino
+
+# AUD-INFRA-030: scrape the sole serving engine (coordinator JMX exporter + PodMonitor,
+# job "trino") — lights up TrinoServingDown / TrinoQueryFailureRateHigh in
+# kube-prometheus-stack values-prod.
+metrics:
+  enabled: true

@@ -24,7 +24,7 @@ import { backfillApi, BffApiError } from '@/lib/api/client';
 import type { BackfillJobProgress } from '@brain/contracts';
 
 /** Query key factory — stable per connectorId. */
-export function backfillProgressKey(connectorId: string) {
+function backfillProgressKey(connectorId: string) {
   return ['connectors', connectorId, 'backfill-progress'] as const;
 }
 
@@ -74,7 +74,11 @@ export function useBackfillProgress(connectorId: string, enabled = true) {
 export function useTriggerBackfill(connectorId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => backfillApi.triggerBackfill(connectorId),
+    // Mutation variable = OPTIONAL depth-picker window (requested_window_ms, 0127).
+    // mutate(undefined) keeps the pre-picker body-less "provider max" call byte-identical;
+    // the server clamps any value to the provider manifest's maxBackfillWindowMs at claim time.
+    mutationFn: (requestedWindowMs?: number) =>
+      backfillApi.triggerBackfill(connectorId, requestedWindowMs),
     onSuccess: () => {
       // Invalidate so useBackfillProgress immediately re-fetches and begins polling.
       void queryClient.invalidateQueries({ queryKey: backfillProgressKey(connectorId) });

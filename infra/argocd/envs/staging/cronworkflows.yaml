@@ -12,7 +12,7 @@ metadata:
 spec:
   project: brain-staging
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/helm/cronworkflows
     helm:

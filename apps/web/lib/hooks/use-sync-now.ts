@@ -29,7 +29,7 @@ import { syncApi, BffApiError } from '@/lib/api/client';
 import type { ConnectorInstanceResponse, SyncState } from '@/lib/api/types';
 
 /** Query key factory — stable per connectorId. */
-export function syncStatusKey(connectorId: string) {
+function syncStatusKey(connectorId: string) {
   return ['connectors', connectorId, 'sync-status'] as const;
 }
 

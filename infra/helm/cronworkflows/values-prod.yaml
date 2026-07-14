@@ -1,42 +1,50 @@
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core-prod
-  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
-
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
+  tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
+  digest: "sha256:5360302eace91f234b7070571bc5a4973e3729b41376ef7d877e1722e6db2f5e"
 streamWorkerImage:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker-prod
-  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
-
-# spark-bronze image — Iceberg Bronze sink + maintenance crons. Also reused by the V4 Spark
-# silver/gold/mv-refresh crons (.sparkV4.image — CI promotes both digests build-once from staging).
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
+  tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
+  digest: "sha256:661380c40996eac6d68435014d6102111bd7b40f98d75d368a4d3685baf795f1"
+# duckdb image — bronze/medallion maintenance + erasure (via the Trino client it carries) AND the V4
+# Silver/Gold transform crons (.sparkV4.image — CI promotes both digests build-once from staging, one
+# image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover: replaces
+# brain-spark-bronze-prod. The digest below is a PLACEHOLDER — the first master build of brain-duckdb-prod
+# (deploy.yml build-data-images) promotes the real digest here; until then the templates fail-closed on it.
 sparkBronze:
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: ""
-  # AUD-PROD-006: Spark cron pods → the batch Karpenter pool (t4g.xlarge Spot).
-  # A Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry +
-  # idempotent MERGE (per-lane dedup_key) — the next run re-drains from the
-  # committed Kafka offsets, no event loss.
+    digest: "sha256:0b71920c07ffa5437550f91c3a458e4511be3a305180630795e0399819325f84"
+  # AUD-PROD-006: the maintenance/erasure cron pods run on the streaming Karpenter pool (the batch pool
+  # was removed in the Spark→DuckDB cutover — the DuckDB crons are lightweight python, no JVM). A
+  # Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry + idempotent maintenance.
   nodeSelector:
-    brain.platform/pool: batch
-
-# spark V4 Silver/Gold transform + mv refresh crons — same image as sparkBronze (the Dockerfile carries the
-# V4 marts). Flip enabled:true once the prod V4 cluster + digest are ready (gated off by default).
+    brain.platform/pool: streaming
+# duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image carries the
+# transform marts + the Trino maintenance client).
 sparkV4:
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze-prod
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: ""
-  # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the batch pool.
+    digest: "sha256:0b71920c07ffa5437550f91c3a458e4511be3a305180630795e0399819325f84"
+  # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the streaming pool (batch pool removed).
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:
-    brain.platform/pool: batch
-
+    brain.platform/pool: streaming
+  # do-not-disrupt tells Karpenter not to consolidate/drift-disrupt a node hosting these pods while they
+  # run (the exit-143 / "No more retries left" class). Idempotent MERGE jobs, so an involuntary AWS spot
+  # reclaim is still safe (bounded retry); this only removes the self-inflicted churn.
+  podAnnotations:
+    karpenter.sh/do-not-disrupt: "true"
+  # DuckDB is single-process python (no JVM heap). 3CPU/8Gi gives the working set + DuckDB's in-memory
+  # MERGE/aggregation room; the streaming pool (t4g.large/xlarge) absorbs the silver/gold/maintenance
+  # overlap. Re-measure the real DuckDB run-time profile in prod and right-size from there.
+  resources:
+    requests: {cpu: "2", memory: 6Gi}
+    limits: {cpu: "3", memory: 8Gi}
 envSecretName: core-env
-
 serviceAccount:
   name: brain-jobs
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-jobs
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-jobs

@@ -1,0 +1,1621 @@
+{
+  "spec": "D.2",
+  "generator": "@brain/semantic-metrics",
+  "count": 22,
+  "metrics": [
+    {
+      "name": "ad_spend",
+      "version": "v1",
+      "entity": "semantic_campaign",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [
+        "platform"
+      ],
+      "currency_handling": "per_currency",
+      "identity_basis": "any",
+      "interactive": false,
+      "owner": "marketing-team",
+      "description": "Total advertising spend, per currency (optionally per platform): SUM of semantic_campaign spend_minor (BIGINT minor units). Spend is NOT identity-linked (identity_basis: any). Never blended across currency. The denominator behind MER/ROAS/CAC.",
+      "examples": [
+        "Total ad spend by platform in INR."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_ad_spend_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "not_applicable",
+      "mcp_tool": {
+        "name": "get_metric_ad_spend",
+        "access": "read",
+        "metric": "ad_spend",
+        "version": "v1",
+        "description": "Read the certified 'ad_spend' metric (Total advertising spend, per currency (optionally per platform): SUM of semantic_campaign spend_minor (BIGINT minor units). Spend is NOT identity-linked (identity_basis: any). Never blended across currency. The denominator behind MER/ROAS/CAC.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: per_currency; identity basis: any.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "platform"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "amer",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "marketing-team",
+      "description": "Acquisition Marketing Efficiency Ratio (aMER): NEW-customer recognised net revenue divided by total ad spend, per currency, whole-period. New-customer revenue from semantic_order.is_new_customer; spend from semantic_campaign. Cross-entity blend joined on (brand_id, currency_code) (AMD-25). Deterministic revenue spine only (§1.4). Null when spend is zero.",
+      "examples": [
+        "aMER in INR — new-customer revenue efficiency of spend."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_amer_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_amer",
+        "access": "read",
+        "metric": "amer",
+        "version": "v1",
+        "description": "Read the certified 'amer' metric (Acquisition Marketing Efficiency Ratio (aMER): NEW-customer recognised net revenue divided by total ad spend, per currency, whole-period. New-customer revenue from semantic_order.is_new_customer; spend from semantic_campaign. Cross-entity blend joined on (brand_id, currency_code) (AMD-25). Deterministic revenue spine only (§1.4). Null when spend is zero.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": []
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "aov",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Average order value per period, per currency: gross order value divided by distinct order count. A same-currency ratio of integer money over an integer count (§1.2). Deterministic order spine only (§1.4). Null when there are zero orders (never divide-by-zero).",
+      "examples": [
+        "AOV in INR at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_aov_day",
+        "week": "iceberg.brain_serving.mv_metric_aov_week",
+        "month": "iceberg.brain_serving.mv_metric_aov_month",
+        "all": "iceberg.brain_serving.mv_metric_aov_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_aov_day",
+        "iceberg.brain_serving.preagg_aov_week",
+        "iceberg.brain_serving.preagg_aov_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_aov",
+        "access": "read",
+        "metric": "aov",
+        "version": "v1",
+        "description": "Read the certified 'aov' metric (Average order value per period, per currency: gross order value divided by distinct order count. A same-currency ratio of integer money over an integer count (§1.2). Deterministic order spine only (§1.4). Null when there are zero orders (never divide-by-zero).) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cac",
+      "version": "v1",
+      "entity": "semantic_campaign",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "marketing-team",
+      "description": "Customer Acquisition Cost (blended): total ad spend (semantic_campaign) divided by the count of distinct NEW customers who purchased (semantic_order.is_new_customer brain_ids), per currency, whole-period. Cross-entity blend joined on (brand_id, currency_code) (AMD-25). Integer minor units (money stays integer — integer division). Deterministic identity links only (§1.4). Null when zero new customers.",
+      "examples": [
+        "Blended CAC in INR."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_cac_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cac",
+        "access": "read",
+        "metric": "cac",
+        "version": "v1",
+        "description": "Read the certified 'cac' metric (Customer Acquisition Cost (blended): total ad spend (semantic_campaign) divided by the count of distinct NEW customers who purchased (semantic_order.is_new_customer brain_ids), per currency, whole-period. Cross-entity blend joined on (brand_id, currency_code) (AMD-25). Integer minor units (money stays integer — integer division). Deterministic identity links only (§1.4). Null when zero new customers.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": []
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cac_new",
+      "version": "v1",
+      "entity": "semantic_campaign",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [
+        "platform"
+      ],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "marketing-team",
+      "description": "New-customer CAC: ad spend divided by the count of new-customer orders DETERMINISTICALLY attributed to the campaign (semantic_campaign.new_customer_orders_attributed), per currency (optionally per platform). Integer minor units (integer division). Deterministic attribution only (§1.4). Null when zero attributed new-customer orders.",
+      "examples": [
+        "CAC(new) by platform in INR."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_cac_new_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cac_new",
+        "access": "read",
+        "metric": "cac_new",
+        "version": "v1",
+        "description": "Read the certified 'cac_new' metric (New-customer CAC: ad spend divided by the count of new-customer orders DETERMINISTICALLY attributed to the campaign (semantic_campaign.new_customer_orders_attributed), per currency (optionally per platform). Integer minor units (integer division). Deterministic attribution only (§1.4). Null when zero attributed new-customer orders.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "platform"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cm1",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "per_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Contribution Margin 1 per period, per currency: SUM of gold_order_economics cm1_minor (net revenue minus COGS; SPEC/AMD-17 numbering). Deterministic order spine only (§1.4). Never blended across currency.",
+      "examples": [
+        "CM1 in INR at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_cm1_day",
+        "week": "iceberg.brain_serving.mv_metric_cm1_week",
+        "month": "iceberg.brain_serving.mv_metric_cm1_month",
+        "all": "iceberg.brain_serving.mv_metric_cm1_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_cm1_day",
+        "iceberg.brain_serving.preagg_cm1_week",
+        "iceberg.brain_serving.preagg_cm1_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cm1",
+        "access": "read",
+        "metric": "cm1",
+        "version": "v1",
+        "description": "Read the certified 'cm1' metric (Contribution Margin 1 per period, per currency: SUM of gold_order_economics cm1_minor (net revenue minus COGS; SPEC/AMD-17 numbering). Deterministic order spine only (§1.4). Never blended across currency.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: per_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cm1_pct",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "measurement-team",
+      "description": "CM1 margin as a fraction of net revenue, per currency: SUM(cm1_minor) / SUM(net_revenue_minor). Margin ratios are per-currency (never blended without FX). Deterministic order spine only (§1.4). Null when net revenue is zero.",
+      "examples": [
+        "CM1 % of net revenue in INR at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_cm1_pct_day",
+        "week": "iceberg.brain_serving.mv_metric_cm1_pct_week",
+        "month": "iceberg.brain_serving.mv_metric_cm1_pct_month",
+        "all": "iceberg.brain_serving.mv_metric_cm1_pct_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cm1_pct",
+        "access": "read",
+        "metric": "cm1_pct",
+        "version": "v1",
+        "description": "Read the certified 'cm1_pct' metric (CM1 margin as a fraction of net revenue, per currency: SUM(cm1_minor) / SUM(net_revenue_minor). Margin ratios are per-currency (never blended without FX). Deterministic order spine only (§1.4). Null when net revenue is zero.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cm2",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "per_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Contribution Margin 2 per period, per currency: SUM of gold_order_economics cm2_minor (CM1 minus shipping fwd+rev, packaging, payment/platform fees; SPEC/AMD-17 numbering). Deterministic order spine only (§1.4). Never blended across currency.",
+      "examples": [
+        "CM2 in INR at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_cm2_day",
+        "week": "iceberg.brain_serving.mv_metric_cm2_week",
+        "month": "iceberg.brain_serving.mv_metric_cm2_month",
+        "all": "iceberg.brain_serving.mv_metric_cm2_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_cm2_day",
+        "iceberg.brain_serving.preagg_cm2_week",
+        "iceberg.brain_serving.preagg_cm2_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cm2",
+        "access": "read",
+        "metric": "cm2",
+        "version": "v1",
+        "description": "Read the certified 'cm2' metric (Contribution Margin 2 per period, per currency: SUM of gold_order_economics cm2_minor (CM1 minus shipping fwd+rev, packaging, payment/platform fees; SPEC/AMD-17 numbering). Deterministic order spine only (§1.4). Never blended across currency.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: per_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cm2_pct",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "measurement-team",
+      "description": "CM2 margin as a fraction of net revenue, per currency: SUM(cm2_minor) / SUM(net_revenue_minor). Margin ratios are per-currency (never blended without FX). Deterministic order spine only (§1.4). Null when net revenue is zero.",
+      "examples": [
+        "CM2 % of net revenue in INR at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_cm2_pct_day",
+        "week": "iceberg.brain_serving.mv_metric_cm2_pct_week",
+        "month": "iceberg.brain_serving.mv_metric_cm2_pct_month",
+        "all": "iceberg.brain_serving.mv_metric_cm2_pct_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cm2_pct",
+        "access": "read",
+        "metric": "cm2_pct",
+        "version": "v1",
+        "description": "Read the certified 'cm2_pct' metric (CM2 margin as a fraction of net revenue, per currency: SUM(cm2_minor) / SUM(net_revenue_minor). Margin ratios are per-currency (never blended without FX). Deterministic order spine only (§1.4). Null when net revenue is zero.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cm3",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "per_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Contribution Margin 3 per period, per currency: SUM of gold_order_economics cm3_minor (CM2 minus allocated marketing spend; SPEC/AMD-17 numbering). Deterministic order spine only (§1.4). Never blended across currency. RTO orders carry negative CM3 (reverse-logistics cost).",
+      "examples": [
+        "CM3 in INR at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_cm3_day",
+        "week": "iceberg.brain_serving.mv_metric_cm3_week",
+        "month": "iceberg.brain_serving.mv_metric_cm3_month",
+        "all": "iceberg.brain_serving.mv_metric_cm3_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_cm3_day",
+        "iceberg.brain_serving.preagg_cm3_week",
+        "iceberg.brain_serving.preagg_cm3_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cm3",
+        "access": "read",
+        "metric": "cm3",
+        "version": "v1",
+        "description": "Read the certified 'cm3' metric (Contribution Margin 3 per period, per currency: SUM of gold_order_economics cm3_minor (CM2 minus allocated marketing spend; SPEC/AMD-17 numbering). Deterministic order spine only (§1.4). Never blended across currency. RTO orders carry negative CM3 (reverse-logistics cost).) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: per_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "cm3_pct",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "measurement-team",
+      "description": "CM3 margin as a fraction of net revenue, per currency: SUM(cm3_minor) / SUM(net_revenue_minor). Margin ratios are per-currency (never blended without FX). Deterministic order spine only (§1.4). Null when net revenue is zero. Can be negative (RTO-heavy periods).",
+      "examples": [
+        "CM3 % of net revenue in INR at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_cm3_pct_day",
+        "week": "iceberg.brain_serving.mv_metric_cm3_pct_week",
+        "month": "iceberg.brain_serving.mv_metric_cm3_pct_month",
+        "all": "iceberg.brain_serving.mv_metric_cm3_pct_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_cm3_pct",
+        "access": "read",
+        "metric": "cm3_pct",
+        "version": "v1",
+        "description": "Read the certified 'cm3_pct' metric (CM3 margin as a fraction of net revenue, per currency: SUM(cm3_minor) / SUM(net_revenue_minor). Margin ratios are per-currency (never blended without FX). Deterministic order spine only (§1.4). Null when net revenue is zero. Can be negative (RTO-heavy periods).) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "gross_revenue",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "per_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Gross order value recognised per period, per currency: SUM of silver_order_state order_value_minor (before refunds/returns). Deterministic order spine only (§1.4). Never blended across currency.",
+      "examples": [
+        "Gross revenue in AED for last week at grain=week."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_gross_revenue_day",
+        "week": "iceberg.brain_serving.mv_metric_gross_revenue_week",
+        "month": "iceberg.brain_serving.mv_metric_gross_revenue_month",
+        "all": "iceberg.brain_serving.mv_metric_gross_revenue_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_gross_revenue_day",
+        "iceberg.brain_serving.preagg_gross_revenue_week",
+        "iceberg.brain_serving.preagg_gross_revenue_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_gross_revenue",
+        "access": "read",
+        "metric": "gross_revenue",
+        "version": "v1",
+        "description": "Read the certified 'gross_revenue' metric (Gross order value recognised per period, per currency: SUM of silver_order_state order_value_minor (before refunds/returns). Deterministic order spine only (§1.4). Never blended across currency.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: per_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "identified_purchase_rate",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "none",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "identity-team",
+      "description": "Share of recognised orders that resolve to a KNOWN (identified) customer rather than an anonymous placeholder brain_id: orders whose brain_id is not an 'anonymous%' placeholder, over all orders. A count ratio (no currency). Deterministic order spine only (§1.4). The identity-resolution quality signal on the purchase path. Null when there are zero orders.",
+      "examples": [
+        "Identified purchase rate at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_identified_purchase_rate_day",
+        "week": "iceberg.brain_serving.mv_metric_identified_purchase_rate_week",
+        "month": "iceberg.brain_serving.mv_metric_identified_purchase_rate_month",
+        "all": "iceberg.brain_serving.mv_metric_identified_purchase_rate_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_identified_purchase_rate",
+        "access": "read",
+        "metric": "identified_purchase_rate",
+        "version": "v1",
+        "description": "Read the certified 'identified_purchase_rate' metric (Share of recognised orders that resolve to a KNOWN (identified) customer rather than an anonymous placeholder brain_id: orders whose brain_id is not an 'anonymous%' placeholder, over all orders. A count ratio (no currency). Deterministic order spine only (§1.4). The identity-resolution quality signal on the purchase path. Null when there are zero orders.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: none; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "ltv_realized",
+      "version": "v1",
+      "entity": "semantic_customer",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "measurement-team",
+      "description": "Realized lifetime value per customer, per currency: SUM(lifetime_value_minor) / COUNT(DISTINCT brain_id). The honest realized-revenue-per-customer figure (NOT a predicted/discounted LTV — no model). semantic_customer carries a physical identity_basis → the compiler injects identity_basis='deterministic' (§1.4). Null when zero customers.",
+      "examples": [
+        "Realized LTV per customer in INR."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_ltv_realized_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "injected_predicate",
+      "mcp_tool": {
+        "name": "get_metric_ltv_realized",
+        "access": "read",
+        "metric": "ltv_realized",
+        "version": "v1",
+        "description": "Read the certified 'ltv_realized' metric (Realized lifetime value per customer, per currency: SUM(lifetime_value_minor) / COUNT(DISTINCT brain_id). The honest realized-revenue-per-customer figure (NOT a predicted/discounted LTV — no model). semantic_customer carries a physical identity_basis → the compiler injects identity_basis='deterministic' (§1.4). Null when zero customers.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": []
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "mer",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "marketing-team",
+      "description": "Marketing Efficiency Ratio (blended): total recognised net revenue (semantic_order) divided by total ad spend (semantic_campaign), per currency, whole-period. Cross-entity blend joined on (brand_id, currency_code) — the campaign entity has no time axis (AMD-25). Deterministic revenue spine only (§1.4). Null when spend is zero.",
+      "examples": [
+        "Blended MER in INR (total revenue / total spend)."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_mer_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_mer",
+        "access": "read",
+        "metric": "mer",
+        "version": "v1",
+        "description": "Read the certified 'mer' metric (Marketing Efficiency Ratio (blended): total recognised net revenue (semantic_order) divided by total ad spend (semantic_campaign), per currency, whole-period. Cross-entity blend joined on (brand_id, currency_code) — the campaign entity has no time axis (AMD-25). Deterministic revenue spine only (§1.4). Null when spend is zero.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": []
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "net_revenue",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "per_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Net revenue recognised per period, per currency: SUM of gold_order_economics net_revenue_minor (gross minus refunds/returns) over orders whose economics are recognised (conversion_at set). Deterministic order spine only (§1.4). Never blended across currency.",
+      "examples": [
+        "Net revenue in INR for July 2026 at grain=month.",
+        "Daily net revenue broken down by attributed channel."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_net_revenue_day",
+        "week": "iceberg.brain_serving.mv_metric_net_revenue_week",
+        "month": "iceberg.brain_serving.mv_metric_net_revenue_month",
+        "all": "iceberg.brain_serving.mv_metric_net_revenue_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_net_revenue_day",
+        "iceberg.brain_serving.preagg_net_revenue_week",
+        "iceberg.brain_serving.preagg_net_revenue_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_net_revenue",
+        "access": "read",
+        "metric": "net_revenue",
+        "version": "v1",
+        "description": "Read the certified 'net_revenue' metric (Net revenue recognised per period, per currency: SUM of gold_order_economics net_revenue_minor (gross minus refunds/returns) over orders whose economics are recognised (conversion_at set). Deterministic order spine only (§1.4). Never blended across currency.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: per_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "orders",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "none",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Count of distinct recognised orders per period. Deterministic order spine only (§1.4). No currency axis (a count, not money).",
+      "examples": [
+        "Order count per day for the last 30 days.",
+        "Orders per channel at grain=week."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_orders_day",
+        "week": "iceberg.brain_serving.mv_metric_orders_week",
+        "month": "iceberg.brain_serving.mv_metric_orders_month",
+        "all": "iceberg.brain_serving.mv_metric_orders_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_orders_day",
+        "iceberg.brain_serving.preagg_orders_week",
+        "iceberg.brain_serving.preagg_orders_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_orders",
+        "access": "read",
+        "metric": "orders",
+        "version": "v1",
+        "description": "Read the certified 'orders' metric (Count of distinct recognised orders per period. Deterministic order spine only (§1.4). No currency axis (a count, not money).) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: none; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "refund_amount",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "per_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": true,
+      "owner": "measurement-team",
+      "description": "Refunded/returned value per period, per currency, derived at the order grain as gross order value minus recognised net revenue (order_value_minor - net_revenue_minor). Deterministic order spine only (§1.4). Never blended across currency.",
+      "examples": [
+        "Total refund amount in INR for June at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_refund_amount_day",
+        "week": "iceberg.brain_serving.mv_metric_refund_amount_week",
+        "month": "iceberg.brain_serving.mv_metric_refund_amount_month",
+        "all": "iceberg.brain_serving.mv_metric_refund_amount_all"
+      },
+      "preaggs": [
+        "iceberg.brain_serving.preagg_refund_amount_day",
+        "iceberg.brain_serving.preagg_refund_amount_week",
+        "iceberg.brain_serving.preagg_refund_amount_month"
+      ],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_refund_amount",
+        "access": "read",
+        "metric": "refund_amount",
+        "version": "v1",
+        "description": "Read the certified 'refund_amount' metric (Refunded/returned value per period, per currency, derived at the order grain as gross order value minus recognised net revenue (order_value_minor - net_revenue_minor). Deterministic order spine only (§1.4). Never blended across currency.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: per_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "repeat_rate",
+      "version": "v1",
+      "entity": "semantic_customer",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [],
+      "currency_handling": "none",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "measurement-team",
+      "description": "Repeat-purchase rate: customers with >=2 lifetime orders divided by all customers. A count ratio (no currency). semantic_customer carries a physical identity_basis → the compiler injects identity_basis='deterministic' (probabilistic rows provably excluded, §1.4). Null when zero customers.",
+      "examples": [
+        "Repeat rate across all customers."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_repeat_rate_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "injected_predicate",
+      "mcp_tool": {
+        "name": "get_metric_repeat_rate",
+        "access": "read",
+        "metric": "repeat_rate",
+        "version": "v1",
+        "description": "Read the certified 'repeat_rate' metric (Repeat-purchase rate: customers with >=2 lifetime orders divided by all customers. A count ratio (no currency). semantic_customer carries a physical identity_basis → the compiler injects identity_basis='deterministic' (probabilistic rows provably excluded, §1.4). Null when zero customers.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: none; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": []
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "return_rate",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "none",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "logistics-team",
+      "description": "Refund/return rate per period: refunded orders divided by all TERMINAL orders (lifecycle_state='refunded' over is_terminal). A count ratio (no currency). Deterministic order spine only (§1.4). Null when there are zero terminal orders.",
+      "examples": [
+        "Return rate at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_return_rate_day",
+        "week": "iceberg.brain_serving.mv_metric_return_rate_week",
+        "month": "iceberg.brain_serving.mv_metric_return_rate_month",
+        "all": "iceberg.brain_serving.mv_metric_return_rate_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_return_rate",
+        "access": "read",
+        "metric": "return_rate",
+        "version": "v1",
+        "description": "Read the certified 'return_rate' metric (Refund/return rate per period: refunded orders divided by all TERMINAL orders (lifecycle_state='refunded' over is_terminal). A count ratio (no currency). Deterministic order spine only (§1.4). Null when there are zero terminal orders.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: none; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "roas",
+      "version": "v1",
+      "entity": "semantic_campaign",
+      "grain": [
+        "all"
+      ],
+      "dimensions_allowed": [
+        "platform"
+      ],
+      "currency_handling": "ratio_same_currency",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "marketing-team",
+      "description": "Return On Ad Spend: DETERMINISTIC-attributed campaign revenue divided by spend, per currency (optionally per platform). Attribution consumes deterministic identity links only (§1.4 / the gold_campaign_attribution ledger). Null when spend is zero. Empty attribution on golden → null (honest, never a fabricated ROAS).",
+      "examples": [
+        "ROAS by platform in INR."
+      ],
+      "views": {
+        "all": "iceberg.brain_serving.mv_metric_roas_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_roas",
+        "access": "read",
+        "metric": "roas",
+        "version": "v1",
+        "description": "Read the certified 'roas' metric (Return On Ad Spend: DETERMINISTIC-attributed campaign revenue divided by spend, per currency (optionally per platform). Attribution consumes deterministic identity links only (§1.4 / the gold_campaign_attribution ledger). Null when spend is zero. Empty attribution on golden → null (honest, never a fabricated ROAS).) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: ratio_same_currency; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "platform"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "name": "rto_rate",
+      "version": "v1",
+      "entity": "semantic_order",
+      "grain": [
+        "day",
+        "week",
+        "month",
+        "all"
+      ],
+      "dimensions_allowed": [
+        "channel"
+      ],
+      "currency_handling": "none",
+      "identity_basis": "deterministic_only",
+      "interactive": false,
+      "owner": "logistics-team",
+      "description": "Return-to-origin rate per period: RTO orders divided by all TERMINAL orders (lifecycle_state='rto' over is_terminal). A count ratio (no currency). Deterministic order spine only (§1.4). In-flight orders excluded from the denominator. Null when there are zero terminal orders.",
+      "examples": [
+        "RTO rate at grain=month."
+      ],
+      "views": {
+        "day": "iceberg.brain_serving.mv_metric_rto_rate_day",
+        "week": "iceberg.brain_serving.mv_metric_rto_rate_week",
+        "month": "iceberg.brain_serving.mv_metric_rto_rate_month",
+        "all": "iceberg.brain_serving.mv_metric_rto_rate_all"
+      },
+      "preaggs": [],
+      "deterministic_exclusion": "by_construction",
+      "mcp_tool": {
+        "name": "get_metric_rto_rate",
+        "access": "read",
+        "metric": "rto_rate",
+        "version": "v1",
+        "description": "Read the certified 'rto_rate' metric (Return-to-origin rate per period: RTO orders divided by all TERMINAL orders (lifecycle_state='rto' over is_terminal). A count ratio (no currency). Deterministic order spine only (§1.4). In-flight orders excluded from the denominator. Null when there are zero terminal orders.) at a time grain, for the authenticated brand. Returns governed numbers from the compiled semantic view — never SQL, never a model-invented figure. Currency handling: none; identity basis: deterministic_only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "grain": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "all"
+              ],
+              "description": "Time grain to aggregate at."
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "description": "Optional dimensions to break the metric down by (subset of dimensions_allowed)."
+            },
+            "date_from": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive start date (ignored at grain=all)."
+            },
+            "date_to": {
+              "type": "string",
+              "format": "date",
+              "description": "Inclusive end date (ignored at grain=all)."
+            }
+          },
+          "required": [
+            "grain"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

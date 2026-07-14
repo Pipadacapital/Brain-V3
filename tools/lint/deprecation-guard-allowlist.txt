@@ -1,0 +1,48 @@
+# deprecation-guard allowlist (SPEC: D.4.5 / D.5) — files PERMITTED to reference a Wave-D DEPRECATED mart
+# (knowledge-base/semantic/deprecation-map.md). These are the GRANDFATHERED consumers that existed at the
+# close of Wave D; §0.5 additive-only keeps them reading the legacy mart until they migrate route-by-route
+# in D.3 behind the per-brand `semantic.serving` flag. Any OTHER file under apps/ or packages/ that
+# references a deprecated mart is a NEW consumer → BLOCKED. Bind new readers to the semantic entity
+# (iceberg.brain_serving.semantic_*) or the compiled metric view (iceberg.brain_serving.mv_metric_*).
+# One repo-relative path per line; adding a path requires a WHY (trailing comment) explaining why the
+# consumer cannot yet migrate. As each row's reader repoints onto the semantic layer, DELETE its line here
+# (the guard then blocks any regression back onto the legacy mart).
+#
+# ── Grandfathered baseline captured at Wave-D close (auto-derived from the live consumer surface) ──
+apps/core/src/modules/analytics/internal/application/queries/_attribution-credit.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/analytics/internal/application/queries/get-campaign-roas.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/analytics/internal/application/queries/get-channel-roas.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/analytics/internal/application/queries/get-cohort-users.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/analytics/internal/application/queries/get-insights-briefing.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/analytics/internal/application/queries/get-orders-list.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/analytics/internal/application/queries/get-product-categories.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/analytics/internal/application/queries/get-product-detail.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/attribution/internal/reconcile-attribution.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/core/src/modules/data-quality/internal/application/queries/get-data-quality-summary.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/stream-worker/src/domain/identity/ScopedRecompute.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/stream-worker/src/jobs/dq/freshness-check.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/stream-worker/src/jobs/dq/reconciliation-check.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+apps/web/app/(dashboard)/customers/[id]/customer-profile-content.tsx   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/attribution-writer/src/index.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/contracts/src/api/intelligence.api.v1.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/attributed-revenue-timeseries.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/attribution-campaign-roas.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/attribution-channel-roas.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/attribution-reconciliation.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/cac.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/campaign-attribution.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/campaign-timeseries.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/connector-records.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/customer-360.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/customer-commerce.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/customer-orders.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/customer-score.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/customer-scores-batch.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/customer-segments.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/executive-metrics.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/insights.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/journey-events.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/journey-mix.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/order-status-mix.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/top-products.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)
+packages/metric-engine/src/utm-source.ts   # WHY: pre-Wave-D consumer; migrates in D.3 (semantic.serving)

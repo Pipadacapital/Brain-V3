@@ -129,6 +129,9 @@ export class PgSpoolRepository implements SpoolRepository {
 
       return {
         entries,
+        // ADR-0012: expose the claim's client so the drainer's mark_events_seen write runs in THIS
+        // transaction and commits atomically with markDrained (a separate txn would break atomicity).
+        client,
         markDrained: async (ids: bigint[]): Promise<void> => {
           if (ids.length === 0) return;
           await client.query(

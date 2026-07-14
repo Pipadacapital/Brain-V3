@@ -103,12 +103,9 @@ resource "aws_iam_role" "this" {
   assume_role_policy = data.aws_iam_policy_document.trust.json
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    workload    = var.role_name
-    namespace   = var.namespace
-    sa          = var.service_account_name
-    managed_by  = "terraform"
+    workload  = var.role_name
+    namespace = var.namespace
+    sa        = var.service_account_name
   }
 }
 

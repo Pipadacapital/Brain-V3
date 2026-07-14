@@ -1,21 +1,23 @@
 /**
  * gokwik-rto-predict-bronze-wiring.e2e.test.ts — P0 follow-up: gokwik.rto_predict.v1 → Iceberg Bronze.
  *
- * ICEBERG-BRONZE: Bronze is the Spark sink → Iceberg `brain_bronze.collector_events` (PG bronze_events
- * dropped — migration 0070). gokwik.rto_predict.v1 is a SERVER_TRUSTED lane event (no install_token;
- * brand_id server-derived), so the Spark sink writes it under the claimed brand without an R2/R3 gate.
- * The risk signal was historically lost (the pixel lane quarantined these for lack of a token, and
- * nothing else consumed them); the server-trusted lane is what lets them reach Bronze.
+ * ICEBERG-BRONZE (ADR-0010): Bronze is the Kafka Connect Iceberg sink (the compose kafka-connect
+ * service — the SOLE Bronze writer, append-only, ungated) → `brain_bronze.collector_events_connect`,
+ * read over Trino via the lift view (PG bronze_events dropped — migration 0070).
+ * gokwik.rto_predict.v1 is a SERVER_TRUSTED lane event (no install_token; brand_id server-derived),
+ * so the Silver admission gate passes it under the claimed brand without an R2/R3 gate. The risk
+ * signal was historically lost (the pixel lane quarantined these for lack of a token, and nothing
+ * else consumed them); the server-trusted lane is what lets them survive Silver admission.
  *
  * This produces three realistic RTO-Predict envelopes (the post-mapper shape) to the collector topic
- * and asserts all three land in Iceberg Bronze (read via the StarRocks external catalog), matched by
+ * and asserts all three land in Iceberg Bronze (read over Trino via the lift view), matched by
  * their exact event_ids so pre-existing rows of the same brand/type don't mask the assertion.
  *
- * The former RP2 case (computeRtoRiskDistribution) reads StarRocks silver_checkout_signal since the
- * payments-Silver re-point (PR #211) and is covered by the metric-engine unit tests — this e2e asserts
- * only the bridge's job: the Bronze landing.
+ * The former RP2 case (computeRtoRiskDistribution) reads the serving silver_checkout_signal view
+ * since the payments-Silver re-point (PR #211) and is covered by the metric-engine unit tests —
+ * this e2e asserts only the bridge's job: the Bronze landing.
  *
- * REQUIRES the `lakehouse` docker profile (Redpanda + Spark sink + Iceberg REST + MinIO + StarRocks).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -105,8 +107,9 @@ describe('GoKwik RTO-Predict → Iceberg Bronze wiring (P0 follow-up, lakehouse)
     const landed = await pollIcebergBronzeCount(
       sr,
       { brandId: BRAND, eventIds: envs.map((e) => e.event_id), eventType: EVENT_NAME },
-      { min: 3, timeoutMs: 60_000 },
+      // ADR-0010: Connect-sink commit visibility is 30-60s+ under load — helper's 120s default.
+      { min: 3 },
     );
     expect(landed).toBeGreaterThanOrEqual(3); // all three reached Iceberg Bronze
-  }, 75_000);
+  }, 150_000);
 });

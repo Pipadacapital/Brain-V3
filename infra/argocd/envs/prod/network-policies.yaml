@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: network-policies-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/network-policies
+    # sync-wave -4: this app is the SOLE owner of the workload namespaces (core/web/collector/
+    # stream-worker/pgbouncer/trino/iceberg-rest/neo4j) + their PSA `restricted` labels. It must
+    # create them BEFORE external-secrets-config-prod (-2) lands ExternalSecrets into them, and
+    # before argo-workflows-prod (-3). Previously (no wave = 0) it ran AFTER ESC, so ESC needed its
+    # own createNamespaces:true crutch — which double-owned these namespaces and caused permanent
+    # OutOfSync. Owning them here + ESC deferring removes the drift (AUD-INFRA-022 single-owner).
+    argocd.argoproj.io/sync-wave: "-4"
+  labels:
+    project: brain
+    environment: prod
+    service: network-policies
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
+    targetRevision: master
+    path: infra/helm/network-policies
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    # Every resource in the chart sets an explicit metadata.namespace (the
+    # policies span all Brain namespaces) or is cluster-scoped (Namespace PSA
+    # labels) — this default namespace is never used.
+    namespace: default
+  # NO automated sync for prod — manual promotion gate required.
+  # ServerSideApply is REQUIRED: the chart's Namespace manifests carry only the
+  # PSA labels and SSA-merge onto the namespaces the per-app Applications own
+  # (AUD-INFRA-022). NetworkPolicies are inert until the vpc-cni network-policy
+  # agent is enabled — see infra/helm/network-policies/README.md (AUD-INFRA-021).
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

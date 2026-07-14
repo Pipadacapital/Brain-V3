@@ -224,8 +224,24 @@ export function hashIdentifier(
 ): string {
   const normalized = normalizeIdentifier(value, type, regionCode);
   // Canonical input: salt ‖ '||' ‖ normalized (preserves existing wire format)
-  const input = `${perBrandSalt}||${normalized}`;
-  return sha256Hex(input);
+  return saltedIdentifierSha256Hex(perBrandSalt, normalized);
+}
+
+// SPEC: A.1.3 (WA-06 — AMD-01 internal salted space; primitive extracted for reuse)
+/**
+ * The ONE salted-identifier hash primitive: sha256( salt ‖ '||' ‖ normalizedValue ) → 64-hex.
+ *
+ * This IS the existing identity-core wire convention (AMD-01's "internal space") — extracted
+ * ADDITIVELY so @brain/identity-normalization can wrap it without duplicating the convention
+ * (one source of truth). hashIdentifier above now delegates here; byte output for every
+ * existing caller is unchanged.
+ *
+ * Callers pass an ALREADY-NORMALIZED value (hashIdentifier normalizes via normalizeIdentifier;
+ * identity-normalization normalizes per SPEC A.1.3 — NFC email, libphonenumber E.164 phone)
+ * and a SaltProvider-validated per-brand salt.
+ */
+export function saltedIdentifierSha256Hex(perBrandSalt: string, normalizedValue: string): string {
+  return sha256Hex(`${perBrandSalt}||${normalizedValue}`);
 }
 
 /**

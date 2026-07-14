@@ -1,27 +1,41 @@
 replicaCount: 3
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-web-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-web-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
+  digest: "sha256:255866c74fcbe6af67bcf5304374d3788d296cd15f392caa890f51aaebc8b574"
 
 envSecretName: web-env
+
+# AUD-INFRA-033: scrape the user-facing tier (job brain-web → BrainTargetDown coverage via
+# the /api/metrics process-gauge exposition).
+metrics:
+  serviceMonitor:
+    enabled: true
 
 # AUD-COST-003: the app UI on the shared brain-prod ALB (host-routed, ACM TLS).
 ingress:
   enabled: true
-  host: REPLACE_WITH_WEB_HOSTNAME   # e.g. app.<apex-domain>
+  host: brain.pipadacapital.com        # apex is the canonical app URL
+  additionalHosts:
+    - app.brain.pipadacapital.com      # kept working alongside the apex
   groupName: brain-prod
-  certificateArn: REPLACE_WITH_ACM_CERT_ARN
+  # cert 684f6184 covers apex + app + api + px (the prior 5247056b lacked the apex)
+  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/684f6184-f357-46ca-8ef9-3be62239c220
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-web
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-web
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 21m / max 22m, mem p95 ~251Mi / max 254Mi per pod. Was 250m/512Mi.
+# New: cpu 100m (HPA fires at 70m ≈ 3x max seen — SSR bursts are spiky), mem
+# 384Mi (80% target = 307Mi > observed max 254Mi). LIMITS UNCHANGED. Revert =
+# restore old requests.
 resources:
   requests:
-    cpu: 250m
-    memory: 512Mi
+    cpu: 100m
+    memory: 384Mi
   limits:
     cpu: "1"
     memory: 1Gi

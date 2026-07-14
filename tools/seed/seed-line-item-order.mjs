@@ -1,13 +1,13 @@
 // seed-line-item-order.mjs — inject ONE synthetic order.live.v1 carrying properties.line_items
-// onto the live collector topic, so it lands in BOTH Bronze sinks via the real ingest path:
-//   • PG bronze_events  — via the stream-worker live-order-bronze-bridge (enforce=false)
-//   • Iceberg collector_events — via the Spark bronze materializer
+// onto the live collector topic, so it lands in Iceberg Bronze via the real ingest path: the
+// compose kafka-connect Iceberg sink (ADR-0010) picks it up automatically and commits it to
+// brain_bronze.collector_events_connect within ~30s (the sink's commit interval) — nothing to run.
 // This unblocks the order-line reader flip verification (ADR-0002): dev re-pull order.live.v1
-// payloads carry NO line_items, so the line-grain mart is empty on both sides and the
-// `bronze_order_line_src` → Iceberg unnest cannot be data-verified without a seeded line order.
+// payloads carry NO line_items, so the line-grain mart is empty and the order-line unnest cannot
+// be data-verified without a seeded line order.
 //
 // Reproducible. Run from anywhere:  node tools/seed/seed-line-item-order.mjs
-// Then materialize into Iceberg:  db/iceberg/spark/run-bronze-spike.sh
+// Then wait ~30s for the kafka-connect sink commit before querying Bronze.
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

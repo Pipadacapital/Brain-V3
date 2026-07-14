@@ -13,7 +13,7 @@
 #
 # sync-wave -1: before the workload apps (core dials pgbouncer at startup).
 # Its `pgbouncer-env` Secret comes from external-secrets-config (wave -2) —
-# sync that first (GO-LIVE step 8). Upstream host REPLACE_WITH_PROD_POSTGRES_HOST
+# sync that first (GO-LIVE step 8). Upstream host brain-prod-postgres.cluster-cjy6iicow625.ap-south-1.rds.amazonaws.com
 # is filled from `terraform output aurora_endpoint` (PLACEHOLDERS.md §2).
 # MANUAL promotion gate (prod convention) — no automated sync.
 ################################################################################
@@ -24,7 +24,7 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/pgbouncer
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/pgbouncer
   labels:
     project: brain
     environment: prod
@@ -32,7 +32,7 @@ metadata:
 spec:
   project: brain-prod
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/helm/pgbouncer
     helm:

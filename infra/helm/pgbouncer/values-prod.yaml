@@ -6,7 +6,7 @@
 # on the Postgres primary (session advisory locks — transaction pooling would break the leader lock).
 replicaCount: 2
 upstream:
-  host: REPLACE_WITH_PROD_POSTGRES_HOST      # e.g. brain-prod.xxxx.rds.amazonaws.com
+  host: brain-prod-postgres.cluster-cjy6iicow625.ap-south-1.rds.amazonaws.com      # e.g. brain-prod.xxxx.rds.amazonaws.com
 envSecretName: pgbouncer-env
 pool:
   defaultPoolSize: 25

@@ -31,8 +31,23 @@
  */
 
 import { createHash } from 'node:crypto';
+import { incrementCounter } from '@brain/observability';
 import { type AnalyticsCachePort, buildCacheKey } from './analytics-cache.js';
 import { resolveServingTtlMs } from './serving-ttl.js';
+
+/**
+ * serving_cache_requests_total{result, metric_id} — the hit-rate signal.
+ *   result=hit   → served from Redis (compute closure never ran).
+ *   result=miss  → cache miss; computed via Trino and (attempted to) cache-fill.
+ *   result=bypass→ flag disabled; read Trino directly, cache untouched.
+ *   result=error → cache layer errored; served via fail-soft direct read (NOT counted as hit/miss
+ *                  so the ratio hit/(hit+miss) stays a clean cache-effectiveness number).
+ * metric_id is bounded (~49 registered metrics) → safe label cardinality.
+ * Hit rate = rate(...{result="hit"}) / rate(...{result=~"hit|miss"}).
+ */
+function recordCacheResult(result: 'hit' | 'miss' | 'bypass' | 'error', metricId: string): void {
+  incrementCounter('serving_cache_requests_total', { result, metric_id: metricId });
+}
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -106,7 +121,10 @@ export function createServingCacheReader(config: ServingCacheReaderConfig): Serv
       compute: () => Promise<T>,
     ): Promise<T> {
       // Safe-OFF fallback: flag disabled → read Trino directly, never touch the cache.
-      if (!enabled) return compute();
+      if (!enabled) {
+        recordCacheResult('bypass', metricId);
+        return compute();
+      }
 
       const key = buildCacheKey(brandId, metricId, hashParams(params), servingVersion);
 
@@ -127,22 +145,29 @@ export function createServingCacheReader(config: ServingCacheReaderConfig): Serv
       };
 
       try {
-        return await cache.getOrSet<T>(key, guardedCompute, resolveServingTtlMs(metricId, ttlMs));
+        const value = await cache.getOrSet<T>(key, guardedCompute, resolveServingTtlMs(metricId, ttlMs));
+        // Clean success: outcome tells hit from miss. 'pending' → the compute closure never ran →
+        // the value came straight from Redis (HIT). 'ok' → compute ran and cache-filled (MISS).
+        recordCacheResult(state.outcome === 'pending' ? 'hit' : 'miss', metricId);
+        return value;
       } catch (err) {
         if (state.outcome === 'failed') {
-          // The Trino read itself failed — surface it (do NOT retry; honest error).
+          // The Trino read itself failed — surface it (do NOT retry; honest error). This is a real
+          // miss that then errored; count it as a miss so the denominator stays honest.
+          recordCacheResult('miss', metricId);
           throw err;
         }
         if (state.outcome === 'ok') {
-          // Compute succeeded but the cache SET failed — return the value, drop the write.
-          // eslint-disable-next-line no-console
+          // Compute succeeded but the cache SET failed — return the value, drop the write. The
+          // compute DID run (a miss), but the cache layer misbehaved → label 'error', not 'miss'.
+          recordCacheResult('error', metricId);
           console.warn(
             `[metric-engine] serving cache write failed (value served, cache skipped): ${err instanceof Error ? err.message : String(err)}`,
           );
           return state.value as T;
         }
         // computeOutcome === 'pending' → the cache GET failed before compute ran → direct read.
-        // eslint-disable-next-line no-console
+        recordCacheResult('error', metricId);
         console.warn(
           `[metric-engine] serving cache unavailable — reading Trino directly: ${err instanceof Error ? err.message : String(err)}`,
         );

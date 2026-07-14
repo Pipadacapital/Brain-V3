@@ -31,12 +31,51 @@ import type {
   SharedUtilityState,
   BrandPhoneGuardConfig,
   ResolveOutcome,
+  IdentityPriorityConfig,
+  IdentityPriorityClass,
 } from '../../domain/identity/IdentityResolver.js';
 import type { ConfidenceVerdict } from '@brain/contracts';
 import type { IdentityReadState, ReviewQueueItem } from '../../domain/identity/IdentityStore.js';
-import { RULE_VERSION } from '../../domain/identity/IdentityResolver.js';
+import { RULE_VERSION, DEFAULT_IDENTITY_PRIORITY } from '../../domain/identity/IdentityResolver.js';
+
+/** The identity-priority classes that may appear in a stored order (validated on read). */
+const KNOWN_PRIORITY_CLASSES: ReadonlySet<string> = new Set<string>(DEFAULT_IDENTITY_PRIORITY);
+
+/**
+ * All-zero UUID — the fail-closed sentinel for the workspace/user GUCs on this SYSTEM (brand-scoped)
+ * write path. These identity txns only ever scope by brand, but tables like `brand` carry a SECOND
+ * permissive RLS policy (`brand_self_read`) whose predicate casts `app.current_user_id::uuid`.
+ * Postgres evaluates EVERY permissive policy, so on a pgbouncer connection whose session GUCs were
+ * RESET to '' at checkout, that unset user GUC cast `''::uuid` → 22P02 (`invalid input syntax for
+ * type uuid: ""`) — crashing the identity-bridge consumer and wedging the partition in a rebalance
+ * loop, EVEN THOUGH app.current_brand_id was set correctly. Defaulting workspace + user to NIL_UUID
+ * (a valid, matches-nothing uuid) keeps every policy's cast legal; brand_isolation still governs
+ * access. Mirrors @brain/db buildContextGucSql / the metric-engine withBrandTxn fix.
+ */
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Set the RLS GUC context for a SYSTEM brand-scoped identity txn: the real brand id, plus
+ * workspace/user pinned to NIL_UUID so no other permissive policy casts an empty GUC (see NIL_UUID).
+ * txn-local (set_config is_local=true) — resets on COMMIT/ROLLBACK, cannot leak across pool conns.
+ */
+async function setBrandRlsContext(
+  client: { query: (sql: string, params?: unknown[]) => Promise<unknown> },
+  brandId: string,
+): Promise<void> {
+  await client.query(
+    `SELECT set_config('app.current_brand_id', $1, true),
+            set_config('app.current_workspace_id', $2, true),
+            set_config('app.current_user_id', $2, true)`,
+    [brandId, NIL_UUID],
+  );
+}
 
 const STRONG_TIERS = ['strong', 'strong_on_link'];
+// SPEC: A.2.3.4 — the identity_link identifier_TYPES that carry strong (person-defining) authority. A
+// brain owning any active edge of these types is "strong-owned"; the resolver's shared-device guard uses
+// that to refuse folding a NEW strong id into it via a shared medium (anon/device) signal.
+const STRONG_LINK_TYPES = ['email', 'phone', 'storefront_customer_id', 'pre_hashed_email', 'pre_hashed_phone'];
 
 // ── Structured confidence / provenance stamped on every graph edge + merge node ──────────────
 // Deterministic-first (D-5): the ONLY live matcher is the union-find resolver, so every committed
@@ -68,6 +107,21 @@ const CANONICAL_OF_C = `
         WHERE all(rel IN relationships(_cano) WHERE rel.valid_to IS NULL)
           AND NOT EXISTS { MATCH (canon)-[ra:ALIAS_OF]->() WHERE ra.valid_to IS NULL }`;
 const CANONICAL_BRAIN_ID = 'coalesce(canon.brain_id, c.brain_id)';
+
+/**
+ * Every node label the identity graph writes (AUD-IMPL-028). purgeBrand deletes per-label so each
+ * MATCH is label-scoped (index/label-scan backed) instead of an AllNodesScan. Keep this list in
+ * sync with every `CREATE (:X …)` / `MERGE (:X …)` in the graph writers (this repo + core's
+ * neo4j-identity-reader unmerge path); the purge's final label-less sweep still catches drift.
+ */
+export const IDENTITY_GRAPH_LABELS = [
+  'Identifier',
+  'Customer',
+  'MergeEvent',
+  'MergeReview',
+  'SharedUtility',
+  'UnmergeEvent',
+] as const;
 
 export class Neo4jIdentityRepository {
   private readonly driver: Driver;
@@ -175,6 +229,23 @@ export class Neo4jIdentityRepository {
         }
       }
 
+      // SPEC: A.2.3.4 — of the brains those identifiers resolve to, which ALREADY own an active STRONG
+      // identifier. The resolver's shared-device guard consults this to refuse pulling a NEW strong id
+      // into a brain owned by a DIFFERENT strong identity via a shared medium (anon/device) bridge — the
+      // shared_device_family merge. Scoped to the (small) resolved-brain set, so it is cheap per event.
+      const strongOwnedBrainIds = new Set<string>();
+      const candidateBrains = [...new Set(existingLinks.map((l) => l.brain_id))];
+      if (candidateBrains.length > 0) {
+        const ownRes = await session.run(
+          `MATCH (c:Customer {brand_id:$brand}) WHERE c.brain_id IN $brains
+           MATCH (si:Identifier {brand_id:$brand})-[sr:IDENTIFIES]->(c)
+           WHERE sr.is_active = true AND si.type IN $strongTypes
+           RETURN DISTINCT c.brain_id AS brain_id`,
+          { brand: brandId, brains: candidateBrains, strongTypes: STRONG_LINK_TYPES },
+        );
+        for (const rec of ownRes.records) strongOwnedBrainIds.add(rec.get('brain_id') as string);
+      }
+
       const phoneHashes = identifierHashes.filter((i) => i.type === 'phone').map((i) => i.hash);
       const sharedUtilityMap = new Map<string, SharedUtilityState>();
       const phoneCount = new Map<string, number>();
@@ -219,7 +290,7 @@ export class Neo4jIdentityRepository {
       );
       const aliasChain = new Set(aliasRes.records.map((r) => r.get('observed') as string));
 
-      return { existingLinks, sharedUtilityMap, phoneCount, aliasChain, brandConfig };
+      return { existingLinks, sharedUtilityMap, phoneCount, aliasChain, brandConfig, strongOwnedBrainIds };
     } finally {
       await session.close();
     }
@@ -434,13 +505,50 @@ export class Neo4jIdentityRepository {
     const client = await this.pgPool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await setBrandRlsContext(client, brandId);
       const rows = await client.query<{ phone_guard_threshold: number; suppression_window_days: number }>(
         'SELECT phone_guard_threshold, suppression_window_days FROM brand WHERE id = $1',
         [brandId],
       );
       await client.query('COMMIT');
       return rows.rows[0] ?? { phone_guard_threshold: 10, suppression_window_days: 30 };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * SPEC: A.1.5 (WA-12) — the brand's CURRENT ordered identity priority config, or null when the
+   * brand has never customized it (⇒ caller uses DEFAULT_IDENTITY_PRIORITY). The store is the
+   * append-only, versioned ops.brand_identity_priority (highest version = current). RLS-scoped: set
+   * the brand GUC in-txn (fail-closed → 0 rows) exactly like readBrandConfig. Any stored class the
+   * running code does not recognize is dropped (forward-compat); an empty/garbage order falls back
+   * to the default at the resolver (order.length === 0 ⇒ DEFAULT_IDENTITY_PRIORITY).
+   */
+  async readPriorityConfig(brandId: string): Promise<IdentityPriorityConfig | null> {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+      await setBrandRlsContext(client, brandId);
+      const rows = await client.query<{ version: number; priority_order: unknown }>(
+        `SELECT version, priority_order
+           FROM ops.brand_identity_priority
+          WHERE brand_id = $1
+          ORDER BY version DESC
+          LIMIT 1`,
+        [brandId],
+      );
+      await client.query('COMMIT');
+      const row = rows.rows[0];
+      if (!row) return null;
+      const raw = Array.isArray(row.priority_order) ? row.priority_order : [];
+      const order = raw.filter(
+        (c): c is IdentityPriorityClass => typeof c === 'string' && KNOWN_PRIORITY_CLASSES.has(c),
+      );
+      return { version: Number(row.version), order };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
@@ -458,7 +566,7 @@ export class Neo4jIdentityRepository {
     const client = await this.pgPool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await setBrandRlsContext(client, brandId);
 
       await client.query(
         `INSERT INTO identity_audit (brand_id, brain_id, action, merge_id, detail)
@@ -476,6 +584,9 @@ export class Neo4jIdentityRepository {
             identifier_types: identifiers.map((i) => i.type),
             action: outcome.action,
             store: 'neo4j', // the graph is the SoR; this PG row is the immutable audit trail
+            // SPEC A.1.5: stamp the per-brand priority config version when the ordered-priority path
+            // resolved this outcome (flag ON). Undefined on the legacy fixed-tier path → null (additive).
+            priority_config_version: outcome.priorityConfigVersion ?? null,
           }),
         ],
       );
@@ -507,10 +618,129 @@ export class Neo4jIdentityRepository {
     }
   }
 
-  /** Delete an entire brand subgraph (test cleanup / brand offboarding / crypto-shred). */
+  // ── DPDP/PDPL erasure lane (AUD-OPS-039 — consumer-side Neo4j purge) ─────────
+
+  /**
+   * Erasure-lane brain_id resolution: matches the identifier REGARDLESS of edge is_active
+   * (active preferred), following the live ALIAS_OF chain to the canonical survivor (same
+   * walk as readState).
+   *
+   * WHY any-state (replay-safety, D-4): eraseSubjectGraph() tombstones the IDENTIFIES edges.
+   * A replayed erasure event (consumer retry after a mid-sequence failure PAST the graph
+   * purge) must STILL resolve the subject so the remaining idempotent steps re-run —
+   * readState()'s active-only match would return null and the replay would skip as
+   * 'no_brain_id', permanently stranding the erasure short of completion. NEVER use this
+   * for the resolver/live-identity paths — active-only semantics are correct there.
+   */
+  async findBrainIdForErasure(
+    brandId: string,
+    identifierType: string,
+    identifierHash: string,
+  ): Promise<string | null> {
+    const session = this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      const res = await session.run(
+        `MATCH (i:Identifier {brand_id:$brand, type:$type, hash:$hash})-[r:IDENTIFIES]->(c:Customer)${CANONICAL_OF_C}
+         RETURN ${CANONICAL_BRAIN_ID} AS brain_id, r.is_active AS is_active
+         ORDER BY r.is_active DESC
+         LIMIT 1`,
+        { brand: brandId, type: identifierType, hash: identifierHash },
+      );
+      return res.records.length > 0 ? (res.records[0]!.get('brain_id') as string) : null;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Every identifier hash linked to a brain_id (its merged aliases included), ANY edge state.
+   * Keys the Bronze raw-PII sweep (erasure STEP 4) for brain_id-only triggers — the UI
+   * erase route hard-deletes contact_pii synchronously, so no raw identifier survives to
+   * re-derive the hash; the graph is the only remaining source (AUD-OPS-036 residual).
+   * Any-state match keeps replays complete after the graph purge tombstones the edges.
+   * Hashes only — the graph never holds raw PII, so nothing raw can leave here.
+   */
+  async listIdentifierHashesForErasure(brandId: string, brainId: string): Promise<string[]> {
+    const session = this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      const res = await session.run(
+        `MATCH (c:Customer {brand_id:$brand})
+         WHERE c.brain_id = $id
+            OR EXISTS { MATCH (c)-[:ALIAS_OF*1..50]->(:Customer {brand_id:$brand, brain_id:$id}) }
+         MATCH (i:Identifier {brand_id:$brand})-[:IDENTIFIES]->(c)
+         RETURN DISTINCT i.hash AS hash`,
+        { brand: brandId, id: brainId },
+      );
+      return res.records.map((r) => r.get('hash') as string);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Graph-side subject purge — MIRRORS core's Neo4jIdentityReader.eraseCustomer Cypher
+   * exactly (one erase shape everywhere): tombstone the active IDENTIFIES edges
+   * (is_active=false) + mark the Customer lifecycle_state='erased'. The identifier hashes
+   * stay (needed for replay resolution + Bronze sweep keying); raw PII never lived here.
+   * Idempotent: re-run matches 0 active edges and re-SETs the same lifecycle_state.
+   * Tenant-scoped: (brand_id, brain_id) exact pair — a foreign pair matches 0 nodes.
+   */
+  async eraseSubjectGraph(
+    brandId: string,
+    brainId: string,
+  ): Promise<{ existed: boolean; linksTombstoned: number }> {
+    const session = this.driver.session();
+    try {
+      let existed = false;
+      let linksTombstoned = 0;
+      await session.executeWrite(async (tx) => {
+        const res = await tx.run(
+          `MATCH (c:Customer {brand_id:$b, brain_id:$id})
+           OPTIONAL MATCH (i:Identifier {brand_id:$b})-[r:IDENTIFIES]->(c) WHERE r.is_active = true
+           SET r.is_active = false
+           WITH c, count(r) AS tombstoned
+           SET c.lifecycle_state='erased'
+           RETURN tombstoned`,
+          { b: brandId, id: brainId },
+        );
+        if (res.records.length > 0) {
+          existed = true;
+          linksTombstoned = toNum(res.records[0]!.get('tombstoned'));
+        }
+      });
+      return { existed, linksTombstoned };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Delete an entire brand subgraph (test cleanup / brand offboarding / crypto-shred).
+   *
+   * AUD-IMPL-028: per-label + batched, NOT one label-less all-nodes scan in a single unbounded
+   * DETACH DELETE transaction. The label-less form is an AllNodesScan (none of bootstrap()'s
+   * label-scoped indexes apply) and the single transaction accumulates the whole brand subgraph
+   * in the fixed 2g heap — on the RTBF/brand-erasure path, running exactly when the tenant's
+   * graph is largest, against the single non-replicated neo4j that also serves live per-event
+   * resolution. `CALL { … } IN TRANSACTIONS OF 10000 ROWS` (Neo4j 4.4+; we run 5.x) bounds each
+   * commit; per-label MATCH keeps every scan label-scoped.
+   *
+   * NOTE: CALL … IN TRANSACTIONS is only legal in an implicit (auto-commit) transaction —
+   * session.run() qualifies; NEVER wrap this in an explicit tx function. The final label-less
+   * sweep stays as a drift-catcher: after the label passes it matches (near-)zero nodes, so it
+   * is heap-bounded, and it guarantees the crypto-shred is COMPLETE even if a new label is
+   * added without updating IDENTITY_GRAPH_LABELS.
+   */
   async purgeBrand(brandId: string): Promise<void> {
     const session = this.driver.session();
     try {
+      for (const label of IDENTITY_GRAPH_LABELS) {
+        await session.run(
+          `MATCH (n:${label} {brand_id: $b}) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS`,
+          { b: brandId },
+        );
+      }
+      // Drift-catcher (see doc above): completeness beats scan cost on the erasure path.
       await session.run('MATCH (n) WHERE n.brand_id = $b DETACH DELETE n', { b: brandId });
     } finally {
       await session.close();

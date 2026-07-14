@@ -7,16 +7,37 @@
  * resolved clientId into the oauth_url, which is what proves the route stored +
  * resolved the brand's own app credentials (not the env app).
  *
- * PINNED CONTRACTS (shopify-byo-app-required Task 4):
- *   - Shopify connect WITHOUT client_id+client_secret → 400 MISSING_APP_CREDENTIALS
- *     (never a silent initiate against the shared env app).
- *   - Shopify connect WITH creds → 200, oauth_url carries the brand's client_id.
+ * PINNED CONTRACTS (shopify-byo-app-required Task 4, updated for the client-credentials
+ * connect — owner requirement 2026-07-12):
+ *   - Shopify connect WITHOUT client_id+client_secret and NO shared env app →
+ *     400 MISSING_SHOPIFY_CREDENTIALS (never a silent initiate against the shared env app).
+ *   - Shopify connect WITH creds → 200 kind:'credential' via the bespoke
+ *     ConnectShopifyWithCredentialsCommand (client-credentials exchange, no OAuth redirect).
  *   - Meta keeps optional-with-fallback behavior (no byoAppRequired) — regression guard.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { resetAllConfigCaches } from '@brain/config';
 import type { ISecretsManager } from '@brain/connector-secrets';
+
+// Route-level test: the bespoke client-credentials command is unit-tested in
+// ConnectShopifyWithCredentialsCommand.test.ts — here it is stubbed so the route's wire
+// contract can be pinned without a live token exchange. Error classes stay real.
+const shopifyCredsConnect = vi.hoisted(() => ({ execute: vi.fn() }));
+vi.mock(
+  '../../modules/connector/sources/storefront/shopify/application/commands/ConnectShopifyWithCredentialsCommand.js',
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import('../../modules/connector/sources/storefront/shopify/application/commands/ConnectShopifyWithCredentialsCommand.js')
+    >();
+    return {
+      ...actual,
+      ConnectShopifyWithCredentialsCommand: class {
+        execute = shopifyCredsConnect.execute;
+      },
+    };
+  },
+);
 
 import { registerConnectorWriteRoutes, type RegisterConnectorWriteRoutesDeps } from './writeRoutes.js';
 import { registerOAuthDispatch } from '../../modules/connector/catalog/dispatch.js';
@@ -121,6 +142,9 @@ beforeAll(async () => {
   // resolveBrandOAuthClientId's env fallback calls loadCoreConfig(), whose schema requires
   // DATABASE_URL. Provide a deterministic value (no DB is opened) and re-parse fresh.
   process.env['DATABASE_URL'] ??= 'postgres://brain:brain@localhost:5432/brain';
+  // The shared-env-app OAuth fallback is gated on SHOPIFY_CLIENT_ID — unset it so the
+  // no-credentials case deterministically hits 400 MISSING_SHOPIFY_CREDENTIALS.
+  delete process.env['SHOPIFY_CLIENT_ID'];
   resetAllConfigCaches();
   app = await buildTestApp();
 });
@@ -132,7 +156,7 @@ afterAll(async () => {
 // ── BYO-required: Shopify ──────────────────────────────────────────────────────
 
 describe('POST /api/v1/connectors — Shopify BYO-app required', () => {
-  it('POST { type:"shopify" } without credentials → 400 MISSING_APP_CREDENTIALS', async () => {
+  it('POST { type:"shopify" } without credentials + no env app → 400 MISSING_SHOPIFY_CREDENTIALS', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/connectors',
@@ -140,10 +164,15 @@ describe('POST /api/v1/connectors — Shopify BYO-app required', () => {
     });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error?.code).toBe('MISSING_APP_CREDENTIALS');
+    expect(body.error?.code).toBe('MISSING_SHOPIFY_CREDENTIALS');
   });
 
-  it('POST { type:"shopify" } with client_id + client_secret → 200 oauth_url', async () => {
+  it('POST { type:"shopify" } with client_id + client_secret → 200 credential connect (no OAuth redirect)', async () => {
+    shopifyCredsConnect.execute.mockResolvedValueOnce({
+      connectorInstanceId: 'ci-shopify-byo-test',
+      shopDomain: 'demo.myshopify.com',
+      webhookUrl: 'http://localhost:3001/api/v1/webhooks/platform/shopify',
+    });
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/connectors',
@@ -155,8 +184,18 @@ describe('POST /api/v1/connectors — Shopify BYO-app required', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.data?.oauth_url).toMatch(/^https:\/\/demo\.myshopify\.com\/admin\/oauth\/authorize/);
-    expect(body.data?.oauth_url).toContain('client_id=brand-app-id');
+    expect(body.data?.kind).toBe('credential');
+    expect(body.data?.connected).toBe(true);
+    expect(body.data?.connector_instance_id).toBe('ci-shopify-byo-test');
+    // The brand's OWN creds reach the client-credentials exchange — never the env app.
+    expect(shopifyCredsConnect.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        brandId: BRAND,
+        shopDomain: 'demo.myshopify.com',
+        clientId: 'brand-app-id',
+        clientSecret: 'brand-app-secret',
+      }),
+    );
   });
 
   it('POST { type:"meta" } without credentials still initiates (env fallback allowed)', async () => {

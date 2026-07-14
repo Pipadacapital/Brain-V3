@@ -88,6 +88,42 @@ export interface GoogleAdsRawRow {
   advertising_channel_type?: string | null;  // SEARCH | DISPLAY | VIDEO | …
   segments_date?: string | null;
   currency_code?: string | null;
+  // ── FIREHOSE metrics (additive; the mapper folds them, all nullable). ──
+  cost_per_conversion?: string | null;        // micros
+  value_per_conversion?: string | null;       // micros
+  all_conversions_value?: string | null;      // MAJOR-unit double
+  cost_per_all_conversions?: string | null;   // micros
+  average_cost?: string | null;               // micros
+  search_impression_share?: string | null;
+  search_budget_lost_impression_share?: string | null;
+  search_rank_lost_impression_share?: string | null;
+  absolute_top_impression_percentage?: string | null;
+  top_impression_percentage?: string | null;
+  interactions?: string | null;
+  interaction_rate?: string | null;
+  engagements?: string | null;
+  engagement_rate?: string | null;
+  video_views?: string | null;
+  video_view_rate?: string | null;
+  conversions_from_interactions_rate?: string | null;
+  // ── FIREHOSE segment/breakdown dims + view identity refs (folded into breakdownKey). ──
+  segment_device?: string | null;
+  segment_ad_network_type?: string | null;
+  segment_day_of_week?: string | null;
+  segment_hour?: string | null;
+  segment_click_type?: string | null;
+  segment_conversion_action?: string | null;
+  segment_conversion_action_name?: string | null;
+  segment_geo_target?: string | null;
+  segment_age_range?: string | null;
+  segment_gender?: string | null;
+  keyword_id?: string | null;
+  keyword_text?: string | null;
+  keyword_match_type?: string | null;
+  search_term?: string | null;
+  product_item_id?: string | null;
+  product_title?: string | null;
+  product_brand?: string | null;
   [key: string]: unknown;
 }
 
@@ -105,6 +141,17 @@ export interface GoogleAdsEntityRow {
   status: string | null;
   advertising_channel_type: string | null; // campaign only
   bidding_strategy: string | null;          // campaign only (bidding_strategy_type)
+  // ── FIREHOSE entity depth (additive; nullable at the levels that don't carry them). ──
+  advertising_channel_sub_type: string | null; // campaign only
+  start_date: string | null;                    // campaign only
+  end_date: string | null;                      // campaign only
+  campaign_budget_amount_micros: string | null; // campaign only (micros → minor in the sync job)
+  ad_group_type: string | null;                 // adset only
+  ad_group_cpc_bid_micros: string | null;       // adset only (micros)
+  ad_type: string | null;                       // ad only
+  ad_final_urls: string[] | null;               // ad only
+  ad_headlines: string[] | null;                // ad only (RSA)
+  ad_descriptions: string[] | null;             // ad only (RSA)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -119,7 +166,14 @@ function sleep(ms: number): Promise<void> {
  */
 const SPEND_METRICS = `metrics.cost_micros, metrics.impressions, metrics.clicks,
            metrics.conversions, metrics.all_conversions, metrics.conversions_value,
-           metrics.view_through_conversions, metrics.ctr, metrics.average_cpc, metrics.average_cpm`;
+           metrics.view_through_conversions, metrics.ctr, metrics.average_cpc, metrics.average_cpm,
+           metrics.cost_per_conversion, metrics.value_per_conversion, metrics.all_conversions_value,
+           metrics.cost_per_all_conversions, metrics.average_cost,
+           metrics.search_impression_share, metrics.search_budget_lost_impression_share,
+           metrics.search_rank_lost_impression_share, metrics.absolute_top_impression_percentage,
+           metrics.top_impression_percentage, metrics.interactions, metrics.interaction_rate,
+           metrics.engagements, metrics.engagement_rate, metrics.video_views, metrics.video_view_rate,
+           metrics.conversions_from_interactions_rate`;
 const LEVEL_QUERIES: Record<'campaign' | 'adset' | 'ad', string> = {
   campaign: `
     SELECT campaign.id, campaign.name, campaign.advertising_channel_type, ${SPEND_METRICS},
@@ -146,21 +200,102 @@ const LEVEL_QUERIES: Record<'campaign' | 'adset' | 'ad', string> = {
  * Spark dim still derives is_active from whatever status DOES arrive.
  */
 const ENTITY_QUERIES: Record<'campaign' | 'adset' | 'ad', string> = {
+  // FIREHOSE entity depth (additive selects): campaign channel-sub-type / start-end dates /
+  // budget amount; ad_group type + cpc_bid; ad type + final_urls + RSA headlines/descriptions.
   campaign: `
     SELECT campaign.id, campaign.name, campaign.status,
-           campaign.advertising_channel_type, campaign.bidding_strategy_type
+           campaign.advertising_channel_type, campaign.advertising_channel_sub_type,
+           campaign.bidding_strategy_type, campaign.start_date, campaign.end_date,
+           campaign_budget.amount_micros
     FROM campaign
     WHERE campaign.status != 'REMOVED'`,
   adset: `
-    SELECT campaign.id, ad_group.id, ad_group.name, ad_group.status
+    SELECT campaign.id, ad_group.id, ad_group.name, ad_group.status,
+           ad_group.type, ad_group.cpc_bid_micros
     FROM ad_group
     WHERE ad_group.status != 'REMOVED'`,
   ad: `
     SELECT campaign.id, ad_group.id, ad_group_ad.ad.id,
-           ad_group_ad.ad.name, ad_group_ad.status
+           ad_group_ad.ad.name, ad_group_ad.status, ad_group_ad.ad.type,
+           ad_group_ad.ad.final_urls,
+           ad_group_ad.ad.responsive_search_ad.headlines,
+           ad_group_ad.ad.responsive_search_ad.descriptions
     FROM ad_group_ad
     WHERE ad_group_ad.status != 'REMOVED'`,
 };
+
+// ── FIREHOSE resource GAQL (each a distinct GAQL FROM-resource / view; own dedup via breakdownKey) ──
+//
+// SPEND_METRICS is reused so every firehose row carries the full metric set. {FROM}/{TO} are the same
+// date-window seam as LEVEL_QUERIES → the existing resumable date-window chunking drives them unchanged.
+// click_view is API-capped at the last 90 days (the manifest reflects this) — its WHERE still uses the
+// window so the driver never asks for older than the caller's floor.
+const FIREHOSE_RESOURCE_QUERIES: Record<string, string> = {
+  // device / network segmentation on the campaign spend query.
+  spend_by_device: `
+    SELECT campaign.id, campaign.name, campaign.advertising_channel_type, ${SPEND_METRICS},
+           segments.date, segments.device, segments.ad_network_type, customer.currency_code
+    FROM campaign
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // ad-schedule (day_of_week + hour) segmentation on the campaign spend query.
+  ad_schedule: `
+    SELECT campaign.id, campaign.name, campaign.advertising_channel_type, ${SPEND_METRICS},
+           segments.date, segments.day_of_week, segments.hour, customer.currency_code
+    FROM campaign
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // keyword performance.
+  keyword: `
+    SELECT campaign.id, ad_group.id, ad_group_criterion.criterion_id,
+           ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type,
+           ${SPEND_METRICS}, segments.date, customer.currency_code
+    FROM keyword_view
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // search-term performance.
+  search_term: `
+    SELECT campaign.id, ad_group.id, search_term_view.search_term,
+           ${SPEND_METRICS}, segments.date, customer.currency_code
+    FROM search_term_view
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // geographic performance.
+  geo: `
+    SELECT campaign.id, geographic_view.country_criterion_id,
+           ${SPEND_METRICS}, segments.date, customer.currency_code
+    FROM geographic_view
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // age-range demographic performance.
+  age_range: `
+    SELECT campaign.id, ad_group.id, ad_group_criterion.age_range.type,
+           ${SPEND_METRICS}, segments.date, customer.currency_code
+    FROM age_range_view
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // gender demographic performance.
+  gender: `
+    SELECT campaign.id, ad_group.id, ad_group_criterion.gender.type,
+           ${SPEND_METRICS}, segments.date, customer.currency_code
+    FROM gender_view
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // shopping product performance.
+  shopping_product: `
+    SELECT campaign.id, ad_group.id, segments.product_item_id, segments.product_title,
+           segments.product_brand, ${SPEND_METRICS}, segments.date, customer.currency_code
+    FROM shopping_performance_view
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // click performance (last 90 days only — API-enforced).
+  click: `
+    SELECT campaign.id, ad_group.id, click_view.gclid, segments.click_type,
+           segments.date, customer.currency_code
+    FROM click_view
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+  // conversion-action segmentation on the campaign spend query.
+  conversion_action: `
+    SELECT campaign.id, segments.conversion_action, segments.conversion_action_name,
+           ${SPEND_METRICS}, segments.date, customer.currency_code
+    FROM campaign
+    WHERE segments.date BETWEEN '{FROM}' AND '{TO}'`,
+};
+
+/** The set of FIREHOSE resource/view names this client can stream (exported for manifest-consistency tests). */
+export const FIREHOSE_RESOURCE_NAMES: readonly string[] = Object.keys(FIREHOSE_RESOURCE_QUERIES);
 
 /** Minimal token-bucket QPS limiter (ADR-AD-7 self-imposed cap). */
 class TokenBucket {
@@ -256,6 +391,36 @@ export class GoogleAdsSearchStreamClient {
     for (const batch of batches) {
       for (const r of batch.results ?? []) {
         rows.push(flattenGoogleRow(r, level));
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * FIREHOSE: stream all rows for a named firehose RESOURCE/view over [from, to] (inclusive
+   * YYYY-MM-DD). Each resource is a distinct GAQL FROM-view carrying its own segment dims — the
+   * flattener projects the full metric set + the view's segment dims. Same QPS bucket + two-error
+   * throttle branch as spend. 1 query = 1 op. Unknown resource → throw (fail-loud).
+   */
+  async streamResource(
+    resource: string,
+    from: string,
+    to: string,
+  ): Promise<GoogleAdsRawRow[]> {
+    if (!this.accessToken) {
+      throw new Error('[google-ads-client] not authenticated — call authenticate() first');
+    }
+    const template = FIREHOSE_RESOURCE_QUERIES[resource];
+    if (!template) {
+      throw new Error(`[google-ads-client] unknown firehose resource "${resource}"`);
+    }
+    const query = template.replace('{FROM}', from).replace('{TO}', to);
+    const url = `${GOOGLE_ADS_API_BASE}/customers/${this.creds.customerId}/googleAds:searchStream`;
+    const batches = await this.postWithThrottle(url, JSON.stringify({ query }));
+    const rows: GoogleAdsRawRow[] = [];
+    for (const batch of batches) {
+      for (const r of batch.results ?? []) {
+        rows.push(flattenFirehoseRow(r, resource));
       }
     }
     return rows;
@@ -452,9 +617,26 @@ export function classifyGoogleError(
 // ── Row flattening ────────────────────────────────────────────────────────────
 
 interface GoogleRawResult {
-  campaign?: { id?: string; name?: string; advertisingChannelType?: string; status?: string; biddingStrategyType?: string };
-  adGroup?: { id?: string; name?: string; status?: string };
-  adGroupAd?: { ad?: { id?: string; name?: string }; status?: string };
+  campaign?: {
+    id?: string; name?: string; advertisingChannelType?: string; advertisingChannelSubType?: string;
+    status?: string; biddingStrategyType?: string; startDate?: string; endDate?: string;
+  };
+  campaignBudget?: { amountMicros?: string };
+  adGroup?: { id?: string; name?: string; status?: string; type?: string; cpcBidMicros?: string };
+  adGroupAd?: {
+    ad?: { id?: string; name?: string; type?: string; finalUrls?: string[];
+           responsiveSearchAd?: { headlines?: Array<{ text?: string }>; descriptions?: Array<{ text?: string }> } };
+    status?: string;
+  };
+  adGroupCriterion?: {
+    criterionId?: string;
+    keyword?: { text?: string; matchType?: string };
+    ageRange?: { type?: string };
+    gender?: { type?: string };
+  };
+  searchTermView?: { searchTerm?: string };
+  geographicView?: { countryCriterionId?: string };
+  clickView?: { gclid?: string };
   metrics?: {
     costMicros?: string;
     impressions?: string;
@@ -466,36 +648,132 @@ interface GoogleRawResult {
     ctr?: number | string;
     averageCpc?: number | string;
     averageCpm?: number | string;
+    // ── FIREHOSE metrics ──
+    costPerConversion?: number | string;
+    valuePerConversion?: number | string;
+    allConversionsValue?: number | string;
+    costPerAllConversions?: number | string;
+    averageCost?: number | string;
+    searchImpressionShare?: number | string;
+    searchBudgetLostImpressionShare?: number | string;
+    searchRankLostImpressionShare?: number | string;
+    absoluteTopImpressionPercentage?: number | string;
+    topImpressionPercentage?: number | string;
+    interactions?: number | string;
+    interactionRate?: number | string;
+    engagements?: number | string;
+    engagementRate?: number | string;
+    videoViews?: number | string;
+    videoViewRate?: number | string;
+    conversionsFromInteractionsRate?: number | string;
   };
-  segments?: { date?: string };
+  segments?: {
+    date?: string;
+    device?: string;
+    adNetworkType?: string;
+    dayOfWeek?: string;
+    hour?: number | string;
+    clickType?: string;
+    conversionAction?: string;
+    conversionActionName?: string;
+    productItemId?: string;
+    productTitle?: string;
+    productBrand?: string;
+  };
   customer?: { currencyCode?: string };
+}
+
+/** Null-safe String() (returns null for null/undefined) — used across the metric flatteners. */
+function s(v: unknown): string | null {
+  return v != null ? String(v) : null;
+}
+
+/** Flatten the shared metric block (base + firehose) → GoogleAdsRawRow metric fields. */
+function flattenMetrics(m: GoogleRawResult['metrics']): Partial<GoogleAdsRawRow> {
+  return {
+    cost_micros: s(m?.costMicros),
+    impressions: s(m?.impressions),
+    clicks: s(m?.clicks),
+    conversions: s(m?.conversions),
+    all_conversions: s(m?.allConversions),
+    conversions_value: s(m?.conversionsValue),
+    view_through_conversions: s(m?.viewThroughConversions),
+    ctr: s(m?.ctr),
+    average_cpc: s(m?.averageCpc),
+    average_cpm: s(m?.averageCpm),
+    // ── FIREHOSE metrics ──
+    cost_per_conversion: s(m?.costPerConversion),
+    value_per_conversion: s(m?.valuePerConversion),
+    all_conversions_value: s(m?.allConversionsValue),
+    cost_per_all_conversions: s(m?.costPerAllConversions),
+    average_cost: s(m?.averageCost),
+    search_impression_share: s(m?.searchImpressionShare),
+    search_budget_lost_impression_share: s(m?.searchBudgetLostImpressionShare),
+    search_rank_lost_impression_share: s(m?.searchRankLostImpressionShare),
+    absolute_top_impression_percentage: s(m?.absoluteTopImpressionPercentage),
+    top_impression_percentage: s(m?.topImpressionPercentage),
+    interactions: s(m?.interactions),
+    interaction_rate: s(m?.interactionRate),
+    engagements: s(m?.engagements),
+    engagement_rate: s(m?.engagementRate),
+    video_views: s(m?.videoViews),
+    video_view_rate: s(m?.videoViewRate),
+    conversions_from_interactions_rate: s(m?.conversionsFromInteractionsRate),
+  };
 }
 
 function flattenGoogleRow(
   r: GoogleRawResult,
   level: 'campaign' | 'adset' | 'ad',
 ): GoogleAdsRawRow {
-  const m = r.metrics;
   return {
     level: level === 'adset' ? 'ad_group' : level,
     campaign_id: r.campaign?.id ?? null,
     campaign_name: r.campaign?.name ?? null,
     ad_group_id: r.adGroup?.id ?? null,
     ad_id: r.adGroupAd?.ad?.id ?? null,
-    cost_micros: m?.costMicros != null ? String(m.costMicros) : null,
-    impressions: m?.impressions != null ? String(m.impressions) : null,
-    clicks: m?.clicks != null ? String(m.clicks) : null,
-    conversions: m?.conversions != null ? String(m.conversions) : null,
-    all_conversions: m?.allConversions != null ? String(m.allConversions) : null,
-    // A3 enriched: major-unit double revenue + counts + ratios + micros — the mapper folds them.
-    conversions_value: m?.conversionsValue != null ? String(m.conversionsValue) : null,
-    view_through_conversions: m?.viewThroughConversions != null ? String(m.viewThroughConversions) : null,
-    ctr: m?.ctr != null ? String(m.ctr) : null,
-    average_cpc: m?.averageCpc != null ? String(m.averageCpc) : null,
-    average_cpm: m?.averageCpm != null ? String(m.averageCpm) : null,
+    ...flattenMetrics(r.metrics),
     advertising_channel_type: r.campaign?.advertisingChannelType ?? null,
     segments_date: r.segments?.date ?? null,
     currency_code: r.customer?.currencyCode ?? null,
+  };
+}
+
+/**
+ * Flatten a FIREHOSE resource/view result → GoogleAdsRawRow. Carries the full metric set PLUS the
+ * view's own segment/breakdown dims + identity refs (keyword/search-term/geo/product). The `level`
+ * stays 'campaign' (the firehose grain is (campaign_id + segment dims), not the ad hierarchy) — the
+ * distinct breakdownKey (folded at emit) keeps these rows collision-free vs the base spend grain.
+ */
+function flattenFirehoseRow(r: GoogleRawResult, resource: string): GoogleAdsRawRow {
+  return {
+    level: 'campaign',
+    campaign_id: r.campaign?.id ?? null,
+    campaign_name: r.campaign?.name ?? null,
+    ad_group_id: r.adGroup?.id ?? null,
+    ad_id: null,
+    ...flattenMetrics(r.metrics),
+    advertising_channel_type: r.campaign?.advertisingChannelType ?? null,
+    segments_date: r.segments?.date ?? null,
+    currency_code: r.customer?.currencyCode ?? null,
+    // ── segment/breakdown dims (only the ones this view carries are non-null) ──
+    segment_device: r.segments?.device ?? null,
+    segment_ad_network_type: r.segments?.adNetworkType ?? null,
+    segment_day_of_week: r.segments?.dayOfWeek ?? null,
+    segment_hour: r.segments?.hour != null ? String(r.segments.hour) : null,
+    segment_click_type: r.segments?.clickType ?? null,
+    segment_conversion_action: r.segments?.conversionAction ?? null,
+    segment_conversion_action_name: r.segments?.conversionActionName ?? null,
+    segment_geo_target: r.geographicView?.countryCriterionId ?? null,
+    segment_age_range: r.adGroupCriterion?.ageRange?.type ?? null,
+    segment_gender: r.adGroupCriterion?.gender?.type ?? null,
+    keyword_id: resource === 'keyword' ? (r.adGroupCriterion?.criterionId ?? null) : null,
+    keyword_text: r.adGroupCriterion?.keyword?.text ?? null,
+    keyword_match_type: r.adGroupCriterion?.keyword?.matchType ?? null,
+    search_term: r.searchTermView?.searchTerm ?? null,
+    product_item_id: r.segments?.productItemId ?? null,
+    product_title: r.segments?.productTitle ?? null,
+    product_brand: r.segments?.productBrand ?? null,
   };
 }
 
@@ -505,6 +783,18 @@ function flattenEntityRow(
   level: 'campaign' | 'adset' | 'ad',
 ): GoogleAdsEntityRow {
   const campaignId = r.campaign?.id ?? null;
+  const EMPTY_DEPTH = {
+    advertising_channel_sub_type: null,
+    start_date: null,
+    end_date: null,
+    campaign_budget_amount_micros: null,
+    ad_group_type: null,
+    ad_group_cpc_bid_micros: null,
+    ad_type: null,
+    ad_final_urls: null,
+    ad_headlines: null,
+    ad_descriptions: null,
+  } as const;
   if (level === 'campaign') {
     return {
       level,
@@ -515,6 +805,11 @@ function flattenEntityRow(
       status: r.campaign?.status ?? null,
       advertising_channel_type: r.campaign?.advertisingChannelType ?? null,
       bidding_strategy: r.campaign?.biddingStrategyType ?? null,
+      ...EMPTY_DEPTH,
+      advertising_channel_sub_type: r.campaign?.advertisingChannelSubType ?? null,
+      start_date: r.campaign?.startDate ?? null,
+      end_date: r.campaign?.endDate ?? null,
+      campaign_budget_amount_micros: r.campaignBudget?.amountMicros ?? null,
     };
   }
   if (level === 'adset') {
@@ -527,8 +822,12 @@ function flattenEntityRow(
       status: r.adGroup?.status ?? null,
       advertising_channel_type: null,
       bidding_strategy: null,
+      ...EMPTY_DEPTH,
+      ad_group_type: r.adGroup?.type ?? null,
+      ad_group_cpc_bid_micros: r.adGroup?.cpcBidMicros ?? null,
     };
   }
+  const rsa = r.adGroupAd?.ad?.responsiveSearchAd;
   return {
     level,
     entity_id: r.adGroupAd?.ad?.id ?? null,
@@ -538,5 +837,10 @@ function flattenEntityRow(
     status: r.adGroupAd?.status ?? null,
     advertising_channel_type: null,
     bidding_strategy: null,
+    ...EMPTY_DEPTH,
+    ad_type: r.adGroupAd?.ad?.type ?? null,
+    ad_final_urls: r.adGroupAd?.ad?.finalUrls ?? null,
+    ad_headlines: rsa?.headlines?.map((h) => h.text ?? '').filter((t) => t !== '') ?? null,
+    ad_descriptions: rsa?.descriptions?.map((d) => d.text ?? '').filter((t) => t !== '') ?? null,
   };
 }

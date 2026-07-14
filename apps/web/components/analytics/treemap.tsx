@@ -131,6 +131,7 @@ function squarify(areas: AreaItem[], box: Box): Cell[] {
 
   while (queue.length > 0) {
     const next = queue[0];
+    if (!next) break; // unreachable: queue.length > 0, but keeps indexed access checked
     const side = Math.min(current.w, current.h);
     if (row.length === 0 || worst(row, side) >= worst([...row, next], side)) {
       row.push(next);
@@ -183,7 +184,7 @@ export function Treemap({
 
   const areas: AreaItem[] = sorted.map((item, i) => ({
     item,
-    color: item.color ?? CHART_VARS[i % CHART_VARS.length],
+    color: item.color ?? CHART_VARS[i % CHART_VARS.length]!, // modulo keeps the index in bounds
     area: (item.value / total) * boxArea,
   }));
 

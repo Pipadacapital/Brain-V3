@@ -60,9 +60,39 @@ variable "system_node_max" {
   default = 3
 }
 
+# AUD-OPS-028: 1.32 is in EXTENDED support ($12/day surcharge ≈ $360/mo).
+# The default stays 1.32 so the current plan is a NO-OP; the operator flips this
+# (with system_ami_type below flipped FIRST) per docs/runbooks/eks-1-33-upgrade.md.
 variable "kubernetes_version" {
   type    = string
   default = "1.32"
+}
+
+# AUD-INFRA-019: AL2 EKS AMIs END at Kubernetes 1.32 — the system MNG must move
+# to AL2023 BEFORE the 1.33 control-plane bump or node creation fails. Default
+# keeps the live AL2 group untouched (no-op plan). Flipping to
+# AL2023_ARM_64_STANDARD REPLACES the MNG (create-before-destroy via the name
+# suffix below) and attaches a launch template with encrypted gp3 roots
+# (the AL2 group runs gp2).
+variable "system_ami_type" {
+  type        = string
+  default     = "AL2_ARM_64"
+  description = "System MNG AMI type. AL2_ARM_64 (current, k8s <=1.32 only) or AL2023_ARM_64_STANDARD (required for 1.33+)."
+
+  validation {
+    condition     = contains(["AL2_ARM_64", "AL2023_ARM_64_STANDARD"], var.system_ami_type)
+    error_message = "system_ami_type must be AL2_ARM_64 or AL2023_ARM_64_STANDARD."
+  }
+}
+
+# AUD-OPS-028: upgradePolicy.supportType. null = leave AWS-managed (current
+# EXTENDED — the API rejects STANDARD while the running version is already past
+# standard support, so this can only be set AFTER the 1.33 upgrade). Set to
+# "STANDARD" post-upgrade to fail-fast on any future extended-support drift.
+variable "cluster_support_type" {
+  type        = string
+  default     = null
+  description = "EKS upgradePolicy support type (STANDARD|EXTENDED). null = omit (keep current). Set STANDARD only after upgrading to a standard-support version."
 }
 
 # M-03 FIX: public endpoint is OFF by default (private-only is the secure
@@ -118,15 +148,31 @@ resource "aws_eks_cluster" "main" {
     resources = ["secrets"]
   }
 
-  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+  # AUD-COST (2026-07-13): trimmed from all 5 types → audit only. The 5-way set
+  # vended ~$78/mo of CloudWatch logs (100% of the CloudWatch bill was
+  # VendedLog-Bytes; api+audit log every API call and Karpenter/ArgoCD/KEDA
+  # generate a firehose). `audit` is kept as the security-forensics trail
+  # ("who did what") — the one you'd want after an incident; api /
+  # authenticator / controllerManager / scheduler are control-plane DEBUG logs
+  # that nothing monitors today (alerting not yet wired) and can be re-enabled
+  # instantly when debugging. In-place cluster update, non-disruptive.
+  enabled_cluster_log_types = ["audit"]
+
+  # AUD-OPS-028: omitted while null (no-op on the live cluster); set STANDARD
+  # after the 1.33 upgrade so a future lapse into extended support fails the
+  # upgrade plan instead of silently billing $12/day.
+  dynamic "upgrade_policy" {
+    for_each = var.cluster_support_type == null ? [] : [var.cluster_support_type]
+    content {
+      support_type = upgrade_policy.value
+    }
+  }
 
   depends_on = [
     aws_iam_role_policy_attachment.cluster_AmazonEKSClusterPolicy,
   ]
 
   tags = {
-    project     = var.project
-    environment = var.environment
   }
 }
 
@@ -201,15 +247,72 @@ resource "aws_iam_role_policy_attachment" "node_AmazonEC2ContainerRegistryReadOn
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# AUD-INFRA-008a: SSM access path to a PRIVATE-ONLY EKS API endpoint. The
+# EKS-optimized AL2 AMIs ship the SSM agent; this managed policy lets the
+# system nodes register with Systems Manager (agent egress rides the NAT — no
+# extra VPC endpoints needed), so an operator can port-forward to the private
+# API endpoint through a system node (docs/runbooks/eks-api-access.md). This
+# is the PRECONDITION for flipping eks_public_access_cidrs=[] — verify an SSM
+# session works BEFORE going private-only, or kubectl access is lost.
+resource "aws_iam_role_policy_attachment" "node_AmazonSSMManagedInstanceCore" {
+  role       = aws_iam_role.node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 ###############################################################################
 # System Node Group — small on-demand group for system add-ons
 # EC10: staging/prod = 0 nodes (set via variables)
+#
+# AUD-INFRA-019: ami_type is variable-driven (default AL2_ARM_64 = no-op).
+# Flipping to AL2023 changes the node_group_name suffix so create_before_destroy
+# stands up the replacement MNG (CoreDNS/Karpenter/ArgoCD keep a home) before
+# the AL2 group drains. The AL2023 group also gets a launch template with
+# encrypted gp3 roots (AL2 default was gp2).
 ###############################################################################
+locals {
+  system_uses_al2023 = var.system_ami_type != "AL2_ARM_64"
+}
+
+resource "aws_launch_template" "system_al2023" {
+  count       = local.system_uses_al2023 ? 1 : 0
+  name_prefix = "${var.project}-${var.environment}-system-al2023-"
+
+  # gp2 → gp3 (AUD-INFRA-019): cheaper per-GB + 3000 baseline IOPS. Size matches
+  # the live MNG (20 GiB). Encrypted with the account default aws/ebs key —
+  # using the root CMK here would need kms:CreateGrant for the EC2 service.
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 20
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
+  # IMDSv2-only; hop limit 2 so pods without IRSA can still reach IMDS if needed.
+  metadata_options {
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 resource "aws_eks_node_group" "system" {
-  cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "${var.project}-${var.environment}-system"
+  cluster_name = aws_eks_cluster.main.name
+  # Name changes with the AMI family so the flip is a create-before-destroy
+  # replacement, not an in-place destroy of the only system capacity.
+  node_group_name = local.system_uses_al2023 ? "${var.project}-${var.environment}-system-al2023" : "${var.project}-${var.environment}-system"
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = var.private_subnet_ids
+
+  # Pin the MNG to the cluster version (was implicit). Setting it to the current
+  # live value is a no-op; on the 1.33 bump it drives the in-place rolling
+  # AMI upgrade of the (by then AL2023) group.
+  version = var.kubernetes_version
 
   scaling_config {
     desired_size = var.system_node_desired
@@ -218,15 +321,30 @@ resource "aws_eks_node_group" "system" {
   }
 
   instance_types = ["t4g.medium"]
-  ami_type       = "AL2_ARM_64"
+  ami_type       = var.system_ami_type
+
+  # gp3 roots ride a launch template on the AL2023 group only (AL2 group stays
+  # untouched — adding a LT to the live group would force replacement today).
+  dynamic "launch_template" {
+    for_each = local.system_uses_al2023 ? [1] : []
+    content {
+      id      = aws_launch_template.system_al2023[0].id
+      version = tostring(aws_launch_template.system_al2023[0].latest_version)
+    }
+  }
 
   update_config {
     max_unavailable = 1
   }
 
   labels = {
-    role        = "system"
-    environment = var.environment
+    role = "system"
+  }
+
+  # NOTE: replacement only ever happens with a simultaneous name change (the
+  # AL2023 flip); same-name forced replacements would conflict under CBD.
+  lifecycle {
+    create_before_destroy = true
   }
 
   depends_on = [
@@ -236,9 +354,7 @@ resource "aws_eks_node_group" "system" {
   ]
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    role        = "system"
+    role = "system"
   }
 }
 
@@ -283,9 +399,7 @@ resource "aws_iam_role" "ebs_csi" {
   assume_role_policy = data.aws_iam_policy_document.ebs_csi_trust.json
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    workload    = "ebs-csi-driver"
+    workload = "ebs-csi-driver"
   }
 }
 
@@ -312,8 +426,6 @@ resource "aws_eks_addon" "ebs_csi" {
   depends_on = [aws_eks_node_group.system]
 
   tags = {
-    project     = var.project
-    environment = var.environment
   }
 }
 
@@ -321,12 +433,14 @@ resource "aws_eks_addon" "ebs_csi" {
 # ECR Repositories — per service, immutable tags
 ###############################################################################
 locals {
-  # The 4 app deployables + the spark-bronze data-plane job image (the Iceberg Bronze sink; the same
-  # image also carries the V4 Silver/Gold marts for the sparkV4 crons). All get an IMMUTABLE,
+  # The 4 app deployables + the `duckdb` data-plane job image (the DuckDB transform tier + Trino
+  # maintenance client — the Spark→DuckDB cutover replaced brain-spark-bronze). All get an IMMUTABLE,
   # KMS-encrypted, scan-on-push ECR repo + lifecycle policy. The cronworkflows chart (sparkBronze.image /
   # sparkV4.image) pulls it; CI builds + digest-pins it (see .github/workflows/deploy.yml build-data-images).
-  # dbt-runner is RETIRED — dbt is removed under Brain V4 (Spark is the sole compute).
-  services = ["collector", "stream-worker", "core", "web", "spark-bronze"]
+  # `spark-bronze` was DROPPED (repo + 11 images deleted 2026-07-14) after the DuckDB cutover — the fast
+  # image-repull rollback is gone; a Spark rollback now needs a git-revert of the cutover + an image
+  # rebuild. dbt-runner is RETIRED (Brain V4).
+  services = ["collector", "stream-worker", "core", "web", "duckdb"]
 }
 
 resource "aws_ecr_repository" "services" {
@@ -344,9 +458,7 @@ resource "aws_ecr_repository" "services" {
   }
 
   tags = {
-    project     = var.project
-    environment = var.environment
-    service     = each.key
+    service = each.key
   }
 }
 
@@ -378,6 +490,14 @@ output "cluster_name" {
 
 output "cluster_endpoint" {
   value = aws_eks_cluster.main.endpoint
+}
+
+# The EKS-managed "cluster security group" — auto-created by EKS and attached to
+# managed-node-group nodes (and cross-node/pod traffic). Data-plane clients
+# (Aurora, ElastiCache) must allow ingress from THIS sg, since the nodes are not
+# members of the network module's eks_nodes_sg. (Fixes workload→DB timeouts.)
+output "cluster_primary_security_group_id" {
+  value = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
 }
 
 output "cluster_ca" {

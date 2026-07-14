@@ -18,11 +18,7 @@ import {
   type MappedOrderEvent,
 } from '@brain/shopify-mapper';
 
-export {
-  computeAchievedDepthLabel,
-  ORDER_BACKFILL_V1_EVENT_NAME,
-  ORDER_LIVE_V1_EVENT_NAME,
-} from '@brain/shopify-mapper';
+export { computeAchievedDepthLabel } from '@brain/shopify-mapper';
 
 export type { MappedOrderEvent as MappedBackfillEvent, ShopifyOrderShape, OrderProperties } from '@brain/shopify-mapper';
 

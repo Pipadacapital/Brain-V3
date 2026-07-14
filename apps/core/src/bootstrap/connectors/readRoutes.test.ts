@@ -12,6 +12,13 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
+// The tile builder reads BRAIN_WEBHOOK_BASE_URL via loadCoreConfig() at request time; the full env
+// schema is not available under vitest, so stub it (pattern: ConnectWooCommerceCommand.test.ts).
+vi.mock('@brain/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@brain/config')>();
+  return { ...actual, loadCoreConfig: () => ({ BRAIN_WEBHOOK_BASE_URL: 'https://api.brain.ai' }) };
+});
+
 import { registerConnectorReadRoutes, type RegisterConnectorReadRoutesDeps } from './readRoutes.js';
 
 const BRAND = 'b7b70007-0007-4007-8007-000000000007';

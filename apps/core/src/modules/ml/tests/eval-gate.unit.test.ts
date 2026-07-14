@@ -23,6 +23,11 @@ import {
   EVAL_GATE_METRIC_FLOORS,
 } from '../internal/application/promote-model.js';
 
+// Hermetic unit tier (AUD-IMPL-007/-016): runEvalGate reads loadCoreConfig(), whose schema
+// requires DATABASE_URL (the ONLY required var). The gate itself never touches the DB — provide
+// a dummy URL so this suite runs without a provisioned env instead of failing on config parse.
+process.env['DATABASE_URL'] ??= 'postgres://unit:unit@localhost:5432/unit_test_never_connected';
+
 const MODEL_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
 const MODEL_NAME = 'customer_churn_rfm';
 

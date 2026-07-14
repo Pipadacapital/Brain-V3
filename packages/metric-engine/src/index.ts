@@ -98,8 +98,9 @@ export {
 } from './customer-scores-batch.js';
 export type { CustomerScoreEnrichment } from './customer-scores-batch.js';
 // Per-customer order list (Silver order-state fold) — backs the Customer 360 "Orders" sub-tab.
-export { getCustomerOrders } from './customer-orders.js';
-export type { CustomerOrderRow } from './customer-orders.js';
+// getCustomerOrdersPage (AUD-SL-11) = the keyset-paginated variant (opaque cursor, never OFFSET).
+export { getCustomerOrders, getCustomerOrdersPage } from './customer-orders.js';
+export type { CustomerOrderRow, CustomerOrdersPage, CustomerOrdersPageParams } from './customer-orders.js';
 // AI/ML input feature vector (Gold ai_features serving mart) — V4 runtime Silver fold, not a precompute table.
 export { getAiFeatures } from './ai-features.js';
 export type { AiFeaturesResult, AiFeatureRow, AiFeaturesOptions } from './ai-features.js';
@@ -183,7 +184,7 @@ export type {
   TopProductRow,
   TopProductsRange,
 } from './top-products.js';
-export { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+export { withSilverBrand, BRAND_PREDICATE, isServingTierUnavailable } from './silver-deps.js';
 export type { SilverDeps, SilverPool, SilverScope } from './silver-deps.js';
 
 // Silver tier — journey seam (Phase 4: first-touch mix, stitch hit-rate, timeline; ADR-004)
@@ -208,6 +209,39 @@ export type {
 export { computeJourneyPaths } from './journey-paths.js';
 export type { JourneyPathsResult, JourneyPathRow, JourneyPathLink } from './journey-paths.js';
 
+// Recent-journeys list — a thin keyset-paginated projection over the per-journey serving view
+// mv_gold_journey (one row per brand_id, brain_anon_id), newest-first by last_touch_at. NO money.
+export { computeJourneyList } from './journey-list.js';
+export type { JourneyListResult, JourneyListRow, JourneyListParams } from './journey-list.js';
+
+// Versioned journey-ledger CURRENT projection (mv_journey_events_current over
+// iceberg.brain_gold.journey_events) — the resolved-identity per-customer timeline,
+// keyset-paginated newest-first. Money = bigint minor string ONLY on composite rows.
+export { computeJourneyEventsCurrent, computeJourneyEventsAsOf, resolveIdentityAsOf } from './journey-events.js';
+export type {
+  JourneyEventsPage,
+  JourneyEventRow,
+  JourneyEventsParams,
+  JourneyEventsAsOfParams,
+  IdentityAsOfState,
+  IdentityEvidenceItem,
+} from './journey-events.js';
+
+// SPEC: B.3 — the A.4 Redis touchpoint-cache READ seam (journey-timeline hot path; §1.11 cache
+// → Trino fallback). Reads the `{brand_id}:tp:{brain_id}` zset newest-first via an injected
+// structural client (the shared ioredis at the root; no second connection).
+export { readTouchpointCachePage } from './journey-touchpoint-cache.js';
+export type {
+  TouchpointZsetClient,
+  TouchpointCacheItem,
+  TouchpointCachePage,
+} from './journey-touchpoint-cache.js';
+
+// SPEC: B.3 — the journey-trace explainability read: per-customer identity evidence
+// (identifier_type + first_seen + provenance) over the bi-temporal identity map. Hash-only.
+export { computeIdentityEvidence } from './journey-identity-evidence.js';
+export type { IdentityEvidenceRow, IdentityEvidenceResult } from './journey-identity-evidence.js';
+
 // Phase 5 Attribution (feat-attribution-ledger) — the credit-ledger WRITER + readers.
 // All Tier-0 deterministic (no model/prompt/dbt macro — I-E03/E04). Money signed BIGINT.
 export {
@@ -223,11 +257,16 @@ export {
   TIME_DECAY_DEFAULT_HALF_LIFE,
   TIME_DECAY_PRECISION,
   ATTRIBUTION_MODEL_IDS,
-  PER_JOURNEY_MODEL_IDS,
   ALL_ATTRIBUTION_MODEL_IDS,
   DEFAULT_ATTRIBUTION_MODEL,
 } from './attribution-models.js';
 export type { AttributionModelId, TouchCredit, AttributionTouch } from './attribution-models.js';
+
+// WA-02 (SPEC: 0.5) purpose-named Gold reads — replace the raw withSilverBrand/BRAND_PREDICATE
+// usage that non-measurement core modules (workspace-access, notification) used to inline.
+export { brandHasRealizedLedgerRows } from './ledger-presence.js';
+export { computeFinalizedPurchasesForWindow } from './finalized-purchases-window.js';
+export type { FinalizedPurchaseWindowRow } from './finalized-purchases-window.js';
 
 // Billing meter seam — per-period realized GMV from the lakehouse (gold), the PG-function replacement.
 export { computeRealizedGmvForPeriod } from './realized-gmv-period.js';
@@ -305,6 +344,17 @@ export type {
 
 export { computeChannelRoas } from './attribution-channel-roas.js';
 export type { ChannelRoasRow } from './attribution-channel-roas.js';
+// SPEC:C.4 — CAC/ROAS/executive marts-migration spend-source resolver (flag: measurement.marts_migration).
+export { spendView, LEGACY_SPEND_VIEW, MEASUREMENT_SPEND_VIEW } from './measurement-migration.js';
+
+// SPEC:C.5.1 — measurement lineage: every executive metric → its Measurement facts (machine-readable audit).
+export {
+  computeMetricLineage,
+  MEASUREMENT_LINEAGE,
+  isLineageMetric,
+  listLineageMetrics,
+} from './metric-lineage.js';
+export type { MetricLineage, FactLineage, LineageMetricId } from './metric-lineage.js';
 
 // H8 — campaign/ad-level ROAS (the granular sibling of channel ROAS; joins on campaign_id).
 export { computeCampaignRoas } from './attribution-campaign-roas.js';
@@ -356,6 +406,28 @@ export type { TrinoAdapterConfig } from './trino-adapter.js';
 // ── Analytics cache PORT (brand_id-leading composite keys + stampede guard) ──
 export { buildCacheKey, IoredisCacheAdapter } from './analytics-cache.js';
 export type { AnalyticsCachePort, RedisCacheClient, DistributedLockOptions } from './analytics-cache.js';
+
+// ── SPEC: D.3 / §1.11.2 — BAI-query-shaped result cache key ({brand}:q:{hash}) ──
+export { buildQueryCacheKey, normalizeQuery, hashQuery } from './analytics-cache.js';
+
+// ── SPEC: D.3 — semantic-serving flag switch (compiled-view migration; DEFAULT OFF) ──
+export {
+  createSemanticServingRouter,
+  isSemanticServingMetric,
+  SEMANTIC_SERVING_FLAG,
+  SEMANTIC_SERVING_METRICS,
+} from './semantic-serving.js';
+export type {
+  SemanticServingRouter,
+  SemanticServingRouterConfig,
+  SemanticFlagPort,
+  SemanticCompute,
+  SemanticServingMetric,
+} from './semantic-serving.js';
+
+// ── SPEC: D.3 / §1.11.3 — per-brand Trino admission gate (concurrency + FIFO + timeout) ──
+export { createPerBrandTrinoGate, defaultBrandKeyOf, TrinoGateRejectedError } from './trino-brand-gate.js';
+export type { PerBrandTrinoGateConfig } from './trino-brand-gate.js';
 
 // ── Serving cache reader (Redis-fronted hot serving reads over the Trino seam) ──
 export { createServingCacheReader, hashParams } from './serving-cache.js';

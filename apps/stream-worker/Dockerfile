@@ -61,9 +61,18 @@ COPY packages/tenant-context/package.json packages/tenant-context/package.json
 COPY packages/woocommerce-mapper/package.json packages/woocommerce-mapper/package.json
 COPY tools/data-quality/package.json tools/data-quality/package.json
 COPY tools/isolation-fuzz/package.json tools/isolation-fuzz/package.json
-COPY tools/parity-oracle/package.json tools/parity-oracle/package.json
 COPY tools/pixel-fixture/package.json tools/pixel-fixture/package.json
 COPY tools/seed/package.json tools/seed/package.json
+COPY packages/action-core/package.json packages/action-core/package.json
+COPY packages/ai-features/package.json packages/ai-features/package.json
+COPY packages/ai-platform/package.json packages/ai-platform/package.json
+COPY packages/decision-policies/package.json packages/decision-policies/package.json
+COPY packages/domain-journey/package.json packages/domain-journey/package.json
+COPY packages/identity-normalization/package.json packages/identity-normalization/package.json
+COPY packages/platform-flags/package.json packages/platform-flags/package.json
+COPY packages/prompt-loader/package.json packages/prompt-loader/package.json
+COPY packages/semantic-metrics/package.json packages/semantic-metrics/package.json
+COPY packages/testing-golden/package.json packages/testing-golden/package.json
 RUN pnpm install --frozen-lockfile --prod=false
 
 # Bring in the full source — the install layer above stays cached.
@@ -71,7 +80,7 @@ COPY . .
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM base AS runtime
-RUN groupadd -r brain && useradd -r -g brain -m brain
+RUN groupadd -r -g 1001 brain && useradd -r -u 1001 -g brain -m brain
 COPY --from=deps --chown=brain:brain /repo /repo
 WORKDIR /repo/apps/stream-worker
 USER brain

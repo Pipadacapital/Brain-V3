@@ -11,6 +11,7 @@
  * (tombstone edges, mark erased) is Neo4j. Per-brand isolation is application-layer (every Cypher
  * carries brand_id — Neo4j has no RLS). Timestamps are epoch-millis in the graph; returned as Date.
  */
+import { randomUUID } from 'node:crypto';
 import neo4j, { type Driver } from 'neo4j-driver';
 import type { Pool } from 'pg';
 
@@ -81,11 +82,26 @@ export interface IdentityReader {
     brandId: string,
     reviewId: string,
     decision: 'approve' | 'reject',
+    opts?: { actor?: string },
   ): Promise<{ resolved: boolean; reason?: string }>;
+  /**
+   * SPEC: A.2.4 (WA-19) — reverse a committed merge. Bi-temporal close of the merge interval
+   * (ALIAS_OF.valid_to set — nothing destroyed), the absorbed id restored to independent existence,
+   * an UnmergeEvent audit node kept forever, and the reversible-decision-log row written to
+   * identity_audit (action='unmerge', actor + reason). Returns the survivor + the original merge id
+   * so the caller can emit identity.unmerged.v1 (AMD-08) for downstream re-versioning/re-stitch.
+   */
   unmergeCustomer(
     brandId: string,
     mergedBrainId: string,
-  ): Promise<{ unmerged: boolean; reason?: string; brain_id?: string }>;
+    opts?: { actor?: string; reason?: string },
+  ): Promise<{
+    unmerged: boolean;
+    reason?: string;
+    brain_id?: string;
+    survivor_brain_id?: string;
+    merge_event_id?: string;
+  }>;
   eraseCustomer(
     brandId: string,
     brainId: string,
@@ -263,7 +279,12 @@ export class Neo4jIdentityReader implements IdentityReader {
   }
 
   /** Approve (merge b→a) or reject a pending review. */
-  async resolveMergeReview(brandId: string, reviewId: string, decision: 'approve' | 'reject'): Promise<{ resolved: boolean; reason?: string }> {
+  async resolveMergeReview(
+    brandId: string,
+    reviewId: string,
+    decision: 'approve' | 'reject',
+    opts?: { actor?: string },
+  ): Promise<{ resolved: boolean; reason?: string }> {
     const s = this.driver.session();
     try {
       return await s.executeWrite(async (tx) => {
@@ -279,13 +300,18 @@ export class Neo4jIdentityReader implements IdentityReader {
         const a = found.records[0]!.get('a');
         const bId = found.records[0]!.get('b');
         const now = Date.now();
+        // SPEC: A.2.4 (WA-19) — carry a stable merge_id on the ALIAS_OF (ON CREATE) so a later unmerge
+        // has a deterministic handle to reference/reverse (the resolver path already sets a.merge_id;
+        // the admin path did NOT — this closes that gap). Also record the operator (actor) on the edge.
+        const mergeId = randomUUID();
         await tx.run(
           `MATCH (m:Customer {brand_id:$b, brain_id:$merged})
            SET m.lifecycle_state='merged', m.merged_into=$canonical
            WITH m MATCH (can:Customer {brand_id:$b, brain_id:$canonical})
-           MERGE (m)-[al:ALIAS_OF]->(can) ON CREATE SET al.rule_version='v1-admin', al.valid_from=$now, al.valid_to=null
+           MERGE (m)-[al:ALIAS_OF]->(can)
+             ON CREATE SET al.merge_id=$mergeId, al.rule_version='v1-admin', al.valid_from=$now, al.valid_to=null, al.merged_by=$actor
            WITH m MATCH (mr:MergeReview {brand_id:$b, review_id:$id}) SET mr.status='merged'`,
-          { b: brandId, canonical: a, merged: bId, id: reviewId, now },
+          { b: brandId, canonical: a, merged: bId, id: reviewId, now, mergeId, actor: opts?.actor ?? null },
         );
         return { resolved: true };
       });
@@ -294,24 +320,97 @@ export class Neo4jIdentityReader implements IdentityReader {
     }
   }
 
-  /** Split a previously-merged customer back out (reverses a merge). */
-  async unmergeCustomer(brandId: string, mergedBrainId: string): Promise<{ unmerged: boolean; reason?: string; brain_id?: string }> {
+  /**
+   * SPEC: A.2.4 (WA-19) — split a previously-merged customer back out (reverses a merge).
+   *
+   * REVERSAL SEMANTICS (AMD-07/AMD-09, additive-only — nothing destroyed):
+   *   1. VALIDATE the merge exists — `m.merged_into` set AND a LIVE outgoing ALIAS_OF; else not_found.
+   *   2. CAPTURE the survivor (the live ALIAS_OF target / merged_into) and the ORIGINAL merge_id
+   *      BEFORE mutating (WITH snapshots them).
+   *   3. BI-TEMPORAL CLOSE: set ALIAS_OF.valid_to (the merge interval is CLOSED, never deleted — the
+   *      edge survives for audit/replay), restore the absorbed node to independent existence
+   *      (lifecycle 'split' — an honest "was merged, now independent" state; merged_into cleared).
+   *   4. AUDIT: create an UnmergeEvent node (kept forever) carrying survivor/absorbed/merge_id/actor/
+   *      reason — the graph-side reversible-decision record, mirrored into the PG identity_audit ledger.
+   *
+   * The silver_identity_map projection re-reads the graph: a CLOSED ALIAS_OF (valid_to set) drops the
+   * superseded interval and re-projects the absorbed identifiers as CURRENT at the restored brain_id
+   * (bi-temporal restore). The PG identity_audit row (below) is the operational decision-log entry.
+   */
+  async unmergeCustomer(
+    brandId: string,
+    mergedBrainId: string,
+    opts?: { actor?: string; reason?: string },
+  ): Promise<{
+    unmerged: boolean;
+    reason?: string;
+    brain_id?: string;
+    survivor_brain_id?: string;
+    merge_event_id?: string;
+  }> {
+    const now = Date.now();
+    const actor = opts?.actor ?? 'system';
+    const reason = opts?.reason ?? null;
     const s = this.driver.session();
+    let graph: { brain_id: string; survivor: string | null; mergeId: string | null } | null = null;
     try {
-      return await s.executeWrite(async (tx) => {
+      graph = await s.executeWrite(async (tx) => {
         const res = await tx.run(
+          // Capture survivor + merge_id in the WITH (pre-mutation snapshot), THEN close the interval and
+          // restore the node, THEN append the UnmergeEvent audit node — all in one atomic tx.
           `MATCH (m:Customer {brand_id:$b, brain_id:$id}) WHERE m.merged_into IS NOT NULL
-           OPTIONAL MATCH (m)-[a:ALIAS_OF]->() SET a.valid_to=$now
-           SET m.lifecycle_state='split', m.merged_into=null
-           RETURN m.brain_id AS id`,
-          { b: brandId, id: mergedBrainId, now: Date.now() },
+           OPTIONAL MATCH (m)-[a:ALIAS_OF]->(can:Customer) WHERE a.valid_to IS NULL
+           WITH m, a, coalesce(can.brain_id, m.merged_into) AS survivor, a.merge_id AS mergeId
+           SET a.valid_to = $now,
+               m.lifecycle_state = 'split',
+               m.merged_into = null
+           CREATE (ue:UnmergeEvent {
+               brand_id: $b, survivor_brain_id: survivor, absorbed_brain_id: m.brain_id,
+               merge_event_id: mergeId, unmerged_at: $now, actor: $actor, reason: $reason
+           })
+           MERGE (m)-[:HAS_UNMERGE_EVENT]->(ue)
+           RETURN m.brain_id AS id, survivor AS survivor, mergeId AS mergeId`,
+          { b: brandId, id: mergedBrainId, now, actor, reason },
         );
-        if (res.records.length === 0) return { unmerged: false, reason: 'not_found' };
-        return { unmerged: true, brain_id: res.records[0]!.get('id') };
+        if (res.records.length === 0) return null;
+        const r = res.records[0]!;
+        return { brain_id: r.get('id') as string, survivor: (r.get('survivor') as string | null) ?? null, mergeId: (r.get('mergeId') as string | null) ?? null };
       });
     } finally {
       await s.close();
     }
+    if (!graph) return { unmerged: false, reason: 'not_found' };
+
+    // Legacy admin ALIAS_OF edges predating WA-19 carry no merge_id — mint a reversal handle so the
+    // identity.unmerged.v1 contract (merge_id REQUIRED) and the audit row always have a stable id.
+    const mergeEventId = graph.mergeId ?? randomUUID();
+    const survivorBrainId = graph.survivor ?? undefined;
+
+    // Reversible-decision-log (ADR-0004): identity_audit stays in PG. action='unmerge' (already in the
+    // 0017 CHECK), merge_id + detail{actor, reason, survivor, store:'neo4j'} — hashed refs / ids only.
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(
+        `INSERT INTO identity_audit (brand_id, brain_id, action, merge_id, detail)
+         VALUES ($1, $2, 'unmerge', $3, $4::jsonb)`,
+        [
+          brandId,
+          graph.brain_id,
+          graph.mergeId, // the ORIGINAL merge id (NULL for legacy edges — the audit is honest)
+          JSON.stringify({ actor, reason, survivor_brain_id: survivorBrainId ?? null, merge_event_id: mergeEventId, store: 'neo4j' }),
+        ],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    return { unmerged: true, brain_id: graph.brain_id, survivor_brain_id: survivorBrainId, merge_event_id: mergeEventId };
   }
 
   /**

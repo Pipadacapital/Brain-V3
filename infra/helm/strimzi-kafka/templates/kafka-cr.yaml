@@ -61,6 +61,17 @@ spec:
       metadata:
         labels:
           {{- include "strimziKafka.labels" . | nindent 10 }}
+        # AUD-LIVE-5: operator-created PVCs inherit ArgoCD tracking labels → without these they show as eternal OutOfSync prune candidates and a prune would destroy broker data.
+        # AUD-INFRA-002: this template block is correct and confirmed to render (KafkaNodePool
+        # CRD schema carries spec.template.persistentVolumeClaim.metadata.annotations; Strimzi
+        # patches metadata onto EXISTING PVCs on reconcile — verify post-sync, see
+        # docs/runbooks/kafka-operations.md). The guard never reached the cluster because the
+        # Application's manifest-generate-paths annotation was relative (resolved against
+        # source.path → watched a non-existent dir) so ArgoCD served STALE cached manifests
+        # for every new revision. Fixed in infra/argocd/envs/prod/strimzi-kafka.yaml.
+        annotations:
+          argocd.argoproj.io/compare-options: IgnoreExtraneous
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
 ---
 apiVersion: kafka.strimzi.io/v1beta2
 kind: Kafka
@@ -75,6 +86,14 @@ spec:
   kafka:
     version: {{ .Values.kafka.version | quote }}
     metadataVersion: {{ .Values.kafka.metadataVersion | quote }}
+    {{- if .Values.kafka.rack.enabled }}
+    # KIP-392 rack awareness: Strimzi resolves each broker's rack from the node's AZ label (its own
+    # node-reader init container) and spreads replicas across racks. Paired with the
+    # RackAwareReplicaSelector below, a consumer that sets client.rack reads a SAME-AZ replica
+    # instead of the cross-AZ leader → cuts DataTransfer-Regional-Bytes $ (needs RF>1; RF=3 here).
+    rack:
+      topologyKey: {{ .Values.kafka.rack.topologyKey | quote }}
+    {{- end }}
     # INTERNAL listeners only — no external/LoadBalancer exposure (compose parity).
     listeners:
       {{- if .Values.kafka.listeners.plain.enabled }}
@@ -99,6 +118,10 @@ spec:
       transaction.state.log.min.isr: {{ .Values.kafka.config.transactionStateLogMinIsr }}
       log.retention.ms: {{ .Values.kafka.config.logRetentionMs | int64 }}
       num.partitions: {{ .Values.topics.partitions | int }}
+      {{- if .Values.kafka.rack.enabled }}
+      # Serve fetches from a same-AZ follower when the consumer sends its client.rack (KIP-392).
+      replica.selector.class: org.apache.kafka.common.replica.RackAwareReplicaSelector
+      {{- end }}
     {{- if .Values.metrics.enabled }}
     # AUD-LOCAL-016-FUP1: broker JMX → Prometheus via the Strimzi-documented jmxPrometheusExporter
     # (pod port tcp-prometheus :9404). Rules ConfigMap = VERBATIM infra/observe/kafka-jmx-exporter.yml

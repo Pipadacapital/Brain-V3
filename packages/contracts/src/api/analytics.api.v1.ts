@@ -28,6 +28,9 @@ import {
   LifecycleStateSchema,
   DataSourceSchema,
 } from './_money.js';
+// SPEC: B.4 — the identity_evidence item is the SHARED explainability type owned by the WB-B3
+// journey-api contract (trace endpoint). Replay reuses it verbatim (one shape across B.3 + B.4).
+import { IdentityEvidenceItemSchema } from './journey-api.v1.js';
 
 // ── #1 GET /v1/dashboard/realized-revenue ─────────────────────────────────────
 // @see apps/core/.../analytics/internal/domain/metrics/revenue-snapshot.ts:35-47 (RevenueSnapshot)
@@ -249,6 +252,84 @@ export const JourneyTimelineSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type JourneyTimeline = z.infer<typeof JourneyTimelineSchema>;
+
+// ── #7b GET /v1/analytics/journey/events — versioned journey ledger (current projection) ──
+// @see apps/core/.../analytics/.../get-journey-events.ts
+// One customer's resolved-identity timeline from brain_serving.mv_journey_events_current
+// (is_current=true over iceberg.brain_gold.journey_events). Keyed by brain_id (the RESOLVED
+// customer, not brain_anon_id), newest-first, keyset-paginated (opaque next_cursor).
+// MONEY: revenue_minor is bigint minor-units-as-string (I-S07), non-null ONLY on composite rows.
+
+export const JourneyEventDtoSchema = z.object({
+  touchpoint_id: z.string(),
+  sequence_number: MinorUnitsSchema, // bigint → string (ledger position — NOT money)
+  occurred_at: z.string(),
+  event_category: z.string().nullable(),
+  event_type: z.string(),
+  channel: z.string().nullable(),
+  campaign: z.string().nullable(),
+  revenue_minor: MinorUnitsSchema.nullable(), // bigint minor units (I-S07); composite rows only
+  currency_code: z.string().nullable(), // sibling of revenue_minor — never blended
+  is_composite: z.boolean(),
+  identity_confidence: z.number().nullable(), // 0..1 double — NOT money
+  data_version: z.number(),
+  // SPEC: B.4 EXPLAINABILITY (additive) — every journey item carries matched_via: HOW this event's
+  // identity was matched onto the resolved brain_id. Coarse derived basis until B.1's mart column lands
+  // (AMD-13 R1): 'order' | 'deterministic' | 'anonymous'. Never null (explainability on every row).
+  matched_via: z.string(),
+  // SPEC: B.4 / DG-2 — point-in-time identity: the brain_id that owned this event's identity AT
+  // occurred_at (bi-temporal map interval). null = the event predates the identity / is anonymous.
+  brain_id_asof: z.string().nullable(),
+  // SPEC: B.4 / A.3 — probabilistic-overlay marker. Canonical deterministic journeys set false;
+  // a probabilistic overlay view sets true and supplies `confidence` (auto `estimated:true`, §A.3).
+  estimated: z.boolean(),
+  // SPEC: B.4 — overlay confidence (0..1). Present ONLY on probabilistic overlay rows; omitted on
+  // deterministic canonical rows (optional — additive, never breaks the deterministic contract).
+  confidence: z.number().nullable().optional(),
+});
+export type JourneyEventDto = z.infer<typeof JourneyEventDtoSchema>;
+
+// ── #7c SPEC: B.4 — Journey Replay (?as_of=) + Explainability (identity_evidence) ─────────────────
+// AMD-10 (BINDING, R1): replay is reconstructed from RETAINED journey_events version history +
+// bi-temporal identity intervals (identity_asof, WA-14) — NEVER Iceberg time-travel (7-day snapshot
+// TTL). Batch-path only, NO cache; responses carry replayed:true. A pre-identification as_of returns
+// the shorter anonymous-era journey (B.5.3). Shared with the WB-B3 trace endpoint (identity_evidence).
+
+// identity_evidence = the SHARED [{identifier_type, first_seen, source}] item (IdentityEvidenceItemSchema,
+// imported from journey-api.v1 — owned by the WB-B3 trace contract; reused here verbatim).
+// The identity map state as known at as_of (both temporal axes pinned) — the replay's identity axis.
+export const IdentityAsOfStateSchema = z.object({
+  identified: z.boolean(), // false ⇒ the customer was still anonymous at as_of
+  evidence: z.array(IdentityEvidenceItemSchema),
+});
+export type IdentityAsOfState = z.infer<typeof IdentityAsOfStateSchema>;
+
+export const JourneyReplaySchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), replayed: z.literal(true), as_of: z.string() }),
+  z.object({
+    state: z.literal('has_data'),
+    replayed: z.literal(true), // ALWAYS true on this surface (batch reconstruction, not a live read)
+    as_of: z.string(), // the replay wall-clock echoed back (ISO-8601)
+    brain_id: z.string(),
+    events: z.array(JourneyEventDtoSchema), // journey AS KNOWN AT as_of (occurred_at <= as_of)
+    identity_asof: IdentityAsOfStateSchema, // what identity resolution was known at as_of
+    next_cursor: z.string().nullable(), // opaque keyset cursor; null = last page
+    data_source: DataSourceSchema,
+  }),
+]);
+export type JourneyReplay = z.infer<typeof JourneyReplaySchema>;
+
+export const JourneyEventsLedgerSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    brain_id: z.string(),
+    events: z.array(JourneyEventDtoSchema),
+    next_cursor: z.string().nullable(), // opaque keyset cursor; null = last page
+    data_source: DataSourceSchema,
+  }),
+]);
+export type JourneyEventsLedger = z.infer<typeof JourneyEventsLedgerSchema>;
 
 // ── #8 GET /v1/analytics/journey/stitch-rate ──────────────────────────────────
 // @see apps/core/.../analytics/.../get-journey-stitch-rate.ts:21-31 (NO money column)
@@ -664,68 +745,6 @@ export const AbandonedCartSchema = z.discriminatedUnion('state', [
 ]);
 export type AbandonedCart = z.infer<typeof AbandonedCartSchema>;
 
-// ── Insight + Opportunity Engine + AI Copilot briefing (GET /v1/insights/briefing) ──────────
-// @see apps/core/.../analytics/.../get-insights-briefing.ts (InsightDto / BriefingDto). Numbers come
-// from the Gold marts via the metric-engine, NEVER a model. Money = bigint minor-unit strings (I-S07).
-// data_source ('synthetic'|'live') is aggregated synthetic-if-any across the contributing marts so the
-// /insights surface can honestly badge synthetic demo data (MK-1..MK-4).
-
-export const InsightKindSchema = z.enum(['risk', 'opportunity', 'trend']);
-export const InsightSeveritySchema = z.enum(['high', 'medium', 'low', 'info']);
-export const InsightConfidenceSchema = z.enum(['high', 'medium', 'low']);
-
-export const InsightDtoSchema = z.object({
-  id: z.string(),
-  detector: z.string(),
-  kind: InsightKindSchema,
-  severity: InsightSeveritySchema,
-  title: z.string(),
-  why: z.string(),
-  recommended_action: z.string(),
-  currency_code: z.string().nullable(),
-  impact_minor: MinorUnitsSchema.nullable(),
-  direction: z.enum(['up', 'down', 'flat']).nullable(),
-  delta_pct: z.string().nullable(),
-  confidence: InsightConfidenceSchema,
-  evidence: z.record(z.union([z.string(), z.number(), z.null()])),
-  // Set by the BFF once the insight is materialized as a recommendation (the audited decision loop).
-  recommendation_id: z.string().nullable().optional(),
-  status: z.string().nullable().optional(),
-});
-export type InsightDto = z.infer<typeof InsightDtoSchema>;
-
-export const BriefingDtoSchema = z.object({
-  headline: z.string(),
-  summary: z.array(z.string()),
-  primary_currency: z.string().nullable(),
-  counts: z.object({ risks: z.number(), opportunities: z.number(), trends: z.number() }),
-  total_impact_minor: MinorUnitsSchema.nullable(),
-  window: z.object({
-    current: z.object({ from: z.string(), to: z.string() }),
-    prior: z.object({ from: z.string(), to: z.string() }),
-  }),
-  source: z.literal('deterministic'),
-  // Provenance of the contributing marts — 'synthetic' when ANY contributing row is synthetic.
-  data_source: DataSourceSchema,
-  // FRESHNESS GUARD: when the underlying gold marts were last REBUILT (dbt build time, not the
-  // latest order). ISO-8601, null if unknown. `stale` = as_of older than the freshness SLO → the UI
-  // warns the briefing may be out of date instead of silently serving stale insights (prod-safety:
-  // if the dbt refresh cron stops, this surfaces it).
-  as_of: z.string().datetime({ offset: true }).nullable().optional(),
-  stale: z.boolean().optional(),
-});
-export type BriefingDto = z.infer<typeof BriefingDtoSchema>;
-
-export const InsightsBriefingSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('no_data') }),
-  z.object({
-    state: z.literal('has_data'),
-    briefing: BriefingDtoSchema,
-    insights: z.array(InsightDtoSchema),
-  }),
-]);
-export type InsightsBriefing = z.infer<typeof InsightsBriefingSchema>;
-
 // ── Engagement — engaged (multi-touch) vs bounce sessions + avg touches (Phase H pixel) ──
 export const EngagementSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('no_data') }),
@@ -848,6 +867,38 @@ export const JourneyPathsSchema = z.discriminatedUnion('state', [
   }),
 ]);
 export type JourneyPaths = z.infer<typeof JourneyPathsSchema>;
+
+// ── GET /v1/analytics/journey/list — paginated recent customer journeys ──────────────
+// @see apps/core/.../analytics/.../get-journey-list.ts (NO money — a journey list is behavioral).
+// One row per (brand_id, brain_anon_id) over mv_gold_journey, newest-first by last_touch_at,
+// keyset-paginated (opaque next_cursor; null = last page). brain_anon_id is the opaque anon key.
+
+export const JourneyListRowDtoSchema = z.object({
+  brain_anon_id: z.string(), // opaque anon journey key (no PII)
+  first_touch_at: z.string(), // raw serving timestamp (UTC)
+  last_touch_at: z.string(), // raw serving timestamp (UTC); the sort key
+  first_channel: JourneyChannelSchema,
+  last_channel: JourneyChannelSchema,
+  touchpoint_count: MinorUnitsSchema, // bigint → string
+  distinct_channels: MinorUnitsSchema, // bigint → string
+  distinct_sessions: MinorUnitsSchema, // bigint → string
+  converted: z.boolean(),
+  converted_at: z.string().nullable(), // null when not converted
+  days_to_convert: MinorUnitsSchema.nullable(), // bigint → string; null when not converted
+});
+export type JourneyListRowDto = z.infer<typeof JourneyListRowDtoSchema>;
+
+export const JourneyListSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data') }),
+  z.object({
+    state: z.literal('has_data'),
+    total: MinorUnitsSchema, // bigint → string — brand-wide journey count (pagination denominator)
+    rows: z.array(JourneyListRowDtoSchema),
+    next_cursor: z.string().nullable(), // opaque keyset cursor for the next (older) page; null = last
+    data_source: DataSourceSchema,
+  }),
+]);
+export type JourneyList = z.infer<typeof JourneyListSchema>;
 
 // ── #32b GET /v1/analytics/retention/repeat-latency — time-to-2nd-purchase median + histogram ──
 // @see apps/core/.../analytics/.../get-repeat-latency.ts (NO money — integer day math only).

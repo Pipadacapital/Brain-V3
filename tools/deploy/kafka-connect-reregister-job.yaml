@@ -1,0 +1,48 @@
+# One-shot re-registration of the Iceberg-Bronze sink connectors after the
+# Kafka Connect internal topics (_connect-configs) were wiped in the broker
+# PVC recreation. Mirrors the chart's post-upgrade register hook
+# (infra/helm/kafka-connect/templates/connectors.yaml) but as a plain Job so it
+# can be re-run out-of-band. Mounts the existing connectors ConfigMap and PUTs
+# each config to the Connect REST API.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-connect-reregister
+  namespace: kafka
+spec:
+  # AUD-INFRA-007: one-shot Jobs are unmanaged by any ArgoCD app — a finished
+  # Job lingering as Complete is imperative-deploy residue that pollutes the
+  # cluster inventory. Self-delete 24h after finishing (long enough to
+  # inspect the registration log; the source of truth for connector configs
+  # stays the chart's ConfigMap + post-upgrade hook).
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: register
+          image: curlimages/curl:8.8.0
+          volumeMounts:
+            - name: connectors
+              mountPath: /config
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              REST="http://kafka-connect-prod-kafka-connect:8083"
+              echo "Waiting for Kafka Connect REST ($REST)..."
+              until curl -fsS "$REST/connectors" >/dev/null 2>&1; do sleep 5; done
+              fail=0
+              for f in /config/*.json; do
+                name=$(basename "$f" .json)
+                code=$(curl -s -o /tmp/resp -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+                  --data @"$f" "$REST/connectors/$name/config")
+                case "$code" in 200|201) echo "  $name: OK ($code)";; *) echo "  $name: FAILED ($code)"; cat /tmp/resp; echo; fail=1;; esac
+              done
+              exit $fail
+      volumes:
+        - name: connectors
+          configMap:
+            name: kafka-connect-prod-kafka-connect-connectors

@@ -1,0 +1,28 @@
+# SPEC:D.2 (AMD-25) — certified CROSS-ENTITY metric. Change ONLY via PR + recompile.
+name: cac
+version: v1
+entity: semantic_campaign
+time_column: updated_at
+grain: [all]
+dimensions_allowed: []
+currency_handling: ratio_same_currency
+identity_basis: deterministic_only
+interactive: false
+owner: marketing-team
+description: >-
+  Customer Acquisition Cost (blended): total ad spend (semantic_campaign) divided by the count of
+  distinct NEW customers who purchased (semantic_order.is_new_customer brain_ids), per currency,
+  whole-period. Cross-entity blend joined on (brand_id, currency_code) (AMD-25). Integer minor units
+  (money stays integer — integer division). Deterministic identity links only (§1.4). Null when zero
+  new customers.
+measures:
+  - name: spend_minor
+    agg: SUM(spend_minor)
+cross:
+  entity: semantic_order
+  measures:
+    - name: new_customers
+      agg: COUNT(DISTINCT CASE WHEN is_new_customer THEN brain_id END)
+expression: spend_minor / NULLIF(new_customers, 0)
+examples:
+  - "Blended CAC in INR."

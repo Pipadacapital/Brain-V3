@@ -3,8 +3,10 @@
  *
  * Reads the SAME live collector topic as ConsentSuppressorConsumer / CapiDeletionConsumer
  * in a SEPARATE consumer group (stream-worker-erasure-orchestrator) — NO new topic, NO new
- * deployable (I-E05). On a subject-erasure event it drives the ordered 6-step sequence via
- * EraseSubjectUseCase. Most events are NOT erasures ('no_consent_flags' / 'not_an_erasure')
+ * deployable (I-E05). On a subject-erasure event it drives the full ordered sequence via
+ * EraseSubjectUseCase (DEK shred → contact_pii → surrogate → Neo4j graph purge → Gold
+ * re-projection + cache invalidation → Bronze raw sweep → CAPI deletion → complete).
+ * Most events are NOT erasures ('no_consent_flags' / 'not_an_erasure')
  * and are committed immediately as skips (normal — high-throughput filter pattern).
  *
  * Mirrors CapiDeletionConsumer EXACTLY in offset/DLQ/retry discipline:
@@ -20,8 +22,11 @@
  *   offset is NOT committed, and after MAX_RETRY the message goes to DLQ — never processed
  *   with a bad/empty salt (which would hash the wrong subject and shred the wrong DEK).
  *
- * NOTIMPLEMENTEDYET (Step 4): shredIcebergSnapshots throws NotImplementedYet. The use case
- *   catches it internally and continues. The consumer NEVER sees this as a write error.
+ * STEP 4 (Bronze raw erasure — AUD-OPS-037): with the Argo submitter WIRED, a submit failure
+ *   propagates like any write error (no commit → retry → DLQ@MAX_RETRY — an unsubmitted Bronze
+ *   sweep is never silently dropped). With NO submitter (dev), shredIcebergSnapshots throws
+ *   NotImplementedYet, which the use case catches internally and continues — the consumer
+ *   NEVER sees that as a write error.
  *
  * REPLAYABLE: re-consuming the topic re-runs the ordered sequence (all steps idempotent) →
  *   same outcome. 3× replay → one erasure record, one DEK shred, one CAPI deletion.
@@ -112,7 +117,13 @@ export class ErasureOrchestratorConsumer {
               msgLog.info(
                 `[erasure-orchestrator] erased brand=${result.brandId} ` +
                 `event=${result.eventId} brain_id=${result.brainId} ` +
-                `surrogate=${result.surrogateId} partition=${partition} offset=${offset}`,
+                `surrogate=${result.surrogateId} ` +
+                `bronze_raw_workflow=${result.bronzeRawWorkflow ?? 'not_configured'} ` +
+                // AUD-OPS-039 / AUD-TP-22 evidence fields: graph edges tombstoned + whether the
+                // serving-cache invalidation published (FAIL-OPEN — false is stale-until-TTL).
+                `graph_links_tombstoned=${result.graphLinksTombstoned ?? 'not_wired'} ` +
+                `cache_invalidated=${result.cacheInvalidated ?? false} ` +
+                `partition=${partition} offset=${offset}`,
               );
             } else if (result.outcome === 'no_brain_id') {
               // Log at WARN: a valid erasure signal but subject not found in identity graph.

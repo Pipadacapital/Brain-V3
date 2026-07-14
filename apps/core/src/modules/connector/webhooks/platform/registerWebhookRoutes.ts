@@ -19,13 +19,14 @@ import type { ISecretsManager } from '@brain/connector-secrets';
 
 import { WebhookPipeline, type WebhookPipelineDeps } from './WebhookPipeline.js';
 import type { WebhookIdentityReader } from './IWebhookStrategy.js';
+import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
 import { ShopifyWebhookStrategy } from '../strategies/ShopifyWebhookStrategy.js';
 import { resolveBrandOAuthAppCreds } from '../../oauth-app-creds.js';
 import { getDefinition } from '../../catalog/index.js';
 import { RazorpayWebhookStrategy } from '../strategies/RazorpayWebhookStrategy.js';
 import { ShopfloWebhookStrategy } from '../strategies/ShopfloWebhookStrategy.js';
 import { WooCommerceWebhookStrategy } from '../strategies/WooCommerceWebhookStrategy.js';
-import { ShiprocketWebhookStrategy } from '../strategies/ShiprocketWebhookStrategy.js';
+import { ShiprocketWebhookStrategy, timingSafeTokenEqual } from '../strategies/ShiprocketWebhookStrategy.js';
 import { GokwikWebhookStrategy } from '../strategies/GokwikWebhookStrategy.js';
 
 export interface WebhookRegistrationDeps {
@@ -38,6 +39,16 @@ export interface WebhookRegistrationDeps {
   regionCode?: string;
   /** MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j identity reader for GDPR redact side-effects. */
   identityReader?: WebhookIdentityReader;
+  /**
+   * AUD-OPS-036 — the RTBF erasure-trigger bridge for Shopify customers/redact. Optional:
+   * absent → the redact side-effect keeps its pre-bridge (synchronous-only) behavior.
+   */
+  erasureEventPublisher?: ErasureEventPublisher;
+  /**
+   * SPEC: A.1.4 (WA-09) — per-brand `connector.identity_fields` flag resolver (platform-flags).
+   * OPTIONAL + FAIL-CLOSED (absent → flag OFF → today's envelope byte-identical).
+   */
+  isIdentityFieldsEnabled?: (brandId: string) => Promise<boolean>;
   /**
    * CRIT-2 OVERRIDE (optional): resolve the Shopify webhook HMAC signing key (the brand's app
    * `client_secret`) for a shop domain. When omitted, a default resolver is built from
@@ -59,6 +70,8 @@ export function registerAllWebhookRoutes(
     redis: deps.redis,
     regionCode: deps.regionCode ?? 'IN',
     identityReader: deps.identityReader,
+    // SPEC: A.1.4 (WA-09) — connector.identity_fields flag resolver (fail-closed when absent).
+    isIdentityFieldsEnabled: deps.isIdentityFieldsEnabled,
   };
 
   // ── Shopify HMAC secret resolver (CRIT-2) ─────────────────────────────────
@@ -112,7 +125,9 @@ export function registerAllWebhookRoutes(
   // Topic param injected as x-wh-topic header for the Strategy.
   {
     const pipeline = new WebhookPipeline(
-      new ShopifyWebhookStrategy(shopifyHmacSecretResolver),
+      // AUD-OPS-036: the erasure publisher lets customers/redact bridge to the async
+      // full-erasure orchestrator (in addition to the synchronous eraseCustomer side-effect).
+      new ShopifyWebhookStrategy(shopifyHmacSecretResolver, deps.erasureEventPublisher),
       {
         path: '/api/v1/webhooks/shopify/:topic', // used only as config label here
         resolverFn: 'resolve_connector_by_shop_domain',
@@ -190,13 +205,42 @@ export function registerAllWebhookRoutes(
 
   // ── Shiprocket: POST /api/v1/webhooks/shiprocket ─────────────────────────
   // Verification: X-Api-Key shared-token compare (token scheme, not HMAC).
-  // Lookup key: x-shiprocket-channel-id header (fallback: x-shiprocket-account-id).
+  // Lookup key: x-shiprocket-channel-id header (fallback: x-shiprocket-account-id), and — when
+  //   the merchant's webhook config can't set custom headers — a TOKEN FALLBACK that resolves
+  //   the tenant from the Brain-minted X-Api-Key itself (see resolver below).
   // Resolver fn: resolve_shiprocket_connector_by_channel (SECURITY DEFINER).
   // FAIL-CLOSED: if webhook_secret is unset in the connector secret bundle,
   //   verification fails — surfaces 'not connected / needs credentials'. No spoofed events.
   {
+    // TENANT-ROUTING TOKEN FALLBACK (header-less deliveries): enumerate connected Shiprocket
+    // connectors (list_shiprocket_connectors_for_webhook, SECURITY DEFINER — migration 0128) and
+    // timing-safe-compare the presented token against each bundle's webhook_secret. The token is
+    // Brain-MINTED (SR-2, high-entropy, unique per connector) so a match uniquely identifies the
+    // tenant; lookup_key = COALESCE(channel_id, account_key), the same value
+    // resolve_shiprocket_connector_by_channel resolves — Step-3 brand resolution works unchanged.
+    // Fail-closed: any error / no match → null → LOOKUP_KEY_MISSING (no spoofed events). The
+    // Shiprocket connector count per deployment is small, so the linear scan is bounded; the
+    // strategy only invokes this when BOTH routing headers are absent.
+    const resolveShiprocketLookupKeyByToken = async (receivedToken: string): Promise<string | null> => {
+      if (!receivedToken) return null;
+      try {
+        const result = await deps.rawPgPool.query<{ secret_ref: string; lookup_key: string | null }>(
+          `SELECT secret_ref, lookup_key FROM list_shiprocket_connectors_for_webhook()`,
+        );
+        for (const row of result.rows) {
+          if (!row.lookup_key) continue;
+          const creds = await deps.secretsManager.getSecret(row.secret_ref).catch(() => null);
+          const stored = creds?.['webhook_secret'] ?? '';
+          if (stored && timingSafeTokenEqual(receivedToken, stored)) return row.lookup_key;
+        }
+      } catch {
+        /* fail-closed — the strategy throws LOOKUP_KEY_MISSING */
+      }
+      return null;
+    };
+
     const pipeline = new WebhookPipeline(
-      new ShiprocketWebhookStrategy(),
+      new ShiprocketWebhookStrategy(resolveShiprocketLookupKeyByToken),
       {
         path: '/api/v1/webhooks/shiprocket',
         resolverFn: 'resolve_shiprocket_connector_by_channel',

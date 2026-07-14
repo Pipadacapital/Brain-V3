@@ -40,8 +40,11 @@
  */
 import { createHash } from 'node:crypto';
 import type { Pool } from 'pg';
-import type { SilverPool } from '@brain/metric-engine';
-import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
+// WA-02 (SPEC: 0.5): metric-engine is fenced to the measurement tier — the Gold half of this
+// query (step 1) moved into the engine as computeFinalizedPurchasesForWindow and is consumed via
+// the analytics facade. No raw withSilverBrand/BRAND_PREDICATE serving SQL in this module.
+import type { SilverPool } from '../../analytics/index.js';
+import { computeFinalizedPurchasesForWindow } from '../../analytics/index.js';
 
 /** A single finalized-purchase candidate, pre-gate, pre-match-hash. */
 export interface CapiSourceRow {
@@ -65,7 +68,7 @@ export interface CapiSourceRow {
 }
 
 /** Deterministic Meta event_id — the dedup key (architecture §3.3). */
-export function capiEventId(
+function capiEventId(
   brandId: string,
   orderId: string,
   ledgerEventId: string,
@@ -112,27 +115,9 @@ export async function fetchFinalizedPurchaseCandidatesScoped(
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
 
-  // ── 1. Finalized purchases from the lakehouse Gold ledger (Trino over Iceberg). ──
-  const orders = await withSilverBrand(srPool, brandId, async (scope) =>
-    scope.runScoped<{
-      order_id: string;
-      ledger_event_id: string;
-      brain_id: string | null;
-      value_minor: string | number;
-      currency_code: string;
-      occurred_at: string;
-    }>(
-      `SELECT order_id, ledger_event_id, brain_id, amount_minor AS value_minor, currency_code, occurred_at
-         FROM brain_serving.mv_gold_revenue_ledger
-        WHERE event_type = 'finalization'
-          AND recognition_label = 'finalized'
-          AND amount_minor > 0
-          AND occurred_at >= ? AND occurred_at <= ?
-          AND ${BRAND_PREDICATE}
-        ORDER BY occurred_at ASC`,
-      [fromIso, toIso],
-    ),
-  );
+  // ── 1. Finalized purchases from the lakehouse Gold ledger (Trino over Iceberg) — via the
+  //       metric-engine's purpose-named seam (I-ST01: the engine is the SOLE Gold reader). ──
+  const orders = await computeFinalizedPurchasesForWindow(srPool, brandId, fromIso, toIso);
   if (orders.length === 0) return [];
 
   // ── 2. PG operational reads (V4: brain_ops relocated to the PG `ops` schema — migration 0116). ──

@@ -17,20 +17,41 @@ kafka:
       class: gp3
       deleteClaim: false
     resources:
+      # Sized to fit the CHEAPER streaming node (t4g.large, 2 vCPU / 8 GiB,
+      # ~6.3Gi allocatable after Karpenter overhead): cpu request 1 (bursts to
+      # limit 4 = whole node), memory request 5Gi / limit 6Gi around a 3Gi JVM
+      # heap (below). With the streaming pool's t4g.large|t4g.xlarge range,
+      # Karpenter picks the cheaper t4g.large. Raise heap+memory (→ t4g.xlarge)
+      # if real traffic needs more.
       requests:
-        cpu: "2"
-        memory: 6Gi
+        cpu: "1"
+        memory: 5Gi
       limits:
         cpu: "4"
-        memory: 8Gi
+        memory: 6Gi
     jvm:
-      xms: 4096m
-      xmx: 4096m
+      xms: 3072m
+      xmx: 3072m
     # AUD-PROD-006: pin the KRaft broker pods (stateful, 'no event loss') to the
     # streaming Karpenter pool — its WhenEmpty consolidation NEVER bin-packs live
     # brokers off a node, unlike the batch/trino pools' WhenEmptyOrUnderutilized.
     # Strimzi PodTemplate has no nodeSelector — required nodeAffinity is the contract.
+    # 2026-07-12 INCIDENT: brokers additionally pinned to ON-DEMAND capacity.
+    # Spot reclaims churned all 3 brokers through 3 node generations in ~40 min
+    # (repeated quorum loss; ap-south-1a t4g spot is volatile). Consumers/Connect
+    # stay on spot — only the 3 broker nodes pay on-demand (~+$100/mo vs the
+    # repeated-outage alternative). Karpenter provisions on-demand nodes for
+    # pods that REQUIRE karpenter.sh/capacity-type=on-demand.
     affinity:
+      # 2026-07-12 post-roll finding: two brokers landed on ONE node (quorum =
+      # one node loss away). REQUIRED anti-affinity spreads the 3 brokers across
+      # distinct nodes — with 3 on-demand broker nodes this is always satisfiable.
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                strimzi.io/name: brain-prod-kafka-kafka
+            topologyKey: kubernetes.io/hostname
       nodeAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
           nodeSelectorTerms:
@@ -38,6 +59,15 @@ kafka:
                 - key: brain.platform/pool
                   operator: In
                   values: ["streaming"]
+                # RE-ENABLED 2026-07-12 (same day): the vCPU quota increase
+                # (L-1216C47A → 32) was APPROVED, unblocking the #47 pin that
+                # VcpuLimitExceeded rolled back (#50). Brokers require on-demand
+                # (~+$100/mo) — spot reclaims broke quorum 3× on 2026-07-12;
+                # 'no event loss' is a core rule. Syncing this rolls the brokers
+                # ONE controlled time (operator healthy, PDB minAvailable=2).
+                - key: karpenter.sh/capacity-type
+                  operator: In
+                  values: ["on-demand"]
 
   listeners:
     plain:

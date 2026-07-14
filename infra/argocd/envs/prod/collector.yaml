@@ -1,6 +1,8 @@
 ################################################################################
 # Brain – ArgoCD Application: collector (prod)
-# MANUAL promote only — no automated sync.
+  # Automated GitOps sync (2026-07-13): merge→build→prod-promote lands the digest in gitops and
+  # ArgoCD auto-applies it (selfHeal reverts drift, prune removes deleted resources) — prod deploys
+  # end-to-end on merge, no manual sync. Safety net = promotion-PR CI + deploy health-probe rollback.
 # VP Eng approves via GitHub Environment 'production' gate.
 # revisionHistoryLimit=10 for rollback.
 ################################################################################
@@ -19,14 +21,14 @@ metadata:
     service: collector
     environment: prod
   annotations:
-    argocd.argoproj.io/manifest-generate-paths: infra/helm/collector
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/collector
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: brain-prod
 
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/helm/collector
     helm:
@@ -40,7 +42,12 @@ spec:
   revisionHistoryLimit: 10
 
   syncPolicy:
-    # PROD: MANUAL sync only — no automated (PLAYBOOK-deploy §Strategy step 6-8)
+    automated:
+      prune: true
+      selfHeal: true
+  # Automated GitOps sync (2026-07-13): merge→build→prod-promote lands the digest in gitops and
+  # ArgoCD auto-applies it (selfHeal reverts drift, prune removes deleted resources) — prod deploys
+  # end-to-end on merge, no manual sync. Safety net = promotion-PR CI + deploy health-probe rollback.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

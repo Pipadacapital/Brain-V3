@@ -35,13 +35,13 @@ spec:
         clusterName: brain-prod
         region: ap-south-1
         # Explicit VPC id (terraform output vpc_id) — avoids IMDS dependence.
-        vpcId: REPLACE_WITH_VPC_ID
+        vpcId: vpc-06ded56ae87bd2b68
         replicaCount: 2
         serviceAccount:
           create: true
           name: aws-load-balancer-controller
           annotations:
-            eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-aws-load-balancer-controller
+            eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-aws-load-balancer-controller
         # The ingress data path must never sit on Spot capacity it also fronts.
         nodeSelector:
           role: system
@@ -55,9 +55,31 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system
+  # AUD-LIVE-5: the upstream chart generates a fresh self-signed webhook cert on
+  # every helm render, so the TLS Secret + webhook caBundle differ from live on
+  # every refresh — eternal false drift. The live (in-cluster) cert is
+  # authoritative; ignore those fields (and RespectIgnoreDifferences below keeps
+  # a sync from clobbering the live cert).
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: aws-load-balancer-webhook
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: aws-load-balancer-webhook
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - kind: Secret
+      name: aws-load-balancer-tls
+      namespace: kube-system
+      jsonPointers:
+        - /data
   syncPolicy:
     syncOptions:
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
     retry:
       limit: 2
       backoff:

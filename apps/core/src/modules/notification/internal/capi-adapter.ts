@@ -126,7 +126,7 @@ export class DevCapiAdapter implements CapiAdapter {
  * The access token is the dereferenced secret (the credential VALUE) — it is NEVER
  * logged. graph.facebook.com appears ONLY in this file (I-ST05 grep gate).
  */
-export class MetaCapiAdapter implements CapiAdapter {
+class MetaCapiAdapter implements CapiAdapter {
   private static readonly GRAPH_VERSION = 'v19.0';
 
   constructor(

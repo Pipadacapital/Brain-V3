@@ -38,10 +38,11 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
+import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext } from '@brain/observability';
+import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
-import { PgBackfillJobRepository } from '../../infrastructure/pg/BackfillJobRepository.js';
+import { PgBackfillJobRepository, parseRequestedWindowMs } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
 import { ShopifyBackfillClient } from './shopify-paged-client.js';
@@ -174,6 +175,12 @@ export async function run(connectorInstanceId?: string): Promise<void> {
         continue;
       }
 
+      // Requested depth (0127): clamp the caller's requested window to the 24-month platform max
+      // (min(requested, BACKFILL_WINDOW_MS)) — the row stores the REQUEST, never the entitlement.
+      // Absent/malformed → the pre-0127 provider max, byte-identical behaviour.
+      const requestedWindowMs = parseRequestedWindowMs(claimedJob.requested_window_ms);
+      const targetWindowMs = Math.min(requestedWindowMs ?? BACKFILL_WINDOW_MS, BACKFILL_WINDOW_MS);
+
       // Execute the page loop
       await runBackfillLoop({
         jobId,
@@ -183,6 +190,7 @@ export async function run(connectorInstanceId?: string): Promise<void> {
         accessToken,
         saltHex,
         resumeSinceId: claimedJob.cursor_value,
+        targetWindowMs,
         producer,
         jobRepo,
         pool,
@@ -304,6 +312,8 @@ interface BackfillLoopParams {
   accessToken: string;
   saltHex: string;
   resumeSinceId: string | null;
+  /** Effective historical window (ms) — min(requested_window_ms, BACKFILL_WINDOW_MS) (0127). */
+  targetWindowMs: number;
   producer: Producer;
   jobRepo: PgBackfillJobRepository;
   pool: Pool;
@@ -312,13 +322,14 @@ interface BackfillLoopParams {
 async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
   const {
     jobId, brandId, connectorInstanceId, connectorRow, accessToken, saltHex,
-    resumeSinceId, producer, jobRepo, pool,
+    resumeSinceId, targetWindowMs, producer, jobRepo, pool,
   } = params;
 
   const shopClient = new ShopifyBackfillClient(connectorRow.shop_domain, accessToken);
 
-  // 24-month lower bound for the backfill window (D-8 / D-14)
-  const createdAtMin = new Date(Date.now() - BACKFILL_WINDOW_MS).toISOString();
+  // Lower bound for the backfill window (D-8 / D-14): the caller-requested depth clamped to the
+  // 24-month platform max (targetWindowMs, 0127). Default = the full 24-month window.
+  const createdAtMin = new Date(Date.now() - targetWindowMs).toISOString();
 
   // ── D-8: count orders before first page (HP-1: null on failure, never fabricate) ──
   let estimatedTotal: bigint | null = null;
@@ -384,7 +395,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
       }
 
       // ── Per-order: map → emit ──────────────────────────────────────────────
-      const messages = [];
+      const messages: Array<{ eventId: string; key: string; value: Buffer }> = [];
       for (const order of page.orders) {
         const mapped = mapOrderToBackfillEvent(order, saltHex, regionCode);
 
@@ -404,6 +415,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
         });
 
         messages.push({
+          eventId,
           key: buildPartitionKey(brandId, eventId),
           value: Buffer.from(JSON.stringify(envelope)),
         });
@@ -417,17 +429,43 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
         recordsProcessed += 1n;
       }
 
+      // ── ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
+      //    so a re-run/overlap never re-floods Bronze. brand GUC set on a short pooled client, then
+      //    filter+mark. ORDER IS CRITICAL: produce FIRST, mark AFTER (a crash between at worst
+      //    re-produces a dup on retry, which Silver backstops — never loses an event).
       // ── D-4: Emit directly to Redpanda (not via collector HTTP edge) ──────
-      // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-      // message so the bronze-bridge consumer resumes this backfill's trace.
-      const traceHeaders: Record<string, Buffer | string> = {};
-      injectKafkaTraceContext(traceHeaders);
-      await producer.send({
-        topic: BACKFILL_TOPIC,
-        messages: messages.map((m) => ({ ...m, headers: traceHeaders })),
-      });
+      let emittedThisPage = 0;
+      if (messages.length > 0) {
+        const dedupClient = await pool.connect();
+        try {
+          await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+          const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
 
-      log.info(`job=${jobId} page=${pageCount} emitted=${messages.length} total=${recordsProcessed}`);
+          const toSend = messages.filter((m) => unseen.has(m.eventId));
+          const dropped = messages.length - toSend.length;
+          if (dropped > 0) {
+            incrementCounter('ingest_dedup_dropped_total', { provider: 'shopify' });
+            log.info(`job=${jobId} page=${pageCount} dedup: dropped ${dropped} already-ingested events`);
+          }
+
+          if (toSend.length > 0) {
+            // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+            // message so the bronze-bridge consumer resumes this backfill's trace.
+            const traceHeaders: Record<string, Buffer | string> = {};
+            injectKafkaTraceContext(traceHeaders);
+            await producer.send({
+              topic: BACKFILL_TOPIC,
+              messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+            });
+            await markEventIdsSeen(dedupClient, brandId, toSend.map((m) => m.eventId));
+            emittedThisPage = toSend.length;
+          }
+        } finally {
+          dedupClient.release();
+        }
+      }
+
+      log.info(`job=${jobId} page=${pageCount} emitted=${emittedThisPage} total=${recordsProcessed}`);
 
       // ── D-14: Update cursor + progress after EACH page ────────────────────
       // sinceId for resume = last order's ID on this page
@@ -466,7 +504,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
 
     // ── Terminal: completed ───────────────────────────────────────────────────
     const depthLabel = oldestOccurredAt
-      ? computeAchievedDepthLabel(oldestOccurredAt, BACKFILL_WINDOW_MS)
+      ? computeAchievedDepthLabel(oldestOccurredAt, targetWindowMs)
       : null;
 
     await jobRepo.finalize({

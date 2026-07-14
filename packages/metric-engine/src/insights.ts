@@ -48,8 +48,13 @@ export interface Insight {
   direction: 'up' | 'down' | 'flat' | null;
   /** Percent change as an exact decimal string (e.g. "-18.42"); null when not a delta. */
   deltaPct: string | null;
-  /** Supporting figures (all exact strings / ints) for the drill + tooltip. */
-  evidence: Record<string, string | number | null>;
+  /**
+   * Supporting figures (all exact strings / ints / bools) for the drill + tooltip. NO null values:
+   * they are persisted verbatim and read back against the BFF evidence contract
+   * (record(string, string|number|boolean)), which rejects null. Detectors OMIT a conditional key
+   * rather than emit null.
+   */
+  evidence: Record<string, string | number | boolean>;
   confidence: InsightConfidence;
 }
 
@@ -343,10 +348,13 @@ export async function computeInsights(
         impactMinor: abs(swing).toString(),
         direction,
         deltaPct: pct,
+        // Omit conditional keys entirely rather than emitting null: the BFF evidence contract is a
+        // record(string, string|number|boolean) with NO null, so a persisted null value is rejected
+        // at the web↔core seam ("Invalid input" at evidence.top_driver_event).
         evidence: {
           current_minor: cur.toString(),
           prior_minor: prior.toString(),
-          top_driver_event: isPrimary && topDriver ? topDriver.eventType : null,
+          ...(isPrimary && topDriver ? { top_driver_event: topDriver.eventType } : {}),
         },
         confidence: prior <= 0n ? 'low' : 'high',
       });
@@ -581,11 +589,13 @@ export async function computeInsights(
           impactMinor: null,
           direction: null,
           deltaPct: null,
+          // Omit null-valued keys (step_pct / overall_conversion_pct can be null) — see the
+          // revenue_trend evidence note above; the BFF evidence contract forbids null values.
           evidence: {
             top_sessions: top.sessions.toString(),
             lost_sessions: worst.lost.toString(),
-            step_pct: worst.stepPct,
-            overall_conversion_pct: purchased?.conversionPct ?? null,
+            ...(worst.stepPct !== null ? { step_pct: worst.stepPct } : {}),
+            ...(purchased?.conversionPct != null ? { overall_conversion_pct: purchased.conversionPct } : {}),
           },
           confidence: 'high',
         });

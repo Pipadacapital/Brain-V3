@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "brain.action.executed.v1",
+  "title": "action.executed.v1",
+  "description": "SPEC I (Wave I, AMD-03) — Action Platform envelope: an approved action was EXECUTED by its executor adapter. Registered in Apicurio as brain/action.executed.v1 (JSON Schema artifact under FULL_TRANSITIVE, AMD-03 R1). Partition key = brand_id (I-S01). SCAFFOLD ONLY — no executor emits this yet (all adapters are NotImplemented/fail-closed). execution_ref is the executor-returned handle a later action.rolled_back.v1 needs to reverse the effect (governance: no 'auto' without a per-executor rollback that can consume this handle). PII (I-S02): no raw PII; money in payload/result is bigint minor + currency_code.",
+  "type": "object",
+  "required": ["brand_id", "action_id", "executor", "execution_mode", "payload"],
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Tenant key — brand_id-first (I-S01). Kafka partition key."
+    },
+    "action_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The action executed (same id across its lifecycle). Idempotency key = (brand_id, action_id)."
+    },
+    "decision_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "OPTIONAL gold_decisions back-reference (Wave H)."
+    },
+    "executor": {
+      "type": "string",
+      "enum": ["shopify-discount", "meta-audience", "messaging", "webhook"],
+      "description": "The executor adapter that ran (matches an @brain/action-core ExecutorPort name)."
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["suggest", "approve", "auto"],
+      "default": "suggest",
+      "description": "Mode under which the action ran."
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "The executed instruction body (money = bigint minor + currency_code; no raw PII)."
+    },
+    "execution_ref": {
+      "type": "string",
+      "description": "Executor-returned handle identifying the produced side effect (e.g. Shopify price-rule id, audience id, message id) — the reversible token action.rolled_back.v1 consumes. Governance: a per-executor rollback MUST be able to reverse this handle before 'auto' is permitted."
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "OPTIONAL auth-principal id of the approver (audit; present for approve/auto lineage)."
+    },
+    "holdout_group": {
+      "type": "string",
+      "description": "OPTIONAL incrementality cohort label (enables lift measurement of the executed action)."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "OPTIONAL distributed-trace correlation id (ADR-009)."
+    },
+    "executed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "OPTIONAL ISO-8601 UTC timestamp execution completed."
+    }
+  },
+  "additionalProperties": true
+}

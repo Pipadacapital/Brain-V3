@@ -51,7 +51,8 @@ export interface ChannelRoasParams {
 export async function getChannelRoas(
   brandId: string,
   params: ChannelRoasParams,
-  deps: { srPool: SilverPool },
+  // SPEC:C.4 — measurementMartsMigration threads the marts-migration flag to the spend read (default OFF → legacy view).
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<ChannelRoasResult> {
   // Spend-exists + attribution-exists, both via the lakehouse brand-scoped seam (one round trip).
   const { hasSpend, hasCredit } = await withSilverBrand(deps.srPool, brandId, async (scope) => {

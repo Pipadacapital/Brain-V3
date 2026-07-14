@@ -1,0 +1,140 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-kafka-connect
+  labels:
+    app.kubernetes.io/name: kafka-connect
+    app.kubernetes.io/part-of: brain
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-connect
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka-connect
+      {{- if .Values.metrics.enabled }}
+      annotations:
+        # Roll the worker when the JMX mapping changes (the agent reads it once at JVM start).
+        checksum/jmx-config: {{ include (print $.Template.BasePath "/jmx-configmap.yaml") . | sha256sum }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ if .Values.serviceAccount.create }}{{ .Values.serviceAccount.name | default (printf "%s-kafka-connect" .Release.Name) }}{{ else }}{{ .Values.serviceAccount.name | default "default" }}{{ end }}
+      containers:
+        - name: connect
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Same runtime plugin-resolution pattern as the local compose service (ADR-0010): the
+          # Apache Iceberg connect runtime zip is fetched once per pod into the plugins emptyDir.
+          # Bake a custom image instead for air-gapped clusters.
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              PLUGIN_DIR=/opt/connect-plugins/iceberg-iceberg-kafka-connect-{{ .Values.icebergConnectVersion }}
+              if [ ! -f "$PLUGIN_DIR/manifest.json" ]; then
+                echo "Downloading Apache Iceberg Kafka Connect runtime {{ .Values.icebergConnectVersion }}..."
+                curl -fsSL -o /tmp/iceberg-connect.zip "{{ .Values.pluginZipUrl }}"
+                ( cd /opt/connect-plugins && jar xf /tmp/iceberg-connect.zip ) && rm -f /tmp/iceberg-connect.zip
+              fi
+              {{- if .Values.metrics.enabled }}
+              # AUD-INFRA-028: Prometheus JMX exporter agent (same jar+version as the local
+              # compose jmx-exporter-init). GRACEFUL: a failed download must NOT crash-loop the
+              # SOLE Bronze landing writer — the worker starts unmonitored instead, and the
+              # unscraped target trips BrainTargetDown{job="kafka-connect-jmx"}.
+              JMX_JAR=/opt/jmx-exporter/jmx_prometheus_javaagent.jar
+              if [ ! -f "$JMX_JAR" ]; then
+                echo "Downloading jmx_prometheus_javaagent..."
+                curl -fsSL --retry 3 -o "$JMX_JAR" "{{ .Values.metrics.jmxExporterJarUrl }}" \
+                  || { echo "WARN: jmx_exporter download FAILED — starting WITHOUT metrics (AUD-INFRA-028 graceful path)"; rm -f "$JMX_JAR"; }
+              fi
+              if [ -f "$JMX_JAR" ]; then
+                export KAFKA_OPTS="${KAFKA_OPTS:+$KAFKA_OPTS }-javaagent:$JMX_JAR={{ .Values.metrics.port }}:/etc/jmx-exporter/kafka-connect-jmx-exporter.yml"
+              fi
+              {{- end }}
+              {{- if .Values.rackAwareness.enabled }}
+              # KIP-392: read this pod's AZ (IMDSv2 — node hop-limit=2) and set consumer client.rack so
+              # the Iceberg SINK consumers fetch from a SAME-AZ replica (RackAwareReplicaSelector on the
+              # brokers) instead of the cross-AZ leader — cuts DataTransfer-Regional-Bytes $. Best-effort:
+              # unresolved AZ ⇒ no client.rack ⇒ today's leader-fetch behaviour (no regression).
+              RACK_TOKEN="$(curl -fsS --max-time 2 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null || true)"
+              if [ -n "$RACK_TOKEN" ]; then
+                RACK_AZ="$(curl -fsS --max-time 2 -H "X-aws-ec2-metadata-token: $RACK_TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone 2>/dev/null || true)"
+                if [ -n "$RACK_AZ" ]; then export CONNECT_CONSUMER_CLIENT_RACK="$RACK_AZ"; echo "[rack] CONNECT_CONSUMER_CLIENT_RACK=$RACK_AZ"; fi
+              fi
+              {{- end }}
+              exec /etc/confluent/docker/run
+          env:
+            - name: KAFKA_HEAP_OPTS
+              value: {{ .Values.heapOpts | quote }}
+            - name: CONNECT_BOOTSTRAP_SERVERS
+              value: {{ .Values.worker.bootstrapServers | quote }}
+            - name: CONNECT_REST_ADVERTISED_HOST_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONNECT_REST_PORT
+              value: "8083"
+            - name: CONNECT_GROUP_ID
+              value: {{ .Values.worker.groupId | quote }}
+            - name: CONNECT_CONFIG_STORAGE_TOPIC
+              value: {{ .Values.worker.configStorageTopic | quote }}
+            - name: CONNECT_OFFSET_STORAGE_TOPIC
+              value: {{ .Values.worker.offsetStorageTopic | quote }}
+            - name: CONNECT_STATUS_STORAGE_TOPIC
+              value: {{ .Values.worker.statusStorageTopic | quote }}
+            - name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR
+              value: {{ .Values.worker.storageReplicationFactor | quote }}
+            - name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR
+              value: {{ .Values.worker.storageReplicationFactor | quote }}
+            - name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR
+              value: {{ .Values.worker.storageReplicationFactor | quote }}
+            - name: CONNECT_KEY_CONVERTER
+              value: "org.apache.kafka.connect.storage.StringConverter"
+            - name: CONNECT_VALUE_CONVERTER
+              value: "org.apache.kafka.connect.json.JsonConverter"
+            - name: CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE
+              value: "false"
+            - name: CONNECT_PLUGIN_PATH
+              value: "/usr/share/java,/usr/share/confluent-hub-components,/opt/connect-plugins"
+          ports:
+            - name: rest
+              containerPort: 8083
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
+          volumeMounts:
+            - name: plugins
+              mountPath: /opt/connect-plugins
+            {{- if .Values.metrics.enabled }}
+            - name: jmx-agent
+              mountPath: /opt/jmx-exporter
+            - name: jmx-config
+              mountPath: /etc/jmx-exporter
+              readOnly: true
+            {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /connectors, port: 8083 }
+            initialDelaySeconds: 60      # first boot downloads the plugin zip
+            periodSeconds: 15
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /, port: 8083 }
+            initialDelaySeconds: 120
+            periodSeconds: 30
+      volumes:
+        - name: plugins
+          emptyDir: {}
+        {{- if .Values.metrics.enabled }}
+        - name: jmx-agent
+          emptyDir: {}
+        - name: jmx-config
+          configMap:
+            name: {{ .Release.Name }}-kafka-connect-jmx
+        {{- end }}
+{{- end }}

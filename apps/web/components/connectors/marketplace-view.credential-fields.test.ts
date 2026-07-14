@@ -40,19 +40,19 @@ describe('authFieldsToCredentialFields — the server-driven (only) path', () =>
   it('preserves key/label/secret/optional and carries the hint', () => {
     const fields = authFieldsToCredentialFields(dtos);
     expect(fields.map((f) => f.key)).toEqual(['site_url', 'consumer_secret', 'webhook_secret']);
-    expect(fields[1].secret).toBe(true);
-    expect(fields[2].optional).toBe(true);
-    expect(fields[2].hint).toBe('From WooCommerce settings');
+    expect(fields[1]?.secret).toBe(true);
+    expect(fields[2]?.optional).toBe(true);
+    expect(fields[2]?.hint).toBe('From WooCommerce settings');
   });
 
   it('derives a masked placeholder for secrets and a url placeholder for url fields', () => {
     const fields = authFieldsToCredentialFields(dtos);
-    expect(fields[0].placeholder).toMatch(/^https:\/\//); // url type
-    expect(fields[1].placeholder).toBe('••••••••••••'); // secret
+    expect(fields[0]?.placeholder).toMatch(/^https:\/\//); // url type
+    expect(fields[1]?.placeholder).toBe('••••••••••••'); // secret
   });
 
   it('omits hint when the server sends null (no empty note rendered)', () => {
     const fields = authFieldsToCredentialFields(dtos);
-    expect(fields[0].hint).toBeUndefined();
+    expect(fields[0]?.hint).toBeUndefined();
   });
 });

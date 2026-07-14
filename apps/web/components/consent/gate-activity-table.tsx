@@ -71,7 +71,7 @@ export function GateActivityTable({
           Recent gate decisions
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          The last {data.decisions.length} can_contact() evaluations —{' '}
+          The last {data.decisions.length} send checks —{' '}
           {data.allow_count} allowed, {data.block_count} blocked, {data.queue_count} queued.
         </p>
       </CardHeader>
@@ -79,7 +79,7 @@ export function GateActivityTable({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <caption className="sr-only">
-              The most recent can_contact() gate decisions, each showing the decision,
+              The most recent send-check decisions, each showing the decision,
               the reason, the channel and purpose, and the time.
             </caption>
             <thead>

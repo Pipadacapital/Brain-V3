@@ -1,534 +1,61 @@
+// SPEC: A.1.1 (WA-03 pixel build unification)
 /**
  * /pixel.js — the served brain.js browser asset (Track B).
  *
- * This is a hand-maintained IIFE that is CONTRACT-equivalent to @brain/pixel-sdk (NOT yet a
- * literal build artifact of it — full build-unification is deferred; see notes). It enforces the
- * same INVARIANTS the tested SDK core does, asserted by apps/collector/tests/pixel-asset.test.ts
- * + packages/pixel-sdk parity tests: shape-(a) emission (ADR-1), ONE event per POST (REC-5),
- * event_id minted once + reused on retry (R4), client-side anon-id + 30-min session (NO Set-Cookie,
- * REC-4), raw-only attribution capture, consent fail-safe-absent (I-ST05), NO raw PII / NO salt on
- * the wire (ADR-2).
+ * WA-03: the served asset is a LITERAL BUILD ARTIFACT of @brain/pixel-sdk (the esbuild IIFE
+ * bundle of packages/pixel-sdk/src/asset/{entry,runtime,auto-instrument,constants}.ts, imported
+ * here as a string — PIXEL_ASSET_JS). The previous hand-maintained IIFE divergence is over; the
+ * LAST hand-written IIFE is frozen at tests/fixtures/legacy-pixel-iife.ts and equivalence
+ * (public API surface + event set + wire shape) is asserted by
+ * tests/pixel-asset-equivalence.wa03.test.ts. Regenerate the artifact with
+ * `pnpm --filter @brain/pixel-sdk build:asset`.
  *
- * It additionally carries zero-merchant-code auto-instrumentation (SPA nav, cart-add/remove/update,
- * checkout step, login/signup, clicks, scroll-depth, session start/end, exit-intent, file download,
- * native video/audio, social share) + persisted first-touch attribution that the injectable SDK core
- * deliberately does
- * NOT (the core is env-injected + unit-testable). Click-id + behavioral-event COVERAGE is kept in
- * lock-step between the two: URL ids (fbclid/gclid/ttclid/msclkid/gbraid/wbraid/dclid) + cookie ids
- * (_fbc/_fbp DISTINCT, li_fat_id, _epik→epik), and the cart/checkout/account event set.
+ * The asset enforces the same INVARIANTS as before, asserted by tests/pixel-asset.test.ts:
+ * shape-(a) emission (ADR-1), ONE event per POST (REC-5), event_id minted once + reused on retry
+ * (R4), client-side anon-id + 30-min session (NO Set-Cookie, REC-4), raw-only attribution
+ * capture, consent fail-safe-absent (I-ST05), NO raw PII / NO salt on the wire (ADR-2). It
+ * carries zero-merchant-code auto-instrumentation (SPA nav, cart-add/remove/update, checkout
+ * step, login/signup, clicks, scroll-depth, session start/end, exit-intent, file download,
+ * native video/audio, social share) + persisted first-touch attribution, and the identity-bridge
+ * identify (client-side SHA-256 email hash — the seam WA-07 extends).
  *
  * The merchant snippet (buildDefaultSnippet, pixelRoutes.ts:136) sets
  *   window.__brain = { install_token, brand_id }
- * BEFORE this asset loads, then `<script src="…/pixel.js" defer>`.
+ * BEFORE this asset loads, then `<script src="…/pixel.js" defer>`. The production install path
+ * (ScriptTag) instead carries ?t=&b= and the handler PREPENDS the bootstrap (dynamic config
+ * injection: ingest base url, consent default, install token — a small templating pass over the
+ * built bundle, exactly as before).
  *
  * Served with long cache + a strong validator; versioned at /pixel.v{N}.js. collector_version
  * is stamped into every event's properties for forensic provenance.
- *
- * Asset-parity test: apps/collector/tests/pixel-asset.test.ts evals this asset against a fake
- * window and asserts the emitted event parses with the REAL CollectorEventV1Schema.
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { loadCollectorConfig } from '@brain/config';
+import { PIXEL_ASSET_JS, PIXEL_ASSET_VERSION } from '@brain/pixel-sdk';
+import {
+  serializeIdentityBootstrapField,
+  type PixelIdentityConfigService,
+} from './pixel-identity-config.js';
 
-export const PIXEL_VERSION = 'pixel@0.1.0';
+export const PIXEL_VERSION = PIXEL_ASSET_VERSION;
 
-/** The self-contained brain.js IIFE (production build of @brain/pixel-sdk). */
-export const PIXEL_JS = `(function(){
-  "use strict";
-  var W = window, D = document, NS = navigator, LS;
-  try { LS = W.localStorage; } catch (e) { LS = null; }
-  var boot = W.__brain;
-  if (!boot || !boot.install_token) { try { console.warn("[brain.js] window.__brain.install_token missing — pixel inactive"); } catch(e){} return; }
-  var INSTALL_TOKEN = boot.install_token, BRAND_ID = boot.brand_id;
-  var INGEST = (boot.ingest_base_url || (location.protocol + "//" + location.host)).replace(/\\/$/, "");
-  var COLLECT_URL = INGEST + "/collect";
-  var VERSION = ${JSON.stringify(PIXEL_VERSION)};
-  var ANON_KEY = "__brain_anon_id", SESSION_KEY = "__brain_session", QUEUE_KEY = "__brain_queue", FT_KEY = "__brain_first_touch";
-  var SESSION_TTL = 1800000, MAX_QUEUE = 200;
-
-  // ── No-event-loss queue policy ──────────────────────────────────────────────
-  // CRITICAL families are conversion / money / identity / our own loss-signal — they must NEVER be
-  // evicted to make room for high-volume behavioural noise (scroll.depth / *.click / page.viewed).
-  // On overflow we drop the OLDEST NON-critical first; critical events are only dropped if the queue is
-  // entirely critical AND still over cap (pathological). Mirrors packages/pixel-sdk transport policy.
-  var CRITICAL_RE = /^(order\.|payment\.|checkout\.|cart\.|purchase|identify|pixel\.dropped)/;
-  function isCritical(ev){ return !!(ev && ev.event_name && CRITICAL_RE.test(ev.event_name)); }
-  var _droppedSinceReport = 0;            // client-side drops not yet reported to the collector
-  var _retryAttempt = 0, _retryTimer = null;  // exp-backoff flush retry state
-
-  function get(k){ try { return LS ? LS.getItem(k) : null; } catch(e){ return null; } }
-  function set(k,v){ try { if (LS) LS.setItem(k,v); } catch(e){} }
-  function uuid(){
-    if (W.crypto && typeof W.crypto.randomUUID === "function") return W.crypto.randomUUID();
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c){ var r=Math.random()*16|0, v=c==="x"?r:(r&0x3)|0x8; return v.toString(16); });
-  }
-  // UUIDv7 (RFC 9562): 48-bit big-endian Unix-ms timestamp + 74 random bits, version nibble 0x7, RFC-4122
-  // variant. Time-ordered ids keep event_id monotonic-ish (better Bronze locality + dedup) while staying a
-  // valid uuid for CollectorEventV1Schema. event_id is minted ONCE per event in build() and reused on retry
-  // (the queued object is resent unchanged, R4). Falls back to the v4 uuid() ONLY when crypto is unavailable.
-  function uuidv7(){
-    try {
-      if (!(W.crypto && typeof W.crypto.getRandomValues === "function")) return uuid();
-      var rnd = new W.Uint8Array(16); W.crypto.getRandomValues(rnd);
-      var ms = Date.now(), b = new Array(16);
-      // 48-bit ms timestamp, big-endian (use division/modulo — bitwise ops truncate to 32 bits in JS).
-      b[0] = Math.floor(ms / 0x10000000000) % 256;
-      b[1] = Math.floor(ms / 0x100000000) % 256;
-      b[2] = Math.floor(ms / 0x1000000) % 256;
-      b[3] = Math.floor(ms / 0x10000) % 256;
-      b[4] = Math.floor(ms / 0x100) % 256;
-      b[5] = ms % 256;
-      for (var i = 6; i < 16; i++) b[i] = rnd[i];
-      b[6] = (b[6] & 0x0f) | 0x70; // version 7
-      b[8] = (b[8] & 0x3f) | 0x80; // RFC-4122 variant (10xxxxxx)
-      var h = []; for (var j = 0; j < 16; j++) h.push(("0" + (b[j] & 0xff).toString(16)).slice(-2));
-      return h.slice(0,4).join("") + "-" + h.slice(4,6).join("") + "-" + h.slice(6,8).join("") + "-" + h.slice(8,10).join("") + "-" + h.slice(10,16).join("");
-    } catch(e){ return uuid(); }
-  }
-  function anonId(){ var a = get(ANON_KEY); if (a) return a; a = uuid(); set(ANON_KEY, a); return a; }
-  function sessionId(){
-    var now = Date.now(), raw = get(SESSION_KEY);
-    if (raw){ try { var s = JSON.parse(raw); if (s && s.id && typeof s.last==="number" && (now - s.last) < SESSION_TTL){ set(SESSION_KEY, JSON.stringify({id:s.id,last:now,started:s.started||s.last})); return s.id; } } catch(e){} }
-    var id = uuid(); set(SESSION_KEY, JSON.stringify({id:id,last:now,started:now})); return id;
-  }
-  // Session lifecycle detection — computed BEFORE build() rotates the session (read-only here). Returns the
-  // session.started / session.ended events that should accompany the triggering event:
-  //   - no stored session            → { started:true }                       (brand-new session begins)
-  //   - stored session idle > 30 min → { ended:{ms}, started:true }           (old session ends, new begins)
-  //   - active session               → null                                   (nothing to emit)
-  function sessionLifecycle(){
-    var now = Date.now(), raw = get(SESSION_KEY);
-    if (!raw) return { started: true };
-    try { var s = JSON.parse(raw);
-      if (s && s.id && typeof s.last === "number"){
-        if ((now - s.last) >= SESSION_TTL) return { ended: { id: s.id, ms: (s.last - (s.started || s.last)) }, started: true };
-        return null;
-      }
-    } catch(e){}
-    return { started: true };
-  }
-  // First-touch persistence (real attribution gap): capture the VERY FIRST landing context once and pin it to
-  // localStorage, then ride properties.first_touch on EVERY event thereafter. Today utm/click_ids are re-read
-  // from the CURRENT url each event and are gone the moment the visitor leaves the landing page — so post-
-  // landing events lose their acquisition source. NEVER overwrite an existing first-touch (first wins).
-  function firstTouch(q){
-    var raw = get(FT_KEY);
-    if (raw){ try { var f = JSON.parse(raw); if (f && typeof f === "object") return f; } catch(e){} }
-    var ft = { landing_path: location.pathname, referrer: D.referrer || undefined, ts: new Date().toISOString() };
-    var ci = clickIds(q); if (ci) ft.click_ids = ci;
-    var um = utm(q); if (um) ft.utm = um;
-    set(FT_KEY, JSON.stringify(ft));
-    return ft;
-  }
-  function parseQuery(){
-    var out = {}, q = location.search.replace(/^\\?/, "");
-    if (!q) return out;
-    q.split("&").forEach(function(p){ if(!p) return; var i=p.indexOf("="), k=i<0?p:p.slice(0,i), v=i<0?"":p.slice(i+1); try{ out[decodeURIComponent(k)]=decodeURIComponent(v); }catch(e){ out[k]=v; } });
-    return out;
-  }
-  function cookie(name){ try { var m = (" "+(D.cookie||"")).match(new RegExp("[; ]"+name.replace(/[.$?*|{}()\\[\\]\\\\\\/+^]/g,"\\\\$&")+"=([^;]*)")); return m ? decodeURIComponent(m[1]) : ""; } catch(e){ return ""; } }
-  // URL click-ids: fbclid/gclid/ttclid + msclkid (Bing), gbraid/wbraid (Google iOS app↔web), dclid (Google Display).
-  // Cookie click-ids: _fbc/_fbp (Meta, DISTINCT — both needed for CAPI), li_fat_id (LinkedIn), _epik→epik (Pinterest).
-  // A click-id not read off the landing URL is lost forever; cookies persist past the landing hit. URL wins per key.
-  var CLICK_URL = ["fbclid","gclid","ttclid","msclkid","gbraid","wbraid","dclid"];
-  var CLICK_COOKIE = [["_fbc","_fbc"],["_fbp","_fbp"],["li_fat_id","li_fat_id"],["_epik","epik"]];
-  function clickIds(q){
-    var ids={};
-    CLICK_URL.forEach(function(k){ if(q[k]) ids[k]=q[k]; });
-    CLICK_COOKIE.forEach(function(p){ if(ids[p[1]]) return; var c=cookie(p[0]); if(c) ids[p[1]]=c; });
-    return Object.keys(ids).length?ids:null;
-  }
-  function utm(q){ var u={}; ["source","medium","campaign","term","content"].forEach(function(k){ if(q["utm_"+k]) u[k]=q["utm_"+k]; }); return Object.keys(u).length?u:null; }
-  function consent(){
-    // 1. Explicit override: window.__brainConsent (host page sets it).
-    var c = W.__brainConsent;
-    if (c != null && typeof c === "object") return { analytics: c.analytics===true, marketing: c.marketing===true, personalization: c.personalization===true, ai_processing: c.ai_processing===true };
-    // 2. Shopify Customer Privacy API — the storefront's REAL consent state. Returning a PRESENT
-    //    consent_flags object (whatever the values) is what lets the event pass the R3 gate into
-    //    Bronze; the values then gate downstream marketing/CAPI use. Absent API → null (R3 drops).
-    try {
-      var sp = W.Shopify && W.Shopify.customerPrivacy;
-      if (sp && typeof sp.analyticsProcessingAllowed === "function") {
-        return {
-          analytics: sp.analyticsProcessingAllowed() === true,
-          marketing: typeof sp.marketingAllowed === "function" ? sp.marketingAllowed() === true : false,
-          personalization: typeof sp.preferencesProcessingAllowed === "function" ? sp.preferencesProcessingAllowed() === true : false,
-          ai_processing: false
-        };
-      }
-    } catch(e){}
-    // 3. Default-granted fallback (PIXEL_CONSENT_DEFAULT=granted) — ONLY when no real signal exists
-    //    (no CMP on the store). Explicit, merchant-accepted, flag-gated. A real signal above wins.
-    if (boot.consent_default === "granted") return { analytics: true, marketing: true, personalization: true, ai_processing: false };
-    return null;
-  }
-  function uaClass(){ return /Mobi|Android|iPhone|iPad/i.test(NS.userAgent) ? "mobile" : "desktop"; }
-
-  function build(name, extra, sessOverride){
-    var q = parseQuery();
-    var props = { install_token: INSTALL_TOKEN, brain_anon_id: anonId(), session_id: sessOverride || sessionId(),
-      referrer: D.referrer || undefined, landing_path: location.pathname,
-      device: { ua_class: uaClass(), viewport: (W.innerWidth + "x" + W.innerHeight) }, collector_version: VERSION };
-    props.first_touch = firstTouch(q); // pinned acquisition context, survives past the landing page
-    var ci = clickIds(q); if (ci) props.click_ids = ci;
-    var um = utm(q); if (um) props.utm = um;
-    if (extra) for (var key in extra){ if (Object.prototype.hasOwnProperty.call(extra,key)) props[key]=extra[key]; }
-    // event_id = UUIDv7 (time-ordered, was v4); correlation_id stays v4. Minted ONCE here, reused on retry (R4).
-    var ev = { schema_version: "1", event_id: uuidv7(), brand_id: BRAND_ID, correlation_id: uuid(),
-      event_name: name, occurred_at: new Date().toISOString(), properties: props };
-    var cf = consent(); if (cf) ev.consent_flags = cf;
-    return ev;
-  }
-
-  function readQ(){ var raw = get(QUEUE_KEY); if(!raw) return []; try{ var a=JSON.parse(raw); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
-  // Keep-critical eviction (G1). The old policy 'q.slice(q.length - MAX_QUEUE)' blindly dropped the OLDEST
-  // events — a flood of scroll.depth/rage.click could evict a queued order.placed/payment.* (the one true
-  // event-loss hole). Now: walk oldest→newest, drop oldest NON-critical first until within cap; only if the
-  // queue is still over (all-critical) drop oldest critical as a last resort. Count drops for pixel.dropped.
-  function writeQ(q){
-    if (q.length > MAX_QUEUE){
-      var over = q.length - MAX_QUEUE, kept = [], i;
-      for (i = 0; i < q.length; i++){
-        if (over > 0 && !isCritical(q[i])){ over--; _droppedSinceReport++; continue; }
-        kept.push(q[i]);
-      }
-      if (kept.length > MAX_QUEUE){ var extra = kept.length - MAX_QUEUE; _droppedSinceReport += extra; kept = kept.slice(extra); }
-      q = kept;
-    }
-    set(QUEUE_KEY, JSON.stringify(q));
-  }
-
-  function sendOne(body, done){
-    // sendBeacon (survives unload) → fetch(keepalive) fallback. ONE object per POST, NO credentials.
-    // CONTENT-TYPE = text/plain (NOT application/json): text/plain is a CORS-"simple" content-type, so a
-    // cross-origin POST needs NO preflight. application/json forces an OPTIONS preflight — and a
-    // PREFLIGHTED sendBeacon is silently DROPPED by browsers (beacon returns true, the POST never sends),
-    // so events vanish. The body is still JSON text; the collector parses text/plain as JSON.
-    try { if (NS.sendBeacon){ var blob = new Blob([body], {type:"text/plain;charset=UTF-8"}); if (NS.sendBeacon(COLLECT_URL, blob)){ done(true); return; } } } catch(e){}
-    try {
-      fetch(COLLECT_URL, { method:"POST", headers:{"Content-Type":"text/plain;charset=UTF-8"}, body:body, keepalive:true, credentials:"omit" })
-        .then(function(r){ done(!!(r && r.ok)); })["catch"](function(){ done(false); });
-    } catch(e){ done(false); }
-  }
-
-  // Exponential-backoff retry (G2). 1s → 2 → 4 → 8 → 16 → 30s (cap), then idle until the next page event.
-  // Without this a single failed flush stranded the whole queue until some later trigger fired — on a
-  // one-page session (the common abandoned-cart case) the queued events were simply lost.
-  var RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
-  function scheduleRetry(){
-    if (_retryTimer || _retryAttempt >= RETRY_DELAYS.length) return;
-    var d = RETRY_DELAYS[_retryAttempt]; _retryAttempt++;
-    try { _retryTimer = W.setTimeout(function(){ _retryTimer = null; flush(); }, d); } catch(e){}
-  }
-  function resetRetry(){ _retryAttempt = 0; if (_retryTimer){ try { W.clearTimeout(_retryTimer); } catch(e){} _retryTimer = null; } }
-
-  var flushing = false;
-  function flush(){
-    if (flushing) return; flushing = true;
-    // STORAGE-AUTHORITATIVE drain: re-read the queue on every step so events enqueued WHILE a flush
-    // is in flight (e.g. the auto-fire emits page.viewed + product.viewed/checkout.step_viewed back
-    // to back) are not clobbered by a stale in-memory slice. Send the head, then persist the tail.
-    function step(){
-      var q = readQ();
-      if (q.length === 0){ flushing = false; resetRetry(); return; }
-      var body = JSON.stringify(q[0]); // ONE object — never an array (REC-5)
-      sendOne(body, function(ok){
-        if (!ok){ flushing = false; scheduleRetry(); return; } // keep the queue; retry with backoff
-        resetRetry();             // a good send means we're online again — clear the backoff
-        writeQ(readQ().slice(1)); // drop ONLY the head we just sent; keep anything appended meanwhile
-        step();
-      });
-    }
-    step();
-  }
-
-  function emitRaw(name, extra, sessOverride){
-    var q = readQ();
-    q.push(build(name, extra, sessOverride));
-    // Piggyback a CRITICAL pixel.dropped marker so the collector learns about any client-side loss
-    // (No-event-loss observability). Done HERE (not inside writeQ) so eviction never re-enters emit.
-    if (_droppedSinceReport > 0 && name !== "pixel.dropped"){
-      var n = _droppedSinceReport; _droppedSinceReport = 0;
-      q.push(build("pixel.dropped", { dropped_count: n, reason: "queue_overflow" }));
-    }
-    writeQ(q); flush();
-  }
-  // Public emit. Session lifecycle is detected BEFORE build() rotates the session, but the session.started /
-  // session.ended markers are queued AFTER the triggering event — so the first synchronous POST stays the
-  // triggering event (REC-5: still ONE event per POST). session.ended carries the EXPIRED session's id +
-  // duration; session.started carries the freshly-minted session id. session.* events skip re-detection.
-  function emit(name, extra){
-    var lc = (name.indexOf("session.") !== 0) ? sessionLifecycle() : null;
-    emitRaw(name, extra);
-    if (lc){
-      if (lc.ended) emitRaw("session.ended", { session_duration_ms: lc.ended.ms }, lc.ended.id);
-      if (lc.started) emitRaw("session.started", {});
-    }
-  }
-
-  // ── Identity capture (the anon→customer BRIDGE) ────────────────────────────
-  // PRIVACY (ADR-2: NO raw PII / NO salt on the wire): the email is hashed CLIENT-SIDE with plain,
-  // UNSALTED SHA-256 of the normalized (trim+lowercase) value — the SAME format Shopify/Woo put in an
-  // order's hashed_customer_email. The resolver's pre_hashed_email path links it, so the anonymous
-  // journey (brain_anon_id on this event) and the order (carrying the SAME pre_hashed_email) resolve to
-  // ONE brain_id → the journey becomes a known-customer journey. No raw email ever leaves the page.
-  function sha256Hex(str, cb){
-    try {
-      if (W.crypto && W.crypto.subtle && W.TextEncoder){
-        W.crypto.subtle.digest("SHA-256", new W.TextEncoder().encode(str)).then(function(buf){
-          var b = new Uint8Array(buf), h = ""; for (var i=0;i<b.length;i++){ h += ("0"+b[i].toString(16)).slice(-2); } cb(h);
-        })["catch"](function(){ cb(null); });
-      } else { cb(null); }
-    } catch(e){ cb(null); }
-  }
-  var _identified = {};
-  function identify(traits){
-    if (!traits) return;
-    var email = traits.email;
-    if (email && ("" + email).indexOf("@") > 0){
-      var norm = ("" + email).trim().toLowerCase();
-      if (_identified[norm]) return; // once per email per page (no spam)
-      _identified[norm] = 1;
-      sha256Hex(norm, function(h){ if (h) emit("identify", { hashed_customer_email: h }); });
-    }
-  }
-
-  W.brain = {
-    page: function(x){ emit("page.viewed", x); },
-    cartItemAdded: function(x){ emit("cart.item_added", x); },
-    cartItemRemoved: function(x){ emit("cart.item_removed", x); },
-    cartUpdated: function(x){ emit("cart.updated", x); },
-    cartViewed: function(x){ emit("cart.viewed", x); },
-    checkoutStarted: function(x){ emit("checkout.started", x); },
-    checkoutStep: function(x){ emit("checkout.step_viewed", x); },
-    // Checkout / payment-page signals — call these from a script pasted on the payment-provider /
-    // thank-you screens (which a storefront ScriptTag cannot reach). Behavioral journey signals only;
-    // revenue + payment truth still come deterministically from the order/payment connectors.
-    shippingSelected: function(x){ emit("checkout.shipping_selected", x); },
-    paymentInitiated: function(x){ emit("payment.initiated", x); },
-    paymentSucceeded: function(x){ emit("payment.succeeded", x); },
-    paymentFailed: function(x){ emit("payment.failed", x); },
-    orderPlaced: function(x){ emit("order.placed", x); },
-    couponApplied: function(x){ emit("coupon.applied", x); },
-    login: function(x){ emit("user.logged_in", x); },
-    signup: function(x){ emit("user.signed_up", x); },
-    identify: function(t){ identify(t); },
-    track: function(n,x){ emit(n, x); },
-    flush: flush
-  };
-
-  // ── Comprehensive auto-instrumentation (online store) ──────────────────────
-  // Captures all key storefront activity with zero merchant code. Checkout/thank-you pages are
-  // OUT of ScriptTag scope (a separate origin) — those need the Web Pixels extension.
-  function pageType(){
-    var p = location.pathname, q = location.search;
-    // Shopify: /products/<h>, /collections/<h>.  WooCommerce: /product/<h>, /product-category/<h>, /shop.
-    if (p.indexOf("/products/") >= 0 || p.indexOf("/product/") >= 0) return "product";
-    if (p.indexOf("/collections/") >= 0 || p.indexOf("/product-category/") >= 0 || p.indexOf("/product-tag/") >= 0 || p === "/shop" || p.indexOf("/shop/") === 0) return "collection";
-    if (p === "/cart" || p.indexOf("/cart") === 0) return "cart";
-    // Order confirmation / thank-you. Shopify: /thank_you, /thank-you, /orders/<id>. Woo: /order-received/.
-    if (p.indexOf("/thank_you") >= 0 || p.indexOf("/thank-you") >= 0 || p.indexOf("/order-received") >= 0 || /\\/orders\\/[0-9]/.test(p)) return "order_confirmation";
-    if (p.indexOf("/checkout") >= 0) return "checkout";
-    if (p.indexOf("/search") >= 0 || /[?&]s=/.test(q)) return "search"; // Woo search = ?s=
-    // Account: Shopify /account*, WooCommerce /my-account*.
-    if (p.indexOf("/account/register") >= 0) return "account_register";
-    if (p.indexOf("/account/login") >= 0) return "account_login";
-    if (p.indexOf("/account") >= 0 || p.indexOf("/my-account") >= 0) return "account";
-    if (p === "/" || p === "") return "home";
-    if (p.indexOf("/pages/") >= 0) return "page";
-    if (p.indexOf("/blogs/") >= 0 || p.indexOf("/blog/") >= 0) return "blog";
-    return "other";
-  }
-  function handleAfter(prefix){ var p = location.pathname, i = p.indexOf(prefix); if (i < 0) return undefined; var rest = p.slice(i + prefix.length); return rest.split("/")[0].split("?")[0].split("#")[0] || undefined; }
-  function trackPageView(){
-    var t = pageType();
-    emit("page.viewed", { page_type: t });
-    if (t === "product") emit("product.viewed", { product_handle: handleAfter("/products/") || handleAfter("/product/") });
-    else if (t === "collection") emit("collection.viewed", { collection_handle: handleAfter("/collections/") || handleAfter("/product-category/") || handleAfter("/product-tag/") });
-    else if (t === "cart") emit("cart.viewed", {});
-    else if (t === "checkout") { var qc = parseQuery(); emit("checkout.step_viewed", { step: qc.step || handleAfter("/checkout/") || undefined }); }
-    else if (t === "search") { var q = parseQuery(); emit("search.submitted", { query: q.q || q.query }); }
-    // Order confirmation — a BEHAVIORAL funnel-completion marker (NOT revenue: revenue truth comes
-    // from the order connectors, never the pixel). order_id (if present in the URL) helps stitch.
-    else if (t === "order_confirmation") { emit("order.placed", { order_id: handleAfter("/orders/") || handleAfter("/order-received/") || undefined }); }
-  }
-
-  // SPA navigation (themes using the History API) → re-fire on path change.
-  var lastPath = location.pathname + location.search;
-  function onNav(){ var cur = location.pathname + location.search; if (cur !== lastPath){ lastPath = cur; trackPageView(); } }
-  try {
-    var _ps = history.pushState; history.pushState = function(){ var r = _ps.apply(this, arguments); setTimeout(onNav, 0); return r; };
-    var _rs = history.replaceState; history.replaceState = function(){ var r = _rs.apply(this, arguments); setTimeout(onNav, 0); return r; };
-    W.addEventListener("popstate", function(){ setTimeout(onNav, 0); });
-  } catch(e){}
-
-  // Cart-mutation interception — Shopify AJAX cart endpoints. Classify the cart op from the URL +
-  // body: /cart/add → cart.item_added; /cart/change|/cart/update with quantity 0 → cart.item_removed
-  // (remove_from_cart); other /cart/change|/cart/update → cart.updated (cart_update). Same logic for
-  // fetch + XHR + classic form submit.
-  function cartAddProps(b){ var props = {}; try { if (b && typeof b === "object"){ var it = b.items && b.items[0]; props.variant_id = b.id || (it && it.id); props.quantity = b.quantity || (it && it.quantity); } } catch(e){} return props; }
-  // Returns the event_name for a Shopify cart URL+body, or null when it is not a cart mutation.
-  function cartEvent(u, b){
-    // Shopify AJAX cart.
-    if (u.indexOf("/cart/add") >= 0) return "cart.item_added";
-    if (u.indexOf("/cart/change") >= 0 || u.indexOf("/cart/update") >= 0){
-      var qty; try { if (b && typeof b === "object"){ qty = (b.quantity != null) ? b.quantity : (b.updates ? null : undefined); } } catch(e){}
-      return (qty === 0 || qty === "0") ? "cart.item_removed" : "cart.updated";
-    }
-    // WooCommerce: legacy AJAX (?wc-ajax=add_to_cart / ?add-to-cart=<id>) + the Store API (Blocks).
-    if (u.indexOf("wc-ajax=add_to_cart") >= 0 || u.indexOf("add-to-cart=") >= 0 || u.indexOf("/wc/store/v1/cart/add-item") >= 0 || u.indexOf("/cart/add-item") >= 0) return "cart.item_added";
-    if (u.indexOf("wc-ajax=remove_from_cart") >= 0 || u.indexOf("/wc/store/v1/cart/remove-item") >= 0) return "cart.item_removed";
-    if (u.indexOf("wc-ajax=update_cart") >= 0 || u.indexOf("/wc/store/v1/cart/update-item") >= 0 || u.indexOf("/wc/store/v1/batch") >= 0) return "cart.updated";
-    return null;
-  }
-  function emitCart(u, b){ var n = cartEvent(u, b); if (n) emit(n, n === "cart.item_added" ? cartAddProps(b) : (cartAddProps(b))); }
-  try {
-    var _fetch = W.fetch;
-    if (_fetch) W.fetch = function(input, init){ try { var u = (typeof input === "string") ? input : (input && input.url) || ""; var b = null; try { b = init && init.body ? JSON.parse(init.body) : null; } catch(e2){} emitCart(u, b); } catch(e){} return _fetch.apply(this, arguments); };
-  } catch(e){}
-  try {
-    var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function(m, u){ try { this.__bu = u; } catch(e){} return _open.apply(this, arguments); };
-    XMLHttpRequest.prototype.send = function(body){ try { var b = null; try { b = body ? JSON.parse(body) : null; } catch(e2){} emitCart("" + (this.__bu || ""), b); } catch(e){} return _send.apply(this, arguments); };
-  } catch(e){}
-  D.addEventListener("submit", function(ev){ try { var f = ev.target; if (!f) return; var a = "" + (f.action || "");
-    var qs = f.querySelector ? function(s){ try { return f.querySelector(s); } catch(e){ return null; } } : function(){ return null; };
-    var classified = true;
-    if (a.indexOf("/cart/add") >= 0 || a.indexOf("add-to-cart") >= 0) emit("cart.item_added", {});
-    else if (a.indexOf("/cart/change") >= 0 || a.indexOf("/cart/update") >= 0) emit("cart.updated", {});
-    // Account auth — Shopify (/account*) + WooCommerce (.woocommerce-form-login / -register).
-    else if (a.indexOf("/account/login") >= 0 || qs(".woocommerce-form-login,[name=login]")) emit("user.logged_in", {});
-    else if ((a.indexOf("/account") >= 0 && (a.indexOf("register") >= 0 || a.indexOf("/account#") >= 0 || f.id === "create_customer")) || qs(".woocommerce-form-register,[name=register]")) emit("user.signed_up", {});
-    else classified = false;
-    // Coupon / discount-code usage (Shopify "discount", Woo "coupon_code"). A discount code is not PII.
-    var cp = qs('input[name*="coupon" i],input[id*="coupon" i],input[name*="discount" i],input[id*="discount" i],input[name*="promo" i]');
-    if (cp && cp.value) emit("coupon.applied", { code: ("" + cp.value).trim().slice(0, 64) });
-    // Generic form submission (newsletter / contact / etc.) not already classified above.
-    if (!classified) emit("form.submitted", { form_id: f.id || undefined, form_name: (f.getAttribute && f.getAttribute("name")) || undefined });
-    // Identity BRIDGE: any submit carrying an email (login / register / newsletter / checkout) → hash
-    // it client-side (no raw PII on the wire) → links the anon journey to the known customer.
-    var em = qs('input[type=email],input[name*="email" i],input[id*="email" i]');
-    if (em && em.value) identify({ email: em.value });
-  } catch(e){} }, true);
-
-  // ── Content-engagement helpers (download / share classification) ───────────
-  // A link whose href resolves to a downloadable asset → file_ext. mp4 is treated as a FILE download here
-  // (a direct media link), distinct from an in-page <video> element (handled by the media listeners below).
-  var DL_EXT = ["pdf","zip","dmg","exe","csv","xlsx","doc","docx","ppt","pptx","rar","7z","pkg","mp3","mp4"];
-  function downloadExt(href){
-    if (!href) return null;
-    var clean = ("" + href).split("?")[0].split("#")[0];
-    var dot = clean.lastIndexOf("."); if (dot < 0) return null;
-    var e = clean.slice(dot + 1).toLowerCase();
-    for (var i = 0; i < DL_EXT.length; i++){ if (DL_EXT[i] === e) return e; }
-    return null;
-  }
-  // Known social-share sharer URLs → the share method/network. navigator.share() is handled separately.
-  function shareMethod(href){
-    if (!href) return null;
-    var h = ("" + href).toLowerCase();
-    if (h.indexOf("facebook.com/sharer") >= 0 || h.indexOf("facebook.com/share.php") >= 0) return "facebook";
-    if (h.indexOf("twitter.com/intent") >= 0 || h.indexOf("x.com/intent") >= 0) return "twitter";
-    if (h.indexOf("linkedin.com/sharing") >= 0 || h.indexOf("linkedin.com/sharearticle") >= 0) return "linkedin";
-    if (h.indexOf("api.whatsapp.com/send") >= 0 || h.indexOf("wa.me/") >= 0) return "whatsapp";
-    if (h.indexOf("t.me/share") >= 0 || h.indexOf("telegram.me/share") >= 0) return "telegram";
-    return null;
-  }
-
-  // Web Share API — monkey-patch navigator.share so a native share invocation is captured (method=web_share).
-  try {
-    if (NS.share && !NS.__brainShareWrapped){
-      var _origShare = NS.share; NS.__brainShareWrapped = 1;
-      NS.share = function(){ try { emit("share", { method: "web_share" }); } catch(e){} return _origShare.apply(NS, arguments); };
-    }
-  } catch(e){}
-
-  // Exit intent (DESKTOP only) — the cursor leaves through the TOP edge of the viewport (clientY<=0) with no
-  // relatedTarget (it left the document). A strong "about to bounce" signal for exit-offer / abandonment logic.
-  // Throttled to avoid spamming when the user repeatedly grazes the top chrome.
-  if (uaClass() === "desktop"){
-    var _lastExit = 0;
-    D.addEventListener("mouseout", function(ev){ try {
-      var y = (ev && ev.clientY != null) ? ev.clientY : 1;
-      if (y <= 0 && !(ev && ev.relatedTarget)){ var now = Date.now(); if ((now - _lastExit) > 3000){ _lastExit = now; emit("exit_intent", {}); } }
-    } catch(e){} }, true);
-  }
-
-  // Native media engagement — <video>/<audio> play/pause/ended. Media events do NOT bubble, so we listen in the
-  // CAPTURE phase on the document (where they DO pass). position_seconds = the playhead at the moment.
-  function mediaListener(action){
-    return function(ev){ try {
-      var el = ev && ev.target; if (!el) return; var tn = ("" + (el.tagName || "")).toLowerCase();
-      if (tn !== "video" && tn !== "audio") return;
-      emit("video", { action: action, src: el.currentSrc || el.src || undefined, position_seconds: typeof el.currentTime === "number" ? Math.round(el.currentTime) : undefined });
-    } catch(e){} };
-  }
-  try {
-    D.addEventListener("play", mediaListener("play"), true);
-    D.addEventListener("pause", mediaListener("pause"), true);
-    D.addEventListener("ended", mediaListener("ended"), true);
-  } catch(e){}
-
-  // Click tracking + frustration signals — links/buttons (element.clicked), plus rage clicks and
-  // dead clicks. The latter two are UX-friction signals that power "checkout bottleneck" /
-  // "conversion drop" insights. No PII.
-  var _clicks = [], _lastRage = 0;
-  D.addEventListener("click", function(ev){ try {
-    var el = ev.target; if (!el) return;
-    var now = Date.now(), x = (ev && ev.clientX) || 0, y = (ev && ev.clientY) || 0;
-    // Rage: >=3 clicks within 1s inside a ~40px box → ONE rage.click per burst (1.5s debounce).
-    _clicks.push({ t: now, x: x, y: y }); if (_clicks.length > 8) _clicks.shift();
-    var near = 0; for (var i = 0; i < _clicks.length; i++){ var c = _clicks[i]; if ((now - c.t) < 1000 && Math.abs(c.x - x) < 40 && Math.abs(c.y - y) < 40) near++; }
-    if (near >= 3 && (now - _lastRage) > 1500){ _lastRage = now; emit("rage.click", { count: near, x: x, y: y }); }
-    var a = el.closest ? el.closest("a,button,input,select,textarea,label,[role=button],[onclick],[data-brain-track],[contenteditable]") : null;
-    if (a){
-      var txt = (a.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 80);
-      var hrefV = (a.getAttribute && a.getAttribute("href")) || undefined;
-      emit("element.clicked", { element: (a.tagName || "").toLowerCase(), text: txt || undefined, href: hrefV, el_id: a.id || undefined });
-      // File download — a link to a downloadable asset (pdf/zip/csv/…); the click is the only signal we get
-      // (the actual GET is a browser navigation we never see). Behavioral content-engagement, no PII.
-      var dext = downloadExt(hrefV); if (dext) emit("download", { href: hrefV, file_ext: dext });
-      // Social share via a known sharer link (the Web Share API path is monkey-patched separately).
-      var smeth = shareMethod(hrefV); if (smeth) emit("share", { method: smeth });
-    } else {
-      // Dead click: the element LOOKS clickable (cursor:pointer) but resolves to NO interactive
-      // ancestor — the user expected something to happen and nothing did. Precise (not every stray click).
-      var looksClickable = false;
-      try { var cs = W.getComputedStyle ? W.getComputedStyle(el) : null; looksClickable = !!(cs && cs.cursor === "pointer"); } catch(e2){}
-      if (looksClickable) emit("dead.click", { element: (el.tagName || "").toLowerCase(), x: x, y: y });
-    }
-  } catch(e){} }, true);
-
-  // Scroll-depth milestones (25/50/75/100%), once each.
-  var sm = {};
-  W.addEventListener("scroll", function(){ try { var h = D.documentElement; var pct = Math.round((((W.scrollY || h.scrollTop) + W.innerHeight) / (h.scrollHeight || 1)) * 100); var ms = [25,50,75,100]; for (var k = 0; k < ms.length; k++){ if (pct >= ms[k] && !sm[ms[k]]){ sm[ms[k]] = 1; emit("scroll.depth", { percent: ms[k] }); } } } catch(e){} }, { passive: true });
-
-  // session.ended on unload — when a session exists, close it out with its elapsed duration. Guarded to fire
-  // at most once per page load (a pagehide can fire more than once across bfcache transitions). Carries the
-  // current session id so the ended marker is attributed to the right session.
-  var _endedOnUnload = false;
-  function endSessionOnUnload(){
-    if (_endedOnUnload) return;
-    var raw = get(SESSION_KEY); if (!raw) return;
-    try { var s = JSON.parse(raw); if (s && s.id){ _endedOnUnload = true; emitRaw("session.ended", { session_duration_ms: Date.now() - (s.started || s.last || Date.now()) }, s.id); } } catch(e){}
-  }
-
-  // Durable retry triggers (NO Set-Cookie — stateless edge, REC-4).
-  W.addEventListener("pagehide", function(){ endSessionOnUnload(); flush(); });
-  D.addEventListener("visibilitychange", function(){ if (D.visibilityState === "hidden") flush(); });
-
-  // Auto-fire the initial page + typed view.
-  trackPageView();
-})();`;
+/** The self-contained brain.js IIFE — the BUILT @brain/pixel-sdk asset (WA-03). */
+export const PIXEL_JS = PIXEL_ASSET_JS;
 
 /** UUID guard — only inject query-derived values that are real UUIDs (no JS-injection via the asset). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function registerPixelAssetRoute(app: FastifyInstance): void {
-  const handler = (
+export function registerPixelAssetRoute(
+  app: FastifyInstance,
+  // SPEC A.1.1 + A.1.2 (WA-07/WA-08): optional per-brand identity-config resolver. Absent (tests /
+  // Redis-less deploys) OR resolving null (flag OFF / unknown token / any failure) ⇒ NO identity
+  // field is injected and the served asset behaves exactly as before WA-07 (fail-closed-to-legacy).
+  identityConfig?: PixelIdentityConfigService,
+): void {
+  const handler = async (
     req: FastifyRequest<{ Querystring: { t?: string; b?: string } }>,
     reply: FastifyReply,
-  ): void => {
+  ): Promise<void> => {
     // Production install path (ScriptTag-injected): the src carries ?t=<install_token>&b=<brand_id>.
     // A ScriptTag cannot set window.__brain first (and document.currentScript is null for async
     // injected scripts), so the collector PREPENDS the bootstrap when valid UUIDs are present.
@@ -550,7 +77,13 @@ export function registerPixelAssetRoute(app: FastifyInstance): void {
       // Default-granted consent (merchant-accepted, flag-gated): only applied by consent() when no
       // real consent signal (window.__brainConsent / Shopify Customer Privacy) exists. See README/RB-4.
       const consentField = loadCollectorConfig().PIXEL_CONSENT_DEFAULT === 'granted' ? ',consent_default:"granted"' : '';
-      body = `window.__brain={install_token:"${t}",brand_id:"${b}"${ingestField}${consentField}};\n${PIXEL_JS}`;
+      // SPEC A.1.1 + A.1.2 (WA-07/WA-08): per-brand identity bootstrap — present ONLY when the
+      // pixel.identify flag is ON for this brand AND the install token proves the brand pairing.
+      // resolve() never throws (fail-closed-to-legacy → empty field).
+      const identityField = serializeIdentityBootstrapField(
+        identityConfig ? await identityConfig.resolve(t, b) : null,
+      );
+      body = `window.__brain={install_token:"${t}",brand_id:"${b}"${ingestField}${consentField}${identityField}};\n${PIXEL_JS}`;
     }
     reply
       .header('Content-Type', 'application/javascript; charset=utf-8')

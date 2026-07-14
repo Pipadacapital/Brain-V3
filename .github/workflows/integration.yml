@@ -20,12 +20,13 @@ on:
   schedule:
     - cron: '0 2 * * *' # nightly 02:00 UTC
   push:
-    branches: [master]
+    branches: [master]  # RELEASE-LAYER: checks only at promotion (master) — release pushes run nothing
   # PR gate (promoted now the dbt Silver step is proven green — verified locally + on master push).
   # Path-filtered to the data/connector/medallion/infra surfaces so doc-only PRs don't pay the
   # real-engine cost. To make it BLOCKING, mark "integration" a required status check in branch
   # protection (a repo-admin setting, not expressible in this file).
   pull_request:
+    branches: [master]  # RELEASE-LAYER: only the release → master promotion PR
     paths:
       - 'apps/**'
       - 'packages/**'
@@ -189,7 +190,17 @@ jobs:
           echo "stack started (pid $!)"
 
       - name: Wait for web to be ready
-        run: npx wait-on http://localhost:3000 --timeout 120000
+        # Next.js runs in dev mode here (turbo run dev) and cold-compiles the whole monorepo app on
+        # first request — 120s regularly wasn't enough on CI runners (chronic wait-on timeout). 300s
+        # (well under the 40-min job cap) covers the cold compile; a genuine crash is surfaced by the
+        # stack-log dump below rather than hidden behind the timeout.
+        run: npx wait-on http://localhost:3000 --timeout 300000
+
+      - name: Dump stack log if web never came up
+        if: failure()
+        run: |
+          echo "─── /tmp/stack.log (app stack: core + web + collector + stream-worker) ───"
+          tail -n 200 /tmp/stack.log || echo "(no stack log)"
 
       - name: Playwright e2e
         run: pnpm --filter @brain/web test:e2e

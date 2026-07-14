@@ -24,7 +24,7 @@
  * Phase 1. This read therefore reports accepted-event health only; quarantine volume
  * is a Kafka/metric concern, surfaced as an honest "—" (not a fabricated 0) in the UI.
  *
- * F-SEC-02: reads are brand-scoped by the withSilverBrand seam (Iceberg collector_events).
+ * F-SEC-02: reads are brand-scoped by the withSilverBrand seam (the ADR-0010 connect lift view).
  * Honest-empty: state:'no_data' only when the brand has NO Bronze rows (or StarRocks isn't wired).
  */
 

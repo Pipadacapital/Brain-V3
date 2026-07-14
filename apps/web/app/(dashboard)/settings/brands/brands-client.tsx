@@ -78,7 +78,7 @@ export function BrandsClient() {
       <PageHeader
         eyebrow="Settings"
         title="Brands"
-        description="All the brands in your workspace. Edit a brand's profile, or delete (archive) one to remove it from the switcher and stop its ingestion — archived brands stay recoverable from Archived Brands."
+        description="All the brands in your workspace. Edit a brand's profile, or delete (archive) one to remove it from the switcher and stop syncing its data — archived brands stay recoverable from Archived Brands."
       />
 
       <SectionCard

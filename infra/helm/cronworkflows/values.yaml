@@ -6,14 +6,14 @@
 
 # Default image (the core image — most jobs are core entrypoints). Per-job `image:` overrides this.
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-core
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
 
 # Stream-worker image (for jobs whose entrypoint ships in that deployable, e.g. revenue-finalization).
 streamWorkerImage:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-stream-worker
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: ""
   pullPolicy: IfNotPresent
@@ -28,9 +28,12 @@ timezone: "Asia/Kolkata"
 serviceAccount:
   name: brain-jobs   # IRSA role for AWS Secrets Manager access (annotated per env)
 
-env:
-  - name: SERVICE_NAME
-    value: cronworkflows
+# NO global SERVICE_NAME: the app config schemas require their OWN literal
+# (z.literal('stream-worker') / ('core')) and are self-satisfying via defaults
+# when unset. Setting 'cronworkflows' here failed EVERY job's config parse the
+# moment the tsx entrypoints made jobs actually load config (2026-07-12:
+# "SERVICE_NAME: Invalid literal value, expected \"stream-worker\"").
+env: []
 
 defaults:
   concurrencyPolicy: Forbid        # never overlap a brand-enumeration run with itself
@@ -47,42 +50,47 @@ defaults:
       cpu: "1"
       memory: 1Gi
 
-# Spark Bronze dual-sink + parity oracle (ADR-0002 Slice 3). GATED OFF by default — enabling it runs
-# the Iceberg Bronze sink IN PARALLEL with the live Postgres write (additive, reversible) plus the
-# PG⇄Iceberg parity oracle. Flip `enabled: true` per env only when ready to start the migration;
-# turn off to instantly stop the dual-sink. See db/iceberg/spark/ + docs/adr/0002-*.
+# Spark Bronze MAINTENANCE cron (templates/spark-bronze.yaml). ADR-0010: Bronze LANDING is the
+# Kafka Connect Iceberg sink — the infra/helm/kafka-connect chart is the SOLE landing writer; the
+# former bronze-landing CronWorkflow (bronze_landing.py, Spark-SS) was REMOVED 2026-07-05 with the
+# whole Spark-SS landing path (rollback = git revert). What remains here is bronze-maintenance:
+# small-file compaction + snapshot-expiry (7d; 14d durable collector lane, AUD-OPS-015) over the Bronze tables, including the
+# Connect-written collector_events_connect / <lane>_raw_connect tables.
 sparkBronze:
-  # ENABLED. CORRECTION: the sink runs spark-submit --master local[*] in a SINGLE Argo Workflow pod
-  # (see templates/spark-bronze.yaml + the Dockerfile ENTRYPOINT) — it needs NO Spark Operator and NO
-  # dedicated cluster, just a pod sized for the driver (resources below give 4Gi; driverMemory 3g). The
-  # image is CI-built + digest-pinned (build-data-images). The remaining PREREQUISITE is operational,
-  # not infra: core-env (envSecretName) MUST carry the sink's config — KAFKA_BROKERS, ICEBERG_REST_URI/
-  # warehouse + AWS creds, CHECKPOINT_LOCATION (a DURABLE s3a:// path), and BOTH lane topics
-  # (COLLECTOR_TOPIC + BACKFILL_TOPIC). Without those the runs fail LOUDLY (visible Argo failures, not
-  # silent). See docs/runbooks/enable-attribution-unlocks.md. Flip back to false to instantly stop it.
+  # `enabled` gates the bronze-maintenance CronWorkflow; landing is the kafka-connect chart
+  # (ADR-0010). Maintenance must run regardless of who lands Bronze, so it defaults ON.
   enabled: true
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb   # built from db/iceberg/duckdb/Dockerfile (carries the Trino maintenance client)
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  landingSchedule: "*/15 * * * *"       # bronze_landing drains ALL topics → brain_bronze.events every 15m (availableNow)
-  maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + 24-mo snapshot-expiry (Slice 7)
+  maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + snapshot-expiry (Slice 7; 7d / 14d durable lane)
   activeDeadlineSeconds: 1800
-  # Spark driver heap (driver==executor under local[*]). Pinned < resources.limits.memory so the JVM +
-  # PySpark + Iceberg/Kafka machinery don't OOM on a backlog drain (the default 1g OOMs — same lesson
-  # as the local docker sink). Keep a margin below the pod memory limit for non-heap overhead.
-  driverMemory: "3g"
-  # Non-secret config. Secrets (envSecretName) MUST include: KAFKA_BROKERS, ICEBERG/Glue, AWS_*, a
-  # DURABLE s3a:// CHECKPOINT_LOCATION, and the topic wiring. bronze_landing subscribes to ALL Bronze
-  # topics: COLLECTOR_TOPIC + BACKFILL_TOPIC + the nine connector *.raw.v1 lanes (derived from
-  # TOPIC_ENV_PREFIX, e.g. `prod`) — so the secret must carry COLLECTOR_TOPIC, BACKFILL_TOPIC AND
-  # TOPIC_ENV_PREFIX. This cron NEWLY lands the 9 raw lanes in prod (there was no bronze_raw_landing cron).
-  # CUTOVER: CHECKPOINT_LOCATION MUST be a FRESH s3a path (a new query plan + topic set + consumer group —
-  # the old bronze_materialize checkpoint can't be reused). Do a ONE-OFF STARTING_OFFSETS=earliest run to
-  # backfill brain_bronze.events (idempotent via dedup_key), then leave STARTING_OFFSETS=latest steady-state.
+  # ── Raw-lane PII retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038) ──────────────────────────────
+  # bronze_raw_retention.py: row-TTL DELETE + snapshot expiry over the *_raw_connect lanes so raw
+  # un-hashed PII/PCI never outlives the 7-day landing-buffer window (Silver is the durable layer;
+  # collector_events_connect is excluded by the job — system-of-record, hashed-safe). The job's env
+  # defaults ARE the D4 posture (RAW_RETENTION_HOURS=168, RAW_ROW_TTL=1); RAW_RETENTION_HOURS is
+  # pinned explicitly so the window is auditable from values. This is the prod half of the D4 gate —
+  # the dev half runs on the daily guard-file cadence in tools/dev/v4-refresh-loop.sh.
+  rawRetention:
+    enabled: true
+    schedule: "40 3 * * *"              # daily 03:40 IST — after the 03:00 compaction/snapshot-expiry pass
+    activeDeadlineSeconds: 1800
+    env:
+      - { name: RAW_RETENTION_HOURS, value: "168" }   # 7 days (D4); tighten per region/regime
+  # Non-secret extra env for the maintenance run. Secrets (envSecretName)
+  # MUST include TRINO_HOST/TRINO_PORT + ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
+  # anymore — those belonged to the removed Spark-SS landing; Kafka Connect keeps its offsets in the
+  # Iceberg snapshots + its own topics.
+  # AUD-OPS-015: the durable collector lane (collector_events_connect — append-only SoR, rows never
+  # deleted) keeps a 14-day Iceberg time-travel window (range 14–30d per the audit; default 7d stays
+  # for everything else, incl. the PII *_raw_connect lanes whose short window is a privacy contract).
+  # Pinned here explicitly so the recovery window is auditable from values — see docs/runbooks/DR.md.
   env:
-    - { name: STARTING_OFFSETS, value: "latest" }
+    - { name: DURABLE_SNAPSHOT_TTL_MS, value: "1209600000" } # 14d
+    - { name: DURABLE_TABLES, value: "collector_events_connect" }
   # Workflow-pod placement (AUD-PROD-006). Empty by default (staging/kind unchanged);
   # values-prod pins the Spark cron pods to the batch pool.
   nodeSelector: {}
@@ -90,63 +98,72 @@ sparkBronze:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
-  # ── Execution mode (see docs/ops/spark-on-k8s-migration.md §7) ─────────────────────────────────
-  # "local" (default) = the proven single-JVM `spark-submit --master local[*]` in the cron pod. "k8s" =
-  # Spark-on-Kubernetes cluster mode (real executor pods, same image/catalog/code). Bronze is the lighter,
-  # SEPARATE-from-batch decision — migrate only when Bronze itself shows lag (Kafka partitions + executors),
-  # NOT coupled to the sparkV4 cutover. DEFAULT local → zero change to today's crons; rollback = flip back.
-  executionMode: local
-  k8s:
-    apiServer: "k8s://https://kubernetes.default.svc"
-    namespace: ""                       # "" → the release namespace
-    serviceAccountName: spark           # shared with sparkV4; RBAC in spark-k8s-rbac.yaml renders if EITHER is k8s
-    executor:
-      instances: "3"
-      cores: "4"
-      memory: "6g"
-      minExecutors: "1"
-      maxExecutors: "8"
+  # ── On-demand subject erasure (AUD-OPS-037; templates/bronze-erasure.yaml) ─────────────────────
+  # WorkflowTemplate `bronze-raw-erasure` wrapping db/iceberg/trino/erasure_raw_delete.py (RTBF
+  # hard-delete of one subject's rows across the raw Bronze tables + the payload-path sweep of
+  # collector_events_connect, run via the Trino client the brain-duckdb image carries). NOT a cron:
+  # the stream-worker erasure orchestrator submits a Workflow from this template (workflowTemplateRef
+  # via the Kubernetes API — the prod argo-workflows app is controller-only, no REST server) after the
+  # subject DEK crypto-shred. Same image/secret/placement as the maintenance cron above.
+  erasure:
+    enabled: true
+    # Per-run hard cap. The payload-path DELETEs full-scan collector_events_connect once per
+    # predicate group — give it the same ceiling as the weekly medallion maintenance sweep.
+    activeDeadlineSeconds: 3600
+    # Completed/failed Workflow CRs are TTL'd (one-shot submits have no history limits): 7 days
+    # keeps the audit/investigation trail without unbounded CR accumulation.
+    ttlSecondsAfterCompletion: 604800
+    # The in-cluster identity allowed to submit from the template (Role/RoleBinding in the
+    # template file): the stream-worker deployable, which hosts the erasure orchestrator.
+    submitter:
+      serviceAccountName: stream-worker
+      serviceAccountNamespace: stream-worker
 
-# Brain V4 Spark Silver/Gold transform (templates/spark-v4.yaml). Spark is the SOLE compute, dbt is gone.
-# Two staggered CronWorkflows — v4-silver (:05) → v4-gold (:25) — that spark-submit the mart jobs the
-# spark image now CARRIES (db/iceberg/spark/{silver,gold}/*.py via the Dockerfile). The serving mv_*
-# Trino views resolve straight over the Iceberg Gold/Silver marts (thin projections) and are SYNC-refreshed
-# by the Spark v4-refresh path — there is NO separate mysql REFRESH leg (StarRocks is removed). The
-# identity-export + journey-stitch node jobs (.Values.jobs) sequence around them by schedule to complete
-# the attribution chain (identity → order-state → silver → stitch → gold). ENABLED: the V4 Spark crons
-# run the medallion refresh. Requires the CI-built+digest-pinned V4 spark image (B3 fail-closed) + a
-# cluster, the same external gate as sparkBronze.
+# Brain V4 DuckDB Silver/Gold transform (templates/v4-transform.yaml). DuckDB is the transform compute
+# now (Spark removed — Spark→DuckDB cutover); dbt/StarRocks were already gone. Two staggered
+# CronWorkflows — v4-silver (:05) → v4-gold (:25) — that `python /opt/brain/duckdb/<layer>/<job>.py` the mart
+# jobs the brain-duckdb image CARRIES (db/iceberg/duckdb/{silver,gold}/*.py via the Dockerfile). The serving
+# mv_* Trino views resolve straight over the Iceberg Gold/Silver marts (thin projections) — there is no
+# separate REFRESH leg (StarRocks is removed). The identity-export + journey-stitch node jobs (.Values.jobs)
+# sequence around them by schedule to complete the attribution chain (identity → order-state → silver →
+# stitch → gold). ENABLED: the V4 crons run the medallion refresh. Requires the CI-built+digest-pinned
+# brain-duckdb image (B3 fail-closed) + a cluster.
 sparkV4:
   enabled: true
+  # ADR-0010: the v4-silver/v4-gold crons read the Kafka Connect Bronze tables
+  # (collector_events_connect + <lane>_raw_connect) — fixed in the jobs, no BRONZE_SOURCE
+  # switch (rollback = git revert).
   image:
-    repository: REPLACE_WITH_ECR_REGISTRY/brain-spark-bronze   # same image — Dockerfile now carries the V4 marts
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb   # carries db/iceberg/duckdb (the transform marts)
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  silverSchedule: "5 * * * *"     # hourly :05 — order_state spine + the rest of Silver (after identity :02)
+  silverSchedule: "5 * * * *"     # hourly :05 — keystone + order_state spine + the rest of Silver (after identity :02)
   goldSchedule: "25 * * * *"      # hourly :25 — revenue → attribution → customer/gap/exec (after stitch :15/:16)
-  activeDeadlineSeconds: 2400     # 40 min per Silver/Gold build
-  driverMemory: "3g"              # < resources.limits.memory (non-heap overhead margin) — same as sparkBronze
-  sparkMaxRetries: "1"            # bounded in-pod retry per spark-submit (idempotent MERGE); + Argo backoffLimit
-  # Non-secret config. Secrets (ICEBERG_REST_URI/Glue, AWS_*, NEO4J_*) come from envSecretName.
+  # 2026-07-12: 2400→4500. Under Spark BOTH tiers outgrew smaller caps on first-fill days; 75 min
+  # covers the worst observed full pass with headroom (DuckDB is lighter, but keep the ceiling until
+  # the DuckDB run-time profile is re-measured in prod). Forbid still serializes runs.
+  activeDeadlineSeconds: 4500
+  # Non-secret config. Secrets (ICEBERG_REST_URI, AWS_*, NEO4J_*) come from envSecretName.
   env:
     - { name: ICEBERG_CATALOG, value: "rest" }
   # Workflow-pod placement (AUD-PROD-006) — shared by v4-silver / v4-gold /
-  # v4-maintenance. Empty by default; values-prod pins to the batch pool.
+  # v4-maintenance. Empty by default; values-prod pins to the streaming pool (the batch pool is gone).
   nodeSelector: {}
   tolerations: []
+  # Annotations stamped on the v4-silver/v4-gold run pods. Empty by default; values-prod sets
+  # karpenter.sh/do-not-disrupt to stop Karpenter voluntarily draining the node mid-run.
+  podAnnotations: {}
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
-  # ── Silver/Gold Iceberg maintenance (AUD-COST-013; templates/spark-v4-maintenance.yaml) ────────
-  # Weekly medallion_maintenance.py: rewrite_data_files + expire_snapshots (7d) + a GUARDED
-  # remove_orphan_files pass — the hourly-rewritten marts otherwise grow S3 unbounded, and no
-  # tier swept orphans from failed/aborted writes. ORPHAN_OLDER_THAN_DAYS=7 (job clamps >=3):
-  # orphans that old can never belong to an in-flight commit, so overlapping the hourly refresh
-  # is safe. remove_orphan_files lists via S3A; since AUD-COST-020 the job's S3A wiring is
-  # conditional — with S3_ENDPOINT unset (real S3) it falls back to the default AWS credential
-  # provider chain (IRSA WebIdentity, zero static keys; hadoop-aws is baked into the image), so
-  # ORPHAN_FILES=1 is safe in prod. ORPHAN_FILES=0 remains the escape hatch (compaction+expiry only).
+  # ── Silver/Gold Iceberg maintenance (AUD-COST-013; templates/v4-maintenance.yaml) ──────────────
+  # Weekly db/iceberg/trino/medallion_maintenance.py (via the Trino client): optimize + expire_snapshots
+  # (7d) + a GUARDED remove_orphan_files pass — the hourly-rewritten marts otherwise grow S3 unbounded,
+  # and no tier swept orphans from failed/aborted writes. ORPHAN_OLDER_THAN_DAYS=7 (job clamps >=3):
+  # orphans that old can never belong to an in-flight commit, so overlapping the hourly refresh is safe.
+  # With S3_ENDPOINT unset (real S3) the job uses the default AWS credential chain (IRSA WebIdentity,
+  # zero static keys), so ORPHAN_FILES=1 is safe in prod. ORPHAN_FILES=0 remains the escape hatch.
   maintenance:
     enabled: true
     schedule: "45 4 * * 0"          # weekly Sun 04:45 IST — off the daily 03:00 Bronze maintenance slot
@@ -154,31 +171,6 @@ sparkV4:
     env:
       - { name: ORPHAN_FILES, value: "1" }
       - { name: ORPHAN_OLDER_THAN_DAYS, value: "7" }
-  # ── Execution mode (see docs/ops/spark-on-k8s-migration.md) ────────────────────────────────────
-  # "local" = the current, proven single-JVM `spark-submit --master local[*]` (driver==executor in the
-  # cron pod). "k8s" = Spark-on-Kubernetes CLUSTER mode: spark-submit launches real executor pods, the
-  # SAME image/catalog/code, gated entirely by this flag. DEFAULT local → zero change to today's crons;
-  # flip to k8s ONLY after the migration plan's parity gate. Rollback = flip back to local (one line).
-  executionMode: local
-  k8s:
-    # In-cluster API server (the `k8s://` master). Override only for an out-of-cluster submit.
-    apiServer: "k8s://https://kubernetes.default.svc"
-    namespace: ""                       # "" → the release namespace (where executor pods launch)
-    serviceAccountName: spark           # the driver SA — RBAC templated in spark-k8s-rbac.yaml (k8s mode only)
-    # Executor fleet (values are strings — interpolated verbatim into --conf). Dynamic allocation with
-    # shuffle tracking (no external shuffle service needed on Spark 3.x/K8s). Tune from the Spark UI.
-    executor:
-      instances: "4"
-      cores: "4"
-      memory: "6g"
-      minExecutors: "2"
-      maxExecutors: "12"
-    # Cluster-scale tuning knobs, ACTIVE ONLY in k8s mode. iceberg_base.spark_perf_configs() reads these
-    # from env — they are no-ops in local mode and become meaningful with real executors (#312 seam).
-    env:
-      - { name: SPARK_SHUFFLE_PARTITIONS, value: "256" }
-      - { name: SPARK_OFFHEAP_SIZE, value: "2g" }
-      - { name: SPARK_AQE_ADVISORY_BYTES, value: "134217728" }   # 128MB
 
 # The scheduled jobs. `image` omitted → the default (core) image.
 #
@@ -203,14 +195,14 @@ sparkV4:
 jobs:
   - name: recommendation-detectors
     schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
-    command: ["node", "dist/jobs/recommendation-detectors.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/recommendation-detectors.ts"]
   - name: identity-export
     schedule: "2 * * * *"          # hourly at :02 — ATTRIBUTION CHAIN step -1: materialize the identity graph
-    command: ["node", "dist/jobs/identity-export/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/identity-export/run.ts"]
     useStreamWorkerImage: true
   - name: journey-stitch-export
     schedule: "3 * * * *"          # hourly at :03 — materialize the PG cart-stitch → silver_journey_stitch
-    command: ["node", "dist/jobs/journey-stitch-export/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/journey-stitch-export/run.ts"]
     useStreamWorkerImage: true
     # MEDALLION REALIGNMENT (Epic 4): connectors.connector_journey_stitch_map (PG capture) →
     # silver_journey_stitch (lakehouse Silver), so silver_touchpoint reads the lakehouse, not a
@@ -227,7 +219,7 @@ jobs:
   # read, served by the brain_serving mv_* Trino views over Iceberg.
   - name: journey-stitch-from-identity
     schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
-    command: ["node", "dist/jobs/journey-stitch-from-identity.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/journey-stitch-from-identity.ts"]
     useStreamWorkerImage: true
     # Deterministic identity-graph stitch (GAP-1): silver_touchpoint anon → identity_link(anon_id)→
     # brain_id ∩ realized_revenue_ledger(order→brain_id), UNAMBIGUOUS-ONLY (skips multi-anon customers,
@@ -236,7 +228,7 @@ jobs:
     # has no journeys to credit.
   - name: attribution-reconcile
     schedule: "30 * * * *"         # hourly at :30 — ATTRIBUTION CHAIN step 3: credit + clawback
-    command: ["node", "dist/jobs/attribution-reconcile.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/attribution-reconcile.ts"]
     # Per brand: the 4 per-journey models (reconcileAttribution) + the GLOBAL data-driven Markov model
     # (reconcileDataDrivenAttribution). Credit basis = finalization ∪ cod_delivery_confirmed (COD-inclusive).
     # MEDALLION REALIGNMENT (Brain V4): the attribution serving marts (gold_marketing_attribution /
@@ -244,23 +236,26 @@ jobs:
     # :25), not a dbt `attribution-gold-refresh` cron — Spark is the sole compute, dbt is gone.
   - name: meta-token-refresh
     schedule: "0 3 * * *"          # daily 03:00 — proactively re-exchange Meta long-lived tokens
-    command: ["node", "dist/jobs/meta-token-refresh/run.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/meta-token-refresh/run.ts"]
     useStreamWorkerImage: true
     # Re-exchanges (fb_exchange_token) any connected Meta connector whose token is older than the
     # threshold, BEFORE the ~60-day expiry — closes the silent spend-stale gap (feat-meta-token-refresh).
     # Needs META_APP_ID / META_APP_SECRET in the pod env (via the stream-worker secret); absent → the
     # job records an app_creds_missing error and no-ops (dev-safe).
   - name: shopify-token-refresh
-    schedule: "30 3 * * *"         # daily 03:30 — proactively refresh Shopify offline tokens (mirrors meta-token-refresh)
-    command: ["node", "dist/jobs/shopify-token-refresh/run.js"]
+    schedule: "30 */6 * * *"       # every 6h — client-credentials tokens expire in 24h (see below)
+    command: ["pnpm", "exec", "tsx", "src/jobs/shopify-token-refresh/run.ts"]
     useStreamWorkerImage: true
-    # Shopify offline-token expiry mandate (2026-04-01 → 1y expiry; 2027-01-01 → ALL expire). Enumerates
-    # connected Shopify connectors whose token is older than the threshold and exchanges it for a fresh
-    # one (write-back via ISecretsManager.putSecretValue — secret_ref/ARN unchanged, NN-2). Without this
-    # cron, offline tokens silently expire → Shopify sync dies. Idempotent (skips fresh tokens).
+    # Two token classes, one pass:
+    #  - GENERIC PER-BRAND CONNECT (custom-app client-credentials grant, 2026-07): tokens expire in
+    #    24 HOURS with no refresh token — the job RE-EXCHANGES them on every run using the brand's
+    #    stored app creds. A daily schedule raced the 24h expiry; every-6h keeps tokens ≤6h old.
+    #  - Legacy offline tokens (expiry mandate 2026-04-01 → 1y; 2027-01-01 → ALL): age-threshold
+    #    exchange as before (skips fresh tokens — idempotent).
+    # Write-back via ISecretsManager.putSecretValue — secret_ref/ARN unchanged (NN-2).
   - name: phone-guard-reeval
     schedule: "50 * * * *"         # hourly at :50 — re-evaluate expired phone-guard suppression windows
-    command: ["node", "dist/jobs/phone-guard-reeval.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/phone-guard-reeval.ts"]
     useStreamWorkerImage: true
     # Windowed re-eval of the phone-guard SharedUtility state (Neo4j identity SoR + PG brand config):
     # un-suppress a phone hash once its window slides below the per-brand distinct-brain_id threshold,
@@ -268,13 +263,13 @@ jobs:
     # Needs NEO4J_* + BRAIN_APP_DATABASE_URL. Idempotent; Forbid + startingDeadline make retries safe.
   - name: audit-checkpoint
     schedule: "15 * * * *"         # hourly at :15 — WORM-anchor the audit hash-chain head to S3 (R-19)
-    command: ["node", "dist/jobs/audit-checkpoint.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/audit-checkpoint.ts"]
     # Activation needs AUDIT_CHECKPOINT_BUCKET (= terraform output s3-audit.audit_bucket_name) +
     # AWS_REGION in the pod env (via core-env secret). The brain-jobs IRSA role already grants
     # Put/Get/List on checkpoints/* (s3-audit). Unset → the job safely no-ops (dev).
   - name: partition-maintenance
     schedule: "30 2 * * *"         # daily 02:30 IST — BEFORE any month rolls over (C4 audit finding)
-    command: ["node", "dist/jobs/partition-maintenance.js"]
+    command: ["pnpm", "exec", "tsx", "src/jobs/partition-maintenance.ts"]
     useStreamWorkerImage: true
     env:
       # CREATE-AHEAD horizon. >=3 so writes NEVER fall into *_pdefault even if the controller is
@@ -288,3 +283,29 @@ jobs:
     # as brain_app. Idempotent (CREATE IF NOT EXISTS / guarded DROP) — Forbid + startingDeadline make
     # a missed/retried run safe. ALERT: if any *_pdefault has rows, partition creation has been
     # lagging — page on a non-zero row count (see infra/helm/cronworkflows/README.md → C4 alert).
+  - name: semantic-preagg-refresh
+    schedule: "40 * * * *"         # hourly at :40 — AFTER v4-gold (:25) commits the marts the entity views read
+    command: ["pnpm", "exec", "tsx", "src/jobs/semantic-preagg-refresh.ts"]
+    # AUD-SL-10: MATERIALIZES the semantic-layer pre-aggs. The @brain/semantic-metrics compiler has
+    # always emitted pre-agg DDL for every interactive metric×grain (§1.11.1) and the compiled FAST
+    # views read iceberg.brain_serving.preagg_* — but no job ever built those tables, so interactive
+    # grains silently fell back to base-entity scans (a latency/cost cliff at scale). This cron runs
+    # each pre-agg's ATOMIC Trino rebuild (CREATE OR REPLACE TABLE AS — one Iceberg replace
+    # transaction; readers see old rows until the new snapshot commits). Cross-brand batch build:
+    # brand_id is a GROUPING KEY here; serving reads only ever go through the compiled
+    # ${BRAND_PREDICATE}-guarded mv_metric_* views. Idempotent (re-run = replace again); exits
+    # non-zero if ANY table failed so a partial failure surfaces. Needs TRINO_HOST/TRINO_PORT in the
+    # pod env (core-env secret) — absent → every table errors and the run fails loudly (honest).
+  - name: ingest-dedup-prune
+    schedule: "20 4 * * 0"         # weekly Sun 04:20 IST — bound the ADR-0012 global dedup index
+    command: ["pnpm", "exec", "tsx", "src/jobs/ingest-dedup-prune.ts"]
+    useStreamWorkerImage: true
+    env:
+      # Retention window (Postgres interval literal). MUST stay >= the longest backfill window so a
+      # re-ingest never re-presents a forgotten (brand_id, event_id); Silver per-lane dedup backstops
+      # a very-old re-ingest regardless (ADR-0012). Change here to retune — it is the SELECT's argument.
+      - { name: INGEST_DEDUP_RETAIN, value: "180 days" }
+    # Calls the SECURITY-DEFINER data_plane.prune_ingest_dedup('180 days'::interval, batch) (migration
+    # 0131) as brain_app in batched DELETEs — no brand GUC needed (definer bypasses ingest_dedup RLS,
+    # brain_app has no DELETE grant on the table). Idempotent (re-run = prune again); Forbid +
+    # startingDeadline make a missed/retried run safe. Needs BRAIN_APP_DATABASE_URL (envSecretName).

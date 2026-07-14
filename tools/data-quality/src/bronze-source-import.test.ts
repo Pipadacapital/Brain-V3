@@ -1,12 +1,15 @@
 /**
- * bronze-source-import.test.ts — AUD-ARCH-003 regression guard.
+ * bronze-source-import.test.ts — AUD-ARCH-003 regression guard (ADR-0010 form).
  *
- * The module previously crashed at import under the default BRONZE_SOURCE=legacy
- * (self-referential const ternary → TDZ ReferenceError). These tests import the
- * module dynamically per BRONZE_SOURCE value and assert the table name resolves.
+ * The module previously crashed at import (self-referential const ternary → TDZ ReferenceError)
+ * when it carried the BRONZE_SOURCE env switch. ADR-0010 removed the switch entirely — the Kafka
+ * Connect Iceberg sink is the ONLY Bronze writer, so the DQ checks target the single lift view
+ * constant regardless of env. These tests assert (a) the module imports cleanly and (b) the table
+ * name is the constant lift view with NO env sensitivity (a stray BRONZE_SOURCE must not change it).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
+const LIFT_VIEW = 'brain_bronze.collector_events_connect_lifted';
 const ORIGINAL = process.env['BRONZE_SOURCE'];
 
 afterEach(() => {
@@ -15,29 +18,23 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('data-quality import under BRONZE_SOURCE (AUD-ARCH-003)', () => {
-  it('imports cleanly with BRONZE_SOURCE unset (legacy default) and uses collector_events', async () => {
+describe('data-quality Bronze source is the constant ADR-0010 lift view (AUD-ARCH-003)', () => {
+  it('imports cleanly and targets the connect lift view', async () => {
     delete process.env['BRONZE_SOURCE'];
     vi.resetModules();
     const mod = await import('./index.js');
     const freshness = mod.DQ_CHECKS.find((c) => c.category === 'freshness');
     expect(freshness).toBeDefined();
-    expect((freshness as { tableName: string }).tableName).toBe('brain_bronze.collector_events');
+    expect((freshness as { tableName: string }).tableName).toBe(LIFT_VIEW);
   });
 
-  it('imports cleanly with BRONZE_SOURCE=legacy and uses collector_events', async () => {
-    process.env['BRONZE_SOURCE'] = 'legacy';
-    vi.resetModules();
-    const mod = await import('./index.js');
-    const freshness = mod.DQ_CHECKS.find((c) => c.category === 'freshness');
-    expect((freshness as { tableName: string }).tableName).toBe('brain_bronze.collector_events');
-  });
-
-  it('BRONZE_SOURCE=events flips to the unified brain_bronze.events table', async () => {
-    process.env['BRONZE_SOURCE'] = 'events';
-    vi.resetModules();
-    const mod = await import('./index.js');
-    const freshness = mod.DQ_CHECKS.find((c) => c.category === 'freshness');
-    expect((freshness as { tableName: string }).tableName).toBe('brain_bronze.events');
+  it('is NOT env-sensitive — a stray legacy BRONZE_SOURCE value changes nothing', async () => {
+    for (const stray of ['legacy', 'events', 'connect']) {
+      process.env['BRONZE_SOURCE'] = stray;
+      vi.resetModules();
+      const mod = await import('./index.js');
+      const freshness = mod.DQ_CHECKS.find((c) => c.category === 'freshness');
+      expect((freshness as { tableName: string }).tableName).toBe(LIFT_VIEW);
+    }
   });
 });

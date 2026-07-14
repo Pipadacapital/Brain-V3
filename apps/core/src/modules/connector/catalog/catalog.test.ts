@@ -40,6 +40,72 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
     const ids = CONNECTOR_CATALOG.map((d) => d.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  // ── Shopify generic per-brand connect (owner requirement 2026-07-12) ──────────
+  // The catalog method is 'credential' (custom-app Client ID/Secret + store URL); the
+  // authorization-code OAuth flow survives only as the env-gated fallback in writeRoutes.
+  describe('shopify generic per-brand credential connect', () => {
+    const shopify = getDefinition('shopify')!;
+
+    it('connectMethod is credential', () => {
+      expect(shopify.connectMethod).toBe('credential');
+    });
+
+    it('requires shop_domain + client_id + client_secret (all non-optional)', () => {
+      const required = (shopify.authFields ?? []).filter((f) => !f.optional).map((f) => f.key);
+      expect(required).toEqual(['shop_domain', 'client_id', 'client_secret']);
+    });
+
+    it('client_secret is the ONLY secret field (NN-2: goes to the Secrets Manager bundle)', () => {
+      const secrets = (shopify.authFields ?? []).filter((f) => f.secret).map((f) => f.key);
+      expect(secrets).toEqual(['client_secret']);
+    });
+
+    it('carries the custom-app how-to hint incl. the Admin API scopes', () => {
+      const clientId = (shopify.authFields ?? []).find((f) => f.key === 'client_id');
+      expect(clientId?.hint).toContain('Develop apps');
+      expect(clientId?.hint).toContain('read_orders');
+      expect(clientId?.hint).toContain('read_customers');
+    });
+
+    it('has NO generic credentialConnect spec (bespoke command handles the connect)', () => {
+      expect(shopify.credentialConnect).toBeUndefined();
+    });
+  });
+
+  // ── GA4 generic per-brand connect (GA4 rebuild, 2026-07-12) ───────────────────
+  // Service-account JSON key + numeric property id; SA JWT-bearer grant server-side —
+  // no OAuth redirect, no shared GOOGLE_CLIENT_ID env app.
+  describe('ga4 generic per-brand credential connect', () => {
+    const ga4 = getDefinition('ga4')!;
+
+    it('connectMethod is credential (the oauth tile was never wired end-to-end)', () => {
+      expect(ga4.connectMethod).toBe('credential');
+      expect(ga4.availability).toBe('available');
+    });
+
+    it('requires property_id + service_account_json; currency_code is optional', () => {
+      const required = (ga4.authFields ?? []).filter((f) => !f.optional).map((f) => f.key);
+      expect(required).toEqual(['property_id', 'service_account_json']);
+      const currency = (ga4.authFields ?? []).find((f) => f.key === 'currency_code');
+      expect(currency?.optional).toBe(true);
+    });
+
+    it('service_account_json is the ONLY secret field (NN-2: goes to the Secrets Manager bundle)', () => {
+      const secrets = (ga4.authFields ?? []).filter((f) => f.secret).map((f) => f.key);
+      expect(secrets).toEqual(['service_account_json']);
+    });
+
+    it('carries the service-account how-to hint (create SA, grant Viewer on the property)', () => {
+      const saField = (ga4.authFields ?? []).find((f) => f.key === 'service_account_json');
+      expect(saField?.hint).toContain('service account');
+      expect(saField?.hint).toContain('Viewer');
+    });
+
+    it('has NO generic credentialConnect spec (bespoke HandleGa4ConnectCommand handles the connect)', () => {
+      expect(ga4.credentialConnect).toBeUndefined();
+    });
+  });
 });
 
 describe('Shopify catalog entry — BYO-app required', () => {

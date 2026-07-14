@@ -10,7 +10,7 @@ the structure here matches **doc 05 §2–§3**.
 - `packages/` — shared libs: contracts (Zod = source of truth), metric-engine, money,
   tenant-context, identity-core, audit, db, events, observability,
   ai-gateway-client, config
-- `db/` — migrations · trino/views (serving views) · iceberg (Spark medallion) · starrocks/teardown (retired-DB drops)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt + StarRocks removed — Spark is sole compute, Trino is sole serving)_
+- `db/` — migrations · trino/views (serving views) · iceberg (Spark medallion)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt + StarRocks removed — Spark is sole compute, Trino is sole serving)_
 - `tools/` — parity-oracle · eval · isolation-fuzz · seed · lint (v4-naming-guard)   ·   `docs/` — adr · runbooks · playbooks · architecture
 
 ## The two rules that keep it a *modular* monolith

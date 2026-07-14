@@ -8,12 +8,16 @@
  * health summary built from the EXISTING stitch-rate + data-quality endpoints:
  *
  *   • Merge review  — the human-review queue (useMergeReviews / useResolveMergeReview).
- *                     Each candidate: Approve merge · Reject · Details (→ the canonical
- *                     customer's profile, the new /customers/[id] detail route).
- *   • PII vault     — encrypted-at-rest coverage, counts only (useVaultCoverage).
+ *                     Each candidate: side-by-side profile refs, a plain-language match
+ *                     reason, Approve merge (green) / Reject (red), Details (→ the
+ *                     canonical customer's profile).
+ *   • PII vault     — encrypted-at-rest coverage, counts only (useVaultCoverage), plus the
+ *                     PII deletion-request feed (useCapiFeedbackDeletions — the EXISTING
+ *                     retroactive-deletion endpoint; status pills, relative times).
  *   • Graph health  — deterministic cart-stitch hit-rate (useJourneyStitchRate, reusing
- *                     StitchRateCard) + vault coverage + the effective-confidence trust
- *                     tier (useDataQualitySummary) as the identity-graph trust signal.
+ *                     StitchRateCard) + "Profile completeness" (vault coverage) + the
+ *                     "Data Trust Score" (useDataQualitySummary; display-name only — the
+ *                     underlying field is still effectiveConfidence).
  *
  * The customer BROWSE list (/customers) and per-customer profile (/customers/[id]) moved
  * OUT of the old Identity section into their own tabs (#2/#3) — identity/customers and
@@ -21,8 +25,12 @@
  *
  * Honesty: merge-reviews + vault-coverage carry NO server timestamp (verified in the
  * contract: MergeReviewListSchema / VaultCoverageSchema), so FreshnessBadge renders the
- * honest tone='unknown' rather than a fabricated "just now". Every section has a friendly
- * EmptyState instead of a fake zero.
+ * honest tone='unknown' rather than a fabricated "just now". The merge-review payload
+ * carries ONLY { review_id, brain_id_a, brain_id_b, trigger_reason, created_at } — no
+ * masked email / order counts / spend / confidence %, so the cards show exactly what
+ * exists: public BRN- refs (canonical brainRef derivation, never invented), the humanized
+ * trigger reason, and when it was flagged. Every section has a friendly EmptyState
+ * instead of a fake zero.
  */
 
 import * as React from 'react';
@@ -38,8 +46,12 @@ import {
   Users,
   Gauge,
   ArrowUpRight,
+  Trash2,
 } from 'lucide-react';
+import { brainRef } from '@brain/contracts';
 import { humanize } from '@/lib/format/humanize';
+import { plainConfidence } from '@/lib/format/plain-language';
+import { relativeTime } from '@/lib/format/relative-time';
 import { TabShell } from '@/components/ui/tab-shell';
 import type { ExplainerPanelProps } from '@/components/ui/explainer-panel';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -49,14 +61,20 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { FreshnessBadge } from '@/components/ui/freshness-badge';
+import { MetricTitle } from '@/components/ui/metric-title';
+import { DataWindowBadge } from '@/components/ui/data-window-badge';
+import { VerifyLink } from '@/components/ui/verify-link';
+import { TableSearch, filterRows } from '@/components/ui/table-search';
+import { StatusPill, type StatusPillStatus } from '@/components/ui/status-pill';
 import { StitchRateCard } from '@/components/analytics/stitch-rate-card';
 import {
   useMergeReviews,
   useResolveMergeReview,
   useVaultCoverage,
 } from '@/lib/hooks/use-identity';
+import { useCapiFeedbackDeletions } from '@/lib/hooks/use-capi-feedback';
 import { useJourneyStitchRate, useDataQualitySummary } from '@/lib/hooks/use-analytics';
-import type { MergeReview } from '@/lib/api/types';
+import type { MergeReview, CapiDeletionStatus } from '@/lib/api/types';
 
 const TAB_KEYS = ['merge-review', 'pii-vault', 'graph-health'] as const;
 type TabKey = (typeof TAB_KEYS)[number];
@@ -70,19 +88,20 @@ function normalizeTab(tab?: string): TabKey {
 const EXPLAINER: ExplainerPanelProps = {
   title: 'Identity — clean, correctly-merged profiles',
   description:
-    'The health of identity resolution: the merge-review queue, the PII vault, and identity-graph linkage health.',
+    'The health of customer profiles: the merge-review queue, the privacy vault, and how well activity links to known customers.',
   sections: [
     {
       heading: 'How to read this tab',
       body: (
         <>
-          Brain resolves every event to a single person (a <code>brain_id</code>). Strong
-          deterministic signals merge automatically; weaker probabilistic matches are{' '}
-          <strong>never auto-merged</strong> — they land in the{' '}
-          <strong>Merge review</strong> queue for a human to approve or reject. The{' '}
-          <strong>PII vault</strong> shows how much customer contact data is encrypted at
-          rest, and <strong>Graph health</strong> shows how well anonymous activity links to
-          known customers.
+          Brain works out which events belong to which person, so every customer has ONE
+          profile. When the proof is strong (the same email or phone), profiles merge
+          automatically. When the match is only <em>likely</em> — say the same device or
+          network — Brain <strong>never merges on its own</strong>: those pairs land in{' '}
+          <strong>Merge review</strong> for you to approve or reject. The{' '}
+          <strong>PII vault</strong> shows how much customer contact data is stored safely
+          encrypted, and <strong>Graph health</strong> shows how well anonymous visits
+          connect to known customers.
         </>
       ),
     },
@@ -91,38 +110,38 @@ const EXPLAINER: ExplainerPanelProps = {
     {
       name: 'Merge review queue',
       definition:
-        'Candidate merges the resolver flagged as possibly the same person — routed for human review, never auto-merged.',
+        'Pairs of profiles the system suspects belong to the same person but is not certain about — held for a human decision, never merged automatically.',
       howComputed:
-        'The probabilistic matcher routes weak / sub-exact pairs to review. Approve merges profile B into the canonical A; Reject keeps them separate. (GET /api/v1/identity/merge-reviews.)',
+        'Weaker signals (same device, browser, or network) flag a possible match. Approve merges the second profile into the first; Reject keeps them separate.',
     },
     {
-      name: 'PII vault coverage',
+      name: 'Profile completeness',
       definition:
-        'Share of resolved customers with at least one identifier (email / phone) held encrypted in the vault.',
+        'The share of customers with at least one email or phone number securely on file.',
       howComputed:
-        'Counts only — never raw PII. AES-256-GCM at rest with a per-brand key; only the conversion-passback path decrypts, transiently. (GET /api/v1/identity/vault-coverage.)',
+        'Counts only — the actual details stay encrypted in the vault and are never shown here.',
     },
     {
-      name: 'Cart-stitch hit-rate',
+      name: 'Linked journeys',
       definition:
-        'Share of anonymous journeys deterministically linked back to a known order — the core identity-graph linkage signal.',
+        'The share of anonymous browsing journeys we could connect to a real customer order.',
       howComputed:
-        'brain_anon_id read BACK from the order (never inferred). Silver-tier journey seam (useJourneyStitchRate).',
+        'A journey is linked only when an order carries definite proof it came from that browser — never by guessing.',
     },
     {
-      name: 'Effective confidence',
+      name: 'Data Trust Score',
       definition:
-        'The trust tier governing whether resolved identity feeds billing and MMM — min(cost, attribution) confidence.',
+        'An overall grade for how much this data can be trusted when making spend and business decisions.',
       howComputed:
-        'Phase-7 data-quality gate (GET /api/v1/data-quality/summary).',
+        'The lower of the cost-data and attribution-data quality grades — the weakest link sets the score.',
     },
   ],
   refreshCadence:
-    'The merge queue and vault coverage read live from the identity control-plane. Graph-health (stitch rate, confidence) refreshes on the Gold loop.',
+    'The merge queue and vault coverage read live. Graph-health numbers refresh with the analytics pipeline.',
   sources: [
-    'Identity control-plane (merge reviews, vault)',
-    'Silver journey tier (cart-stitch)',
-    'Data-quality marts (effective confidence)',
+    'Identity system (merge reviews, vault)',
+    'Journey data (linked journeys)',
+    'Data-quality checks (Data Trust Score)',
   ],
 };
 
@@ -170,20 +189,127 @@ export function IdentityContent({ initialTab }: { initialTab?: string }) {
 
 // ── Merge review queue ────────────────────────────────────────────────────────
 
+/**
+ * matchReason — humanize the resolver's trigger_reason into ONE plain sentence.
+ *
+ * Known machine shapes (write side: stream-worker DecisionEngine / IdentityResolver /
+ * ProbabilisticMatcher): 'probabilistic_match: …', 'cycle_guard:alias_loop',
+ * 'cycle-guard: alias chain collision (…)', 'weak_agree:<type>' fragments, plus the
+ * curated enums humanize() already covers (shared_device, shared_email_hash, …).
+ * The raw code is NEVER rendered — unknown values fall back to a cleaned Title Case.
+ */
+const WEAK_SIGNAL_LABELS: Record<string, string> = {
+  device_fingerprint: 'device',
+  cookie_id: 'browser cookie',
+  session_id: 'browsing session',
+  ip: 'IP address',
+};
+
+function matchReason(reason: string): string {
+  const r = reason.toLowerCase();
+
+  // Which weak signals agreed (e.g. 'weak_agree:device_fingerprint') → "Same device and IP address".
+  const signals = [...reason.matchAll(/weak_agree:([a-z_]+)/gi)]
+    .map((m) => WEAK_SIGNAL_LABELS[m[1]?.toLowerCase() ?? ''] ?? null)
+    .filter((s): s is string => s !== null);
+  if (signals.length > 0) {
+    const list =
+      signals.length === 1
+        ? signals[0]
+        : `${signals.slice(0, -1).join(', ')} and ${signals[signals.length - 1]}`;
+    return `Same ${list}`;
+  }
+
+  if (r.includes('probabilistic')) {
+    if (r.includes('email')) return 'Possible match — same email';
+    if (r.includes('phone')) return 'Possible match — same phone';
+    return 'Similar device and browsing signals suggest the same person';
+  }
+  if (r.includes('cycle_guard') || r.includes('cycle-guard')) {
+    return 'These profiles are linked in a conflicting way and need a human decision';
+  }
+  if (r.includes('phone_guard')) {
+    return 'The same phone number appears on an unusually large number of profiles';
+  }
+
+  // Curated enum labels (shared_device → 'Same device', …), else cleaned Title Case —
+  // strip any '(canonical=… merged=…)' machine payload and separators first.
+  const cleaned = reason.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/[:\s]+/g, '_').replace(/^_+|_+$/g, '');
+  return humanize(cleaned);
+}
+
+/** One side of the candidate pair — the public BRN- ref (canonical derivation) + profile link. */
+function MergeProfileRef({
+  role,
+  brainId,
+}: {
+  role: string;
+  brainId: string;
+}) {
+  const publicRef = brainRef(brainId);
+  return (
+    <div className="min-w-0 rounded-md border p-3">
+      <div className="text-xs font-medium text-muted-foreground">{role}</div>
+      <div className="truncate font-mono text-sm" title={publicRef ?? brainId}>
+        {publicRef ?? brainId}
+      </div>
+      <Link
+        href={`/customers/${encodeURIComponent(brainId)}`}
+        className="mt-1 inline-flex items-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        aria-label={`View the profile ${publicRef ?? brainId}`}
+      >
+        View profile
+        <ArrowUpRight className="ml-1 h-3 w-3" aria-hidden="true" />
+      </Link>
+    </div>
+  );
+}
+
 function MergeReviewSection() {
   const { data, isLoading, isFetching, error, refetch } = useMergeReviews();
   const resolve = useResolveMergeReview();
+  const [query, setQuery] = React.useState('');
+
+  const reviews = data?.reviews ?? [];
+  // Search across the human-meaningful fields: the plain match reason + both public refs.
+  const filtered = filterRows(
+    reviews,
+    query,
+    (r) =>
+      `${matchReason(r.trigger_reason)} ${brainRef(r.brain_id_a) ?? r.brain_id_a} ${
+        brainRef(r.brain_id_b) ?? r.brain_id_b
+      }`,
+  );
 
   return (
     <section className="space-y-4" aria-label="Merge review queue">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          Candidate identity merges the resolver flagged for human review. Approve to merge
-          the second profile into the first (canonical), or reject to keep them separate.
-        </p>
-        {/* No server timestamp on this endpoint → honest 'unknown'. */}
-        <FreshnessBadge timestamp={undefined} prefix="Queue" />
+        <div className="max-w-2xl space-y-1">
+          <MetricTitle
+            label={<span className="text-sm font-medium">Needs your review</span>}
+            help="These are profiles the system suspects belong to the same person but isn't certain — approve only if you're sure."
+          />
+          <p className="text-sm text-muted-foreground">
+            Approve to combine the two profiles into one customer, or reject to keep them
+            separate. Nothing is merged without your decision.
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          {/* Live queue — no time window on this endpoint, so state it honestly. */}
+          <DataWindowBadge from={null} to={null} count={reviews.length} label="in the queue" />
+          {/* No server timestamp on this endpoint → honest 'unknown'. */}
+          <FreshnessBadge timestamp={undefined} prefix="Queue" />
+        </div>
       </div>
+
+      {reviews.length > 0 ? (
+        <TableSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search by match reason or profile ref…"
+          aria-label="Search the merge-review queue"
+        />
+      ) : null}
 
       <div aria-live="polite" aria-busy={isLoading || isFetching}>
         {isLoading ? (
@@ -193,67 +319,71 @@ function MergeReviewSection() {
           </div>
         ) : error ? (
           <ErrorCard error={error} retry={refetch} />
-        ) : !data || data.reviews.length === 0 ? (
+        ) : reviews.length === 0 ? (
           <EmptyState
             icon={<GitMerge className="h-6 w-6" aria-hidden="true" />}
-            title="No pending merges"
-            description="The review queue is clear — no candidate merges await a decision. Strong deterministic matches merge automatically; only ambiguous ones land here."
+            title="All good! No customer merges need your attention."
+            description="When the system spots two profiles that might be the same person, they'll appear here for you to decide."
+          />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<GitMerge className="h-6 w-6" aria-hidden="true" />}
+            title="No matches"
+            description={`Nothing in the queue matches “${query}”. Clear the search to see all ${reviews.length} pending.`}
           />
         ) : (
           <ul className="space-y-3">
-            {data.reviews.map((r: MergeReview) => (
-              <li key={r.review_id}>
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">{humanize(r.trigger_reason)}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="text-sm">
-                      <div>
-                        Canonical: <span className="font-mono">{r.brain_id_a}</span>
+            {filtered.map((r: MergeReview) => {
+              const flagged = relativeTime(r.created_at);
+              return (
+                <li key={r.review_id}>
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base">
+                        {matchReason(r.trigger_reason)}
+                      </CardTitle>
+                      <p className="text-xs text-muted-foreground">
+                        Flagged{' '}
+                        <span title={flagged.absolute ?? undefined}>{flagged.label}</span>
+                      </p>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {/* Side-by-side: exactly the data the endpoint returns — the two
+                          profile refs. (No emails / order counts / spend in the payload.) */}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <MergeProfileRef role="Profile that stays" brainId={r.brain_id_a} />
+                        <MergeProfileRef
+                          role="Profile merged in (if you approve)"
+                          brainId={r.brain_id_b}
+                        />
                       </div>
-                      <div>
-                        Merge in: <span className="font-mono">{r.brain_id_b}</span>
-                      </div>
-                      <div className="text-muted-foreground">
-                        flagged {new Date(r.created_at).toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        disabled={resolve.isPending}
-                        onClick={() =>
-                          resolve.mutate({ reviewId: r.review_id, decision: 'merge' })
-                        }
-                      >
-                        <Check className="mr-2 h-4 w-4" aria-hidden="true" />
-                        Approve merge
-                      </Button>
-                      <Button
-                        variant="outline"
-                        disabled={resolve.isPending}
-                        onClick={() =>
-                          resolve.mutate({ reviewId: r.review_id, decision: 'reject' })
-                        }
-                      >
-                        <X className="mr-2 h-4 w-4" aria-hidden="true" />
-                        Reject
-                      </Button>
-                      {/* Details → the canonical customer's profile (the new detail route). */}
-                      <Button variant="ghost" asChild>
-                        <Link
-                          href={`/customers/${encodeURIComponent(r.brain_id_a)}`}
-                          aria-label={`View profile details for canonical customer ${r.brain_id_a}`}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="success"
+                          disabled={resolve.isPending}
+                          onClick={() =>
+                            resolve.mutate({ reviewId: r.review_id, decision: 'merge' })
+                          }
                         >
-                          Details
-                          <ArrowUpRight className="ml-2 h-4 w-4" aria-hidden="true" />
-                        </Link>
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </li>
-            ))}
+                          <Check className="mr-2 h-4 w-4" aria-hidden="true" />
+                          Approve merge
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          disabled={resolve.isPending}
+                          onClick={() =>
+                            resolve.mutate({ reviewId: r.review_id, decision: 'reject' })
+                          }
+                        >
+                          <X className="mr-2 h-4 w-4" aria-hidden="true" />
+                          Reject
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </li>
+              );
+            })}
           </ul>
         )}
         {resolve.isError ? (
@@ -288,6 +418,114 @@ function VaultStat({
   );
 }
 
+/** Deletion-request status → StatusPill state + human label (raw code never rendered). */
+const DELETION_STATUS: Record<CapiDeletionStatus, { status: StatusPillStatus; label: string }> = {
+  requested: { status: 'waiting', label: 'In progress' },
+  would_delete_dev: { status: 'waiting', label: 'Queued (test mode)' },
+  deleted: { status: 'healthy', label: 'Deleted' },
+  failed: { status: 'error', label: 'Failed' },
+};
+
+/**
+ * PII deletion requests — reuses the EXISTING retroactive-deletion endpoint
+ * (useCapiFeedbackDeletions): when a customer withdraws consent, their previously shared
+ * data is deleted from ad platforms. Status pills + relative times; honest empty state.
+ */
+function DeletionRequestsCard() {
+  const { data, isLoading, error, refetch } = useCapiFeedbackDeletions();
+
+  const deletions = data && data.state === 'has_data' ? data.deletions : [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Trash2 className="h-5 w-5" aria-hidden="true" />
+          <MetricTitle
+            label="Deletion requests"
+            help="When a customer asks for their data to be removed, the request and its progress show here."
+          />
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-24 w-full" aria-hidden="true" />
+        ) : error ? (
+          <ErrorCard error={error} retry={refetch} />
+        ) : deletions.length === 0 ? (
+          <EmptyState
+            icon={<Trash2 className="h-6 w-6" aria-hidden="true" />}
+            title="No PII deletion requests."
+            description="When a customer withdraws consent, the deletion request and its progress will appear here."
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <caption className="sr-only">
+                The most recent data-deletion requests, each showing its status, how many
+                shared events it covers, and when it was requested and completed.
+              </caption>
+              <thead>
+                <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
+                  <th scope="col" className="py-2 text-left font-medium">
+                    Status
+                  </th>
+                  <th scope="col" className="py-2 text-right font-medium">
+                    Events covered
+                  </th>
+                  <th scope="col" className="py-2 text-right font-medium">
+                    Requested
+                  </th>
+                  <th scope="col" className="py-2 text-right font-medium">
+                    Completed
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {deletions.map((row, i) => {
+                  const pill = DELETION_STATUS[row.status] ?? {
+                    status: 'waiting' as StatusPillStatus,
+                    label: humanize(row.status),
+                  };
+                  const requested = relativeTime(row.requested_at);
+                  const completed = row.completed_at ? relativeTime(row.completed_at) : null;
+                  return (
+                    <tr
+                      key={`${row.requested_at}-${i}`}
+                      className="border-b last:border-0"
+                      data-testid="pii-deletion-row"
+                      data-status={row.status}
+                    >
+                      <td className="py-2">
+                        <StatusPill status={pill.status} label={pill.label} />
+                      </td>
+                      <td className="py-2 text-right tabular-nums text-foreground">
+                        {row.event_count}
+                      </td>
+                      <td
+                        className="py-2 text-right tabular-nums text-muted-foreground"
+                        title={requested.absolute ?? undefined}
+                      >
+                        {requested.label}
+                      </td>
+                      <td
+                        className="py-2 text-right tabular-nums text-muted-foreground"
+                        title={completed?.absolute ?? undefined}
+                      >
+                        {completed ? completed.label : 'Not yet'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function PiiVaultSection() {
   const { data, isLoading, isFetching, error, refetch } = useVaultCoverage();
 
@@ -295,11 +533,14 @@ function PiiVaultSection() {
     <section className="space-y-4" aria-label="PII vault">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Customer email and phone are stored encrypted at rest (AES-256-GCM, per-brand key).
-          Raw values never leave the vault — only the conversion-passback path decrypts them
-          transiently to compute match hashes. Counts only.
+          Customer emails and phone numbers are stored safely encrypted. The actual details
+          never leave the vault — this page only ever shows counts.
         </p>
-        <FreshnessBadge timestamp={undefined} prefix="Coverage" />
+        <div className="flex flex-col items-end gap-1">
+          {/* Brand-wide coverage across all identified customers — no date window. */}
+          <DataWindowBadge from={null} to={null} count={data?.resolved_customers} label="customers" />
+          <FreshnessBadge timestamp={undefined} prefix="Coverage" />
+        </div>
       </div>
 
       <div aria-live="polite" aria-busy={isLoading || isFetching}>
@@ -313,8 +554,8 @@ function PiiVaultSection() {
         ) : !data ? (
           <EmptyState
             icon={<ShieldCheck className="h-6 w-6" aria-hidden="true" />}
-            title="No vault coverage yet"
-            description="Once customers are resolved and their contact identifiers are vaulted, coverage will appear here."
+            title="Nothing in the vault yet"
+            description="Once customers are identified and their contact details are stored, coverage will appear here."
           />
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
@@ -322,7 +563,10 @@ function PiiVaultSection() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <ShieldCheck className="h-5 w-5" aria-hidden="true" />
-                  Coverage
+                  <MetricTitle
+                    label="Profile completeness"
+                    help="The share of customers with at least one email or phone number securely on file."
+                  />
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -331,12 +575,12 @@ function PiiVaultSection() {
                     {data.coverage_pct}%
                   </div>
                   <div className="text-sm text-muted-foreground">
-                    of resolved customers have at least one vaulted identifier
+                    of customers have an email or phone number securely on file
                   </div>
                 </div>
                 <VaultStat
                   icon={<Users className="h-5 w-5" aria-hidden="true" />}
-                  label={`vaulted of ${data.resolved_customers} resolved customers`}
+                  label={`with contact details, of ${data.resolved_customers} customers`}
                   value={data.vaulted_customers}
                 />
               </CardContent>
@@ -344,17 +588,22 @@ function PiiVaultSection() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Vaulted identifiers</CardTitle>
+                <CardTitle>
+                  <MetricTitle
+                    label="Contact details on file"
+                    help="How many email addresses and phone numbers are stored encrypted in the vault."
+                  />
+                </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <VaultStat
                   icon={<Mail className="h-5 w-5" aria-hidden="true" />}
-                  label="emails"
+                  label="email addresses"
                   value={data.email_count}
                 />
                 <VaultStat
                   icon={<Phone className="h-5 w-5" aria-hidden="true" />}
-                  label="phones"
+                  label="phone numbers"
                   value={data.phone_count}
                 />
               </CardContent>
@@ -362,11 +611,50 @@ function PiiVaultSection() {
           </div>
         )}
       </div>
+
+      <DeletionRequestsCard />
     </section>
   );
 }
 
 // ── Graph health ──────────────────────────────────────────────────────────────
+
+/** Trust tier → plain phrase (raw enum 'estimated'/'untrusted' never reaches the DOM). */
+const TRUST_TIER_LABEL: Record<string, string> = {
+  trusted: 'Trusted for decisions',
+  estimated: 'Use as a rough estimate',
+  untrusted: 'Not yet reliable for decisions',
+};
+
+/** Report-card ordering (A+ best → D worst) so we can name the weaker of two grades. */
+function gradeRank(g: string): number {
+  const order = ['A+', 'A', 'B', 'C', 'D'];
+  const i = order.indexOf(g.toUpperCase());
+  return i === -1 ? order.length : i;
+}
+
+/**
+ * trustInsight — ONE plain "why this grade / what raises it" sentence for the Data Trust Score.
+ * The score is the WEAKER of the cost-data and attribution-data grades, so we name the weak
+ * link and the concrete action that lifts it. No raw codes — just the report-card letter and
+ * plain English a Shopify owner understands.
+ */
+const RAISE_COST = 'Connecting complete ad-spend and product-cost data raises this.';
+const RAISE_ATTR = 'Linking more orders back to the visits that drove them raises this.';
+function trustInsight(cost: string, attribution: string): string {
+  const costRank = gradeRank(cost);
+  const attrRank = gradeRank(attribution);
+  if (attrRank > costRank) {
+    return `Held back by attribution-data quality (graded ${attribution}); your cost data is stronger at ${cost}. ${RAISE_ATTR}`;
+  }
+  if (costRank > attrRank) {
+    return `Held back by cost-data quality (graded ${cost}); your attribution data is stronger at ${attribution}. ${RAISE_COST}`;
+  }
+  // Tied — the weakest link still sets the score; both need to move to lift the grade.
+  return costRank <= 1
+    ? `Cost data and attribution data are both graded ${cost} — keeping data flowing steadily holds this grade.`
+    : `Cost data and attribution data are both graded ${cost} — the weakest link sets the score. ${RAISE_ATTR} ${RAISE_COST}`;
+}
 
 function GraphHealthSection() {
   const stitchQ = useJourneyStitchRate();
@@ -383,11 +671,15 @@ function GraphHealthSection() {
     <section className="space-y-4" aria-label="Identity-graph health">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="max-w-2xl text-sm text-muted-foreground">
-          How well anonymous activity links into single identities, how much PII is vaulted,
-          and the confidence tier governing whether resolved identity feeds billing and MMM.
+          How well anonymous visits connect to known customers, how complete your customer
+          profiles are, and how much this data can be trusted for decisions.
         </p>
-        {/* Graph-health marts refresh on the Gold loop; no per-row served-at exposed. */}
-        <FreshnessBadge timestamp={undefined} prefix="Marts" />
+        <div className="flex flex-col items-end gap-1">
+          {/* Brand-wide aggregate over your whole history — no date window on these marts. */}
+          <DataWindowBadge from={null} to={null} />
+          {/* Graph-health marts refresh on the Gold loop; no per-row served-at exposed. */}
+          <FreshnessBadge timestamp={undefined} prefix="Marts" />
+        </div>
       </div>
 
       {isLoading ? (
@@ -402,43 +694,53 @@ function GraphHealthSection() {
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {/* Cart-stitch hit-rate — the core linkage signal (reuses StitchRateCard). */}
+          {/* Linked journeys — the core linkage signal (reuses StitchRateCard). */}
           {stitch?.state === 'has_data' ? (
             <StitchRateCard
               hitPct={stitch.hit_pct}
               stitched={stitch.stitched}
               total={stitch.total}
+              href="/customers"
+              linkLabel="See the identified customers"
               data-testid="identity-graph-stitch"
             />
           ) : (
-            <Card className="p-5" role="region" aria-label="Cart-stitch hit-rate: no journeys yet">
+            <Card className="p-5" role="region" aria-label="Linked journeys: no data yet">
               <CardContent className="space-y-1 p-0">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Cart-stitch hit-rate
-                </p>
-                <p className="text-sm italic text-muted-foreground">No journeys yet</p>
+                <MetricTitle
+                  className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  label="Linked journeys"
+                  help="The share of anonymous browsing journeys we could connect to a real customer order."
+                />
+                <p className="text-sm italic text-muted-foreground">No data yet</p>
                 <p className="text-xs text-muted-foreground">
-                  Linkage appears once the Brain Pixel captures sessions stitched to orders.
+                  This appears once your tracking pixel captures visits that lead to orders.
                 </p>
               </CardContent>
             </Card>
           )}
 
-          {/* Vault coverage — share of resolved customers with vaulted PII. */}
+          {/* Profile completeness — share of customers with vaulted contact details. */}
           <Card
             className="p-5"
             role="region"
             aria-label={
               vault
-                ? `PII vault coverage: ${vault.coverage_pct} percent`
-                : 'PII vault coverage: not available yet'
+                ? `Profile completeness: ${vault.coverage_pct} percent`
+                : 'Profile completeness: no data yet'
             }
           >
             <CardContent className="space-y-1 p-0">
-              <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                Vault coverage
-              </p>
+              <MetricTitle
+                className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                label={
+                  <span className="inline-flex items-center gap-1.5">
+                    <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                    Profile completeness
+                  </span>
+                }
+                help="The share of customers with at least one email or phone number securely on file."
+              />
               {vault ? (
                 <>
                   <p className="text-2xl font-bold leading-tight tabular-nums text-foreground">
@@ -446,43 +748,69 @@ function GraphHealthSection() {
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {vault.vaulted_customers.toLocaleString('en-IN')} of{' '}
-                    {vault.resolved_customers.toLocaleString('en-IN')} resolved customers
+                    {vault.resolved_customers.toLocaleString('en-IN')} customers have an
+                    email or phone on file
                   </p>
+                  <VerifyLink
+                    href="/customers"
+                    label="See these customers"
+                    className="text-xs"
+                  />
                 </>
               ) : (
-                <p className="text-sm italic text-muted-foreground">Not available yet</p>
+                <p className="text-sm italic text-muted-foreground">No data yet</p>
               )}
             </CardContent>
           </Card>
 
-          {/* Effective confidence — the identity-graph trust tier (DQ gate). */}
+          {/* Data Trust Score — display name for the DQ effective-confidence gate. */}
           <Card
             className="p-5"
             role="region"
             aria-label={
               dq && dq.state === 'has_data'
-                ? `Effective confidence grade ${dq.effectiveConfidence}, ${dq.gate.tier}`
-                : 'Effective confidence: not available yet'
+                ? `Data Trust Score grade ${dq.effectiveConfidence}, ${dq.gate.tier}`
+                : 'Data Trust Score: no data yet'
             }
           >
             <CardContent className="space-y-1 p-0">
-              <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                <Gauge className="h-3.5 w-3.5" aria-hidden="true" />
-                Effective confidence
-              </p>
+              <MetricTitle
+                className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                label={
+                  <span className="inline-flex items-center gap-1.5">
+                    <Gauge className="h-3.5 w-3.5" aria-hidden="true" />
+                    Data Trust Score
+                  </span>
+                }
+                help="An overall grade for how much this data can be trusted when making spend and business decisions."
+              />
               {dq && dq.state === 'has_data' ? (
                 <>
                   <p className="text-2xl font-bold leading-tight tabular-nums text-foreground">
                     {dq.effectiveConfidence}
                   </p>
-                  <p className="text-xs capitalize text-muted-foreground">
-                    {dq.gate.tier} · governs billing &amp; MMM eligibility
+                  <p className="text-xs text-muted-foreground">
+                    {plainConfidence(dq.effectiveConfidence) || 'Overall grade'} ·{' '}
+                    {TRUST_TIER_LABEL[dq.gate.tier] ?? humanize(dq.gate.tier)}
                   </p>
+                  {/* Audit hint: the "why this grade / what raises it" insight line. */}
+                  <p className="text-xs text-muted-foreground">
+                    {trustInsight(dq.costConfidence, dq.attributionConfidence)}
+                  </p>
+                  <VerifyLink
+                    href="/data/quality"
+                    label="See the full quality report"
+                    className="text-xs"
+                  />
                 </>
               ) : (
-                <p className="text-sm italic text-muted-foreground">
-                  No quality grades yet
-                </p>
+                <div className="space-y-1">
+                  <p className="text-sm italic text-muted-foreground">No quality grades yet</p>
+                  <p className="text-xs text-muted-foreground">
+                    A grade appears once Brain has enough cost and attribution data to score.
+                    Connect your ad accounts and let orders flow through to fill this in.
+                  </p>
+                </div>
               )}
             </CardContent>
           </Card>
@@ -490,9 +818,8 @@ function GraphHealthSection() {
       )}
 
       <p className="text-xs text-muted-foreground">
-        Linkage is deterministic — anonymous sessions are stitched only when the{' '}
-        <span className="font-mono">brain_anon_id</span> is read back from a real order,
-        never inferred.
+        Journeys are linked only on hard proof — an anonymous visit is connected to a
+        customer when a real order confirms it came from that browser, never by guessing.
       </p>
     </section>
   );

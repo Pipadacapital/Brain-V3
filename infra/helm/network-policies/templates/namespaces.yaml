@@ -1,0 +1,34 @@
+{{- /*
+AUD-INFRA-022: Pod Security Admission labels on the Brain namespaces.
+The namespaces are CREATED by the per-app ArgoCD Applications
+(CreateNamespace=true) — this chart only OWNS THE PSA LABELS, merged onto the
+live Namespace objects via Server-Side Apply (the network-policies Application
+sets ServerSideApply=true; SSA field management keeps other managers' fields —
+never sync this app with a client-side/replace apply).
+PSA enforcement is API-server-native (v1.25+) — active as soon as the labels
+land, no agent required.
+*/ -}}
+{{- range .Values.podSecurity.enforceRestricted }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ . }}
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+{{- end }}
+{{- range .Values.podSecurity.auditRestricted }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ . }}
+  labels:
+    # audit+warn ONLY (no enforce): data-tier images are not yet verified
+    # against the restricted profile — this surfaces violations in the API
+    # audit log / kubectl warnings without blocking admission.
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+{{- end }}

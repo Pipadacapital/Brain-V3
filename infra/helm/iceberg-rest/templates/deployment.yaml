@@ -15,10 +15,25 @@ spec:
         {{- include "iceberg-rest.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      # PodSecurity Admission `restricted` compliant (Wave-2 hardening extension —
+      # only the 4 app charts were covered; iceberg-rest tripped a restricted warning
+      # on pod restart). runAsUser is NUMERIC: the apache/iceberg-rest-fixture image
+      # declares a non-numeric user (`iceberg`, uid 1000), and runAsNonRoot needs a
+      # numeric uid or kubelet refuses the pod (same as pgbouncer's `postgres` user).
+      securityContext:
+        runAsNonRoot: {{ .Values.podSecurityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        seccompProfile:
+          type: {{ .Values.podSecurityContext.seccompProfile.type }}
       containers:
         - name: iceberg-rest
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: rest
               containerPort: 8181
@@ -45,6 +60,12 @@ spec:
               value: org.apache.iceberg.aws.s3.S3FileIO
             - name: AWS_REGION
               value: "{{ .Values.catalog.s3Region }}"
+            {{- if .Values.javaToolOptions }}
+            # AUD-INFRA-023: suppress the fixture's startup config dump (it prints the
+            # plaintext jdbc.password to stdout). See values.yaml `javaToolOptions`.
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ .Values.javaToolOptions | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /v1/config

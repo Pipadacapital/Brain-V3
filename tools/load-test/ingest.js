@@ -5,10 +5,11 @@
  * endpoints (POST /collect, /v1/events, /batch on :8787). The collector handler does a
  * single durable spool INSERT and ACKs (D-1 ordering: spool commit BEFORE 200) — there is
  * NO validation / Apicurio / Kafka produce in the request path, so the accept latency we
- * measure here is the spool-write tail, NOT the medallion. The drainer → Kafka → Spark-SS →
- * Iceberg Bronze pipeline is asynchronous; its correctness (event count == sent, streaming
+ * measure here is the spool-write tail, NOT the medallion. The drainer → Kafka → Kafka Connect
+ * Iceberg sink → Bronze pipeline (ADR-0010: the Connect sink is the SOLE Bronze writer,
+ * append-only, ~30s commit interval) is asynchronous; its correctness (event count, streaming
  * lag, zero-OOM) is an OUT-OF-BAND operator assertion documented in README.md (k6 cannot
- * read Spark/Trino/Prometheus directly).
+ * read Connect/Trino/Prometheus directly).
  *
  * Envelope is grounded in packages/contracts/src/events/sample.collector.event.v1.ts:
  *   - brand_id (top-level) is PARTITIONING-ONLY and untrusted; the authoritative brand is
@@ -184,8 +185,10 @@ export function handleSummary(data) {
   const sent = data.metrics.events_sent ? data.metrics.events_sent.values.count : 0;
   const text =
     `\n  events_sent (soak-count denominator) = ${sent}\n` +
-    `  OUT-OF-BAND assertion — Bronze count MUST equal events_sent. Run in Trino:\n` +
-    `    SELECT count(*) FROM iceberg.brain_bronze.collector_events\n` +
+    `  OUT-OF-BAND assertion — Bronze count MUST be >= events_sent (ADR-0010: Bronze is APPEND-ONLY\n` +
+    `  under the Kafka Connect sink; re-deliveries land as extra rows — dedup lives in Silver).\n` +
+    `  Run in Trino:\n` +
+    `    SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect_lifted\n` +
     `    WHERE brand_id = '${BRAND_ID}' AND ingested_at >= TIMESTAMP '<test-start-utc>';\n` +
     `  See tools/load-test/README.md "Operator post-run assertions".\n`;
   return {

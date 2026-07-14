@@ -19,7 +19,7 @@ spec:
   project: brain
 
   source:
-    repoURL: https://github.com/Rishabhporwal/Brain-V4.git
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
     targetRevision: master
     path: infra/argocd/envs/staging
 

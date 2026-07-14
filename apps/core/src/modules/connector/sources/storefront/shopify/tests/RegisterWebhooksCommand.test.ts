@@ -27,6 +27,16 @@ const EXPECTED_TOPICS = [
   'customers/redact',
   'shop/redact',
   'app/uninstalled',
+  // P1 webhook expansion — real-time resource peers of the scheduled resource backfills
+  // (RegisterWebhooksCommand ALL_WEBHOOK_TOPICS). Kept in lock-step with the command's list.
+  'products/create',
+  'products/update',
+  'customers/create',
+  'customers/update',
+  'refunds/create',
+  'fulfillments/create',
+  'fulfillments/update',
+  'inventory_levels/update',
 ];
 
 function makeSecrets() {
@@ -117,7 +127,8 @@ describe('RegisterWebhooksCommand', () => {
     const result = await cmd.execute({ shopDomain: SHOP, secretRef: SECRET_REF, callbackBaseUrl: CALLBACK_BASE });
 
     expect(result.topicCount).toBe(EXPECTED_TOPICS.length); // all topics accounted for
-    // 2 already at our host (orders/create, app/uninstalled) skipped → 7 POSTs (incl. the foreign-host orders/paid).
+    // 2 already at our host (orders/create, app/uninstalled) skipped → the rest are POSTed (incl. the
+    // foreign-host orders/paid, which does NOT count as ours).
     expect(posts).toBe(EXPECTED_TOPICS.length - 2);
   });
 

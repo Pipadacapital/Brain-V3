@@ -1,0 +1,27 @@
+# SPEC:D.2 (AMD-25) — certified CROSS-ENTITY metric. Change ONLY via PR + recompile.
+name: amer
+version: v1
+entity: semantic_order
+time_column: conversion_at
+grain: [all]
+dimensions_allowed: []
+currency_handling: ratio_same_currency
+identity_basis: deterministic_only
+interactive: false
+owner: marketing-team
+description: >-
+  Acquisition Marketing Efficiency Ratio (aMER): NEW-customer recognised net revenue divided by total
+  ad spend, per currency, whole-period. New-customer revenue from semantic_order.is_new_customer;
+  spend from semantic_campaign. Cross-entity blend joined on (brand_id, currency_code) (AMD-25).
+  Deterministic revenue spine only (§1.4). Null when spend is zero.
+measures:
+  - name: new_customer_net_revenue_minor
+    agg: SUM(CASE WHEN is_new_customer THEN net_revenue_minor ELSE 0 END)
+cross:
+  entity: semantic_campaign
+  measures:
+    - name: spend_minor
+      agg: SUM(spend_minor)
+expression: CAST(new_customer_net_revenue_minor AS double) / NULLIF(spend_minor, 0)
+examples:
+  - "aMER in INR — new-customer revenue efficiency of spend."

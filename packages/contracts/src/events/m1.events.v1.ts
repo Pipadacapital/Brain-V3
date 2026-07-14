@@ -110,6 +110,7 @@ export type EventEnvelopeBase = z.infer<typeof EventEnvelopeBaseSchema>;
 // Emitted: after app_user insert + verification token issued.
 // brand_id carries organization_id (user may not have a brand yet).
 
+/** @public documented event payload contract (composed into UserRegisteredEventSchema below) */
 export const UserRegisteredPayloadSchema = z.object({
   user_id: z.string().uuid(),
   /** Masked email for traceability (no raw PII). e.g. u***@domain.com */
@@ -128,6 +129,7 @@ export const USER_REGISTERED_TOPIC_SUFFIX = 'user.registered.v1' as const;
 // ── 2. user.logged_in ────────────────────────────────────────────────────────
 // Emitted: after user_session insert.
 
+/** @public documented event payload contract (composed into UserLoggedInEventSchema below) */
 export const UserLoggedInPayloadSchema = z.object({
   user_id: z.string().uuid(),
   session_jti: z.string().uuid(),
@@ -147,6 +149,7 @@ export const USER_LOGGED_IN_TOPIC_SUFFIX = 'user.logged_in.v1' as const;
 // Emitted: after organization insert.
 // brand_id carries organization_id.
 
+/** @public documented event payload contract (composed into WorkspaceCreatedEventSchema below) */
 export const WorkspaceCreatedPayloadSchema = z.object({
   organization_id: z.string().uuid(),
   name: z.string(),
@@ -166,6 +169,7 @@ export const WORKSPACE_CREATED_TOPIC_SUFFIX = 'workspace.created.v1' as const;
 // ── 4. brand.created ─────────────────────────────────────────────────────────
 // Emitted: after brand insert.
 
+/** @public documented event payload contract (composed into BrandCreatedEventSchema below) */
 export const BrandCreatedPayloadSchema = z.object({
   brand_id: z.string().uuid(),
   organization_id: z.string().uuid(),
@@ -184,6 +188,7 @@ export const BRAND_CREATED_TOPIC_SUFFIX = 'brand.created.v1' as const;
 // ── 5. user.invited ──────────────────────────────────────────────────────────
 // Emitted: after invite insert (before email send).
 
+/** @public documented event payload contract (composed into UserInvitedEventSchema below) */
 export const UserInvitedPayloadSchema = z.object({
   invite_id: z.string().uuid(),
   organization_id: z.string().uuid(),
@@ -206,6 +211,7 @@ export const USER_INVITED_TOPIC_SUFFIX = 'user.invited.v1' as const;
 // ── 6. connector.connected ───────────────────────────────────────────────────
 // Emitted: after connector_instance insert (post-HMAC, secret_ref stored — NN-2).
 
+/** @public documented event payload contract (composed into ConnectorConnectedEventSchema below) */
 export const ConnectorConnectedPayloadSchema = z.object({
   connector_instance_id: z.string().uuid(),
   provider: z.enum(['shopify']),
@@ -225,6 +231,7 @@ export const CONNECTOR_CONNECTED_TOPIC_SUFFIX = 'connector.connected.v1' as cons
 // ── 7. connector.sync_started ────────────────────────────────────────────────
 // Emitted: when connector_sync_status transitions to 'syncing'.
 
+/** @public documented event payload contract (composed into ConnectorSyncStartedEventSchema below) */
 export const ConnectorSyncStartedPayloadSchema = z.object({
   connector_instance_id: z.string().uuid(),
   provider: z.enum(['shopify']),
@@ -242,6 +249,7 @@ export const CONNECTOR_SYNC_STARTED_TOPIC_SUFFIX = 'connector.sync_started.v1' a
 // ── 8. pixel.installed ───────────────────────────────────────────────────────
 // Emitted: after pixel_installation insert.
 
+/** @public documented event payload contract (composed into PixelInstalledEventSchema below) */
 export const PixelInstalledPayloadSchema = z.object({
   pixel_installation_id: z.string().uuid(),
   install_token: z.string().uuid(),
@@ -259,6 +267,7 @@ export const PIXEL_INSTALLED_TOPIC_SUFFIX = 'pixel.installed.v1' as const;
 // ── 9. pixel.verified ────────────────────────────────────────────────────────
 // Emitted: after verify success → pixel_status write.
 
+/** @public documented event payload contract (composed into PixelVerifiedEventSchema below) */
 export const PixelVerifiedPayloadSchema = z.object({
   pixel_installation_id: z.string().uuid(),
   target_host: z.string(),

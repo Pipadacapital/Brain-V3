@@ -51,7 +51,7 @@ export class LocalSecretsProvider implements SecretsProvider {
  * read via get_brand_identity_salt. This adapter resolves the 64-hex salt from that DB store keyed by
  * brandId, so SaltProvider's seam (and its D-2 length guards) stay unchanged.
  */
-export class DbSaltSecretsProvider implements SecretsProvider {
+class DbSaltSecretsProvider implements SecretsProvider {
   constructor(private readonly src: { saltHexForBrand(brandId: string): Promise<string> }) {}
   async getSecret(brandId: string): Promise<string> {
     return this.src.saltHexForBrand(brandId);

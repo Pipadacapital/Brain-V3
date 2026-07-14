@@ -1,0 +1,56 @@
+# kafka-connect — PROD overrides (ADR-0010: the SOLE Bronze landing writer).
+# Sync order: AFTER strimzi-kafka (broker) + iceberg-rest (catalog); BEFORE cronworkflows
+# depends on nothing here (bronze-maintenance reads the tables Connect creates).
+# IRSA supplies S3 credentials — the local-dev access-key sinkDefaults are overridden to
+# the IRSA chain by OMITTING s3 keys (S3FileIO falls back to the pod role, AUD-COST-022).
+enabled: true
+
+replicas: 1
+
+worker:
+  # Strimzi KRaft cluster `brain-prod-kafka` in ns `kafka` (strimzi-kafka/values-prod.yaml).
+  bootstrapServers: "brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
+  groupId: brain-bronze-connect
+  configStorageTopic: _connect-configs
+  offsetStorageTopic: _connect-offsets
+  statusStorageTopic: _connect-status
+  storageReplicationFactor: "3"
+
+# Same catalog the Spark medallion + Trino use (iceberg-rest/values-prod.yaml): ONE REST
+# server over the single warehouse bucket. Bucket name is account-suffixed — the deploy
+# fills the terraform output `warehouse_bucket_name` here (placeholder guard enforces).
+icebergCatalog:
+  iceberg.catalog.type: "rest"
+  iceberg.catalog.uri: "http://brain-prod-iceberg-rest.iceberg-rest.svc.cluster.local:8181"
+  iceberg.catalog.warehouse: "s3://brain-bronze-prod-380254378136/"
+  iceberg.catalog.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
+  iceberg.catalog.client.region: "ap-south-1"
+
+# AUD-INFRA-028: light up the Bronze-landing alerts (BronzeConnectTaskFailed /
+# BronzeConnectLagHigh / BrainIngestStale) — the sole Bronze writer was detection-dark.
+metrics:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations:
+    # IRSA: S3 RW on the warehouse prefixes (module irsa_kafka_connect, envs/prod
+    # bootstrap.tf). AUD-W1-001: the previous ARN (brain-prod-spark-jobs) never
+    # existed — sink tasks failed sts:AssumeRoleWithWebIdentity, Bronze landing down.
+    eks.amazonaws.com/role-arn: "arn:aws:iam::380254378136:role/brain-prod-kafka-connect"
+
+# AUD-IMPL-024: the worker idled at 1415Mi RSS against the old 1792Mi limit (~375Mi
+# OOMKill headroom) with the base -Xmx1G heap — an OOMKill stalls ALL Bronze landing
+# (sole writer, replicas=1, no-event-loss budget). Sized per the audit numbers:
+# -Xmx1280M heap + 2560Mi limit keeps >=1G non-heap headroom (metaspace + the 10
+# connectors' Parquet write buffers), and MaxDirectMemorySize bounds direct buffers
+# so a burst surfaces as a recoverable in-JVM error instead of a cgroup OOMKill.
+heapOpts: "-Xms512M -Xmx1280M -XX:MaxDirectMemorySize=512M"
+resources:
+  requests:
+    cpu: 250m
+    memory: 1792Mi
+  limits:
+    cpu: "1"
+    memory: 2560Mi

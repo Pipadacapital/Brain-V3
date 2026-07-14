@@ -56,9 +56,9 @@ function EmptyCard() {
         <div>
           <p className="font-medium text-foreground">No engagement yet</p>
           <p className="text-sm text-muted-foreground mt-1 max-w-md">
-            Engagement appears once the Brain Pixel captures storefront sessions. It measures how deeply
-            shoppers browse — engaged (multi-page) vs bounced sessions — from the journey touchpoints in
-            the Silver tier.
+            Engagement appears once the Brain Pixel captures storefront visits. It measures how deeply
+            shoppers browse — visits with several page views versus visits that ended after one — from
+            the browsing activity the pixel records.
           </p>
         </div>
         <Link href="/settings/pixel">
@@ -78,12 +78,12 @@ function EngagementBar({ data }: { data: EngagementHasData }) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          Engagement depth ({num(data.sessions)} sessions)
+          Engagement depth ({num(data.sessions)} visits)
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="flex items-center justify-between text-sm">
-          <span className="text-foreground">Engaged (multi-touch)</span>
+          <span className="text-foreground">Engaged (viewed more than one page)</span>
           <span className="text-muted-foreground tabular-nums">
             {num(data.engaged_sessions)}
             {data.engagement_rate_pct !== null && <span className="ml-2 text-foreground">{data.engagement_rate_pct}%</span>}
@@ -93,7 +93,7 @@ function EngagementBar({ data }: { data: EngagementHasData }) {
           <div className="h-full bg-foreground/70" style={{ width: `${engaged}%` }} />
         </div>
         <div className="flex items-center justify-between text-sm pt-1">
-          <span className="text-foreground">Bounced (single-touch)</span>
+          <span className="text-foreground">Bounced (left after one page)</span>
           <span className="text-muted-foreground tabular-nums">
             {num(data.bounce_sessions)}
             {data.bounce_rate_pct !== null && <span className="ml-2">{data.bounce_rate_pct}%</span>}
@@ -114,14 +114,14 @@ export function EngagementContent() {
     <div className="space-y-8">
       <PageHeader
         title="Engagement"
-        description="How deeply storefront sessions engage — engaged (multi-page) versus bounced sessions and the average touches per session — captured by the Brain Pixel in the Silver tier."
+        description="How deeply shoppers browse your store — visits with several page views versus visits that ended after one, and the average number of actions per visit — captured by the Brain Pixel."
         meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title="Read from the Silver tier (silver_touchpoint) via the metric-engine storefront-engagement seam."
+            title="Built from the browsing activity the Brain Pixel records on your storefront."
           >
             <Activity className="h-3 w-3" aria-hidden="true" />
-            Powered by the Silver tier
+            Powered by Brain Pixel tracking
           </span>
         }
       />
@@ -145,21 +145,29 @@ function EngagementData({ data }: { data: EngagementHasData }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-        <KpiTile label="Sessions" value={num(data.sessions)} sublabel={`${data.from} → ${data.to}`} />
+        <KpiTile
+          label="Visits"
+          help="How many separate browsing visits shoppers made to your store in the selected period."
+          value={num(data.sessions)}
+          sublabel={`${data.from} → ${data.to}`}
+        />
         <KpiTile
           label="Engagement rate"
+          help="The share of visits where the shopper viewed more than one page."
           value={data.engagement_rate_pct !== null ? `${data.engagement_rate_pct}%` : '—'}
-          sublabel="multi-touch sessions"
+          sublabel={data.engagement_rate_pct !== null ? 'visits with several page views' : 'Not enough data yet'}
         />
         <KpiTile
           label="Bounce rate"
+          help="The share of visits that ended after a single page view."
           value={data.bounce_rate_pct !== null ? `${data.bounce_rate_pct}%` : '—'}
-          sublabel="single-touch sessions"
+          sublabel={data.bounce_rate_pct !== null ? 'visits that ended after one page' : 'Not enough data yet'}
         />
         <KpiTile
-          label="Avg touches / session"
+          label="Actions per visit"
+          help="On average, how many things a shopper did in one visit — page views, clicks, cart changes."
           value={data.avg_touches_per_session ?? '—'}
-          sublabel={`${num(data.touches)} total touches`}
+          sublabel={data.avg_touches_per_session !== null ? `${num(data.touches)} actions recorded` : 'Not enough data yet'}
         />
       </div>
 

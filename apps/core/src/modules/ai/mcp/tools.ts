@@ -12,14 +12,7 @@
  * @see packages/ai-gateway-client/src/mcp-tools.ts · 02-architecture.md §D5
  */
 
-export {
-  MCP_TOOLS,
-  writeToolCount,
-  listMetricIds,
-  FORBIDDEN_TOOL_NAME_SUBSTRINGS,
-  type McpToolSpec,
-  type McpToolAccess,
-} from '@brain/ai-gateway-client';
+export type { McpToolSpec, McpToolAccess } from '@brain/ai-gateway-client';
 
 // The MCP MOUNT — wires the read-only dispatch to its real read seams (intelligence/marketing via
 // the metric-engine; identity injected by the app assembly). brand_id from the principal (I-S01).

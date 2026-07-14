@@ -1,11 +1,16 @@
-replicaCount: 3
+replicaCount: 2
 
 image:
-  repository: REPLACE_WITH_ECR_REGISTRY/brain-collector-prod
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-collector-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: ""
+  digest: "sha256:70e2ddd64e858dc24c39dad5ed5afc8c325c64513291d55dd9cd568d0e1949b0"
 
 envSecretName: collector-env
+
+# AUD-OBS-2: OTel export deliberately OFF in prod until the trace/metric backend
+# (Grafana Cloud vs in-cluster Tempo) is decided + its endpoint/credentials are seeded
+# (OTEL_EXPORTER_OTLP_HEADERS in collector-env). Flipping this value is the entire ON-switch.
+otelExporterOtlpEndpoint: ""
 
 # AUD-LOCAL-016-FUP1: prod kube-prometheus-stack scrapes the collector's /metrics (main port)
 # as job "brain-collector" — the brain-slo rules' job name (up{job=~"brain-.*"}).
@@ -17,13 +22,13 @@ metrics:
 # shared brain-prod ALB (host-routed); TLS = ACM at the ALB.
 ingress:
   enabled: true
-  host: REPLACE_WITH_COLLECTOR_HOSTNAME   # e.g. px.<apex-domain>
+  host: px.brain.pipadacapital.com   # e.g. px.<apex-domain>
   groupName: brain-prod
-  certificateArn: REPLACE_WITH_ACM_CERT_ARN
+  certificateArn: arn:aws:acm:ap-south-1:380254378136:certificate/684f6184-f357-46ca-8ef9-3be62239c220
 
 serviceAccount:
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/brain-prod-collector
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-collector
 
 # AUD-PROD-006: the 99.95%-SLA ingest front rides the streaming pool (t4g.large
 # Spot, WhenEmpty consolidation — live pods are never bin-packed off a node; the
@@ -31,16 +36,26 @@ serviceAccount:
 nodeSelector:
   brain.platform/pool: streaming
 
+# AUD-COST-2: right-sized from live prod telemetry (Prometheus 2d, 2026-07-12):
+# CPU p95 33m / max 39m, mem p95 ~174Mi / max 309Mi per pod. Was 250m/512Mi —
+# ~7x over p95, which starved the HPA (0%/65% observed → never scales) and
+# reserved ~1 node of dead headroom. New: cpu 100m (HPA fires at 65m ≈ 1.7x max
+# seen), mem 384Mi (80% target = 307Mi ≈ observed max). LIMITS UNCHANGED —
+# burst ceiling and OOM budget are not touched; this is a scheduling/HPA-math
+# change only. Revert = restore the old requests.
 resources:
   requests:
-    cpu: 250m
-    memory: 512Mi
+    cpu: 100m
+    memory: 384Mi
   limits:
     cpu: "2"
     memory: 1Gi
 
 # P2.5: HPA on in prod — collector is the spike-prone ingest front (widest band).
+# AUD-COST (2026-07-13): warm baseline 3 → 2 (matches replicaCount above) — right-sized for current
+# low traffic. 2 keeps the ingest front HA (survives one pod/node loss) behind the ALB + client
+# retries; the HPA still bursts to maxReplicas=24 on real spikes. Rollback: minReplicas/replicaCount 3.
 autoscaling:
   enabled: true
-  minReplicas: 3
+  minReplicas: 2
   maxReplicas: 24

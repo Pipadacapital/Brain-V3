@@ -6,11 +6,9 @@
  * references, assembled from the append-then-reference Decision Log (DecisionLogRepository, persisted
  * additively into the identity_audit compliance ledger) and the per-decision EvidenceStore.
  *
- * Pure DOMAIN projection — no infra imports. The list seam is the `IdentityTimelineSource` port; an
- * infrastructure adapter (PgIdentityTimelineRepository) reads the identity_audit rows and maps them
- * to `IdentityTimelineRecord`s (defensively — it works on both the legacy audit rows AND the richer
- * Decision-Log rows). The engine-side caller that already holds a `DecisionLogEntry` (+ optional
- * `DecisionEvidence`) uses `timelineRecordFromDecision` so the two never drift.
+ * Pure DOMAIN projection — no infra imports. The engine-side caller that already holds a
+ * `DecisionLogEntry` (+ optional `DecisionEvidence`) uses `timelineRecordFromDecision` so the
+ * projected records never drift from the audit-sourced ones.
  *
  * HASH-ONLY (I-S02): records carry identifier TYPES + the structured hash-only `identifier_combo`,
  * never raw PII. CONFIDENCE IS AN INTEGER 0-100 — never money, never blended.
@@ -72,14 +70,6 @@ export interface IdentityTimeline {
   brain_id: string;
   entries: TimelineEntry[];
   count: number;
-}
-
-/**
- * The list seam over the decision log + identity_audit: return the (already brand+brain scoped)
- * timeline records for one identity. The infra adapter implements this against identity_audit.
- */
-export interface IdentityTimelineSource {
-  readTimelineRecords(brandId: string, brainId: string): Promise<IdentityTimelineRecord[]>;
 }
 
 /**

@@ -65,7 +65,12 @@ data "aws_caller_identity" "current" {}
 locals {
   # The Iceberg medallion namespaces — each is a top-level prefix under the
   # warehouse root (JdbcCatalog layout: <warehouse>/<namespace>/<table>/...).
-  medallion_namespaces = ["brain_bronze", "brain_silver", "brain_gold"]
+  # brain_serving: the Trino serving VIEWS store their metadata under this
+  # prefix via the REST catalog. Without it, CREATE VIEW in brain_serving
+  # failed with s3:PutObject AccessDenied on the first prod views run
+  # (2026-07-11) — only the brain_bronze lift view (whose metadata lands
+  # under brain_bronze/) applied.
+  medallion_namespaces = ["brain_bronze", "brain_silver", "brain_gold", "brain_serving"]
 
   # Spark Structured Streaming checkpoint root (CHECKPOINT_LOCATION =
   # s3a://<bucket>/_checkpoints/<job>) — kept inside the warehouse bucket so
@@ -325,6 +330,24 @@ data "aws_iam_policy_document" "analytics_s3" {
     resources = local.namespace_object_arns
   }
 
+  # AUD-SL-10 pre-agg materialization: the hourly semantic-preagg-refresh cron
+  # has TRINO CTAS the compiled pre-aggs into brain_serving.preagg_* — a
+  # deliberate serving-layer materialization (not a transform; Spark stays the
+  # sole TRANSFORM compute). Write is scoped to brain_serving/ ONLY: the
+  # read-only posture on bronze/silver/gold is unchanged. Without this every
+  # refresh failed "Error committing write parquet" (24/24, 2026-07-12).
+  statement {
+    sid    = "AllowServingPreaggWrite"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
+    ]
+    resources = ["${aws_s3_bucket.bronze.arn}/brain_serving/*"]
+  }
+
   statement {
     sid       = "AllowBucketList"
     effect    = "Allow"
@@ -397,6 +420,14 @@ data "aws_iam_policy_document" "bronze_bucket_policy" {
       test     = "StringNotEquals"
       variable = "s3:x-amz-server-side-encryption"
       values   = ["aws:kms"]
+    }
+    # Only deny EXPLICIT non-KMS puts; header-absent puts (Iceberg REST +
+    # Kafka Connect Iceberg sink + Spark) fall through to the bucket default
+    # SSE-KMS. Without this the Bronze Iceberg commits were denied → landing dead.
+    condition {
+      test     = "Null"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["false"]
     }
   }
 

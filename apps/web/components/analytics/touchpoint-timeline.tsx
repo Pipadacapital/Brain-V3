@@ -4,177 +4,123 @@
  * TouchpointTimeline — the ordered touchpoint timeline for a SELECTED order
  * (Silver-tier journey). Resolves an order → its deterministically-stitched anon
  * journey → the ordered touches (touch_seq asc) from silver.touchpoint via the
- * metric-engine journey seam (I-ST01 — the UI never queries StarRocks).
+ * metric-engine journey seam (I-ST01 — the UI never queries the serving tier).
  *
- * It is a read PROJECTION (no aggregation, no money) — one ordered list item per touch,
- * with channel (icon + text — never colour-only), timestamp, UTM/referrer context, and
- * first/last-touch flags. An order with no stitched journey shows an honest empty state
- * (never a fabricated touch).
+ * PLAIN LANGUAGE: rows render through the shared <JourneyTimeline/> — internal event
+ * codes are humanized via lib/event-labels (icon + "Page view"-style label + a
+ * story-style sentence composed from the touch's UTM/referrer context and first/last
+ * flags); raw codes never reach the DOM. Relative + absolute time per row.
  *
- * A11y:
- *   - the timeline is an ordered list (<ol>) — reading order matches visual order.
- *   - each channel is an icon + text label (never colour-only).
- *   - first/last-touch are text badges, not colour cues.
- *   - the search input is labelled; the empty state is announced.
+ * It is a read PROJECTION (no aggregation, no money) — an order with no stitched
+ * journey shows an honest empty state (never a fabricated touch).
+ *
+ * CONTROLLED MODE: pass `orderId` to drive the trace externally (the Customer Profile
+ * "Explain this order" box); the internal input is hidden. Without the prop it stays
+ * self-contained (the Journeys page usage is unchanged).
  */
 
 import { useState } from 'react';
-import {
-  Megaphone,
-  Facebook,
-  Search,
-  Music2,
-  Mail,
-  Share2,
-  Link2,
-  Globe,
-  Flag,
-  Footprints,
-  Route,
-} from 'lucide-react';
+import { Link2, Route } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorCard } from '@/components/ui/error-card';
 import { SyntheticBadge } from '@/components/analytics/synthetic-badge';
+import { JourneyTimeline, type JourneyTimelineEvent } from '@/components/analytics/journey-timeline';
+import { eventLabel } from '@/lib/event-labels';
 import { useJourneyTimeline } from '@/lib/hooks/use-analytics';
-import type { JourneyChannel, JourneyTouchpointRow } from '@/lib/api/types';
+import type { JourneyTouchpointRow } from '@/lib/api/types';
 
-const CHANNEL_META: Record<
-  JourneyChannel,
-  { label: string; icon: React.ComponentType<{ className?: string }> }
-> = {
-  paid: { label: 'Paid', icon: Megaphone },
-  paid_meta: { label: 'Paid · Meta', icon: Facebook },
-  paid_google: { label: 'Paid · Google', icon: Search },
-  paid_tiktok: { label: 'Paid · TikTok', icon: Music2 },
-  email: { label: 'Email', icon: Mail },
-  organic_social: { label: 'Organic Social', icon: Share2 },
-  referral: { label: 'Referral', icon: Link2 },
-  direct: { label: 'Direct', icon: Globe },
-};
-
-function channelMeta(channel: JourneyChannel) {
-  return CHANNEL_META[channel] ?? { label: channel, icon: Globe };
-}
-
-/** ISO → a stable, locale-aware short timestamp (no float math; pure display). */
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function TouchRow({ touch }: { touch: JourneyTouchpointRow }) {
-  const meta = channelMeta(touch.channel);
-  const Icon = meta.icon;
-
-  const utmBits = [touch.utm_source, touch.utm_medium, touch.utm_campaign]
+/**
+ * Compose the story-style sentence for one touch: the event's plain-language meaning,
+ * prefixed with its first/last-touch role and suffixed with where the shopper came
+ * from (UTM triple, else referrer, else landing path). Never the raw code.
+ */
+function touchDescription(t: JourneyTouchpointRow): string {
+  const { description } = eventLabel(t.event_type);
+  const utmBits = [t.utm_source, t.utm_medium, t.utm_campaign]
     .filter((v): v is string => Boolean(v))
     .join(' / ');
-  const context = utmBits || touch.referrer_host || touch.landing_path || null;
+  const context = utmBits || t.referrer_host || t.landing_path || null;
 
-  return (
-    <li
-      className="flex items-start gap-3"
-      data-testid={`journey-touch-${touch.touch_seq}`}
-    >
-      {/* Timeline node + connector line. */}
-      <div className="flex flex-col items-center">
-        <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground"
-          aria-hidden="true"
-        >
-          <Icon className="h-3.5 w-3.5" />
-        </span>
-      </div>
-
-      <div className="flex-1 pb-4 -mt-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium text-foreground">{meta.label}</span>
-          <span className="text-xs text-muted-foreground">·</span>
-          <span className="text-xs text-muted-foreground">{touch.event_type}</span>
-
-          {touch.is_first_touch && (
-            <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-              <Footprints className="h-2.5 w-2.5" aria-hidden="true" />
-              First touch
-            </span>
-          )}
-          {touch.is_last_touch && (
-            <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-              <Flag className="h-2.5 w-2.5" aria-hidden="true" />
-              Last touch
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground tabular-nums">{fmtTime(touch.occurred_at)}</p>
-        {context && (
-          <p className="text-xs text-muted-foreground/80 truncate" title={context}>
-            {context}
-          </p>
-        )}
-      </div>
-    </li>
-  );
+  const parts: string[] = [];
+  if (t.is_first_touch) parts.push('First touch —');
+  else if (t.is_last_touch) parts.push('Last touch —');
+  parts.push(description);
+  if (context) parts.push(`Came via ${context}.`);
+  return parts.join(' ');
 }
 
-export function TouchpointTimeline() {
+function toTimelineEvent(t: JourneyTouchpointRow): JourneyTimelineEvent {
+  return {
+    id: String(t.touch_seq),
+    occurredAt: t.occurred_at,
+    eventType: t.event_type,
+    description: touchDescription(t),
+    channel: t.channel,
+  };
+}
+
+export function TouchpointTimeline({
+  orderId: controlledOrderId,
+}: {
+  /** Controlled mode: the order to trace (null = none yet). Omit for the self-contained input. */
+  orderId?: string | null;
+} = {}) {
+  const isControlled = controlledOrderId !== undefined;
   const [draft, setDraft] = useState('');
-  const [orderId, setOrderId] = useState<string | null>(null);
+  const [internalOrderId, setInternalOrderId] = useState<string | null>(null);
+  const orderId = isControlled ? controlledOrderId : internalOrderId;
 
   const { data, isLoading, error, refetch } = useJourneyTimeline(orderId);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const v = draft.trim();
-    setOrderId(v.length > 0 ? v : null);
+    setInternalOrderId(v.length > 0 ? v : null);
   };
 
   const hasData = data?.state === 'has_data';
 
   return (
     <div className="space-y-3" data-testid="journey-timeline-section">
-      <form onSubmit={submit} className="flex flex-wrap items-end gap-2">
-        <div className="flex flex-col gap-1">
-          <label htmlFor="journey-order-id" className="text-xs font-medium text-muted-foreground">
-            Order ID
-          </label>
-          <input
-            id="journey-order-id"
-            type="text"
-            inputMode="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="e.g. 4521987654321"
-            data-testid="journey-order-input"
-            className="h-9 w-64 max-w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
-        <Button type="submit" size="sm" variant="outline" data-testid="journey-timeline-submit">
-          <Route className="mr-2 h-4 w-4" aria-hidden="true" />
-          Trace journey
-        </Button>
-      </form>
+      {!isControlled && (
+        <form onSubmit={submit} className="flex flex-wrap items-end gap-2">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="journey-order-id" className="text-xs font-medium text-muted-foreground">
+              Order ID
+            </label>
+            <input
+              id="journey-order-id"
+              type="text"
+              inputMode="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="e.g. 4521987654321"
+              data-testid="journey-order-input"
+              className="h-9 w-64 max-w-full rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <Button type="submit" size="sm" variant="outline" data-testid="journey-timeline-submit">
+            <Route className="mr-2 h-4 w-4" aria-hidden="true" />
+            Trace journey
+          </Button>
+        </form>
+      )}
 
-      {orderId === null && (
+      {orderId === null && !isControlled && (
         <Card data-testid="journey-timeline-prompt">
           <CardContent className="flex flex-col items-center gap-2 py-8 text-center">
             <Route className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
             <p className="text-sm text-muted-foreground max-w-md">
-              Enter an order ID to trace its journey — the ordered touchpoints leading to that
-              order, deterministically stitched from the anonymous session.
+              Enter an order ID to trace its journey — the ordered steps that led to that
+              order, from first visit to purchase.
             </p>
           </CardContent>
         </Card>
       )}
 
-      {orderId !== null && isLoading && (
+      {orderId != null && isLoading && (
         <div className="space-y-2" aria-busy="true" aria-label="Loading journey timeline…">
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-full" />
@@ -182,66 +128,54 @@ export function TouchpointTimeline() {
         </div>
       )}
 
-      {orderId !== null && !isLoading && error && <ErrorCard error={error} retry={refetch} />}
+      {orderId != null && !isLoading && error && <ErrorCard error={error} retry={refetch} />}
 
-      {orderId !== null && !isLoading && !error && data?.state === 'no_data' && (
+      {orderId != null && !isLoading && !error && data?.state === 'no_data' && (
         <Card data-testid="journey-timeline-empty">
           <CardContent className="flex flex-col items-center gap-2 py-8 text-center">
-            <Unplugged />
-            <p className="text-sm font-medium text-foreground">No stitched journey for this order</p>
+            <Link2 className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
+            <p className="text-sm font-medium text-foreground">No traced journey for this order</p>
             <p className="text-sm text-muted-foreground max-w-md">
-              We could not deterministically link order <span className="font-mono">{orderId}</span>{' '}
-              to an anonymous journey. Stitching reads <span className="font-mono">brain_anon_id</span>{' '}
-              back from the order at checkout — it is never inferred.
+              We could not reliably link order <span className="font-mono">{orderId}</span> to a
+              browsing session. Linking only happens when the order itself carries the visitor
+              reference at checkout — it is never guessed.
             </p>
           </CardContent>
         </Card>
       )}
 
-      {orderId !== null && !isLoading && !error && hasData && (
+      {orderId != null && !isLoading && !error && hasData && (
         <Card data-testid="journey-timeline-result">
           <CardContent className="py-5">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <span className="text-sm font-medium text-foreground">
                 Journey for order <span className="font-mono">{orderId}</span>
-                {data.brain_anon_id && (
-                  <span className="text-xs text-muted-foreground ml-1">
-                    (anon: <span className="font-mono">{data.brain_anon_id}</span>)
-                  </span>
-                )}
               </span>
               <span className="text-xs text-muted-foreground">
-                · {data.touches.length} touchpoint{data.touches.length === 1 ? '' : 's'}
+                · {data.touches.length} step{data.touches.length === 1 ? '' : 's'}
               </span>
               {data.data_source === 'synthetic' && (
                 <SyntheticBadge
                   data-testid="journey-timeline-synthetic-badge"
-                  reason="This journey is built from clearly-labelled synthetic touchpoint fixtures (real shape, synthetic source) so the timeline is demoable. Real page.viewed coverage is thin in dev."
+                  reason="This journey is built from clearly-labelled sample steps so the timeline is demoable — real browsing coverage is thin in this environment."
                 />
               )}
             </div>
 
             {data.touches.length === 0 ? (
               <p className="text-sm text-muted-foreground italic">
-                Stitched, but no touchpoints recorded for this journey.
+                Linked to a session, but no browsing steps were recorded for this journey.
               </p>
             ) : (
-              <ol className="ml-1">
-                {[...data.touches]
+              <JourneyTimeline
+                events={[...data.touches]
                   .sort((a, b) => a.touch_seq - b.touch_seq)
-                  .map((t) => (
-                    <TouchRow key={t.touch_seq} touch={t} />
-                  ))}
-              </ol>
+                  .map(toTimelineEvent)}
+              />
             )}
           </CardContent>
         </Card>
       )}
     </div>
   );
-}
-
-/** A tiny inline "no link" glyph (icon-only is decorative; the text carries meaning). */
-function Unplugged() {
-  return <Link2 className="h-7 w-7 text-muted-foreground" aria-hidden="true" />;
 }

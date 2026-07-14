@@ -45,7 +45,8 @@ export interface CampaignRoasParams {
 export async function getCampaignRoas(
   brandId: string,
   params: CampaignRoasParams,
-  deps: { srPool: SilverPool },
+  // SPEC:C.4 — measurementMartsMigration threads the marts-migration flag to the spend read (default OFF → legacy view).
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
 ): Promise<CampaignRoasResult> {
   const { hasSpend, hasCredit } = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     const spend = await scope.runScoped<{ has_row: number }>(

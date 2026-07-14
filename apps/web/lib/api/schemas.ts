@@ -47,31 +47,6 @@ export const resetPasswordSchema = z
   });
 export type ResetPasswordFormValues = z.infer<typeof resetPasswordSchema>;
 
-// ── Workspace ─────────────────────────────────────────────────────────────────
-
-export const createWorkspaceSchema = z.object({
-  name: z
-    .string()
-    .min(1, 'Workspace name is required')
-    .max(80, 'Workspace name must be under 80 characters'),
-  /**
-   * feat-onboarding-ux: slug is now an implementation detail — derived server-side from the
-   * name (the standalone /v1/workspaces contract makes `slug` optional). The slug input is no
-   * longer shown to the user, so this field is optional here too (the merged onboarding step
-   * uses createBrandWorkspaceSchema below and sends no slug at all).
-   */
-  slug: z
-    .string()
-    .min(2, 'Slug must be at least 2 characters')
-    .max(48, 'Slug must be under 48 characters')
-    .regex(
-      /^[a-z0-9-]+$/,
-      'Slug must be lowercase letters, numbers, and hyphens only',
-    )
-    .optional(),
-});
-export type CreateWorkspaceFormValues = z.infer<typeof createWorkspaceSchema>;
-
 // ── Brand ─────────────────────────────────────────────────────────────────────
 
 export const createBrandSchema = z.object({
@@ -169,11 +144,6 @@ export const inviteMemberSchema = z.object({
   }),
 });
 export type InviteMemberFormValues = z.infer<typeof inviteMemberSchema>;
-
-export const updateRoleSchema = z.object({
-  role_code: z.enum(['owner', 'brand_admin', 'manager', 'analyst'] as const),
-});
-export type UpdateRoleFormValues = z.infer<typeof updateRoleSchema>;
 
 // ── Ask Brain (Phase 8 — feat-decision-intelligence-inputs) ────────────────────
 //

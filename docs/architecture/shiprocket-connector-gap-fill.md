@@ -1,5 +1,9 @@
 # Shiprocket Connector — Gap-Fill Plan
 
+> **Writer note (ADR-0010, 2026-07-05):** `bronze_materialize.py` referenced below was removed —
+> Bronze is landed verbatim by the Kafka Connect sink with NO Bronze-side gate; the
+> `SERVER_TRUSTED` admit set now lives only in `silver_collector_event.py` (one edit, not two).
+
 > Status: PLAN · Owner: Connector Platform · Brand under test: Bodd Active (`1a6adb32-eb0d-41f9-8409-dc423240e444`)
 > Companion: `docs/architecture/gokwik-connector-reimplementation.md`. **Serialize implementation AFTER the GoKwik build** — both touch `silver_collector_event.py` and `bronze_materialize.py`.
 

@@ -24,6 +24,8 @@ export type {
   JourneyFirstTouchMix as AnalyticsJourneyFirstTouchMixResponse,
   TimelineTouchDto as JourneyTouchpointRow,
   JourneyTimeline as AnalyticsJourneyTimelineResponse,
+  JourneyEventDto as JourneyLedgerEventRow,
+  JourneyEventsLedger as AnalyticsJourneyEventsResponse,
   JourneyStitchRate as AnalyticsJourneyStitchRateResponse,
   ShipmentOutcomes as AnalyticsShipmentOutcomesResponse,
   CourierOutcomeDto as ShipmentCourierRow,
@@ -49,6 +51,8 @@ export type {
   JourneyPaths as AnalyticsJourneyPathsResponse,
   JourneyPathRowDto as JourneyPathRow,
   JourneyPathLinkDto as JourneyPathLink,
+  JourneyList as AnalyticsJourneyListResponse,
+  JourneyListRowDto as JourneyListRow,
   RepeatLatency as AnalyticsRepeatLatencyResponse,
   RepeatLatencyBucketDto as RepeatLatencyBucket,
   CohortUsers as AnalyticsCohortUsersResponse,
@@ -133,39 +137,6 @@ import type {
   AttributionModelId as AttributionModel,
 } from '@brain/contracts';
 export type { ChannelContributionDto, AttributionModel };
-
-// Re-export the contract Schemas the client boundary parses against.
-export {
-  RevenueSnapshotSchema,
-  KpiSummarySchema,
-  AttributionByChannelSchema,
-  AttributionReconciliationSchema,
-  ChannelRoasSchema,
-  JourneyFirstTouchMixSchema,
-  JourneyTimelineSchema,
-  JourneyStitchRateSchema,
-  JourneyPathsSchema,
-  RepeatLatencySchema,
-  DeliveryTimeSchema,
-  CampaignAttributionSchema,
-  ShipmentOutcomesSchema,
-  ReturnFunnelSchema,
-  BehaviorOverviewSchema,
-  OrderStatusMixSchema,
-  DataQualitySummarySchema,
-  AskBrainResultSchema,
-} from '@brain/contracts';
-
-// ── Error envelope (matches sample.api.v1.ts pattern) ───────────────────────
-
-export interface ApiErrorResponse {
-  request_id: string;
-  error: {
-    code: string;
-    message: string;
-    fields?: Array<{ field: string; message: string }>;
-  };
-}
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -327,13 +298,6 @@ export interface BrandSummaryEntry {
 /** DELETE /api/v1/brands/:id → soft-delete (archive). Reversible server-side. */
 export interface BrandArchiveResponse {
   id: string;
-  archived: boolean;
-}
-
-/** Restore (un-archive) a previously soft-deleted brand → POST /api/v1/brands/:id/restore. */
-export interface BrandRestoreResponse {
-  id: string;
-  /** false once the brand is active again. */
   archived: boolean;
 }
 
@@ -816,19 +780,6 @@ export type DqTrustTier = 'trusted' | 'estimated' | 'untrusted';
 export type DqFreshnessSlaStatus = 'green' | 'at_risk' | 'breached';
 
 /** DqGradeCell is DERIVED from @brain/contracts DqGradeRow (re-exported at top of file). */
-/** The gate decision the metric-engine computes from effective_confidence. */
-export interface DqGateDecision {
-  tier: DqTrustTier;
-  billingCapApplies: boolean;
-  includedInMmm: boolean;
-  blocksHighRiskRecommendation: boolean;
-}
-
-/** dq_grade coverage — the Phase-7 success metric. */
-export interface DqCoverage {
-  graded: number; // distinct (category,target) with a grade
-  expected: number; // distinct (category,target) expected to be graded
-}
 
 // DataQualitySummaryResponse is DERIVED from @brain/contracts DataQualitySummary
 // (re-exported at top of file). The contract superset adds costConfidence /
@@ -1474,4 +1425,86 @@ export interface AnalyticsRecordsResponse {
   columns: AnalyticsRecordColumn[];
   detailColumns: AnalyticsRecordColumn[];
   rows: Array<Record<string, string | null>>;
+}
+
+// ── Wave B — Journey deep-dive (contract types, re-exported for UI hooks/pages) ──────────────
+export type {
+  CustomerJourneyTimeline,
+  CustomerJourneyItem,
+  JourneyTrace,
+  TraceTouch,
+  IdentityEvidenceItem,
+} from '@brain/contracts';
+
+// ── Wave C — Metric lineage ("prove this number": the source facts behind a metric) ─────────
+export interface MetricLineageFact {
+  catalog: 'iceberg';
+  schema: 'brain_gold' | 'brain_silver';
+  table: string;
+  /** fully-qualified 'iceberg.<schema>.<table>' */
+  fqtn: string;
+  /** what this fact contributes to the metric (human description) */
+  role: string;
+  /** the date column filtered for the as-of read, or null (all-time) */
+  date_column: string | null;
+  /** brand + as-of scoped row count (honest 0 for a table that has not materialized) */
+  row_count: number;
+  /** distinct producing Spark job version(s) — provenance */
+  job_versions: string[];
+  job_version_source: 'column' | 'producer';
+}
+export type MetricLineageResult =
+  | { state: 'unknown_metric'; metric: string; supported: string[] }
+  | {
+      state: 'ok';
+      metric: string;
+      description: string;
+      /** echoed as-of date (YYYY-MM-DD) or null (all-time counts) */
+      date: string | null;
+      facts: MetricLineageFact[];
+      traces_to_measurement: boolean;
+    };
+
+// ── Wave C — Contribution margin (true profit: revenue → COGS → CM1 → marketing → CM2) ──────
+// All money is bigint minor units as a string, paired with currency_code (never a float).
+export interface ContributionMarginBlock {
+  currency_code: string;
+  net_revenue_minor: string;
+  cogs_minor: string;
+  /** cogs + shipping + packaging (variable cost of goods) */
+  variable_cost_minor: string;
+  /** net_revenue − cogs */
+  cm1_minor: string;
+  /** allocated marketing spend */
+  marketing_minor: string;
+  /** cm1 − variable_cost − marketing */
+  cm2_minor: string;
+  cost_confidence: 'Trusted' | 'Estimated' | 'Insufficient';
+}
+export type ContributionMarginResponse =
+  | { state: 'no_data'; as_of: string }
+  | { state: 'has_data'; as_of: string; margin: ContributionMarginBlock };
+
+// ── Wave D — Semantic metric catalog (the certified, governed metric definitions) ───────────
+export interface SemanticMetricEntry {
+  name: string;
+  version: string;
+  entity: string;
+  grain: string[];
+  dimensions_allowed: string[];
+  currency_handling: string;
+  identity_basis: string;
+  interactive: boolean;
+  owner: string;
+  description: string;
+  examples: string[];
+  deterministic_exclusion: string;
+}
+export interface SemanticMetricsCatalog {
+  spec: string;
+  generator: string;
+  count: number;
+  /** the per-brand semantic.serving flag state (informational; discovery is flag-agnostic) */
+  semantic_serving_flag: boolean;
+  metrics: SemanticMetricEntry[];
 }

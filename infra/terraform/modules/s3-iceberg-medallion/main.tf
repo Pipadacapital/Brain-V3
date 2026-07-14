@@ -5,8 +5,8 @@
 #   Provision the Iceberg SILVER and GOLD storage layers so Spark can CREATE +
 #   MERGE Iceberg tables in the brain_silver / brain_gold namespaces. Today only
 #   the Bronze bucket/catalog exists (modules/s3-iceberg) — Gold-in-Iceberg is
-#   not deployable (08-spark-ownership-report §4 provisioning blocker;
-#   09-starrocks-report §6 step 1). This module is the cloud mirror of that.
+#   not deployable (08-spark-ownership-report §4 provisioning blocker).
+#   This module is the cloud mirror of that.
 #
 # NON-BREAKING / ADDITIVE: this module creates NEW buckets, NEW Glue databases,
 # and a NEW Spark write role/policy. It changes no existing bucket, catalog,
@@ -359,6 +359,17 @@ data "aws_iam_policy_document" "bucket_policy" {
       test     = "StringNotEquals"
       variable = "s3:x-amz-server-side-encryption"
       values   = ["aws:kms"]
+    }
+    # Only deny puts that EXPLICITLY request a non-KMS algorithm. Writers that
+    # omit the header (Iceberg REST + the Kafka Connect Iceberg sink + Spark)
+    # fall through to the bucket's default SSE-KMS, so objects are always
+    # KMS-encrypted at rest. Without this, header-absent puts were denied
+    # ("explicit deny in a resource-based policy") and Bronze/Silver/Gold
+    # commits failed.
+    condition {
+      test     = "Null"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["false"]
     }
   }
 

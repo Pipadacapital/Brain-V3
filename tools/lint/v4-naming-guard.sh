@@ -32,6 +32,11 @@
 #         env read. Brain V4 removed StarRocks ENTIRELY — serving is Trino-over-Iceberg
 #         (createTrinoPool / withTrinoBrand) fronted by Redis. This rule stops StarRocks creeping back into
 #         the app after the Trino cut-over. (Trino clients are ALLOWED; this only bans the StarRocks wire.)
+#   R6  NEW Spark COUPLING (Spark→DuckDB cutover, feat/spark-to-duckdb-cutover): a `spark-submit`
+#         invocation, or a `db/iceberg/spark` path reference, in live (non-comment) code. The transform
+#         tier is DuckDB-on-Iceberg (db/iceberg/duckdb/**) + a Trino maintenance client (db/iceberg/
+#         trino/**); the Spark tree and image are DELETED. This rule stops Spark creeping back after the
+#         cutover. (Both db/iceberg/duckdb and db/iceberg/trino are ALLOWED — never matched by this rule.)
 #
 # EXCLUDED from scanning (by design):
 #   • test fixtures: *.test.ts, *.spec.ts, *.live.test.ts, tools/isolation-fuzz/**, **/test/**
@@ -116,6 +121,12 @@ noncomment_lines() { # $1 = file
           # A line whose stripped content STARTS with a triple-quote is a (single-line) docstring → skip.
           if (stripped ~ /^("""|'"'"''"'"''"'"')/) next
           if (stripped ~ /^#/) next                 # whole-line python comment
+          # A line whose stripped content STARTS with a bare string quote is a multi-line string-literal
+          # BODY/continuation (e.g. a raise SystemExit("…") error message split across lines) — prose, not
+          # an executable table reference. Executable string args start with the CALL (con.execute("…"),
+          # f"…") or a SQL keyword ("SELECT …"), never with a bare `"brain_gold.` — so this cannot hide a
+          # real FROM/JOIN. Same intent as the docstring skip above.
+          if (stripped ~ /^("|'"'"')/) next
           printf "%d:%s\n", NR, line
         }
       ' "$f"
@@ -237,6 +248,27 @@ scan_starrocks_coupling() {
   done < <(candidate_files 'mysql2|STARROCKS_|(^|[^0-9])9030([^0-9]|$)' | grep -E '\.tsx?$' || true)
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# R6: NEW Spark coupling (Spark→DuckDB cutover). A `spark-submit` invocation or a `db/iceberg/spark`
+#   path reference in live (non-comment) code. The Spark tree + image are deleted; the transform tier is
+#   DuckDB (db/iceberg/duckdb/**) + a Trino maintenance client (db/iceberg/trino/**). Comments/docstrings
+#   that mention the ported-from Spark path (provenance) are stripped by noncomment_lines() and allowed.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+scan_spark_coupling() {
+  local f l content
+  while IFS= read -r f; do
+    is_excluded "$f" && continue
+    while IFS= read -r line; do
+      l="${line%%:*}"; content="${line#*:}"
+      if printf '%s' "$content" | grep -qE 'spark-submit'; then
+        flag R6 "$f:$l" "spark-submit is REMOVED (Spark→DuckDB cutover) — the transform tier is DuckDB (db/iceberg/duckdb) invoked as \`python /opt/brain/duckdb/<layer>/<job>.py\`; maintenance is the Trino client (db/iceberg/trino): ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE 'db/iceberg/spark'; then
+        flag R6 "$f:$l" "db/iceberg/spark is DELETED (Spark→DuckDB cutover) — use db/iceberg/duckdb (transform) or db/iceberg/trino (maintenance): ${content#"${content%%[![:space:]]*}"}"
+      fi
+    done < <(noncomment_lines "$f")
+  done < <(candidate_files 'spark-submit|db/iceberg/spark')
+}
+
 # ── Self-test ──────────────────────────────────────────────────────────────────────────────────────
 # Proves the guard FAILS on a known-bad corpus (one line per rule) and PASSES on the allowed forms.
 selftest() {
@@ -262,6 +294,12 @@ import mysql from 'mysql2/promise';
 const host = process.env['STARROCKS_HOST'];
 const pool = mysql.createPool({ host, port: 9030, user: 'brain_analytics' });
 EOF
+  # R6 bad corpus — NEW Spark coupling (one signal per line).
+  cat > "$d/bad.spark.sh" <<'EOF'
+#!/usr/bin/env bash
+exec /opt/spark/bin/spark-submit --master local[*] /opt/brain/silver/silver_order_state.py
+python db/iceberg/spark/gold/gold_revenue_ledger.py
+EOF
 
   # ── Good corpus (must NOT trigger) ────────────────────────────────────────
   cat > "$d/good.sql" <<'EOF'
@@ -283,6 +321,19 @@ EOF
 import { createTrinoPool, withTrinoBrand } from '@brain/metric-engine';
 const trino = createTrinoPool({ baseUrl: process.env['TRINO_URL'] ?? 'http://trino:8090', user: 'brain' });
 // reads iceberg.brain_serving.mv_gold_revenue_ledger over Trino — no mysql2, no :9030, no STARROCKS_ env.
+EOF
+  # R6 good corpus — the DuckDB/Trino cutover invocation + a provenance comment/docstring (allowed).
+  cat > "$d/good.spark.sh" <<'EOF'
+#!/usr/bin/env bash
+# faithful port of db/iceberg/spark/gold/gold_cac.py — provenance comment, allowed
+python /opt/brain/duckdb/gold/gold_cac.py       # DuckDB transform
+python /opt/brain/trino/bronze_maintenance.py   # Trino maintenance client
+EOF
+  cat > "$d/good.spark.py" <<'EOF'
+"""
+gold_cac.py (DuckDB) — faithful port of db/iceberg/spark/gold/gold_cac.py (docstring — allowed).
+"""
+con.execute("MERGE INTO rest.brain_gold.gold_cac ...")
 EOF
 
   local fail_bad=0 fail_good=0
@@ -312,6 +363,16 @@ EOF
   # The 3-line corpus carries all three signals; require every one to be caught.
   [ "$r5_hits" -ge 3 ] || { echo "${RED}SELFTEST FAIL: R5 missed a StarRocks-coupling signal in bad.starrocks.ts (hits=$r5_hits)${RST}"; fail_bad=1; }
 
+  # ── Check bad.spark.sh catches R6 (spark-submit + db/iceberg/spark) ───────────
+  local r6_hits; r6_hits=0
+  while IFS= read -r line; do
+    local content="${line#*:}"
+    printf '%s' "$content" | grep -qE 'spark-submit' && r6_hits=$((r6_hits+1))
+    printf '%s' "$content" | grep -qE 'db/iceberg/spark' && r6_hits=$((r6_hits+1))
+  done < <(noncomment_lines "$d/bad.spark.sh")
+  # The 2-line corpus carries both signals; require every one to be caught.
+  [ "$r6_hits" -ge 2 ] || { echo "${RED}SELFTEST FAIL: R6 missed a Spark-coupling signal in bad.spark.sh (hits=$r6_hits)${RST}"; fail_bad=1; }
+
   # ── Check good.sql + good.py produce NO false positives ───────────────────
   for f in "$d/good.sql" "$d/good.py"; do
     local hits; hits=0
@@ -334,8 +395,19 @@ EOF
   done < <(noncomment_lines "$d/good.starrocks.ts")
   [ "$r5_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R5 false-positived on the allowed Trino client in good.starrocks.ts (hits=$r5_fp)${RST}"; fail_good=1; }
 
+  # ── Check good.spark.{sh,py} (DuckDB/Trino invocation + provenance comments) produce NO R6 FPs ──
+  local r6_fp; r6_fp=0
+  for f in "$d/good.spark.sh" "$d/good.spark.py"; do
+    while IFS= read -r line; do
+      local content="${line#*:}"
+      printf '%s' "$content" | grep -qE 'spark-submit' && r6_fp=$((r6_fp+1))
+      printf '%s' "$content" | grep -qE 'db/iceberg/spark' && r6_fp=$((r6_fp+1))
+    done < <(noncomment_lines "$f")
+  done
+  [ "$r6_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R6 false-positived on the allowed DuckDB/Trino invocation or a provenance comment (hits=$r6_fp)${RST}"; fail_good=1; }
+
   if [ "$fail_bad" -eq 0 ] && [ "$fail_good" -eq 0 ]; then
-    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 on the bad corpus + R5 StarRocks coupling; no false positives on allowed Trino/Iceberg forms).${RST}"
+    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 + R5 StarRocks + R6 Spark coupling on the bad corpus; no false positives on allowed Trino/Iceberg/DuckDB forms).${RST}"
     return 0
   fi
   return 1
@@ -352,6 +424,7 @@ scan_dead_db_refs
 scan_dbt_invocations
 scan_feature_precompute
 scan_starrocks_coupling
+scan_spark_coupling
 
 if [ "$violations" -gt 0 ]; then
   echo ""

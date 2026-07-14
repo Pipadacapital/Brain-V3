@@ -6,46 +6,40 @@ streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
   digest: "sha256:f34adf7357efa5963126e0f24f529874474fe8498f3f11bda0de9ed1bb24001a"
-# spark image — bronze-maintenance cron + reused by the V4 Spark silver/gold/mv-refresh crons
-# (.sparkV4.image — CI promotes both digests build-once from staging). Bronze LANDING is the
-# kafka-connect chart (ADR-0010) — the Spark landing cron was removed 2026-07-05.
+# duckdb image — bronze/medallion maintenance + erasure (via the Trino client it carries) AND the V4
+# Silver/Gold transform crons (.sparkV4.image — CI promotes both digests build-once from staging, one
+# image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover: replaces
+# brain-spark-bronze-prod. The digest below is a PLACEHOLDER — the first master build of brain-duckdb-prod
+# (deploy.yml build-data-images) promotes the real digest here; until then the templates fail-closed on it.
 sparkBronze:
   image:
-    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
     digest: "sha256:11e4c1cba1bc50bbeee463c54176832b4a751465e0c2a14401a6c02a477e75c4"
-  # AUD-PROD-006: Spark cron pods → the batch Karpenter pool (t4g.xlarge Spot).
-  # A Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry +
-  # idempotent maintenance (compaction/snapshot-expiry re-runs are no-ops).
+  # AUD-PROD-006: the maintenance/erasure cron pods run on the streaming Karpenter pool (the batch pool
+  # was removed in the Spark→DuckDB cutover — the DuckDB crons are lightweight python, no JVM). A
+  # Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry + idempotent maintenance.
   nodeSelector:
-    brain.platform/pool: batch
-# spark V4 Silver/Gold transform + mv refresh crons — same image as sparkBronze (the Dockerfile carries the
-# V4 marts). Flip enabled:true once the prod V4 cluster + digest are ready (gated off by default).
+    brain.platform/pool: streaming
+# duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image carries the
+# transform marts + the Trino maintenance client).
 sparkV4:
   image:
-    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze-prod
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
     digest: "sha256:11e4c1cba1bc50bbeee463c54176832b4a751465e0c2a14401a6c02a477e75c4"
-  # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the batch pool.
+  # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the streaming pool (batch pool removed).
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:
-    brain.platform/pool: batch
-  # AUD-OPS (2026-07-13): the batch pool is Karpenter spot; Karpenter was VOLUNTARILY draining the node
-  # under a running v4-silver/v4-gold pod (karpenter.sh/disrupted taint → Evicted → exit 143 → retries
-  # exhausted at 14-37 min, well under the 4500s deadline). do-not-disrupt tells Karpenter not to
-  # consolidate/drift-disrupt a node hosting these pods while they run. Idempotent MERGE jobs, so an
-  # involuntary AWS spot reclaim is still safe (bounded retry); this only removes the self-inflicted churn.
+    brain.platform/pool: streaming
+  # do-not-disrupt tells Karpenter not to consolidate/drift-disrupt a node hosting these pods while they
+  # run (the exit-143 / "No more retries left" class). Idempotent MERGE jobs, so an involuntary AWS spot
+  # reclaim is still safe (bounded retry); this only removes the self-inflicted churn.
   podAnnotations:
     karpenter.sh/do-not-disrupt: "true"
-  # ── AUD-OPS-029 / AUD-IMPL-027: short-term sizing bump. Prod previously ran the
-  # local-mode DEFAULTS (3g driver in a 2CPU/4Gi pod) — the audit's first 10×
-  # data-plane bottleneck. 6g heap in an 8Gi pod keeps the same ~non-heap margin
-  # ratio as 3g/4Gi; a 3CPU/8Gi pod fits one batch-pool t4g.xlarge (4 vCPU/16Gi)
-  # with daemonset headroom, and the pool limits (12CPU/48Gi) absorb the
-  # silver/gold/maintenance overlap. This buys headroom ONLY — the real fix is
-  # executionMode: k8s per the DEFINED, alert-backed cutover trigger in
-  # docs/ops/spark-on-k8s-migration.md §1 (brain_spark_workflow_duration_seconds).
-  driverMemory: "6g"
+  # DuckDB is single-process python (no JVM heap). 3CPU/8Gi gives the working set + DuckDB's in-memory
+  # MERGE/aggregation room; the streaming pool (t4g.large/xlarge) absorbs the silver/gold/maintenance
+  # overlap. Re-measure the real DuckDB run-time profile in prod and right-size from there.
   resources:
     requests: {cpu: "2", memory: 6Gi}
     limits: {cpu: "3", memory: 8Gi}

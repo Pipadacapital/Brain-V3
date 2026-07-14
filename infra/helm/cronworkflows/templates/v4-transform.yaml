@@ -1,0 +1,241 @@
+{{- /*
+Brain V4 DuckDB Silver/Gold transform CronWorkflows (was spark-v4.yaml — Spark→DuckDB cutover,
+feat/spark-to-duckdb-cutover).
+
+The transform tier is DuckDB-on-Iceberg now (NOT spark-submit): the brain-duckdb image carries
+db/iceberg/duckdb/** at /opt/brain/duckdb, and each job self-imports its _base/_catalog via
+sys.path.insert — so we invoke `python /opt/brain/duckdb/<layer>/<job>.py` directly (no --master,
+no --py-files/iceberg_base, no JVM). Iceberg (brain_bronze/silver/gold via the REST catalog) is the
+system of record; the brain_serving.mv_* Trino views are thin projections straight over the Gold/Silver
+marts. dbt is GONE; StarRocks is GONE; Spark is GONE.
+
+DEPENDENCY ORDER is enforced by STAGGERED SCHEDULES (this chart's one-container-per-CronWorkflow
+convention — NOT an Argo DAG) + idempotency (every DuckDB MERGE is replay-safe; Forbid +
+startingDeadline make a missed/retried run safe). The full V4 attribution chain — identity →
+order-state → silver → journey-stitch → gold — is split across the node `.Values.jobs`
+(identity-export, journey-stitch-from-identity, journey-stitch-export) and these two crons, which
+mirror tools/dev/duckdb-refresh.sh's ordering EXACTLY:
+
+  :05  v4-silver   keystone silver_collector_event.py (the admission gate every silver job reads) →
+                   silver_order_state.py (order_state spine, resolves brain_id) → the rest of Silver,
+                   run TWICE so a job that read a not-yet-produced sibling on pass 1 converges on pass 2.
+  :25  v4-gold     gold_revenue_ledger.py (recognized basis) → gold_attribution_credit.py +
+                   gold_marketing_attribution.py + gold_attribution_paths.py (attribution, read the
+                   stitched silver_touchpoint) → the remaining Gold marts.
+
+ENABLED by default (.Values.sparkV4.enabled=true): needs the CI-built + digest-pinned brain-duckdb image
+(B3 fail-closed below) + a cluster.
+
+Image MUST be pinned by digest (B3) — same fail-closed rule as the Bronze/maintenance templates.
+
+NOTE: the value block is still named `sparkV4` (chart values compatibility — one image, minimal diff);
+it now carries the DuckDB image + the DuckDB-relevant knobs only (no executionMode / k8s / driverMemory /
+sparkMaxRetries — those were Spark-submit-only and were removed in the cutover).
+*/ -}}
+{{- if .Values.sparkV4.enabled }}
+{{- $img := .Values.sparkV4.image -}}
+{{- $ref := "" -}}
+{{- if $img.digest -}}
+  {{- $ref = printf "%s@%s" $img.repository $img.digest -}}
+{{- else if and $img.tag (ne $img.tag "latest") -}}
+  {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
+{{- else -}}
+  {{- fail "sparkV4.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- $envFrom := .Values.envSecretName -}}
+{{- $sa := .Values.serviceAccount.name -}}
+{{- $tz := .Values.timezone -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-silver
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-silver
+spec:
+  schedule: {{ .Values.sparkV4.silverSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid            # never overlap a Silver build with itself (idempotent, but serialize)
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}      # IRSA: S3 (Iceberg warehouse) + REST catalog access
+    entrypoint: run
+    {{- /* AUD-OPS: keep Karpenter from VOLUNTARILY disrupting (consolidating/draining) the node while
+           this idempotent transform tier is mid-run. Observed with the Spark tier on the batch pool; the
+           DuckDB crons run on the streaming pool (untainted, warm baseline) — same podAnnotations seam. */}}
+    {{- with .Values.sparkV4.podAnnotations }}
+    podMetadata:
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    # ── AUD-IMPL-027 / AUD-OPS-029: per-run wall-time telemetry ─────────────────
+    # The Argo controller emits these on its /metrics endpoint (metricsConfig +
+    # ServiceMonitor enabled in infra/argocd/envs/prod/argo-workflows.yaml). The
+    # realtime duration gauge ticks WHILE the tier runs, so the scale-tripwire
+    # rules (infra/observe/alerts/scale-tripwires.rules.yml) can fire on approach
+    # to activeDeadlineSeconds. Per-job drill-down stays in each DuckDB job's
+    # structured stdout ({"job":…,"upserted":…} result line).
+    metrics:
+      prometheus:
+        - name: brain_transform_workflow_duration_seconds
+          help: "Realtime wall-clock (s) of the running v4 DuckDB transform workflow"
+          labels:
+            - key: tier
+              value: v4-silver
+          gauge:
+            realtime: true
+            value: {{ `"{{workflow.duration}}"` }}
+        - name: brain_transform_workflow_failed_total
+          help: "v4 DuckDB transform workflow runs that ended Failed (deadline/retries exhausted)"
+          labels:
+            - key: tier
+              value: v4-silver
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
+    {{- /* AUD-PROD-006: pin the transform cron pods to the streaming pool (values-prod). */}}
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    activeDeadlineSeconds: {{ .Values.sparkV4.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}    # bounded retry: every Silver MERGE is idempotent
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          # The image CARRIES db/iceberg/duckdb → /opt/brain/duckdb; each job self-imports _base/_catalog.
+          # ORDER (mirrors tools/dev/duckdb-refresh.sh): keystone silver_collector_event FIRST (the
+          # admission gate every silver job reads) → silver_order_state (the brain_id spine) → the rest of
+          # Silver, run TWICE so a job that read a not-yet-produced sibling on pass 1 converges on pass 2.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              run_job() { echo "▶ $1"; python "/opt/brain/duckdb/silver/$1"; }
+              run_job silver_collector_event.py     # keystone / admission gate — MUST run first
+              run_job silver_order_state.py          # spine — resolves brain_id
+              for pass in 1 2; do
+                echo "── silver pass ${pass}/2 ──"
+                for j in /opt/brain/duckdb/silver/silver_*.py; do
+                  b="$(basename "$j")"
+                  case "$b" in silver_collector_event.py|silver_order_state.py) continue;; esac
+                  case "$b" in _*) continue;; esac
+                  run_job "$b"
+                done
+              done
+          env:
+            # ADR-0010: the silver jobs read the Kafka Connect Bronze tables (collector_events_connect
+            # + <lane>_raw_connect) — fixed, no BRONZE_SOURCE switch (rollback = git revert).
+            {{- toYaml .Values.sparkV4.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* + NEO4J_* (identity mart reads)
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-gold
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-gold
+spec:
+  schedule: {{ .Values.sparkV4.goldSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    {{- with .Values.sparkV4.podAnnotations }}
+    podMetadata:
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    # AUD-IMPL-027 / AUD-OPS-029: per-run wall-time telemetry — see the v4-silver
+    # block above for the full rationale (same gauge/counter, tier=v4-gold).
+    metrics:
+      prometheus:
+        - name: brain_transform_workflow_duration_seconds
+          help: "Realtime wall-clock (s) of the running v4 DuckDB transform workflow"
+          labels:
+            - key: tier
+              value: v4-gold
+          gauge:
+            realtime: true
+            value: {{ `"{{workflow.duration}}"` }}
+        - name: brain_transform_workflow_failed_total
+          help: "v4 DuckDB transform workflow runs that ended Failed (deadline/retries exhausted)"
+          labels:
+            - key: tier
+              value: v4-gold
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    activeDeadlineSeconds: {{ .Values.sparkV4.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          # gold_revenue_ledger (recognized basis) FIRST, then attribution (reads the stitched
+          # silver_touchpoint + the ledger basis), then the remaining Gold marts + the snap_* jobs.
+          # _*.py are shared modules (imported), never run directly.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              run_job() { echo "▶ $1"; python "/opt/brain/duckdb/gold/$1"; }
+              run_job gold_revenue_ledger.py
+              run_job gold_attribution_credit.py
+              run_job gold_marketing_attribution.py
+              run_job gold_attribution_paths.py
+              for j in /opt/brain/duckdb/gold/gold_*.py /opt/brain/duckdb/gold/snap_*.py; do
+                b="$(basename "$j")"
+                case "$b" in gold_revenue_ledger.py|gold_attribution_credit.py|gold_marketing_attribution.py|gold_attribution_paths.py) continue;; esac
+                case "$b" in _*) continue;; esac
+                run_job "$b"
+              done
+          env:
+            # ADR-0010: the gold jobs' Silver inputs derive from the Kafka Connect Bronze tables —
+            # fixed, no BRONZE_SOURCE switch (rollback = git revert).
+            {{- toYaml .Values.sparkV4.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+{{- end }}

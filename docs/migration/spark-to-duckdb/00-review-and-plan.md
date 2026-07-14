@@ -7,6 +7,20 @@ RTBF) with DuckDB, decommission the Spark `batch` compute, keep the architecture
 
 ---
 
+## GATE 1 — PASSED ✅ (2026-07-14, against the live dev catalog)
+
+Ran `phase0_capability_probe.py` against the real Brain Iceberg REST catalog
+(iceberg-rest-fixture 1.9.2 + MinIO, DuckDB 1.5.4). **9/9 pass:**
+attach + list medallion · read real Bronze (`shopify_orders_raw_connect`, 292 rows) ·
+INSERT · **MERGE idempotency (replay-stable)** · BIGINT money round-trip · DELETE ·
+partition transforms `bucket()/day()` · snapshot history · cleanup.
+
+**Key fix discovered:** the REST-catalog ATTACH first-arg must be the warehouse
+**name** (`brain-bronze`), NOT the `s3://` URI — the URI attaches the catalog
+READ-ONLY, the name attaches it READ-WRITE. Encoded as `WAREHOUSE_NAME` in `_catalog.py`.
+
+---
+
 ## A. Feasibility verdict — GO (linchpin verified)
 
 The program hinges on one thing: **can DuckDB write Iceberg through Brain's REST

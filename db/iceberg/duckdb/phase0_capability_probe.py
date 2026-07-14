@@ -204,8 +204,11 @@ def main() -> int:
     try:
         probe(con)
     finally:
+        # Iceberg schemas don't support DROP ... CASCADE in DuckDB — drop tables first.
         try:
-            con.execute(f"DROP SCHEMA IF EXISTS {CATALOG}.{PROBE_NS} CASCADE;")
+            for t in ("probe_events", "probe_partitioned"):
+                con.execute(f"DROP TABLE IF EXISTS {CATALOG}.{PROBE_NS}.{t};")
+            con.execute(f"DROP SCHEMA IF EXISTS {CATALOG}.{PROBE_NS};")
             record("9. cleanup scratch namespace", "PASS", PROBE_NS)
         except Exception as e:  # noqa: BLE001
             record("9. cleanup scratch namespace", "SKIP", f"manual drop needed: {e!r}")

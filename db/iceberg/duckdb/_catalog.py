@@ -28,6 +28,16 @@ REST_URI = os.environ.get("ICEBERG_REST_URI", "http://iceberg-rest:8181")
 WAREHOUSE = os.environ.get("ICEBERG_WAREHOUSE", os.environ.get("BRONZE_WAREHOUSE", "s3://brain-bronze/"))
 REGION = os.environ.get("AWS_REGION", "ap-south-1")
 
+# CRITICAL: the REST-catalog ATTACH first-arg must be the warehouse NAME the catalog
+# knows, NOT the s3:// URI. Passing the URI makes DuckDB attach the catalog READ-ONLY
+# (path-mode); passing the bare name (bucket) attaches it READ-WRITE through the REST
+# catalog. Default = the s3 URI with scheme+trailing-slash stripped (s3://brain-bronze/
+# → brain-bronze); override explicitly with ICEBERG_REST_WAREHOUSE if they differ.
+WAREHOUSE_NAME = os.environ.get(
+    "ICEBERG_REST_WAREHOUSE",
+    WAREHOUSE.replace("s3://", "").replace("s3a://", "").rstrip("/"),
+)
+
 BRONZE_NAMESPACE = os.environ.get("BRONZE_NAMESPACE", "brain_bronze")
 SILVER_NAMESPACE = os.environ.get("SILVER_NAMESPACE", "brain_silver")
 GOLD_NAMESPACE = os.environ.get("GOLD_NAMESPACE", "brain_gold")
@@ -94,10 +104,19 @@ def connect():
         )
 
     # REST-catalog attach. All writes commit as new Iceberg snapshots through this endpoint,
-    # so Trino + Kafka Connect see the same metadata. read_only guards accidental writes on
-    # a job that should only read (Phase-0 probes flip it off to test writes).
-    attach_opts = f"TYPE iceberg, ENDPOINT '{REST_URI}'"
-    con.execute(f"ATTACH IF NOT EXISTS '{WAREHOUSE}' AS {CATALOG} ({attach_opts});")
+    # so Trino + Kafka Connect see the same metadata.
+    #   ICEBERG_REST_AUTH: 'none'   → local iceberg-rest-fixture (no auth)   [default]
+    #                      'sigv4'  → AWS-signed (e.g. S3 Tables / Glue REST in prod)
+    #                      'oauth2' → token server (set ICEBERG_REST_TOKEN or client id/secret)
+    # DuckDB defaults REST auth to oauth2, which errors against the unauthenticated local
+    # fixture — so we set it explicitly.
+    auth = os.environ.get("ICEBERG_REST_AUTH", "none").lower()
+    opts = ["TYPE iceberg", f"ENDPOINT '{REST_URI}'", f"AUTHORIZATION_TYPE '{auth}'"]
+    if auth == "oauth2":
+        token = os.environ.get("ICEBERG_REST_TOKEN", "")
+        if token:
+            opts.append(f"TOKEN '{token}'")
+    con.execute(f"ATTACH IF NOT EXISTS '{WAREHOUSE_NAME}' AS {CATALOG} ({', '.join(opts)});")
     return con
 
 

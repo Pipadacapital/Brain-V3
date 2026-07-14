@@ -34,7 +34,7 @@ technology, and swap only where a lighter engine fills the same slot better.**
 
 | Slot | Technology + prod sizing | Est. $/mo (T0) | Notes |
 |---|---|---|---|
-| Orchestration control plane | EKS 1.32 | **$73 + $360** | ⚠️ **$360/mo EKS *extended support*** — 1.32 is past standard support |
+| Orchestration control plane | EKS **1.33** (AL2023, STANDARD support) | **$73** | ✅ upgraded 2026-07-12 — the former ~$360/mo extended-support fee is already GONE; `eks_support_type=STANDARD` guards against re-drift |
 | System node group | 3× t4g.medium on-demand | ~$73 | control/system pods |
 | Ingest bus | Kafka (Strimzi) 3 brokers, 1 vCPU/5Gi, **on-demand** + 3×50Gi gp3 | ~$160–200 | on-demand pin = +~$100 vs spot (post 07-12 quorum-loss incident) |
 | Bronze sink | Kafka Connect ×1 (250m/1.8Gi) | bin-packs | sole Bronze landing writer |
@@ -259,13 +259,21 @@ point later).
 
 ### 3.11 Orchestration — EKS + Karpenter + KEDA + ArgoCD
 
-- **⚠️ Biggest single cost item in the whole stack:** **EKS 1.32 extended support =
-  ~$360/mo** ($12/day). This dwarfs every other line.
-- **✅ Recommendation: KEEP the platform; RIGHT-SIZE by upgrading EKS 1.32 → 1.33
-  (+ AL2023).** This drops the $360/mo extended-support surcharge — **the largest,
-  cleanest saving available**, and it's already flagged (AUD-OPS-028). Karpenter
-  (spot pools + consolidation), KEDA (lag scaling), ArgoCD (GitOps) are all correct
-  choices at this scale — no swap. Just get off extended support.
+- **Status (verified live 2026-07-14):** cluster is on **EKS 1.33**, all nodes on
+  **Amazon Linux 2023** (`AL2023_ARM_64_STANDARD` system MNG), on **STANDARD
+  support**. The AL2→AL2023 migration + 1.32→1.33 roll were **executed 2026-07-12**
+  (AUD-OPS-028), and `eks_support_type = "STANDARD"` in `terraform.tfvars` makes a
+  plan **fail-fast** if the cluster ever drifts into paid extended support again.
+- **The former ~$360/mo extended-support surcharge is already eliminated** — this is
+  a *realized* saving, not an available one. (An earlier draft of this doc mis-read
+  the Terraform module *default* of `1.32` as the live state; the prod `tfvars`
+  override and the live cluster are both 1.33.)
+- **✅ Recommendation: KEEP — done and well-guarded.** Karpenter (spot pools +
+  consolidation), KEDA (lag scaling), ArgoCD (GitOps) are all correct at this scale.
+  The only forward action is **cadence**: 1.33 standard support ends ~late-2026, so
+  schedule the routine **1.33 → 1.34+** bump (now a no-AMI-migration, single-step
+  roll since you're already on AL2023) before that window to avoid re-incurring the
+  extended-support fee — the `STANDARD` guard will surface it.
 
 ---
 
@@ -290,19 +298,20 @@ point later).
 
 | # | Action | Type | Est. saving / benefit | Effort | Risk |
 |---|---|---|---|---|---|
-| 1 | **EKS 1.32 → 1.33 + AL2023** (drop extended support) | Right-size | **~$360/mo** | Medium | Low (planned) |
-| 2 | **DuckDB pilot → migrate transform tier** (Spark is already local-mode) | Pilot/Swap | Big: cost + kills Spark OOM + faster crons | Med–High | Med (parity re-validate) |
-| 3 | **Kafka: reclaim Spot for 2/3 brokers + shrink broker nodes** | Right-size | ~$60–100/mo | Low–Med | Low–Med |
-| 4 | **Trino static workers 3 → 2** (cache absorbs hot path; hit-rate metric now proves it) | Right-size | ~$35–50/mo | Low | Low (KEDA bursts back) |
-| 5 | ✅ **Valkey swap** (done #144/#145; run CLI migration) | Swap | ~20% of cache (~$3/mo) + licensing | Done | Low |
-| 6 | **Predictions runtime = in-cluster Python/DuckDB crons** (not SageMaker) | Build-in-slot | avoids managed-ML $$; unlocks the goal | Med | Low |
-| 7 | **S3 Intelligent-Tiering on Bronze prefix** | Right-size | grows with T2 volume | Low | None |
-| 8 | **AI gateway: Haiku-first + prompt-cache stable prefixes + refresh model tiers** | Tune | LLM spend down | Low | Low |
-| 9 | **Neo4j: identity write-batching + lag tripwire** (Enterprise decision at T2) | Right-size/Hold | headroom to T1 | Low–Med | Med at T2 |
+| — | ✅ **EKS 1.32 → 1.33 + AL2023** (dropped extended support) | Done 07-12 | **~$360/mo — already realized** | — | — |
+| 1 | **DuckDB pilot → migrate transform tier** (Spark is already local-mode) | Pilot/Swap | Big: cost + kills Spark OOM + faster crons | Med–High | Med (parity re-validate) |
+| 2 | **Kafka: reclaim Spot for 2/3 brokers + shrink broker nodes** | Right-size | ~$60–100/mo | Low–Med | Low–Med |
+| 3 | **Trino static workers 3 → 2** (cache absorbs hot path; hit-rate metric now proves it) | Right-size | ~$35–50/mo | Low | Low (KEDA bursts back) |
+| 4 | ✅ **Valkey swap** (done #144/#145; run CLI migration) | Swap | ~20% of cache (~$3/mo) + licensing | Done | Low |
+| 5 | **Predictions runtime = in-cluster Python/DuckDB crons** (not SageMaker) | Build-in-slot | avoids managed-ML $$; unlocks the goal | Med | Low |
+| 6 | **S3 Intelligent-Tiering on Bronze prefix** | Right-size | grows with T2 volume | Low | None |
+| 7 | **AI gateway: Haiku-first + prompt-cache stable prefixes + refresh model tiers** | Tune | LLM spend down | Low | Low |
+| 8 | **Neo4j: identity write-batching + lag tripwire** (Enterprise decision at T2) | Right-size/Hold | headroom to T1 | Low–Med | Med at T2 |
+| — | **Cadence: schedule EKS 1.33 → 1.34+** before 1.33 standard-support ends (~late-2026) | Maintenance | avoids re-incurring extended-support fee | Low | Low |
 
-**If you do only two things:** #1 (−$360/mo, immediate) and #2 (the DuckDB pilot —
-structural cost + reliability win). Together they attack the biggest cost line and
-the biggest recurring-pain line without touching the architecture.
+**The biggest EKS lever is already banked** (−$360/mo, 07-12). So the top remaining
+moves are **#1 (the DuckDB pilot** — structural cost + reliability) and **#2/#3
+(Kafka spot + Trino right-size** — ~$100–150/mo of quick, reversible config wins).
 
 ---
 
@@ -324,13 +333,14 @@ the biggest recurring-pain line without touching the architecture.
 ## 6. Bottom line
 
 Brain's *architecture* is right for an AI-native commerce OS. The *technology* in
-each slot is mostly right too — the exceptions are **(a) you're paying $360/mo for
-an out-of-support EKS version, and (b) you're running Spark's cluster overhead for a
-single-node, small-data transform that DuckDB does faster and ~cheaper in the exact
-same medallion slot.** Fix those two, right-size Kafka/Trino, keep everything else,
-and build the predictions runtime inside the existing cron+Iceberg+PG slots. That
-captures the cost and reliability wins **without changing one line of the
-architecture.**
+each slot is mostly right too. The **biggest cost lever — EKS extended support
+(~$360/mo) — is already banked** (upgraded to 1.33/AL2023 on 2026-07-12, with a
+`STANDARD`-support guard). The one remaining structural opportunity is **(b): you're
+running Spark's cluster overhead for a single-node, small-data transform that DuckDB
+does faster and ~cheaper in the exact same medallion slot.** Pursue the DuckDB pilot,
+right-size Kafka/Trino (~$100–150/mo of reversible config wins), keep everything
+else, and build the predictions runtime inside the existing cron+Iceberg+PG slots —
+all **without changing one line of the architecture.**
 
 ---
 

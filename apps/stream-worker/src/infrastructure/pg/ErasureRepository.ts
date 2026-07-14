@@ -20,6 +20,7 @@
  * No raw PII: only hashed identifiers (subjectHash) and UUID brain_ids flow through here.
  */
 import { Pool, type PoolClient } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 
 export interface IErasureRepository {
   /**
@@ -83,7 +84,7 @@ export class ErasureRepository implements IErasureRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       const result = await fn(client);
       await client.query('COMMIT');
       return result;

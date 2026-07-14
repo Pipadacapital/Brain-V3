@@ -22,6 +22,7 @@
  * as brain_app (never superuser). HASH-ONLY — no raw PII ever reaches this row (I-S02).
  */
 import type { Pool } from 'pg';
+import { buildContextGucSql } from '@brain/db';
 import type { IdentityDecision, IdentityCommand } from '@brain/contracts';
 import type {
   DecisionLogRepository,
@@ -57,7 +58,7 @@ export class IdentityAuditDecisionLog implements DecisionLogRepository, Evidence
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [entry.brand_id]);
+      await client.query(buildContextGucSql({ brandId: entry.brand_id, correlationId: '' }));
       await client.query(
         `INSERT INTO identity_audit (brand_id, brain_id, action, merge_id, detail)
          VALUES ($1, $2, $3, $4, $5::jsonb)`,
@@ -101,7 +102,7 @@ export class IdentityAuditDecisionLog implements DecisionLogRepository, Evidence
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
       const res = await client.query<{ detail: Record<string, unknown> }>(
         `SELECT detail FROM identity_audit
          WHERE brand_id = $1 AND detail->>'decision_id' = $2

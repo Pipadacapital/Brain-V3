@@ -10,6 +10,7 @@
  * Invoked by the worker job entrypoint: `node dist/jobs/journey-stitch-export/run.js`.
  */
 import pg from 'pg';
+import { buildContextGucSql } from '@brain/db';
 import { log } from '../../log.js';
 
 // intentional raw: distinct DATABASE_URL fallback + a different (superuser 'brain') default
@@ -37,7 +38,7 @@ export async function runJourneyStitchExport(): Promise<StitchExportResult> {
       const c = await pgPool.connect();
       try {
         await c.query('BEGIN');
-        await c.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]); // txn-local GUC
+        await c.query(buildContextGucSql({ brandId: brandId, correlationId: '' })); // txn-local GUC
         const r = await c.query<StitchRow>(
           `SELECT brand_id::text, order_id, stitched_anon_id, brain_id::text AS brain_id, created_at
              FROM connectors.connector_journey_stitch_map`,

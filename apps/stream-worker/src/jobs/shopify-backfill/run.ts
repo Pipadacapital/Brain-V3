@@ -45,6 +45,7 @@ import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js
 import { PgBackfillJobRepository, parseRequestedWindowMs } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import { ShopifyBackfillClient } from './shopify-paged-client.js';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from './order-mapper.js';
 import { uuidV5FromOrderBackfill } from '@brain/shopify-mapper';
@@ -438,7 +439,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
       if (messages.length > 0) {
         const dedupClient = await pool.connect();
         try {
-          await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+          await dedupClient.query(buildContextGucSql({ brandId, correlationId: '' }));
           const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
 
           const toSend = messages.filter((m) => unseen.has(m.eventId));
@@ -525,7 +526,7 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
       const sc = await pool.connect();
       try {
         await sc.query('BEGIN');
-        await sc.query("SELECT set_config('app.current_brand_id', $1, true)", [brandId]);
+        await sc.query(buildContextGucSql({ brandId, correlationId: '' }));
         await sc.query(
           `UPDATE connector_sync_status
              SET state = 'connected', last_sync_at = NOW(), last_error = NULL, updated_at = NOW()
@@ -574,7 +575,7 @@ async function upsertConnectorCursor(pool: Pool, params: ConnectorCursorParams):
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query("SELECT set_config('app.current_brand_id', $1, true)", [params.brandId]);
+    await client.query(buildContextGucSql({ brandId: params.brandId, correlationId: '' }));
     await client.query(
       `INSERT INTO connector_cursor (brand_id, connector_instance_id, resource, cursor_value, updated_at)
        VALUES ($1, $2, $3, $4, NOW())

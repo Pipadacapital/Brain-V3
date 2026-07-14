@@ -37,6 +37,7 @@ import { buildPartitionKey } from '@brain/events';
 import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
+import { buildContextGucSql } from '@brain/db';
 import {
   mapSettlementItemToEvent,
   uuidV5FromSettlementItem,
@@ -353,7 +354,7 @@ async function repullCursorResource(params: CursorRepullParams): Promise<number>
     if (messages.length > 0) {
       const dedupClient = await pool.connect();
       try {
-        await dedupClient.query(`SELECT set_config('app.current_brand_id', $1, true)`, [brandId]);
+        await dedupClient.query(buildContextGucSql({ brandId, correlationId: '' }));
         const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
 
         const toSend = messages.filter((m) => unseen.has(m.eventId));
@@ -404,10 +405,7 @@ async function setSyncState(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.current_brand_id', $1, true)`,
-      [brandId],
-    );
+    await client.query(buildContextGucSql({ brandId, correlationId: '' }));
     // UPSERT, not UPDATE (matches the shared connector re-pull pattern): a missing connect-time row would make an
     // UPDATE-only write a silent no-op → UI stuck on "Not synced yet". (brand_id, connector_instance_id) UNIQUE.
     if (state === 'connected') {

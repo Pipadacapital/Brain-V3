@@ -58,6 +58,63 @@ workers:
     minReplicas: 1
     maxReplicas: 3
 
+# ── BATCH cluster — Fault-Tolerant Execution (ADR-0002) ──────────────────────────────────────────
+# OFF by default per the selective-rebuild ground rules: the interactive serving cluster above is
+# UNCHANGED and stays the default, so ArgoCD auto-sync of this file renders ZERO batch objects and
+# nothing regresses. Flip batchCluster.enabled=true (one line) to stand up the additive
+# brain-prod-trino-batch cluster for compaction / RTBF / Iceberg-maintenance; everything below is
+# pre-wired so enabling is the only change. Rollback = flip back / git revert (no serving impact).
+batchCluster:
+  enabled: false
+  coordinator:
+    # Batch coordinator rides the same dedicated Spot `trino` Karpenter pool as the workers — it is
+    # NOT the serving path (the interactive coordinator, pinned to `ondemand`, is), so a Spot reclaim
+    # only aborts an in-flight maintenance run, which FTE/retry re-drives.
+    nodeSelector:
+      karpenter.sh/nodepool: trino
+    resources:
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 7Gi
+  workers:
+    # Batch workers share the dedicated `trino` Spot pool (t4g.xlarge, infra/helm/karpenter). They
+    # scale to zero between maintenance windows, so they only draw against the pool's 8-vCPU limit
+    # during an actual run (interactive load is low in maintenance windows).
+    nodeSelector:
+      karpenter.sh/nodepool: trino
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 7Gi
+    # KEDA scale-to-zero ON (ADR-0003): FTE makes worker absence recoverable, so min 0 is safe. The
+    # batch cluster costs nothing between maintenance runs. Rollback value when disabled: replicaCount 0.
+    autoscaling:
+      enabled: true
+      minReplicas: 0
+      maxReplicas: 4
+      cpuTargetUtilization: 60
+      cooldownPeriod: 120
+  query:
+    maxMemory: "8GB"
+    maxMemoryPerNode: "3GB"
+  fte:
+    retryPolicy: TASK
+    exchange:
+      # FTE spool root under the EXISTING Iceberg medallion (Bronze) bucket — reached by the SAME
+      # brain-prod-trino pod IRSA role, ap-south-1, SSE-KMS (no new bucket, no static keys). A
+      # dedicated `trino-exchange/` prefix keeps spool data out of the table namespaces; the bucket's
+      # abort-MPU-7d + noncurrent-90d lifecycle already reaps stragglers. LIST — add buckets later
+      # (S3-request-throttling mitigation) with no template change.
+      baseDirectories:
+        - "s3://brain-bronze-prod-380254378136/trino-exchange"
+      encryptionEnabled: true
+
 # Real AWS S3 Iceberg buckets reached via the pod IRSA role — no static keys, no MinIO endpoint.
 iceberg:
   # The Iceberg REST catalog is the chart-fullname service in ns `iceberg-rest`

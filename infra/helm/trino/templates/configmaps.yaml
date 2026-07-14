@@ -124,3 +124,99 @@ data:
     s3.aws-access-key=${ENV:TRINO_S3_ACCESS_KEY}
     s3.aws-secret-key=${ENV:TRINO_S3_SECRET_KEY}
     {{- end }}
+{{- if .Values.batchCluster.enabled }}
+---
+{{/*
+BATCH cluster ConfigMap (ADR-0002). A SEPARATE ConfigMap so the interactive cluster's config/catalog
+is untouched (its checksum/config annotation never changes → no interactive rollout on a batch-only
+edit). Coordinator/worker share node.properties, the catalog, and the FTE exchange-manager config;
+they differ only in config.properties (coordinator vs worker role). The batch cluster reuses the
+SAME shared bounded-heap jvm.config helper — the OOM fix applies to both clusters.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "trino.batch.fullname" . }}-config
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+    app.kubernetes.io/component: batch
+data:
+  coordinator-config.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=false
+    http-server.http.port={{ .Values.httpPort }}
+    discovery.uri=http://{{ include "trino.batch.fullname" . }}:{{ .Values.service.port }}
+    query.max-memory={{ .Values.batchCluster.query.maxMemory }}
+    query.max-memory-per-node={{ .Values.batchCluster.query.maxMemoryPerNode }}
+    # ── Fault-Tolerant Execution (research §3): worker loss retries TASKs, not whole queries — the
+    # enabler for safe scale-to-zero of Spot batch workers. Wrong for low-latency interactive reads,
+    # so this is BATCH-ONLY.
+    retry-policy={{ .Values.batchCluster.fte.retryPolicy }}
+    # Exchange manager spools intermediate exchange data to external (S3) storage for FTE.
+    exchange.compression-codec=LZ4
+
+  worker-config.properties: |
+    coordinator=false
+    http-server.http.port={{ .Values.httpPort }}
+    discovery.uri=http://{{ include "trino.batch.fullname" . }}:{{ .Values.service.port }}
+    query.max-memory={{ .Values.batchCluster.query.maxMemory }}
+    query.max-memory-per-node={{ .Values.batchCluster.query.maxMemoryPerNode }}
+    retry-policy={{ .Values.batchCluster.fte.retryPolicy }}
+    exchange.compression-codec=LZ4
+
+  node.properties: |
+    node.environment={{ .Values.environment }}_batch
+    node.data-dir=/data/trino
+
+  # FTE exchange manager — mounted at /etc/trino/exchange-manager.properties on BOTH roles. The S3
+  # spool root(s) live under the medallion bucket, reached by the SAME pod IRSA role (no static keys).
+  exchange-manager.properties: |
+    exchange-manager.name=filesystem
+    {{- $dirs := .Values.batchCluster.fte.exchange.baseDirectories }}
+    {{- if not $dirs }}{{ fail "batchCluster.fte.exchange.baseDirectories must be set (e.g. [\"s3://brain-bronze-prod-380254378136/trino-exchange\"]) when batchCluster.enabled=true" }}{{- end }}
+    exchange.base-directories={{ join "," $dirs }}
+    exchange.encryption-enabled={{ .Values.batchCluster.fte.exchange.encryptionEnabled }}
+    exchange.s3.region={{ .Values.iceberg.s3.region }}
+    {{- if .Values.iceberg.s3.endpoint }}
+    exchange.s3.endpoint={{ .Values.iceberg.s3.endpoint }}
+    {{- end }}
+    {{- if .Values.iceberg.s3.pathStyleAccess }}
+    exchange.s3.path-style-access=true
+    {{- end }}
+    {{- if .Values.iceberg.s3SecretName }}
+    exchange.s3.aws-access-key=${ENV:TRINO_S3_ACCESS_KEY}
+    exchange.s3.aws-secret-key=${ENV:TRINO_S3_SECRET_KEY}
+    {{- end }}
+
+  # Shared bounded-heap jvm.config (SAME helper as interactive) — the OOM outage fix on the batch
+  # cluster too. No JMX agent here: the batch cluster is not the serving path (interactive owns the
+  # TrinoServingDown / query-failure alerting), so it stays JMX-free to keep pod start dependency-free.
+  jvm.config: |
+{{ include "trino.jvmConfigBase" . | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "trino.batch.fullname" . }}-catalog
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+    app.kubernetes.io/component: batch
+data:
+  iceberg.properties: |
+    # Same Iceberg REST catalog + S3 object store as the interactive cluster — batch reads/writes the
+    # SAME medallion tables (compaction / RTBF / maintenance). Single-writer serialization per table
+    # is the caller's discipline (ADR-0002), not the connector's.
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri={{ .Values.iceberg.restUri }}
+    fs.native-s3.enabled=true
+    s3.region={{ .Values.iceberg.s3.region }}
+    {{- if .Values.iceberg.s3.endpoint }}
+    s3.endpoint={{ .Values.iceberg.s3.endpoint }}
+    {{- end }}
+    s3.path-style-access={{ .Values.iceberg.s3.pathStyleAccess }}
+    {{- if .Values.iceberg.s3SecretName }}
+    s3.aws-access-key=${ENV:TRINO_S3_ACCESS_KEY}
+    s3.aws-secret-key=${ENV:TRINO_S3_SECRET_KEY}
+    {{- end }}
+{{- end }}

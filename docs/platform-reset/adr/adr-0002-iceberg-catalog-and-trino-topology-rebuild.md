@@ -1,6 +1,6 @@
 # ADR-0002 — Additive rebuild: Iceberg REST catalog SQLite→Aurora PG, and Trino interactive/batch split
 
-**Status:** Proposed
+**Status:** Accepted (owner-ratified 2026-07-14)
 **Date:** 2026-07-14
 **Deciders:** Engineering Program Lead, Data Platform owner (owner sign-off required)
 **Relates to:** ADR-0001 (selective rebuild), `06-redesign-proposal.md` §2.6, `inventory/research-data-platform.md` §2–§4

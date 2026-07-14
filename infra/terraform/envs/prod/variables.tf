@@ -103,3 +103,24 @@ variable "aurora_max_capacity" {
   type        = number
   default     = 2
 }
+
+# ADR-0005 (REL-3, T1 DR): add a second db.serverless reader instance so the
+# single-writer Aurora SPOF gains an in-region auto-failover target. Default
+# false = single-writer (unchanged cost/topology). Serverless v2 readers idle
+# at the min-ACU floor, so the marginal cost is ~the 0.5-ACU floor, not a node.
+variable "aurora_enable_t1_reader" {
+  description = "Add a second Aurora db.serverless reader for in-region failover (ADR-0005 T1)."
+  type        = bool
+  default     = false
+}
+
+# ADR-0004 (SEC-4): give the AUDIT CMK its own non-blanket key policy (root gets
+# admin, not kms:*; CloudTrail gets encrypt-only). Default false keeps the
+# shared root policy (no-op) so this is additive; flip true to harden the
+# tamper-evidence key. NOTE: enabling this and enable_cloudtrail together is the
+# intended pairing (the isolated policy grants the trail its GenerateDataKey).
+variable "isolate_audit_cmk_policy" {
+  description = "Apply a dedicated non-blanket policy to the audit CMK (ADR-0004 SEC-4)."
+  type        = bool
+  default     = false
+}

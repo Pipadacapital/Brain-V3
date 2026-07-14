@@ -29,6 +29,23 @@ variable "kms_key_arn" {
   description = "Audit CMK ARN for SSE-KMS"
 }
 
+# ADR-0004 (SEC-1): when true, append the CloudTrail service-principal grants
+# (GetBucketAcl + PutObject under the trail prefix) to the bucket policy so an
+# account CloudTrail can deliver its log files into this WORM bucket. Default
+# false keeps the policy unchanged (fully additive). The prod root flips this on
+# and passes the same prefix it gives modules/security-baseline.
+variable "enable_cloudtrail_delivery" {
+  type        = bool
+  description = "Append CloudTrail delivery grants to the audit bucket policy (ADR-0004 SEC-1)."
+  default     = false
+}
+
+variable "cloudtrail_s3_key_prefix" {
+  type        = string
+  description = "CloudTrail s3_key_prefix — must match modules/security-baseline var of the same name."
+  default     = "cloudtrail"
+}
+
 data "aws_caller_identity" "current" {}
 
 ###############################################################################
@@ -121,6 +138,53 @@ data "aws_iam_policy_document" "audit_bucket_policy" {
     principals {
       type        = "*"
       identifiers = ["*"]
+    }
+  }
+
+  # ADR-0004 (SEC-1): CloudTrail delivery grants (var-gated, default off). The
+  # trail service principal must read the bucket ACL and Put log objects under
+  # its prefix with the bucket-owner-full-control ACL. Scoped to this account's
+  # trails via aws:SourceArn.
+  dynamic "statement" {
+    for_each = var.enable_cloudtrail_delivery ? [1] : []
+    content {
+      sid       = "AWSCloudTrailAclCheck"
+      effect    = "Allow"
+      actions   = ["s3:GetBucketAcl"]
+      resources = [aws_s3_bucket.audit.arn]
+      principals {
+        type        = "Service"
+        identifiers = ["cloudtrail.amazonaws.com"]
+      }
+      condition {
+        test     = "StringEquals"
+        variable = "aws:SourceAccount"
+        values   = [data.aws_caller_identity.current.account_id]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_cloudtrail_delivery ? [1] : []
+    content {
+      sid       = "AWSCloudTrailWrite"
+      effect    = "Allow"
+      actions   = ["s3:PutObject"]
+      resources = ["${aws_s3_bucket.audit.arn}/${var.cloudtrail_s3_key_prefix}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"]
+      principals {
+        type        = "Service"
+        identifiers = ["cloudtrail.amazonaws.com"]
+      }
+      condition {
+        test     = "StringEquals"
+        variable = "s3:x-amz-acl"
+        values   = ["bucket-owner-full-control"]
+      }
+      condition {
+        test     = "StringEquals"
+        variable = "aws:SourceAccount"
+        values   = [data.aws_caller_identity.current.account_id]
+      }
     }
   }
 }

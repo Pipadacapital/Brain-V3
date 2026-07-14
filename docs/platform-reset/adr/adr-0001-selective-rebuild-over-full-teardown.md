@@ -1,6 +1,6 @@
 # ADR-0001 — Selective rebuild over full teardown of the prod platform
 
-**Status:** Proposed
+**Status:** Accepted (owner-ratified 2026-07-14)
 **Date:** 2026-07-14
 **Deciders:** Engineering Program Lead (owner sign-off required)
 **Account:** 380254378136 (PAID PRODUCTION) · **Region:** ap-south-1 · **Domain:** brain.pipadacapital.com

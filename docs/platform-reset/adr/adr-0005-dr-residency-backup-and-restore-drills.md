@@ -1,6 +1,6 @@
 # ADR-0005 — DR / residency posture: backup-and-restore tiering, gated CRR, and quarterly restore drills
 
-**Status:** Proposed
+**Status:** Accepted (owner-ratified 2026-07-14)
 **Date:** 2026-07-14
 **Deciders:** Engineering Program Lead, Data Platform + Compliance owners (owner sign-off required)
 **Relates to:** ADR-0001, ADR-0002, `04-architecture-review.md` (REL-3/REL-7), `06-redesign-proposal.md` §4, ADR-0004 (identity SoR = Neo4j), ADR-0011 (S3 CRR residency)

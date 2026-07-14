@@ -177,6 +177,27 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Banked-cost-wins regression guard — BLOCKING. The platform-reset program
+  # (docs/platform-reset/, owner-ratified 2026-07-14) is a SELECTIVE REBUILD:
+  # the estate is already cost-optimized and the structural wins are one-line
+  # reversible. This gate FAILS the promotion PR if a banked win regresses:
+  # managed NAT reintroduced (must stay fck-nat), Aurora min-ACU above the 0.5
+  # floor / unbounded max, EKS extended-support or a version downgrade below
+  # 1.33, or Kafka rack-awareness disabled (the ~$194/mo cross-AZ lever). It
+  # reads the tracked prod IaC SoT only (no AWS calls). See tools/lint/cost-guard.sh
+  # (--selftest proves each rule; runs first).
+  # ─────────────────────────────────────────────────────────────────────────
+  cost-guard:
+    name: Banked Cost-Wins Guard (fck-nat / Aurora ACU / EKS support / Kafka rack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Self-test the guard (proves it catches each regression)
+        run: tools/lint/cost-guard.sh --selftest
+      - name: Verify the banked cost wins in the prod IaC SoT
+        run: tools/lint/cost-guard.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Prod placeholder guard (AUD-COST-007) — renders every prod chart
   # (helm template + values-prod) and scans the deployed ArgoCD prod manifests.
   # PR mode: fails on render breakage or any UNDOCUMENTED placeholder token

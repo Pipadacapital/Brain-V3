@@ -3,8 +3,8 @@
 **Author:** Chief Platform Architect
 **Date:** 2026-07-14
 **Account:** 380254378136 (PAID PRODUCTION) · **Region:** ap-south-1 (Mumbai) · **Domain:** brain.pipadacapital.com
-**Status:** COMPLETE ANALYSIS — DESTRUCTION PLAN **AWAITING OWNER APPROVAL. NOTHING HAS BEEN OR WILL BE DELETED.**
-**Reading order:** this summary → `04` review → `06` redesign → `07` cost → `08`/`09` repo+standards → `adr/*` → `02` destruction plan (documented, NOT chosen).
+**Status:** SELECTIVE REBUILD RATIFIED BY OWNER 2026-07-14 (ADR-0001…0005 Accepted). The teardown plan (`02-destruction-plan.md`) is SHELVED — exit-only, retained for reference; NOTHING HAS BEEN OR WILL BE DELETED. Forward work is the additive harden-in-place from `06`/`07`/`09` + the ADRs.
+**Reading order:** this summary → `04` review → `06` redesign → `07` cost → `08`/`09` repo+standards → `adr/*` (Accepted) → `10` hygiene + apply runbook (owner-run at promotion) → `02` destruction plan (SHELVED, exit-only, NOT chosen).
 
 ---
 

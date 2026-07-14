@@ -5,7 +5,43 @@
 # the IRSA chain by OMITTING s3 keys (S3FileIO falls back to the pod role, AUD-COST-022).
 enabled: true
 
-replicas: 1
+# REL-4 (04-architecture-review Reliability + 06-redesign §2.7): remove the single-
+# writer Bronze-landing SPOF by running the Connect worker at 2 replicas. This is SAFE
+# and additive:
+#   • Distributed mode — the worker already runs with a groupId + config/offset/status
+#     storage topics (CONNECT_GROUP_ID / *_STORAGE_TOPIC below), so 2 workers form ONE
+#     Connect cluster and the runtime rebalances tasks across them (the Iceberg sink is
+#     partition-parallel: collector tasks.max=2, the 9 raw lanes tasks.max=1 each).
+#   • Exactly-/at-least-once is PRESERVED — the Iceberg sink elects a SINGLE commit
+#     COORDINATOR among the workers (via the shared iceberg.control.topic); a 2nd worker
+#     is a standby that assumes coordination on failover. Bronze stays append-only /
+#     at-least-once, dedup stays in Silver (ADR-0010) — 2 replicas does NOT introduce
+#     double-writes or break that contract.
+#   • Freshness SPOF gone — a single worker/node loss no longer stalls ALL Bronze
+#     landing; tasks re-balance onto the surviving worker.
+# Reversible: set replicas back to 1 to restore the previous single-writer topology.
+replicas: 2
+
+# REL-4: keep the 2 HA workers off the same node (and prefer distinct AZs) so one node
+# or AZ loss cannot take both. ScheduleAnyway/preferred = SOFT — never blocks scheduling
+# on a Spot pool that may briefly offer fewer nodes/AZs (landing availability > perfect
+# spread). kafka-connect stays on Spot (only the 3 brokers are on-demand-pinned).
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka-connect
+          topologyKey: kubernetes.io/hostname
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: kafka-connect
 
 worker:
   # Strimzi KRaft cluster `brain-prod-kafka` in ns `kafka` (strimzi-kafka/values-prod.yaml).
@@ -30,6 +66,10 @@ icebergCatalog:
 # BronzeConnectLagHigh / BrainIngestStale) — the sole Bronze writer was detection-dark.
 metrics:
   enabled: true
+
+# REL-4: same-AZ REST routing between the 2 HA workers / the register Job (GA in 1.33).
+service:
+  trafficDistribution: PreferClose
 
 serviceAccount:
   create: true

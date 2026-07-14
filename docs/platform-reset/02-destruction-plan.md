@@ -4,7 +4,7 @@
 - **Primary region:** ap-south-1 (Mumbai) · **Global-service sweep:** us-east-1 = CLEAN (no CloudFront, no us-east-1 ACM/logs/secrets/EBS)
 - **Domain:** brain.pipadacapital.com
 - **Authored:** 2026-07-14 · **Source:** synthesis of all `docs/platform-reset/inventory/*.md` (read-only AWS + k8s inventory)
-- **Status:** PLAN ONLY. No AWS or Kubernetes mutation has been or will be performed by this document. Execution requires explicit owner GO (see banner at end).
+- **Status:** SHELVED (exit-only). SELECTIVE REBUILD RATIFIED BY OWNER 2026-07-14 (ADR-0001…0005 Accepted) — a full teardown is NOT the chosen path; this plan is retained only as a reference/exit runbook. NOTHING has been or will be deleted by this document. PLAN ONLY: no AWS or Kubernetes mutation has been or will be performed here. Any execution would still require an explicit, separate owner GO (see banner at end) — which has NOT been given.
 
 > **Honest architecture note.** The live design is already lean and sound — Karpenter Spot-first, a small on-demand system node group, Aurora Serverless v2 (0.5–2.0 ACU), a `t4g.nano` fck-nat instead of a managed NAT GW, S3 gateway + ECR interface endpoints, a single shared ALB, Valkey single-node cache, tight S3 lifecycle rules, gp3 (not io2) everywhere. This is a *teardown* plan for that lean estate, not a remediation of invented debt.
 

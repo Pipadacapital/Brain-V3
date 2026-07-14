@@ -1,6 +1,6 @@
 # ADR-0004 — Account detective-control baseline (CloudTrail + GuardDuty) and actionable SNS alerting
 
-**Status:** Proposed
+**Status:** Accepted (owner-ratified 2026-07-14)
 **Date:** 2026-07-14
 **Deciders:** Engineering Program Lead, Security owner (owner sign-off required)
 **Relates to:** ADR-0001, `04-architecture-review.md` (OE-1/OE-2, SEC-1/SEC-2/SEC-4), `06-redesign-proposal.md` §2.11

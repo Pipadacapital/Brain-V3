@@ -14,6 +14,14 @@ image:
 replicaCount: 2
 
 catalog:
+  # ADR-0002: prod EXPLICITLY opts the catalog backend onto Aurora PostgreSQL. The chart default
+  # is `sqlite` (rollback path) so nothing flips a live catalog on auto-sync; this override is the
+  # deliberate, runbook-gated cutover (docs/platform-reset/runbooks/iceberg-catalog-migration.md).
+  # Postgres retires the SQLite-lock class and is safe with replicaCount: 2 (optimistic CAS at the
+  # catalog DB). ROLLBACK: delete this line (or git revert) → chart reverts to sqlite. Because prod
+  # has NEVER had a SQLite PVC, a rollback re-introduces the SQLite SPOF from empty — the runbook's
+  # rollback keeps the pre-cutover on-Aurora path recoverable via Aurora PITR instead.
+  backend: postgres
   # AUD-COST-016: the SINGLE medallion warehouse root — terraform output
   # `warehouse_bucket_name` (modules/s3-iceberg, brain-bronze-prod-<acct>, NO
   # Object Lock). Exactly like local (compose CATALOG_WAREHOUSE=s3://brain-bronze/):

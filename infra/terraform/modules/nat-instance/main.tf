@@ -111,11 +111,23 @@ variable "enable_auto_recovery" {
   default     = true
 }
 
+# ADR-0004 (OE-1): SNS topic ARN added ALONGSIDE the EC2-automate recover/reboot
+# actions so a fck-nat host failure also PAGES (today it silently auto-heals).
+# Empty default = today's behavior (only the EC2-automate action). The prod
+# root passes module.alerting.sns_topic_arn.
+variable "alarm_sns_topic_arn" {
+  type        = string
+  description = "SNS topic ARN appended to the NAT alarm alarm_actions (in addition to the EC2-automate action). Empty = none."
+  default     = ""
+}
+
 ###############################################################################
 # Locals — naming + mandatory tags
 ###############################################################################
 locals {
   name_prefix = "${var.project}-${var.environment}"
+  # SNS action appended to the EC2-automate recover/reboot actions when set.
+  nat_sns_actions = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
 
   common_tags = merge(
     {
@@ -261,8 +273,9 @@ resource "aws_cloudwatch_metric_alarm" "nat_system_recover" {
     InstanceId = aws_instance.nat.id
   }
 
-  # EC2 built-in recover action — no SNS/Lambda required.
-  alarm_actions = ["arn:aws:automate:${data.aws_region.current.region}:ec2:recover"]
+  # EC2 built-in recover action (+ optional SNS page — ADR-0004).
+  alarm_actions = concat(["arn:aws:automate:${data.aws_region.current.region}:ec2:recover"], local.nat_sns_actions)
+  ok_actions    = local.nat_sns_actions
 
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-nat-system-check-recover"
@@ -287,7 +300,8 @@ resource "aws_cloudwatch_metric_alarm" "nat_instance_reboot" {
     InstanceId = aws_instance.nat.id
   }
 
-  alarm_actions = ["arn:aws:automate:${data.aws_region.current.region}:ec2:reboot"]
+  alarm_actions = concat(["arn:aws:automate:${data.aws_region.current.region}:ec2:reboot"], local.nat_sns_actions)
+  ok_actions    = local.nat_sns_actions
 
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-nat-instance-check-reboot"

@@ -8,15 +8,45 @@ image:
 
 replicaCount: 1
 
-# Iceberg JdbcCatalog over Postgres (Aurora in prod). The catalog tables (iceberg_tables,
-# iceberg_namespace_properties, iceberg_views) live in this DB; Iceberg DATA files live in S3.
+# Iceberg JdbcCatalog. The catalog tables (iceberg_tables, iceberg_namespace_properties,
+# iceberg_views) live in the catalog DB; Iceberg DATA files live in S3.
+#
+# ADR-0002 — the catalog backend is FLAG-GATED and ADDITIVE. Two mutually-exclusive backends:
+#   backend: sqlite   → file-backed JdbcCatalog on a durable PVC (the historical/local path;
+#                        the SQLite-lock class — "database table is locked: iceberg_tables" —
+#                        lives here, serialized via CATALOG_CLIENTS=1). This is the ROLLBACK path.
+#   backend: postgres → JdbcCatalog over Aurora PostgreSQL (durable, multi-writer, 35-day PITR).
+#                        No SQLite lock; safe with replicaCount > 1.
+# DEFAULT IS `sqlite` so a bare/auto-synced render NEVER flips a live catalog onto a new backend
+# on its own. Prod OPTS IN to postgres explicitly via values-prod.yaml. Rollback = drop the
+# `catalog.backend: postgres` override (or `git revert`); ArgoCD self-heals back to sqlite, and
+# the SQLite PVC/file remains intact until explicitly retired post-verification (ADR-0002 §Rollback).
 catalog:
+  backend: sqlite            # sqlite | postgres  — see the migration runbook before flipping prod
   warehouse: ""              # e.g. s3://brain-bronze-<env>-<acct>/ — the SINGLE warehouse root; medallion layers are namespaces (AUD-COST-016)
+  s3Region: ap-south-1
+
+  # --- backend: postgres (Aurora) ---
+  # JDBC user/password come from a k8s Secret (synced from AWS Secrets Manager). See secret.* below.
   jdbcHost: ""               # Aurora writer endpoint (module.aurora.endpoint)
   jdbcPort: 5432
   jdbcDatabase: iceberg_catalog
-  s3Region: ap-south-1
-  # JDBC user/password come from a k8s Secret (synced from AWS Secrets Manager). See secret.* below.
+
+  # --- backend: sqlite (file-backed JdbcCatalog on a PVC; ROLLBACK path) ---
+  # Mirrors the compose/local catalog: WAL + busy_timeout so a contending writer WAITS for the
+  # file lock instead of erroring, and CATALOG_CLIENTS=1 so every catalog op serializes through a
+  # single JDBC connection (SQLite has exactly one writer). Static user/password (SQLite ignores them).
+  sqlite:
+    # Durable named PVC so the namespace→table pointers survive pod restarts (data files are in S3).
+    persistence:
+      enabled: true
+      size: 2Gi
+      storageClass: ""       # "" = cluster default StorageClass
+      mountPath: /catalog
+      dbFile: brain-iceberg-catalog.db
+    jdbcUser: user
+    jdbcPassword: password
+    clients: "1"             # pin JdbcClientPool to a single connection (serializes writers)
 
 # k8s Secret holding the catalog DB credentials (keys: jdbc-user, jdbc-password).
 secret:

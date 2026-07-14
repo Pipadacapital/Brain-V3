@@ -3,14 +3,18 @@
 # v4-naming-guard.sh — Brain V4 architecture naming lint (BLOCKING CI gate).
 #
 # Brain V4 invariants this guard enforces (see CLAUDE.md + docs/architecture/v4/):
-#   • Compute is Spark-on-Iceberg. dbt is REMOVED — the dbt-internal StarRocks DBs
-#     `brain_gold` / `brain_silver` are RETIRED (dropped).
+#   • Compute is DuckDB-on-Iceberg — DuckDB is the sole TRANSFORM compute (Silver/Gold, run as
+#     `python db/iceberg/duckdb/<layer>/<job>.py`); Bronze maintenance/retention/RTBF is the Trino
+#     maintenance client (db/iceberg/trino/**). The Spark transform tree (db/iceberg/spark/**) is
+#     DELETED (Spark→DuckDB cutover) — R6 forbids `spark-submit` / a `db/iceberg/spark` path creeping
+#     back. dbt is REMOVED — the dbt-internal DBs `brain_gold` / `brain_silver` are RETIRED (dropped).
 #   • Medallion lives in the Iceberg catalogs brain_{bronze,silver,gold}_local; Gold/Silver are
-#     SERVED to the app ONLY by the StarRocks async MVs brain_serving.mv_* (or read directly from
-#     the rest-Iceberg catalogs by Spark). No reader queries a bare brain_gold./brain_silver. DB.
+#     SERVED to the app ONLY by the Trino views brain_serving.mv_* (iceberg.brain_serving.*), or read
+#     directly from the rest-Iceberg catalogs by the DuckDB/Trino transform jobs. No reader queries a
+#     bare brain_gold./brain_silver. DB.
 #   • Features are RUNTIME — there is NO permanent feature-precompute table (no feature_customer_daily,
 #     no brain_feature write). brain_feature is dead (dropped).
-#   • Trino is the SERVING engine (Brain V4 removes StarRocks ENTIRELY — wire AND serving). The app /
+#   • Trino is the SERVING engine (Brain V4 removed StarRocks ENTIRELY — wire AND serving). The app /
 #     BFF / metric-engine read brain_serving.mv_* over TRINO (the iceberg.brain_serving.* VIEWS over the
 #     Iceberg Gold/Silver marts), fronted by a Redis analytics cache. A Trino client
 #     (withTrinoBrand/createTrinoPool/TrinoPool) in core serving code is ALLOWED; NEW StarRocks coupling
@@ -429,8 +433,10 @@ scan_spark_coupling
 if [ "$violations" -gt 0 ]; then
   echo ""
   echo "${RED}v4-naming-guard FAILED: ${violations} violation(s).${RST}"
-  echo "Brain V4: Spark is sole compute; medallion lives in the brain_*_local Iceberg catalogs;"
-  echo "Gold/Silver are SERVED via Trino views brain_serving.mv_* over Iceberg (fronted by Redis);"
+  echo "Brain V4: DuckDB-on-Iceberg is the sole TRANSFORM compute (db/iceberg/duckdb/**), maintenance is"
+  echo "the Trino client (db/iceberg/trino/**); the Spark transform tree is DELETED (R6 blocks spark-submit"
+  echo "/ db/iceberg/spark). The medallion lives in the brain_*_local Iceberg catalogs; Gold/Silver are"
+  echo "SERVED via Trino views brain_serving.mv_* over Iceberg (fronted by Redis);"
   echo "dbt and the dbt-internal brain_gold/brain_silver DBs are REMOVED; features are RUNTIME."
   echo "StarRocks is REMOVED entirely — NEW StarRocks coupling (mysql2 / :9030 / STARROCKS_*) in serving"
   echo "app code is FORBIDDEN (R5); use the Trino client (createTrinoPool / withTrinoBrand)."

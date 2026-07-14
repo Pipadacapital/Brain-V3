@@ -40,9 +40,30 @@ variable "cluster_name" {
   type = string
 }
 
+# ADR-0004 (OE-1/OE-2): SNS topic ARN the composite EKS-unhealthy alarm pages.
+# Empty default = today's un-paged posture (fully additive). The prod root
+# passes module.alerting.sns_topic_arn.
+variable "alarm_sns_topic_arn" {
+  type        = string
+  description = "SNS topic ARN for composite-alarm alarm_actions/ok_actions. Empty = no paging (unchanged)."
+  default     = ""
+}
+
+# OE-2 collision guard: in prod the /aws/eks/<cluster>/cluster log group is
+# already ADOPTED by an env-level import (envs/prod/log-retention-*.tf), so this
+# module must NOT also declare it. Default true preserves dev/staging behavior
+# (this module owns the group); prod passes false. When false, the
+# CrashLoopBackOff metric filter references the group by name instead.
+variable "manage_eks_audit_log_group" {
+  type        = bool
+  description = "Whether this module owns the EKS control-plane log group. False when an env-level import owns it (prod)."
+  default     = true
+}
+
 locals {
   services           = ["collector", "stream-worker", "core", "web"]
   log_retention_days = 90
+  alarm_actions      = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
 }
 
 ###############################################################################
@@ -62,6 +83,7 @@ resource "aws_cloudwatch_log_group" "service" {
 }
 
 resource "aws_cloudwatch_log_group" "eks_audit" {
+  count             = var.manage_eks_audit_log_group ? 1 : 0
   name              = "/aws/eks/${var.cluster_name}/cluster"
   retention_in_days = 365
   kms_key_id        = var.kms_key_arn
@@ -77,9 +99,12 @@ resource "aws_cloudwatch_log_group" "eks_audit" {
 # Metric filter: count CrashLoopBackOff events
 ###############################################################################
 resource "aws_cloudwatch_log_metric_filter" "crashloop" {
-  name           = "${var.project}-${var.environment}-crashloop"
-  pattern        = "{ $.reason = \"BackOff\" && $.involvedObject.kind = \"Pod\" }"
-  log_group_name = aws_cloudwatch_log_group.eks_audit.name
+  name = "${var.project}-${var.environment}-crashloop"
+  # $.reason = "BackOff" on a Pod event = CrashLoopBackOff.
+  pattern = "{ $.reason = \"BackOff\" && $.involvedObject.kind = \"Pod\" }"
+  # When this module owns the group, reference the created resource; otherwise
+  # (prod, env-level import owns it) reference the well-known group name.
+  log_group_name = var.manage_eks_audit_log_group ? aws_cloudwatch_log_group.eks_audit[0].name : "/aws/eks/${var.cluster_name}/cluster"
 
   metric_transformation {
     name          = "PodCrashLoopCount"
@@ -140,6 +165,10 @@ resource "aws_cloudwatch_composite_alarm" "eks_unhealthy" {
   alarm_description = "Composite: EKS cluster health degraded (${var.environment}). See child alarms."
 
   alarm_rule = "ALARM(${aws_cloudwatch_metric_alarm.pod_crashloop.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.node_not_ready.alarm_name})"
+
+  # ADR-0004: page the SNS topic on EKS-unhealthy (and clear on recovery).
+  alarm_actions = local.alarm_actions
+  ok_actions    = local.alarm_actions
 
   tags = {
     project     = var.project

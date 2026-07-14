@@ -1,6 +1,6 @@
 # ADR-0003 — Compute topology: Karpenter Spot + Graviton, KEDA scale-to-zero boundaries, and Aurora ACU sizing
 
-**Status:** Proposed
+**Status:** Accepted (owner-ratified 2026-07-14)
 **Date:** 2026-07-14
 **Deciders:** Engineering Program Lead, FinOps (owner sign-off required)
 **Relates to:** ADR-0001, `06-redesign-proposal.md` §2.2–§2.5/§3, `07-cost-optimization.md` §2/§3, `inventory/research-infra-cost.md` §2–§9

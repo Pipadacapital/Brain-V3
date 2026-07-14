@@ -9,8 +9,7 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test:unit": "vitest run --passWithNoTests",
-    "test:xlang": "bash scripts/run-a52-property-test.sh"
+    "test:unit": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@brain/identity-core": "workspace:*",

@@ -64,6 +64,15 @@ kafka:
       enabled: true
       port: 9093
 
+  # KIP-392 rack awareness. Strimzi tags each broker with its node AZ (topologyKey) and enables the
+  # RackAwareReplicaSelector so consumers that send client.rack fetch from a SAME-AZ replica →
+  # eliminates consumer cross-AZ fetch (the dominant DataTransfer-Regional-Bytes $). Needs RF>1
+  # (RF=3 here). Safe/reversible: brokers still work with it off; consumers without client.rack are
+  # unaffected either way. Toggle off to revert.
+  rack:
+    enabled: true
+    topologyKey: topology.kubernetes.io/zone
+
   # Broker config. auto.create.topics.enable is OFF (compose parity) — every topic is declared as a
   # KafkaTopic CR below. Replication factors assume the 3-broker pool above.
   config:

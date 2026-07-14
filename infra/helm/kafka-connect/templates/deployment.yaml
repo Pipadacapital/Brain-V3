@@ -55,6 +55,17 @@ spec:
                 export KAFKA_OPTS="${KAFKA_OPTS:+$KAFKA_OPTS }-javaagent:$JMX_JAR={{ .Values.metrics.port }}:/etc/jmx-exporter/kafka-connect-jmx-exporter.yml"
               fi
               {{- end }}
+              {{- if .Values.rackAwareness.enabled }}
+              # KIP-392: read this pod's AZ (IMDSv2 — node hop-limit=2) and set consumer client.rack so
+              # the Iceberg SINK consumers fetch from a SAME-AZ replica (RackAwareReplicaSelector on the
+              # brokers) instead of the cross-AZ leader — cuts DataTransfer-Regional-Bytes $. Best-effort:
+              # unresolved AZ ⇒ no client.rack ⇒ today's leader-fetch behaviour (no regression).
+              RACK_TOKEN="$(curl -fsS --max-time 2 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null || true)"
+              if [ -n "$RACK_TOKEN" ]; then
+                RACK_AZ="$(curl -fsS --max-time 2 -H "X-aws-ec2-metadata-token: $RACK_TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone 2>/dev/null || true)"
+                if [ -n "$RACK_AZ" ]; then export CONNECT_CONSUMER_CLIENT_RACK="$RACK_AZ"; echo "[rack] CONNECT_CONSUMER_CLIENT_RACK=$RACK_AZ"; fi
+              fi
+              {{- end }}
               exec /etc/confluent/docker/run
           env:
             - name: KAFKA_HEAP_OPTS

@@ -21,6 +21,23 @@ READ-ONLY, the name attaches it READ-WRITE. Encoded as `WAREHOUSE_NAME` in `_cat
 
 ---
 
+## GATE 2 — first job proven, checksum-identical (2026-07-14)
+
+Framework + first vertical-slice job ported and validated against **real data** in the
+dev catalog (125,516 gated events):
+
+- `db/iceberg/duckdb/_base.py` — the reusable framework (read gated source, `prop()`
+  json extraction, idempotent `merge_on_pk`, watermark, `run_job`).
+- `db/iceberg/duckdb/silver/silver_payment.py` — faithful port (3 lanes → business
+  gate → MERGE on `(brand_id, event_id)`).
+- `db/iceberg/duckdb/parity_check.py` — reusable Spark↔DuckDB parity gate.
+
+**Result:** DuckDB `silver_payment` = **880 rows, checksum-identical** to the
+Spark-produced table (`49f4f57b…`), **idempotent** on replay, **0.75s** (vs Spark
+minutes). This is the proven template every remaining job follows.
+
+---
+
 ## A. Feasibility verdict — GO (linchpin verified)
 
 The program hinges on one thing: **can DuckDB write Iceberg through Brain's REST

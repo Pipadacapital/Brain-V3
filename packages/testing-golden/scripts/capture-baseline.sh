@@ -170,12 +170,12 @@ if [ "${SILVER_GOLDEN:-0}" -eq 0 ]; then
   cat >&2 <<'EOF'
 [capture-baseline] FATAL: refresh completed but silver_collector_event holds ZERO golden-brand rows.
   Cause: golden envelopes have no ingested_at → the Silver incremental watermark filter drops them
-  when the target is already non-empty (live-brand stacks). Remediate with a ONE-TIME single-chunk
-  full refresh of the admission gate, then re-run this script:
-    FULL_REFRESH=1 SILVER_BATCH_TARGET_ROWS=<bronze_row_count+margin> SILVER_MAX_CHUNKS=1 \
-      bash db/iceberg/spark/silver/run-silver-collector-event.sh
-  (single chunk matters: the adaptive batch windows are ingested_at-bounded and would drop the
-  NULL-ingested_at rows again).
+  when the target is already non-empty (live-brand stacks). Remediate with a ONE-TIME full refresh of
+  the admission gate (keystone), then re-run this script:
+    FULL_REFRESH=1 STAGE=keystone bash tools/dev/duckdb-refresh.sh
+  (Spark→DuckDB cutover: the transform tier is DuckDB now — the old Spark run script + its
+  SILVER_BATCH_TARGET_ROWS/SILVER_MAX_CHUNKS adaptive-batch env no longer apply; FULL_REFRESH re-admits
+  the NULL-ingested_at golden rows.)
 EOF
   exit 1
 fi

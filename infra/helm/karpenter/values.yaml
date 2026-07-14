@@ -54,7 +54,10 @@ tags:
 # streaming just gets a much longer consolidateAfter so live consumers aren't thrashed.
 #
 # ── AUD-OPS-033: the INTENDED aggregate ceiling + spot instance diversity ──────────────────────
-# Aggregate pool limits = streaming 20 + batch 12 + trino 8 + ondemand 8 = 48 vCPU / 192Gi.
+# Aggregate pool limits = streaming 20 + trino 8 + ondemand 8 = 36 vCPU / 144Gi.
+# (The `batch` pool — 12 vCPU / 48Gi — was REMOVED in the Spark→DuckDB cutover: the Spark
+# transforms that needed a dedicated 4vCPU/16Gi batch node are gone; the lightweight DuckDB crons
+# run on the streaming pool.)
 # That ceiling is DELIBERATE — it is LESS than the sum of every HPA's max×request under a
 # fully-correlated burst (traffic spike scaling collector/core/stream-worker WHILE hourly crons
 # run and Trino scales out): overflow pods queue Pending until a pool frees, and per-workload
@@ -93,19 +96,10 @@ nodePools:
       cpu: "20"
       memory: 80Gi
     taints: []                       # untainted: existing untainted workloads can land here today
-  batch:
-    # 4 vCPU / 16 GiB — Argo/Spark batch jobs, off-peak. m7g = spot-drought fallback (AUD-OPS-033).
-    instanceTypes: ["t4g.xlarge", "m7g.xlarge"]
-    instanceType: t4g.xlarge         # fallback (unused when instanceTypes is set)
-    capacityType: ["spot", "on-demand"]   # Spot-first, on-demand fallback (see streaming)
-    consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 30s            # reclaim batch capacity quickly after jobs finish (→ 0 nodes)
-    expireAfter: 720h
-    weight: 10
-    limits:                          # ~0-3 t4g.xlarge nodes (3 × 4 vCPU)
-      cpu: "12"
-      memory: 48Gi
-    taints: []
+  # NOTE: the `batch` pool was REMOVED in the Spark→DuckDB cutover (feat/spark-to-duckdb-cutover). It
+  # existed for the Spark Silver/Gold transforms (a dedicated 4vCPU/16Gi off-peak node); those are gone.
+  # The DuckDB transform + Trino-maintenance crons are lightweight python (no JVM) and run on the
+  # untainted `streaming` pool (cronworkflows values-prod nodeSelector brain.platform/pool: streaming).
   trino:
     # 4 vCPU / 16 GiB — Trino workers (CPU-bound scans). m7g = spot-drought fallback (AUD-OPS-033).
     instanceTypes: ["t4g.xlarge", "m7g.xlarge"]

@@ -10,7 +10,7 @@
 #   • Trino : iceberg.brain_serving.identity_current_v  /  iceberg.brain_serving.identity_asof
 #
 # This guard FAILS (exit 1) when a NON-allowlisted, NON-comment source line under the scan roots
-# (db/iceberg/spark, db/trino/views, apps, packages) references silver_identity_map as a QUALIFIED table
+# (db/iceberg/duckdb, db/iceberg/trino, db/trino/views, apps, packages) references silver_identity_map as a QUALIFIED table
 # (`.silver_identity_map`) or a QUOTED table name (`"silver_identity_map"` / `'silver_identity_map'`).
 #
 # NOT a violation (so no false positives):
@@ -68,7 +68,7 @@ is_allowlisted() { # $1 = repo-relative path
 # tree; grep -rl is the fallback. (New/untracked files are picked up by the fallback and, once committed,
 # by git grep in CI.)
 candidate_files() {
-  local roots=(db/iceberg/spark db/trino/views apps packages)
+  local roots=(db/iceberg/duckdb db/iceberg/trino db/trino/views apps packages)
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git grep -lE 'silver_identity_map' -- "${roots[@]}" 2>/dev/null || true
   else

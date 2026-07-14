@@ -79,12 +79,11 @@ step "5/7 bootstrap — seed LocalStack Secrets Manager + KMS"
 pnpm bootstrap
 
 # ── 6. one-shot medallion refresh (creates the Trino serving views) ─────────
-# Do NOT source .env.local-prod here: the refresh's Node steps (identity-export, journey-stitch)
-# already self-load it via `tsx --env-file` (see run_node_job in v4-refresh-loop.sh), and the
-# Spark steps run in CONTAINERS on the compose network. Sourcing would export the host-oriented
-# S3_ENDPOINT=http://localhost:9000 into those containers, where MinIO is reachable only as
-# `minio:9000` — breaking every Iceberg write with "Connect to localhost:9000: refused" and
-# leaving Silver/Gold empty. Unset, the run-*.sh scripts fall back to their correct minio:9000.
+# Spark→DuckDB cutover: the refresh is now tools/dev/duckdb-refresh.sh (via `pnpm dev:v4-refresh`),
+# which runs the DuckDB transform jobs (db/iceberg/duckdb/**) with the host python venv. The DuckDB
+# jobs read the env the caller exports (S3_ENDPOINT / ICEBERG_* / AWS_* / NEO4J_URI) — see the
+# duckdb-refresh.sh header for the exact contract. ONESHOT is a no-op here (the DuckDB refresh always
+# runs a single pass); it is kept for call-site compatibility with the old loop.
 step "6/7 refresh — one-shot Silver→Gold→Trino serving views"
 ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh || \
   echo "  ⚠ refresh reported issues (often just an empty cold DB) — continuing; re-run 'pnpm dev:v4-refresh' anytime."

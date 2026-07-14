@@ -61,7 +61,7 @@ sparkBronze:
   # (ADR-0010). Maintenance must run regardless of who lands Bronze, so it defaults ON.
   enabled: true
   image:
-    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze   # built from db/iceberg/spark/Dockerfile
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb   # built from db/iceberg/duckdb/Dockerfile (carries the Trino maintenance client)
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
@@ -80,12 +80,8 @@ sparkBronze:
     activeDeadlineSeconds: 1800
     env:
       - { name: RAW_RETENTION_HOURS, value: "168" }   # 7 days (D4); tighten per region/regime
-  # Spark driver heap (driver==executor under local[*]). Pinned < resources.limits.memory so the JVM +
-  # PySpark + Iceberg machinery don't OOM on a big compaction pass. Keep a margin below the pod
-  # memory limit for non-heap overhead.
-  driverMemory: "3g"
   # Non-secret extra env for the maintenance run. Secrets (envSecretName)
-  # MUST include ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
+  # MUST include TRINO_HOST/TRINO_PORT + ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
   # anymore — those belonged to the removed Spark-SS landing; Kafka Connect keeps its offsets in the
   # Iceberg snapshots + its own topics.
   # AUD-OPS-015: the durable collector lane (collector_events_connect — append-only SoR, rows never
@@ -102,13 +98,13 @@ sparkBronze:
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
-  # ── On-demand subject erasure (AUD-OPS-037; templates/spark-erasure.yaml) ──────────────────────
-  # WorkflowTemplate `bronze-raw-erasure` wrapping erasure_raw_delete.py (RTBF hard-delete of one
-  # subject's rows across the raw Bronze tables + the payload-path sweep of
-  # collector_events_connect). NOT a cron: the stream-worker erasure orchestrator submits a
-  # Workflow from this template (workflowTemplateRef via the Kubernetes API — the prod
-  # argo-workflows app is controller-only, no REST server) after the subject DEK crypto-shred.
-  # Same image/secret/placement as the maintenance cron above.
+  # ── On-demand subject erasure (AUD-OPS-037; templates/bronze-erasure.yaml) ─────────────────────
+  # WorkflowTemplate `bronze-raw-erasure` wrapping db/iceberg/trino/erasure_raw_delete.py (RTBF
+  # hard-delete of one subject's rows across the raw Bronze tables + the payload-path sweep of
+  # collector_events_connect, run via the Trino client the brain-duckdb image carries). NOT a cron:
+  # the stream-worker erasure orchestrator submits a Workflow from this template (workflowTemplateRef
+  # via the Kubernetes API — the prod argo-workflows app is controller-only, no REST server) after the
+  # subject DEK crypto-shred. Same image/secret/placement as the maintenance cron above.
   erasure:
     enabled: true
     # Per-run hard cap. The payload-path DELETEs full-scan collector_events_connect once per
@@ -122,75 +118,52 @@ sparkBronze:
     submitter:
       serviceAccountName: stream-worker
       serviceAccountNamespace: stream-worker
-  # ── Execution mode (see docs/ops/spark-on-k8s-migration.md §7) ─────────────────────────────────
-  # "local" (default) = the proven single-JVM `spark-submit --master local[*]` in the cron pod. "k8s" =
-  # Spark-on-Kubernetes cluster mode (real executor pods, same image/catalog/code). Bronze is the lighter,
-  # SEPARATE-from-batch decision — migrate only when Bronze itself shows lag (Kafka partitions + executors),
-  # NOT coupled to the sparkV4 cutover. DEFAULT local → zero change to today's crons; rollback = flip back.
-  executionMode: local
-  k8s:
-    apiServer: "k8s://https://kubernetes.default.svc"
-    namespace: ""                       # "" → the release namespace
-    serviceAccountName: spark           # shared with sparkV4; RBAC in spark-k8s-rbac.yaml renders if EITHER is k8s
-    executor:
-      instances: "3"
-      cores: "4"
-      memory: "6g"
-      minExecutors: "1"
-      maxExecutors: "8"
 
-# Brain V4 Spark Silver/Gold transform (templates/spark-v4.yaml). Spark is the SOLE compute, dbt is gone.
-# Two staggered CronWorkflows — v4-silver (:05) → v4-gold (:25) — that spark-submit the mart jobs the
-# spark image now CARRIES (db/iceberg/spark/{silver,gold}/*.py via the Dockerfile). The serving mv_*
-# Trino views resolve straight over the Iceberg Gold/Silver marts (thin projections) and are SYNC-refreshed
-# by the Spark v4-refresh path — there is NO separate mysql REFRESH leg (StarRocks is removed). The
-# identity-export + journey-stitch node jobs (.Values.jobs) sequence around them by schedule to complete
-# the attribution chain (identity → order-state → silver → stitch → gold). ENABLED: the V4 Spark crons
-# run the medallion refresh. Requires the CI-built+digest-pinned V4 spark image (B3 fail-closed) + a
-# cluster, the same external gate as sparkBronze.
+# Brain V4 DuckDB Silver/Gold transform (templates/v4-transform.yaml). DuckDB is the transform compute
+# now (Spark removed — Spark→DuckDB cutover); dbt/StarRocks were already gone. Two staggered
+# CronWorkflows — v4-silver (:05) → v4-gold (:25) — that `python /opt/brain/duckdb/<layer>/<job>.py` the mart
+# jobs the brain-duckdb image CARRIES (db/iceberg/duckdb/{silver,gold}/*.py via the Dockerfile). The serving
+# mv_* Trino views resolve straight over the Iceberg Gold/Silver marts (thin projections) — there is no
+# separate REFRESH leg (StarRocks is removed). The identity-export + journey-stitch node jobs (.Values.jobs)
+# sequence around them by schedule to complete the attribution chain (identity → order-state → silver →
+# stitch → gold). ENABLED: the V4 crons run the medallion refresh. Requires the CI-built+digest-pinned
+# brain-duckdb image (B3 fail-closed) + a cluster.
 sparkV4:
   enabled: true
   # ADR-0010: the v4-silver/v4-gold crons read the Kafka Connect Bronze tables
   # (collector_events_connect + <lane>_raw_connect) — fixed in the jobs, no BRONZE_SOURCE
   # switch (rollback = git revert).
   image:
-    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-spark-bronze   # same image — Dockerfile now carries the V4 marts
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb   # carries db/iceberg/duckdb (the transform marts)
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  silverSchedule: "5 * * * *"     # hourly :05 — order_state spine + the rest of Silver (after identity :02)
+  silverSchedule: "5 * * * *"     # hourly :05 — keystone + order_state spine + the rest of Silver (after identity :02)
   goldSchedule: "25 * * * *"      # hourly :25 — revenue → attribution → customer/gap/exec (after stitch :15/:16)
-  # 2026-07-12: 2400→4500. With real data BOTH tiers outgrew their caps across
-  # retries (v4-silver 30-min-era deadline kills; v4-gold Error 'retry exceeded
-  # workflow deadline' at 2400 twice on first-fill days). 75 min covers the
-  # worst observed full pass with headroom; Forbid still serializes runs.
+  # 2026-07-12: 2400→4500. Under Spark BOTH tiers outgrew smaller caps on first-fill days; 75 min
+  # covers the worst observed full pass with headroom (DuckDB is lighter, but keep the ceiling until
+  # the DuckDB run-time profile is re-measured in prod). Forbid still serializes runs.
   activeDeadlineSeconds: 4500
-  driverMemory: "3g"              # < resources.limits.memory (non-heap overhead margin) — same as sparkBronze
-  sparkMaxRetries: "1"            # bounded in-pod retry per spark-submit (idempotent MERGE); + Argo backoffLimit
-  # Non-secret config. Secrets (ICEBERG_REST_URI/Glue, AWS_*, NEO4J_*) come from envSecretName.
+  # Non-secret config. Secrets (ICEBERG_REST_URI, AWS_*, NEO4J_*) come from envSecretName.
   env:
     - { name: ICEBERG_CATALOG, value: "rest" }
   # Workflow-pod placement (AUD-PROD-006) — shared by v4-silver / v4-gold /
-  # v4-maintenance. Empty by default; values-prod pins to the batch pool.
+  # v4-maintenance. Empty by default; values-prod pins to the streaming pool (the batch pool is gone).
   nodeSelector: {}
   tolerations: []
   # Annotations stamped on the v4-silver/v4-gold run pods. Empty by default; values-prod sets
-  # karpenter.sh/do-not-disrupt to stop Karpenter voluntarily draining the batch node mid-run
-  # (the real cause of the exit-143 / "No more retries left" failures — NOT activeDeadlineSeconds,
-  # which the runs never approached: they died evicted at 14-37 min under the 4500s cap).
+  # karpenter.sh/do-not-disrupt to stop Karpenter voluntarily draining the node mid-run.
   podAnnotations: {}
   resources:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
-  # ── Silver/Gold Iceberg maintenance (AUD-COST-013; templates/spark-v4-maintenance.yaml) ────────
-  # Weekly medallion_maintenance.py: rewrite_data_files + expire_snapshots (7d) + a GUARDED
-  # remove_orphan_files pass — the hourly-rewritten marts otherwise grow S3 unbounded, and no
-  # tier swept orphans from failed/aborted writes. ORPHAN_OLDER_THAN_DAYS=7 (job clamps >=3):
-  # orphans that old can never belong to an in-flight commit, so overlapping the hourly refresh
-  # is safe. remove_orphan_files lists via S3A; since AUD-COST-020 the job's S3A wiring is
-  # conditional — with S3_ENDPOINT unset (real S3) it falls back to the default AWS credential
-  # provider chain (IRSA WebIdentity, zero static keys; hadoop-aws is baked into the image), so
-  # ORPHAN_FILES=1 is safe in prod. ORPHAN_FILES=0 remains the escape hatch (compaction+expiry only).
+  # ── Silver/Gold Iceberg maintenance (AUD-COST-013; templates/v4-maintenance.yaml) ──────────────
+  # Weekly db/iceberg/trino/medallion_maintenance.py (via the Trino client): optimize + expire_snapshots
+  # (7d) + a GUARDED remove_orphan_files pass — the hourly-rewritten marts otherwise grow S3 unbounded,
+  # and no tier swept orphans from failed/aborted writes. ORPHAN_OLDER_THAN_DAYS=7 (job clamps >=3):
+  # orphans that old can never belong to an in-flight commit, so overlapping the hourly refresh is safe.
+  # With S3_ENDPOINT unset (real S3) the job uses the default AWS credential chain (IRSA WebIdentity,
+  # zero static keys), so ORPHAN_FILES=1 is safe in prod. ORPHAN_FILES=0 remains the escape hatch.
   maintenance:
     enabled: true
     schedule: "45 4 * * 0"          # weekly Sun 04:45 IST — off the daily 03:00 Bronze maintenance slot
@@ -198,31 +171,6 @@ sparkV4:
     env:
       - { name: ORPHAN_FILES, value: "1" }
       - { name: ORPHAN_OLDER_THAN_DAYS, value: "7" }
-  # ── Execution mode (see docs/ops/spark-on-k8s-migration.md) ────────────────────────────────────
-  # "local" = the current, proven single-JVM `spark-submit --master local[*]` (driver==executor in the
-  # cron pod). "k8s" = Spark-on-Kubernetes CLUSTER mode: spark-submit launches real executor pods, the
-  # SAME image/catalog/code, gated entirely by this flag. DEFAULT local → zero change to today's crons;
-  # flip to k8s ONLY after the migration plan's parity gate. Rollback = flip back to local (one line).
-  executionMode: local
-  k8s:
-    # In-cluster API server (the `k8s://` master). Override only for an out-of-cluster submit.
-    apiServer: "k8s://https://kubernetes.default.svc"
-    namespace: ""                       # "" → the release namespace (where executor pods launch)
-    serviceAccountName: spark           # the driver SA — RBAC templated in spark-k8s-rbac.yaml (k8s mode only)
-    # Executor fleet (values are strings — interpolated verbatim into --conf). Dynamic allocation with
-    # shuffle tracking (no external shuffle service needed on Spark 3.x/K8s). Tune from the Spark UI.
-    executor:
-      instances: "4"
-      cores: "4"
-      memory: "6g"
-      minExecutors: "2"
-      maxExecutors: "12"
-    # Cluster-scale tuning knobs, ACTIVE ONLY in k8s mode. iceberg_base.spark_perf_configs() reads these
-    # from env — they are no-ops in local mode and become meaningful with real executors (#312 seam).
-    env:
-      - { name: SPARK_SHUFFLE_PARTITIONS, value: "256" }
-      - { name: SPARK_OFFHEAP_SIZE, value: "2g" }
-      - { name: SPARK_AQE_ADVISORY_BYTES, value: "134217728" }   # 128MB
 
 # The scheduled jobs. `image` omitted → the default (core) image.
 #

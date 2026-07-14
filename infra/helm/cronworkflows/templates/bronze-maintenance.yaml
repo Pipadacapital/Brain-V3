@@ -1,0 +1,159 @@
+{{- /*
+Bronze MAINTENANCE CronWorkflows (was spark-bronze.yaml — Spark→DuckDB cutover).
+
+Iceberg is the SOLE Bronze system-of-record. Maintenance is now the Trino client that the brain-duckdb
+image carries: DuckDB can't run the Iceberg maintenance stored procedures, so these invoke
+`python /opt/brain/trino/<script>.py`, which runs `ALTER TABLE … EXECUTE optimize / expire_snapshots`
+against the SAME REST catalog + object store (trino_base.py). No spark-submit, no JVM.
+
+ADR-0010: Bronze LANDING is the Kafka Connect Iceberg sink (infra/helm/kafka-connect) — the sole
+landing writer. The former Spark-SS bronze-landing CronWorkflow was removed 2026-07-05; Connect keeps
+offsets in the Iceberg snapshots + its own topics (no CHECKPOINT_LOCATION / STARTING_OFFSETS wiring).
+
+This template renders TWO CronWorkflows:
+  - bronze-maintenance: small-file compaction (optimize) + snapshot-expiry TTL (Slice 7; 7d default,
+    14d on the durable collector lane — AUD-OPS-015, see docs/runbooks/DR.md) over the Bronze tables,
+    including the Connect-written collector_events_connect / <lane>_raw_connect.
+  - bronze-raw-retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038): the 7-day raw-PII retention window
+    on the <lane>_raw_connect tables — row-TTL DELETE + snapshot expiry (bronze_raw_retention.py).
+    collector_events_connect is deliberately NOT swept (system-of-record; the job excludes it itself).
+
+Gated by .Values.sparkBronze.enabled (defaults true — both must run regardless of who lands Bronze).
+
+Image MUST be pinned by digest (B3) — same fail-closed rule as the transform/maintenance templates.
+
+NOTE: the value block is still named `sparkBronze` (chart values compatibility — one image, minimal
+diff); it now carries the brain-duckdb image (Trino client) + the Trino-relevant knobs only (no
+executionMode / k8s / driverMemory — those were spark-submit-only and were removed in the cutover).
+*/ -}}
+{{- if .Values.sparkBronze.enabled }}
+{{- $img := .Values.sparkBronze.image -}}
+{{- $ref := "" -}}
+{{- if $img.digest -}}
+  {{- $ref = printf "%s@%s" $img.repository $img.digest -}}
+{{- else if and $img.tag (ne $img.tag "latest") -}}
+  {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
+{{- else -}}
+  {{- fail "sparkBronze.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- $envFrom := .Values.envSecretName -}}
+{{- $sa := .Values.serviceAccount.name -}}
+{{- $tz := .Values.timezone -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: bronze-maintenance
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-maintenance
+spec:
+  # Slice 7: compaction (optimize) + snapshot-expiry TTL (7d; 14d durable collector lane — AUD-OPS-015).
+  # The ERASURE mode (ERASE_BRAND_ID=…) is NOT a cron — it is invoked on-demand by the right-to-erasure
+  # orchestrator (erasure_raw_delete.py) after a brand's DEK is crypto-shredded (D13 / I-S05).
+  schedule: {{ .Values.sparkBronze.maintenanceSchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    {{- /* AUD-PROD-006: pin the maintenance cron pods to the streaming pool (values-prod). */}}
+    {{- with .Values.sparkBronze.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkBronze.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              exec python /opt/brain/trino/bronze_maintenance.py
+          env:
+            - { name: MODE, value: "maintain" }
+            {{- with .Values.sparkBronze.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # TRINO_HOST/PORT + ICEBERG_REST_URI + AWS_*
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+{{- if .Values.sparkBronze.rawRetention.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: bronze-raw-retention
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-raw-retention
+spec:
+  # ADR-0006 D4 (AUD-IMPL-019/AUD-OPS-038): 7-day retention on the *_raw_connect lanes —
+  # row-TTL DELETE + snapshot expiry so raw un-hashed PII/PCI never outlives the landing-buffer
+  # window (Silver, gated/normalized/hashed, is the durable layer). Daily, off the 03:00
+  # bronze-maintenance slot. Idempotent — a missed/retried run just re-applies the same window.
+  schedule: {{ .Values.sparkBronze.rawRetention.schedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    {{- with .Values.sparkBronze.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkBronze.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    activeDeadlineSeconds: {{ .Values.sparkBronze.rawRetention.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # row-TTL DELETE + expire_snapshots are retry-safe
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              exec python /opt/brain/trino/bronze_raw_retention.py
+          env:
+            {{- with .Values.sparkBronze.rawRetention.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+{{- end }}
+{{- end }}

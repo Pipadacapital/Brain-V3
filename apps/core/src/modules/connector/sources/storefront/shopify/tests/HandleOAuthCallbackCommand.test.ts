@@ -363,14 +363,13 @@ describe('HandleOAuthCallbackCommand', () => {
     expect([...postedTopics].sort()).toEqual(
       [
         'app/uninstalled',
-        'customers/data_request',
-        'customers/redact',
+        // GDPR compliance topics (customers/data_request, customers/redact, shop/redact) are NOT
+        // API-registered — they're app-config webhooks (Shopify 404s the Admin API for them).
         'orders/cancelled',
         'orders/create',
         'orders/fulfilled',
         'orders/paid',
         'orders/updated',
-        'shop/redact',
         // P1 webhook expansion — real-time resource peers of the scheduled resource backfills
         // (RegisterWebhooksCommand ALL_WEBHOOK_TOPICS). Kept in lock-step with the command's list.
         'products/create',

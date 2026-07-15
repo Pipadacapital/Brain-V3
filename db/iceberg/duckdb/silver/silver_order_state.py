@@ -69,7 +69,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _revenue_identity import enabled_brands as _revenue_qt_brands  # noqa: E402
 from _revenue_identity import resolve_brain_id_v2_sql  # noqa: E402
@@ -203,6 +211,45 @@ def _identity_link_sql() -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
 
+    # ── ENTITY-INCREMENTAL CHANGED-ENTITY REFOLD (opt-in; SILVER_INCREMENTAL=1) ───────────────────────
+    #   order_state is an ENTITY FOLD: MANY events per (brand_id, order_id) aggregate/terminal-wins into ONE
+    #   row whose value (Σ signed amounts, terminal state, min/max times) depends on the order's FULL history
+    #   — events that may sit BELOW the watermark. So we MUST NOT window the fold input directly (that would
+    #   silently drop history → wrong money). Instead: a WINDOWED read of the gated source discovers the SET
+    #   of (brand_id, order_id) that changed in [lo, hi); the fold then reads the FULL, UNWINDOWED source but
+    #   is SEMI-JOINed to that changed set, so ONLY changed orders re-fold over their complete history, and
+    #   the MERGE upserts exactly them. TWO gated lanes drive an order's state: the ORDER events (order_id from
+    #   payload) AND the forward AWB lane (a delivered/rto status change flips COD recognition with no order
+    #   event landing) — the changed set is the UNION of both, using each lane's own key derivation + guards.
+    #   Default OFF / first run / FULL_REFRESH → lo is None → NO changed-set, NO semi-join → byte-identical
+    #   full recompute over every order (the string predicates below are EMPTY when lo is None).
+    lo, hi = incremental_window(con, "silver-order-state", GATED_SOURCE, ts_col="ingested_at")
+
+    changed_order_keys = f"""
+      SELECT DISTINCT brand_id, {prop('pj','order_id')} AS order_id
+      FROM ({read_gated_events_sql(ORDER_EVENTS, lo=lo, hi=hi)})
+      WHERE {prop('pj','order_id')} IS NOT NULL AND {prop('pj','order_id')} <> ''
+    """
+    changed_awb_keys = f"""
+      SELECT DISTINCT brand_id, {prop('pj','order_id')} AS order_id
+      FROM ({read_gated_events_sql([AWB_EVENT], lo=lo, hi=hi)})
+      WHERE {prop('pj','order_id')} IS NOT NULL AND {prop('pj','order_id')} <> ''
+    """
+    changed = f"({changed_order_keys}) UNION ({changed_awb_keys})"
+    # GUARD: lo=None → emit NO semi-join predicate at all (empty string) → full recompute, byte-identical.
+    # stg_semijoin_col references the already-lifted brand_id/order_id COLUMNS of the stg dedup CTE;
+    # awb_semijoin references the payload-derived key exprs of the awb_latest read (no lifted columns yet).
+    # Each predicate carries its OWN leading newline+indent so the lo=None case is the EMPTY string and the
+    # surrounding SQL is byte-for-byte unchanged (no stray blank/whitespace line injected).
+    stg_semijoin_col = (
+        f"\n        AND (brand_id, order_id) IN (SELECT brand_id, order_id FROM ({changed}))"
+        if lo is not None else ""
+    )
+    awb_semijoin = (
+        f"\n        AND (brand_id, {prop('pj','order_id')}) IN (SELECT brand_id, order_id FROM ({changed}))"
+        if lo is not None else ""
+    )
+
     # ── stg_order_events_bronze: type + dedup order.{live,backfill}.v1 to (brand_id, order_id)
     #    latest-ingested (ingested_at DESC, occurred_at DESC, event_id DESC). ─────────────────────────────
     # IMPORTANT: ingested_at is read from the PAYLOAD JSON ($.ingested_at, an ISO string), NOT the gated
@@ -238,7 +285,7 @@ def build(con):
                  PARTITION BY brand_id, order_id
                  ORDER BY ingested_at DESC, occurred_at DESC, event_id DESC) AS _dedup_rn
         FROM ({stg_typed})
-        WHERE order_id IS NOT NULL AND order_id <> ''
+        WHERE order_id IS NOT NULL AND order_id <> ''{stg_semijoin_col}
       ) WHERE _dedup_rn = 1
     """
 
@@ -254,7 +301,7 @@ def build(con):
                row_number() OVER (PARTITION BY brand_id, {prop('pj','order_id')}
                                   ORDER BY occurred_at DESC) AS _rn
         FROM ({read_gated_events_sql([AWB_EVENT])})
-        WHERE {prop('pj','order_id')} IS NOT NULL AND {prop('pj','order_id')} <> ''
+        WHERE {prop('pj','order_id')} IS NOT NULL AND {prop('pj','order_id')} <> ''{awb_semijoin}
       ) WHERE _rn = 1
     """
 

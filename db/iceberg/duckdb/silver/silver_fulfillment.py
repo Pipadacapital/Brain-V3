@@ -28,7 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job, GATED_SOURCE  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_fulfillment_duckdb_test beside the
@@ -61,6 +61,11 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1). per_event grain over the gated keystone → windowing
+    # the source read is safe. Default OFF → (None, None) → read_gated_events_sql omits the predicate → full
+    # scan, byte-identical to before.
+    lo, hi = incremental_window(con, "silver-fulfillment", GATED_SOURCE, ts_col="ingested_at")
+
     staged = f"""
       SELECT {', '.join(COLUMNS)} FROM (
         SELECT
@@ -74,7 +79,7 @@ def build(con):
           {prop('pj','tracking_number')}   AS tracking_number,
           event_id,
           occurred_at, ingested_at
-        FROM ({read_gated_events_sql([FULFILLMENT_EVENT])})
+        FROM ({read_gated_events_sql([FULFILLMENT_EVENT], lo=lo, hi=hi)})
       )
       WHERE fulfillment_id IS NOT NULL AND brand_id IS NOT NULL
     """

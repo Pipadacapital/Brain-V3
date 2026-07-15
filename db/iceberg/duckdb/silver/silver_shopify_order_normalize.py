@@ -33,8 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _normalize_base import (  # noqa: E402
-    connect_source_table, ensure_shadow, merge_collector_event, register_salts, run_normalize_job,
-    source_present,
+    advance_lane_watermark, connect_source_table, ensure_shadow, lane_window, lane_window_predicate,
+    merge_collector_event, register_salts, run_normalize_job, source_present,
 )
 import _raw_normalize_ports as rn  # noqa: E402
 from _silver_technical_ports import event_category  # noqa: E402
@@ -81,6 +81,12 @@ def build(con):
     register_salts(con)
     src = connect_source_table(LANE)
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   PER-EVENT grain: each raw order row → 0..1 shadow row via the idempotent merge_collector_event on
+    #   (brand_id, event_id), so narrowing the source read is safe. Default OFF / first run / FULL_REFRESH →
+    #   lo=None → lane_window_predicate == "" → byte-identical full scan.
+    lo_orders, hi_orders = lane_window(con, "silver-shopify-order-normalize", LANE)
+
     # Project the fields the order marts need off the nested `order` struct (a reserved word → quoted).
     df = f"""
       SELECT
@@ -100,6 +106,7 @@ def build(con):
         CAST("order".customer.email AS VARCHAR)         AS cust_email,
         CAST("order".customer.phone AS VARCHAR)         AS cust_phone
       FROM {src}
+      {lane_window_predicate(lo_orders, hi_orders)}
     """
 
     # Per-brand salt LEFT join (NULL salt on a miss → literal "None" in the hash — Spark parity).
@@ -160,6 +167,7 @@ def build(con):
     """
 
     n = merge_collector_event(con, TARGET, good)
+    advance_lane_watermark(con, "silver-shopify-order-normalize", LANE, hi_orders)
     return TARGET, n
 
 

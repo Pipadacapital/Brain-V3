@@ -51,7 +51,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to silver_customer_duckdb_test
@@ -83,6 +83,42 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ──────────────────────
+    #   GRAIN = entity_fold: MANY silver_order_state rows aggregate into ONE (brand_id, brain_id) customer
+    #   row whose lifetime totals depend on the entity's FULL order history — including rows BELOW the
+    #   watermark. Windowing the fold input directly would silently drop history → wrong lifetime money.
+    #   So we window ONLY to DISCOVER which entities changed (a new order landed since the last run), then
+    #   re-fold each changed entity over its FULL, UNWINDOWED order history. The MERGE on the PK
+    #   (brand_id, brain_id) upserts exactly those restated rollups. The fold-driving source is the order
+    #   spine silver_order_state (ts_col=ingested_at); its max_ingested_at feeds customer_watermark.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "silver-customer", ORDER_STATE, ts_col="ingested_at")
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range
+    # over the order spine's arrival clock otherwise. Same entity-key guard as the fold (brain_id NOT NULL).
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    order_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: entities whose order spine changed within [lo, hi], using the SAME (brand_id,
+    # brain_id) key + brain_id-NOT-NULL guard the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, brain_id
+      FROM {ORDER_STATE}
+      WHERE brain_id IS NOT NULL{order_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed entities so
+    # each re-folds over its ENTIRE order history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"        AND (brand_id, brain_id) IN (SELECT brand_id, brain_id FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── order_rollup — dbt FULL-build aggregation over the order spine (brain_id NOT NULL). ──
     # The source timestamp columns are TIMESTAMP WITH TIME ZONE; our Silver columns are naive
     # `timestamp` (Iceberg parity with the Spark UTC instants). `AT TIME ZONE 'UTC'` pins the
@@ -97,7 +133,7 @@ def build(con):
              max(max_ingested_at)    AT TIME ZONE 'UTC' AS customer_watermark
       FROM {ORDER_STATE}
       WHERE brain_id IS NOT NULL
-      GROUP BY brand_id, brain_id
+{refold_filter}      GROUP BY brand_id, brain_id
     """
 
     # ── identity_node — silver_customer_identity where lifecycle_state <> 'merged'. ──
@@ -142,4 +178,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("silver-customer", build, target_table="silver_customer")
+    # The watermark tracks the order spine's arrival clock (silver_order_state.ingested_at), NOT the gated
+    # keystone default — this job reads sibling Silver marts, not silver_collector_event.
+    run_job("silver-customer", build, target_table="silver_customer",
+            source_table=ORDER_STATE, ts_col="ingested_at")

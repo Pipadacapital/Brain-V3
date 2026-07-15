@@ -35,7 +35,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 SUFFIX = os.environ.get("MIGRATION_TABLE_SUFFIX", "")
@@ -101,7 +109,7 @@ _FAMILIES = {
 }
 
 
-def _base_typed_sql() -> str:
+def _base_typed_sql(lo=None, hi=None) -> str:
     """Read spend.live.v1, keep BREAKDOWN rows only (breakdown_key present + non-empty), dedup latest.
     Projects every family's dim so each family can select+filter its own. spend_event_id = Bronze event_id."""
     dim_props = [
@@ -129,7 +137,7 @@ def _base_typed_sql() -> str:
         {dim_sel},
         {prop('pj','hourly_stats_aggregated_by_advertiser_time_zone')} AS hour_bucket,
         occurred_at, ingested_at
-      FROM ({read_gated_events_sql([SPEND_EVENT])})
+      FROM ({read_gated_events_sql([SPEND_EVENT], lo=lo, hi=hi)})
       WHERE event_id IS NOT NULL AND event_id <> ''
         AND {prop('pj','breakdown_key')} IS NOT NULL AND {prop('pj','breakdown_key')} <> ''
     """
@@ -163,7 +171,13 @@ def _project_family_sql(typed_sql: str, family: str) -> str:
 
 
 def build(con):
-    typed_sql = _base_typed_sql()
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   GRAIN=per_event over the gated keystone: each source spend row → 0..1 breakdown row per family via
+    #   the idempotent MERGE on (brand_id, spend_event_id), so windowing the source read is safe. read_gated_
+    #   events_sql builds the [lo,hi) predicate on ingested_at itself and omits it when lo/hi are None, so
+    #   default OFF → (None, None) → full scan, byte-identical to before.
+    lo, hi = incremental_window(con, "silver-marketing-spend-breakdowns", GATED_SOURCE, ts_col="ingested_at")
+    typed_sql = _base_typed_sql(lo=lo, hi=hi)
     total = 0
     for family, spec in _FAMILIES.items():
         target = f"{CATALOG}.{SILVER_NAMESPACE}.{family}{SUFFIX}"

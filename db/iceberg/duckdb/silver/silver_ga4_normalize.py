@@ -31,7 +31,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _normalize_base import (  # noqa: E402
-    connect_source_table, ensure_shadow, merge_collector_event, run_normalize_job, source_present,
+    advance_lane_watermark, connect_source_table, ensure_shadow, lane_window, lane_window_predicate,
+    merge_collector_event, run_normalize_job, source_present,
 )
 import _raw_normalize_ports as rn  # noqa: E402
 from _silver_technical_ports import event_category  # noqa: E402
@@ -134,6 +135,14 @@ def build(con):
     _register_udfs(con)
     src = connect_source_table(LANE)
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   GA4 is PER-EVENT (each raw GA4 row → 0..1 shadow row via the idempotent MERGE on (brand_id,
+    #   event_id)), so narrowing the source read to a kafka_timestamp window is safe. Default OFF / first
+    #   run / FULL_REFRESH → lo=None → lane_window_predicate == "" → byte-identical full scan.
+    lo_ga4, hi_ga4 = lane_window(con, "silver-ga4-normalize", LANE)
+    _pred_ga4 = lane_window_predicate(lo_ga4, hi_ga4)
+    _ga4_where = f"\n      {_pred_ga4}" if _pred_ga4 else ""
+
     # The verbatim GA4 runReport row is nested under `row` (the connector wraps it). Envelope columns
     # (server-trusted brand_id / property_id / currency — MT-1) come from the record, NEVER the row body.
     df = f"""
@@ -161,7 +170,7 @@ def build(con):
         CAST("row".eventCount AS VARCHAR)                AS event_count,
         CAST("row".conversions AS VARCHAR)               AS conversions,
         CAST("row".totalRevenue AS VARCHAR)              AS total_revenue
-      FROM {src}
+      FROM {src}{_ga4_where}
     """
 
     canon = f"""
@@ -239,6 +248,7 @@ def build(con):
     """
 
     n = merge_collector_event(con, TARGET, good)
+    advance_lane_watermark(con, "silver-ga4-normalize", LANE, hi_ga4)
     return TARGET, n
 
 

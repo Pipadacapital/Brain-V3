@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import GATED_SOURCE, ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to silver_payment_duckdb_test
@@ -67,13 +67,19 @@ def _webhook_status(pj: str) -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   per_event grain over the gated keystone: each source row → 0..1 silver row via the idempotent
+    #   MERGE on (brand_id, event_id), so narrowing the source read is safe. Default OFF → (None, None);
+    #   read_gated_events_sql omits the [lo,hi) predicate when lo/hi are None → full scan, byte-identical.
+    lo, hi = incremental_window(con, "silver-payment", GATED_SOURCE, ts_col="ingested_at")
+
     pixel = f"""
       SELECT brand_id, event_id, 'pixel' AS source, {_PIXEL_STATUS} AS payment_status,
              {prop('pj','order_id')} AS order_id, CAST(NULL AS VARCHAR) AS payment_id_hash,
              {prop('pj','brain_anon_id')} AS brain_anon_id, {prop('pj','session_id')} AS session_id,
              CAST({prop('pj','amount_minor')} AS BIGINT) AS amount_minor,
              {prop('pj','currency_code')} AS currency_code, occurred_at, ingested_at
-      FROM ({read_gated_events_sql(PIXEL_EVENTS)})
+      FROM ({read_gated_events_sql(PIXEL_EVENTS, lo=lo, hi=hi)})
     """
 
     conn = f"""
@@ -83,7 +89,7 @@ def build(con):
              CAST(NULL AS VARCHAR) AS brain_anon_id, CAST(NULL AS VARCHAR) AS session_id,
              CAST({prop('pj','amount_minor')} AS BIGINT) AS amount_minor,
              {prop('pj','currency_code')} AS currency_code, occurred_at, ingested_at
-      FROM ({read_gated_events_sql([CONNECTOR_EVENT])})
+      FROM ({read_gated_events_sql([CONNECTOR_EVENT], lo=lo, hi=hi)})
       WHERE {prop('pj','entity_type')} IN ('payment_authorized', 'order_paid')
     """
 
@@ -94,7 +100,7 @@ def build(con):
              CAST(NULL AS VARCHAR) AS brain_anon_id, CAST(NULL AS VARCHAR) AS session_id,
              CAST({prop('pj','amount_minor')} AS BIGINT) AS amount_minor,
              {prop('pj','currency_code')} AS currency_code, occurred_at, ingested_at
-      FROM ({read_gated_events_sql(WEBHOOK_PAYMENT_EVENTS)})
+      FROM ({read_gated_events_sql(WEBHOOK_PAYMENT_EVENTS, lo=lo, hi=hi)})
     """
 
     unioned = f"({pixel}) UNION ALL BY NAME ({conn}) UNION ALL BY NAME ({webhook})"

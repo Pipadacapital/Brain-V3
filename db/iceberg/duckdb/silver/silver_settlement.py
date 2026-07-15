@@ -38,7 +38,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_settlement_duckdb_test beside the
@@ -84,6 +92,13 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   PER-EVENT grain: each gated keystone row → 0..1 settlement row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the source read is safe. read_gated_events_sql builds the
+    #   [lo,hi) predicate on ingested_at itself and OMITS it when lo/hi are None, so default OFF →
+    #   (None, None) → full scan, byte-identical to before.
+    lo, hi = incremental_window(con, "silver-settlement", GATED_SOURCE, ts_col="ingested_at")
+
     # Money: BIGINT minor units (integer paisa) — cast the string property to bigint, default 0.
     # TRY_CAST guards a non-numeric payload from failing the whole batch (Spark's cast returns NULL →
     # coalesce 0; TRY_CAST is the DuckDB analogue). currency_code defaults INR (Spark coalesce verbatim).
@@ -110,7 +125,7 @@ def build(con):
         TRY_CAST({prop('pj','settlement_at')} AS TIMESTAMP) AS settlement_at,
         occurred_at,
         ingested_at
-      FROM ({read_gated_events_sql([SETTLEMENT_EVENT])})
+      FROM ({read_gated_events_sql([SETTLEMENT_EVENT], lo=lo, hi=hi)})
       WHERE event_id IS NOT NULL AND brand_id IS NOT NULL
     """
 

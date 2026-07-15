@@ -32,7 +32,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to
@@ -84,6 +92,13 @@ _SIGNAL_TYPE = (
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   per_event grain over the gated keystone: each keystone row → 0..1 signal row via the idempotent
+    #   MERGE on (brand_id, event_id), so windowing the source read is safe. read_gated_events_sql builds
+    #   the [lo,hi) predicate on ingested_at itself and OMITS it when lo/hi are None → default OFF stays a
+    #   byte-identical full scan.
+    lo, hi = incremental_window(con, "silver-engagement-signal", GATED_SOURCE, ts_col="ingested_at")
+
     # Project the four event shapes into ONE canonical row shape (single lane — same event grain,
     # signal_type discriminates). `element` present on dead.click/element.clicked; scroll.depth carries
     # `percent`; rage.click carries `count`; rage/dead carry x/y. All others NULL by construction.
@@ -101,7 +116,7 @@ def build(con):
              {prop('pj', 'device.ua_class')} AS device_class,
              {prop('pj', 'device.viewport')} AS viewport,
              occurred_at, ingested_at
-      FROM ({read_gated_events_sql(ENGAGEMENT_EVENTS)})
+      FROM ({read_gated_events_sql(ENGAGEMENT_EVENTS, lo=lo, hi=hi)})
       WHERE event_id IS NOT NULL AND brand_id IS NOT NULL
     """
 

@@ -45,7 +45,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_sessions{os.environ.get('MIGRATION_TABLE_SUFFIX', '')}"
@@ -81,6 +81,46 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   GRAIN = entity_fold: MANY silver_touchpoint per-touch rows sessionize (GROUP BY) into ONE
+    #   (brand_id, brain_anon_id, session_key) row whose value (touch_count, entry/exit by touch ORDER,
+    #   min/max session start/end, is_bounce, is_converted) depends on touches that may sit BELOW the
+    #   watermark. So we MUST NOT window the fold input directly (that would drop history → wrong counts,
+    #   wrong entry/exit, wrong duration). Instead: use the [lo,hi) window ONLY to discover the CHANGED
+    #   session keys, then re-fold each changed session over its FULL touch history.
+    #
+    #   The source silver_touchpoint has NO `ingested_at` column (see its COLUMNS_SQL: only occurred_at +
+    #   a `now()` run-clock `updated_at`). Its physical arrival/change key is `updated_at` — every re-landed
+    #   or new touch row gets a fresh now() on write — so the watermark tracks max(updated_at) with the
+    #   framework's trailing lookback (a slightly-late write can never be skipped; the idempotent MERGE dedups
+    #   the re-scanned overlap). This mirrors silver_shipment (its source likewise lacked ingested_at).
+    #   Default OFF (lo=None) → NO changed-set, NO semi-join → byte-identical full re-fold, unchanged SQL.
+    lo, hi = incremental_window(con, "silver-sessions", SOURCE, ts_col="updated_at")
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    src_window = f"WHERE {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: the (brand_id, brain_anon_id, session_key) session keys whose touches changed in
+    # [lo,hi). Uses the SAME entity-key derivation the fold GROUPs on (no extra not-null guard, matching the
+    # fold's GROUP BY exactly). Never referenced when lo is None (default OFF → src_window '').
+    changed = (
+        f"SELECT DISTINCT brand_id, brain_anon_id, session_key FROM {SOURCE} {src_window}"
+    )
+
+    # The fold reads the FULL, UNWINDOWED source; when incremental is on, a semi-join narrows it to ONLY the
+    # changed sessions so each re-folds over its COMPLETE touch history. When lo is None the extra predicate
+    # is absent → byte-identical full scan of SOURCE.
+    fold_source = SOURCE
+    if lo is not None:
+        fold_source = (
+            f"(SELECT * FROM {SOURCE} "
+            f"WHERE (brand_id, brain_anon_id, session_key) "
+            f"IN (SELECT brand_id, brain_anon_id, session_key FROM ({changed})))"
+        )
+
     # ── per-touch projection (occurred_at → UTC-naive) + the order-encoded channel/page_type ──
     touches = f"""
       SELECT
@@ -89,7 +129,7 @@ def build(con):
         event_type, channel, page_type, stitched_order_id,
         concat(lpad(CAST(touch_seq AS VARCHAR), 10, '0'), '|', coalesce(channel, ''))   AS _ch_enc,
         concat(lpad(CAST(touch_seq AS VARCHAR), 10, '0'), '|', coalesce(page_type, '')) AS _pt_enc
-      FROM {SOURCE}
+      FROM {fold_source}
     """
 
     # ── roll the touch grain up to the session grain (verbatim dbt fold) ──
@@ -129,4 +169,10 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("silver-sessions", build, target_table="silver_sessions")
+    # Source is the sibling Silver mart silver_touchpoint (NOT the gated keystone) and it has no
+    # ingested_at column — the watermark tracks max(updated_at) on that table (see incremental_window's
+    # ts_col), the same run-clock the fold-source read/semi-join windows on.
+    run_job(
+        "silver-sessions", build, target_table="silver_sessions",
+        source_table=SOURCE, ts_col="updated_at",
+    )

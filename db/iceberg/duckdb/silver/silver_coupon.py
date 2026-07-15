@@ -22,7 +22,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to silver_coupon_duckdb_test
@@ -58,7 +66,35 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(first_event_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────
+    #   GRAIN = entity_fold: MANY coupon.upsert.v1 rows fold to ONE (brand_id, coupon_code) latest-state
+    #   row, and first_event_at / the LATEST-wins pick depend on events that may sit BELOW the watermark.
+    #   So we NEVER window the fold input directly (that would drop history → wrong first_event_at / stale
+    #   state). Instead the window only discovers which entity keys CHANGED this batch; each changed key
+    #   then re-folds over its FULL, unwindowed history. Default OFF (lo=None) → no changed-set, no
+    #   semi-join → byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-coupon", GATED_SOURCE, ts_col="ingested_at")
+
+    # CHANGED-KEY set: the entity keys (brand_id, coupon_code) touched in [lo, hi), derived with the SAME
+    # coupon_code expression + the SAME not-null/'' guard the fold uses. Empty read → no refold work.
+    changed = f"""
+      SELECT DISTINCT brand_id, {prop('pj','code')} AS coupon_code
+      FROM ({read_gated_events_sql([COUPON_EVENT_TYPE], lo=lo, hi=hi)})
+      WHERE {prop('pj','code')} IS NOT NULL AND {prop('pj','code')} <> ''
+    """
+
+    # Semi-join predicate (STRING, EMPTY when lo is None → default OFF is a no-op). When on, only the
+    # changed entities' FULL history is read, so the fold recomputes exactly those keys; the MERGE on the
+    # (brand_id, coupon_code) PK upserts precisely them.
+    refold_filter = ""
+    if lo is not None:
+        refold_filter = (
+            f" WHERE (brand_id, {prop('pj','code')}) "
+            f"IN (SELECT brand_id, coupon_code FROM ({changed}))"
+        )
+
     # Project the canonical coupon properties out of the gated collector lane (1 row per upsert state).
+    # The fold source stays FULL/UNWINDOWED; refold_filter (empty by default) narrows to changed keys only.
     events = f"""
       SELECT brand_id, event_id, occurred_at,
              {prop('pj','source')}         AS source,
@@ -74,7 +110,7 @@ def build(con):
              -- timestamptz (as Spark created it), so cast to TIMESTAMPTZ: it honors the Z offset and
              -- preserves the instant, rendering identically to Spark's cast(AS timestamp) fold.
              CAST({prop('pj','expires_at')} AS TIMESTAMPTZ) AS expires_at
-      FROM ({read_gated_events_sql([COUPON_EVENT_TYPE])})
+      FROM ({read_gated_events_sql([COUPON_EVENT_TYPE])}){refold_filter}
     """
 
     # Fold to LATEST state per (brand, coupon_code): latest occurred_at wins, tie-break highest event_id.

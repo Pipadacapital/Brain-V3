@@ -40,7 +40,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_shipment_duckdb_test beside the
@@ -83,6 +83,44 @@ def build(con):
     # day(first_event_at) (always present for any order with events) — matches the Spark partitioning.
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(first_event_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   GRAIN = entity_fold: MANY silver_shipment_event transition rows collapse to ONE (brand_id, order_id)
+    #   row whose value (terminal-wins ranking + min(occurred_at)) depends on events that may sit BELOW the
+    #   watermark. So we MUST NOT window the fold input directly (that would silently drop history → a
+    #   partial, wrong shipment state). Instead: use the [lo,hi) window ONLY to discover the CHANGED order
+    #   keys, then re-fold each changed order over its FULL history.
+    #
+    #   The source silver_shipment_event has NO `ingested_at` column (see its COLUMNS_SQL: only occurred_at
+    #   + a `now()` run-clock `updated_at`). Its physical arrival/change key is `updated_at` — every re-landed
+    #   or new transition row gets a fresh now() on write — so the watermark tracks max(updated_at) with the
+    #   framework's trailing lookback (a slightly-late write can never be skipped; the idempotent MERGE dedups
+    #   the re-scanned overlap). This mirrors the keystone using kafka_timestamp because its source likewise
+    #   lacked ingested_at. Default OFF (lo=None) → NO changed-set, NO semi-join → byte-identical full re-fold.
+    lo, hi = incremental_window(con, "silver-shipment", EVENT_TABLE, ts_col="updated_at")
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    src_window = f"WHERE {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: the (brand_id, order_id) entity keys whose event log changed in [lo,hi). Uses the SAME
+    # key derivation the fold groups on (PARTITION BY brand_id, order_id — no extra not-null guard, matching
+    # the fold exactly). Empty string / never referenced when lo is None (default OFF).
+    changed = (
+        f"SELECT DISTINCT brand_id, order_id FROM {EVENT_TABLE} {src_window}"
+    )
+
+    # The fold reads the FULL, UNWINDOWED source; when incremental is on, a semi-join narrows it to ONLY the
+    # changed orders so each re-folds over its COMPLETE history. When lo is None the extra predicate is
+    # absent → byte-identical full scan.
+    fold_source = EVENT_TABLE
+    if lo is not None:
+        fold_source = (
+            f"(SELECT * FROM {EVENT_TABLE} "
+            f"WHERE (brand_id, order_id) IN (SELECT brand_id, order_id FROM ({changed})))"
+        )
+
     # ranked: terminal-state wins, then latest status_changed_at (STRING lexical DESC), then latest
     # occurred_at, then highest event_id. first_event_at = min(occurred_at) over the order partition.
     ranked = f"""
@@ -95,7 +133,7 @@ def build(con):
                         event_id           DESC
              ) AS _win_rn,
              min(occurred_at) OVER (PARTITION BY brand_id, order_id) AS first_event_at
-      FROM {EVENT_TABLE}
+      FROM {fold_source}
     """
 
     staged = f"""
@@ -127,4 +165,9 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("silver-shipment", build, target_table="silver_shipment")
+    # Source is the same-tier Silver event log (NOT the gated keystone); its physical change key is
+    # `updated_at` (no ingested_at column exists on silver_shipment_event) — the watermark tracks that.
+    run_job(
+        "silver-shipment", build, target_table="silver_shipment",
+        source_table=EVENT_TABLE, ts_col="updated_at",
+    )

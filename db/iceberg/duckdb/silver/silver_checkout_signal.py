@@ -30,7 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import GATED_SOURCE, ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_checkout_signal_duckdb_test beside the
@@ -103,6 +103,12 @@ _SOURCE = (
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   PER-EVENT admission over the gated keystone: each source row → 0..1 mart row via the idempotent
+    #   MERGE on (brand_id, event_id), so windowing the source read on ingested_at is safe. Default OFF →
+    #   (None, None) → read_gated_events_sql omits the window predicate → SQL byte-identical (full scan).
+    lo, hi = incremental_window(con, "silver-checkout-signal", GATED_SOURCE, ts_col="ingested_at")
+
     typed = f"""
       SELECT
         brand_id,
@@ -118,7 +124,7 @@ def build(con):
         occurred_at,
         CASE WHEN {prop('pj','data_source')} = 'synthetic' THEN true ELSE false END AS is_synthetic,
         now() AS updated_at
-      FROM ({read_gated_events_sql(SIGNAL_EVENTS)})
+      FROM ({read_gated_events_sql(SIGNAL_EVENTS, lo=lo, hi=hi)})
     """
 
     # Mart admission filter: TTL/partition guard + NOT-NULL occurred_at (matches the Spark mart WHERE),

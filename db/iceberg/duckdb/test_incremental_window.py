@@ -46,12 +46,13 @@ def _run(*, incremental: bool, full_refresh: bool, watermark, lookback: int):
 
 def test_default_off_is_full_scan():
     lo, hi = _run(incremental=False, full_refresh=False, watermark=WATERMARK, lookback=600)
-    assert lo is None and hi == HI, "default OFF must be a full scan (None, hi)"
+    # HARD INVARIANT: lo is None IFF hi is None IFF full scan — so NO predicate leaks into the default path.
+    assert lo is None and hi is None, "default OFF must be a full scan (None, None) — no bound leaks"
 
 
 def test_on_first_run_no_watermark_is_full_scan():
     lo, hi = _run(incremental=True, full_refresh=False, watermark=None, lookback=600)
-    assert lo is None and hi == HI, "first run (no watermark) bootstraps via a full scan"
+    assert lo is None and hi is None, "first run (no watermark) bootstraps via a full scan (None, None)"
 
 
 def test_on_with_watermark_applies_lookback():
@@ -62,7 +63,7 @@ def test_on_with_watermark_applies_lookback():
 
 def test_full_refresh_forces_full_scan_even_when_on():
     lo, hi = _run(incremental=True, full_refresh=True, watermark=WATERMARK, lookback=600)
-    assert lo is None and hi == HI, "FULL_REFRESH is the fold/backfill escape → full scan"
+    assert lo is None and hi is None, "FULL_REFRESH is the fold/backfill escape → full scan (None, None)"
 
 
 def test_zero_lookback_is_strict_half_open():

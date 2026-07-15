@@ -97,7 +97,12 @@ def lane_window(con, job_name: str, lane_table: str):
     idempotent merge_collector_event dedups the trailing overlap. `hi` is pinned here (computed once) so the
     caller uses the SAME value for the read predicate AND advance_lane_watermark → a row landing mid-run is
     caught by the next window, never skipped."""
-    key = f"{job_name}:{lane_table}"
+    # `hi` is pinned ONCE here (before the read) and used for BOTH the predicate and advance_lane_watermark,
+    # so a row landing mid-run is excluded now and re-read next run (race-safe). Unlike the gated path,
+    # normalize jobs have no independent run_job _CURRENT_HI advance — they MUST advance the watermark to
+    # this `hi` even on a full-scan/bootstrap run (else the lane never leaves full-scan). Safe to return a
+    # non-None hi in the full-scan case because lane_window_predicate() gates the hi bound on `lo` (a full
+    # scan emits NO predicate), so hi never leaks into the default read.
     try:
         hi = con.execute(
             f"SELECT max(kafka_timestamp) FROM {connect_source_table(lane_table)}"
@@ -105,9 +110,12 @@ def lane_window(con, job_name: str, lane_table: str):
     except Exception:  # noqa: BLE001 — lane table absent → nothing to read
         return None, None
     if not _INCREMENTAL or _FULL_REFRESH:
-        return None, hi
+        return None, hi  # full scan (predicate empty via lo=None) but still advance the watermark to hi
+    key = f"{job_name}:{lane_table}"
     lo = read_watermark(con, key)
-    if lo is not None and _LOOKBACK > 0:
+    if lo is None:
+        return None, hi  # first run for this lane → full-scan bootstrap; advance sets the initial watermark
+    if _LOOKBACK > 0:
         lo = lo - _timedelta(seconds=_LOOKBACK)
     return lo, hi
 

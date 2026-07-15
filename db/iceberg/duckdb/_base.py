@@ -183,20 +183,32 @@ _CURRENT_HI = None
 
 
 def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ingested_at"):
-    """Return (lo, hi) `ts_col` bounds for an incremental read of `source_table`, or (None, hi) for a full
+    """Return (lo, hi) `ts_col` bounds for an incremental read of `source_table`, or (None, None) for a full
     scan.
 
-    Full scan (lo=None) when: SILVER_INCREMENTAL is off, FULL_REFRESH is on, or this job has no prior
-    watermark (first run). Otherwise lo = (last committed watermark − LOOKBACK_SECONDS) as a half-open
-    [lo, hi) window (the lookback re-admits a trailing margin; the idempotent MERGE dedups it). hi = the
-    batch max `ts_col` pinned by run_job. `ts_col` is `ingested_at` for entity jobs reading the gated
-    keystone, but `kafka_timestamp` for the keystone job reading Bronze collector_events_connect (which has
-    no lifted ingested_at column).
+    HARD INVARIANT: `lo is None` IFF `hi is None` IFF a full scan. `hi` is meaningful ONLY as the upper edge
+    of a real window, so it is returned non-None ONLY alongside a non-None `lo`. This makes the default
+    (SILVER_INCREMENTAL off) path emit NO predicate at all → byte-identical to the pre-incremental full
+    scan. (The watermark advance does NOT depend on this return: run_job pins `_CURRENT_HI` independently, so
+    a full-scan run still advances the watermark to the batch max — a later flip to incremental picks up
+    cleanly from there.)
+
+    Full scan (returns None, None) when: SILVER_INCREMENTAL is off, FULL_REFRESH is on, the source is
+    missing, OR this job has no prior watermark (first run → full-scan bootstrap). Otherwise
+    lo = (last committed watermark − LOOKBACK_SECONDS) and hi = the batch max `ts_col` pinned by run_job, a
+    half-open [lo, hi) window (the lookback re-admits a trailing margin; the idempotent MERGE dedups it).
+    `ts_col` is `ingested_at` for entity jobs reading the gated keystone, but `kafka_timestamp` for the
+    keystone job reading Bronze collector_events_connect (which has no lifted ingested_at column).
 
     Per-event jobs pass (lo, hi) straight into their source WHERE. Entity-fold jobs use the window only to
     discover CHANGED entity ids, then re-fold each changed entity's full history (never window the fold
     input directly — that would drop below-watermark rows).
     """
+    if not INCREMENTAL or FULL_REFRESH:
+        return None, None
+    lo = read_watermark(con, job_name)
+    if lo is None:
+        return None, None  # first run → full-scan bootstrap (run_job still advances the watermark)
     # run_job pins the batch's hi ONCE (before build) so the read bound and the watermark advance are the
     # SAME value — a row landing mid-run is captured by the NEXT window, never skipped. Fall back to a live
     # max() when called outside run_job (e.g. a unit harness).
@@ -206,10 +218,7 @@ def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ing
             hi = con.execute(f"SELECT max({ts_col}) FROM {source_table}").fetchone()[0]
         except Exception:  # noqa: BLE001 — source not created yet
             return None, None
-    if not INCREMENTAL or FULL_REFRESH:
-        return None, hi
-    lo = read_watermark(con, job_name)
-    if lo is not None and LOOKBACK_SECONDS > 0:
+    if LOOKBACK_SECONDS > 0:
         lo = lo - timedelta(seconds=LOOKBACK_SECONDS)
     return lo, hi
 

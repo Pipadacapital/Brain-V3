@@ -44,7 +44,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import GATED_SOURCE, ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write to silver_page_view_duckdb_test beside the
@@ -135,6 +135,13 @@ def _channel() -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   per_event grain: each gated keystone row → 0..1 page-view row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the SOURCE read on ingested_at is safe. read_gated_events_sql
+    #   builds the [lo, hi) predicate itself and OMITS it when lo/hi are None → default OFF (lo=None) is a
+    #   byte-identical full scan.
+    lo, hi = incremental_window(con, "silver-page-view", GATED_SOURCE, ts_col="ingested_at")
+
     # Project the three page-view event shapes into ONE canonical row shape (single lane — same event
     # grain; page_event discriminates). All click-id/utm/handle fields are NULL by construction when the
     # source event does not carry them.
@@ -162,7 +169,7 @@ def build(con):
              {prop('pj', 'device.ua_class')}   AS device_class,
              {prop('pj', 'device.viewport')}   AS viewport,
              occurred_at, ingested_at
-      FROM ({read_gated_events_sql(PAGE_EVENTS)})
+      FROM ({read_gated_events_sql(PAGE_EVENTS, lo=lo, hi=hi)})
     """
 
     # Derive page_event, referrer_host (scheme+path stripped from referrer), channel.

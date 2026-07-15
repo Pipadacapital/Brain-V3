@@ -41,7 +41,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_order_line_duckdb_test beside the
@@ -90,6 +97,35 @@ def _item(path: str) -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY order.* events aggregate/sessionize into ONE line row per
+    #   (brand_id, order_id) whose value (the LATEST order event's line_items) may depend on events BELOW the
+    #   watermark. So we MUST NOT window the fold input directly — that would silently drop history and pick a
+    #   stale "latest" event. Instead we window the source ONLY to discover which (brand_id, order_id) entities
+    #   have new/changed source rows, then re-fold each of those entities over its FULL, unwindowed history.
+    #   Default OFF / first run / FULL_REFRESH → lo is None → no changed-set, no semi-join → byte-identical
+    #   full recompute.
+    lo, hi = incremental_window(con, "silver-order-line", GATED_SOURCE, ts_col="ingested_at")
+
+    # CHANGED-KEY set: DISTINCT (brand_id, order_id) from the WINDOWED [lo, hi) source read, using the SAME
+    # entity-key derivation the fold uses. order_id NOT NULL guards NULL-key rows (they can't survive the
+    # target's order_id NOT NULL PK, and a NULL never matches a semi-join anyway).
+    changed = f"""
+      SELECT DISTINCT brand_id, order_id FROM (
+        SELECT brand_id, {_ORDER_ID} AS order_id
+        FROM ({read_gated_events_sql(ORDER_EVENTS, lo=lo, hi=hi)})
+      ) WHERE order_id IS NOT NULL
+    """
+
+    # Fold source reads the FULL, UNWINDOWED keystone. When lo is not None, semi-join to `changed` so ONLY
+    # changed entities re-fold over their full history; the MERGE on the entity PK upserts exactly those.
+    # When lo is None the extra predicate is OMITTED entirely → byte-identical full scan.
+    fold_source_where = ""
+    if lo is not None:
+        fold_source_where = (
+            f" WHERE (brand_id, {_ORDER_ID}) IN (SELECT brand_id, order_id FROM ({changed}))"
+        )
+
     # ── Step 1: latest order.* event per (brand_id, order_id) with a non-empty line_items array ──────────
     # json_array_length over the parsed array is the DuckDB analogue of size(from_json(..,'array<string>')).
     latest_order = f"""
@@ -104,7 +140,7 @@ def build(con):
             PARTITION BY brand_id, {_ORDER_ID}
             ORDER BY occurred_at DESC, event_id DESC
           ) AS rn
-        FROM ({read_gated_events_sql(ORDER_EVENTS)})
+        FROM ({read_gated_events_sql(ORDER_EVENTS)}{fold_source_where})
         WHERE {_LINE_ITEMS} IS NOT NULL
           AND json_array_length(CAST({_LINE_ITEMS} AS JSON)) > 0
       ) l

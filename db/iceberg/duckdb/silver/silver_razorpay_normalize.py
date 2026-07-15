@@ -33,8 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _normalize_base import (  # noqa: E402
-    connect_source_table, ensure_shadow, merge_collector_event, register_salts, run_normalize_job,
-    source_present,
+    advance_lane_watermark, connect_source_table, ensure_shadow, lane_window, lane_window_predicate,
+    merge_collector_event, register_salts, run_normalize_job, source_present,
 )
 import _raw_normalize_ports as rn  # noqa: E402
 from _silver_technical_ports import event_category  # noqa: E402
@@ -119,6 +119,12 @@ def build(con):
     src = connect_source_table(LANE)
     s = NEST
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   PER-EVENT grain: each raw recon item → 0..1 shadow row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the raw lane read is safe. Default OFF / first run / FULL_REFRESH
+    #   → lo=None → lane_window_predicate == "" → BYTE-IDENTICAL full scan (unchanged SQL).
+    lo_razorpay, hi_razorpay = lane_window(con, "silver-razorpay-normalize", LANE)
+
     # C4: only allowlisted recon-item fields; card.* NEVER read → PCI boundary held.
     df = f"""
       SELECT
@@ -137,6 +143,7 @@ def build(con):
         CAST("{s}".currency AS VARCHAR)                  AS currency,
         CAST("{s}".entity_type AS VARCHAR)               AS entity_type_raw
       FROM {src}
+      {lane_window_predicate(lo_razorpay, hi_razorpay)}
     """
 
     # Per-brand salt LEFT join for the C1 PII hash (bytes.fromhex(salt); a miss → NULL salt → NULL hash).
@@ -203,6 +210,7 @@ def build(con):
     """
 
     n = merge_collector_event(con, TARGET, good)
+    advance_lane_watermark(con, "silver-razorpay-normalize", LANE, hi_razorpay)
     return TARGET, n
 
 

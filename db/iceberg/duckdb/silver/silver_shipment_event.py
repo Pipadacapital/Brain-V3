@@ -38,7 +38,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import GATED_SOURCE, ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to silver_shipment_event_duckdb_test
@@ -78,6 +78,12 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   Per-event grain (1 row per brand_id, event_id via the idempotent MERGE), so narrowing the keystone
+    #   read to the [lo,hi) ingested_at window is safe. Default OFF → (None, None) → read_gated_events_sql
+    #   omits the window predicate → full scan, byte-identical to before.
+    lo, hi = incremental_window(con, "silver-shipment-event", GATED_SOURCE, ts_col="ingested_at")
+
     # ── stg_shipment_events: typed projection from the gated keystone's shipment lane. ──
     src = f"""
       SELECT
@@ -95,7 +101,7 @@ def build(con):
         {prop('pj','status_changed_at')} AS status_changed_at,
         CASE WHEN {prop('pj','data_source')} = 'synthetic' THEN true ELSE false END AS is_synthetic,
         occurred_at
-      FROM ({read_gated_events_sql([SHIPMENT_EVENT])})
+      FROM ({read_gated_events_sql([SHIPMENT_EVENT], lo=lo, hi=hi)})
     """
 
     # keyed: drop un-keyed transitions (order_id present + non-empty).

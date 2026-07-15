@@ -38,7 +38,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_cod_rto_duckdb_test beside the Spark-produced
@@ -101,6 +109,48 @@ def _latest_per_order(inner_sql: str, cols: list[str]) -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD via CHANGED-ENTITY REFOLD. ─────
+    #   GRAIN=entity_fold: MANY gated-keystone rows across THREE signals (COD orders / RTO predictions /
+    #   AWB outcomes) collapse into ONE (brand_id, order_id) row whose latest-per-order value depends on
+    #   events that may be BELOW the watermark. Windowing the fold input directly would silently drop
+    #   history → the wrong "latest" signal and wrong money. Instead we window ONLY to discover CHANGED
+    #   entity keys — a [lo,hi) read across ALL THREE event sets, each using the SAME (brand_id, order_id)
+    #   key derivation + not-null guards its fold uses — then re-fold each changed entity over its FULL
+    #   history and MERGE on the (brand_id, order_id) PK. Default OFF (lo=None) → NO changed-set, NO
+    #   semi-join → byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-cod-rto", GATED_SOURCE, ts_col="ingested_at")
+
+    _ORDER_ID = prop("pj", "order_id")  # same order_id derivation all three folds use.
+
+    # CHANGED-KEY set: DISTINCT (brand_id, order_id) touched in [lo, hi) across the three signals — each
+    # sub-select carries the SAME not-null/'' key guard its fold input uses (COD orders additionally
+    # requires payment_method='cod', mirroring the spine filter). Any signal changing for an order forces
+    # that order's full re-fold. UNIONed and DISTINCT'd. Only referenced when lo is not None (guarded
+    # below), so nothing is emitted and each fold stays a full scan when incremental is OFF.
+    changed_sql = f"""
+        SELECT DISTINCT brand_id, {_ORDER_ID} AS order_id
+        FROM ({read_gated_events_sql(ORDER_EVENTS, lo=lo, hi=hi)})
+        WHERE {_ORDER_ID} IS NOT NULL AND lower({prop('pj','payment_method')}) = 'cod'
+        UNION
+        SELECT DISTINCT brand_id, {_ORDER_ID} AS order_id
+        FROM ({read_gated_events_sql([RTO_PREDICT_EVENT], lo=lo, hi=hi)})
+        WHERE {_ORDER_ID} IS NOT NULL
+        UNION
+        SELECT DISTINCT brand_id, {_ORDER_ID} AS order_id
+        FROM ({read_gated_events_sql([AWB_EVENT], lo=lo, hi=hi)})
+        WHERE {_ORDER_ID} IS NOT NULL
+    """
+
+    # Semi-join predicate appended to each fold's admission filter. EMPTY when lo is None → each fold
+    # reads its FULL, UNWINDOWED source → byte-identical full recompute. When lo is not None, each fold
+    # is narrowed to the changed entities only, so ONLY changed (brand_id, order_id) rows re-fold over
+    # their complete history and the MERGE upserts exactly those.
+    changed_filter = ""
+    if lo is not None:
+        changed_filter = (
+            f" AND (brand_id, {_ORDER_ID}) IN (SELECT brand_id, order_id FROM ({changed_sql}))"
+        )
+
     # ── Source 1: COD orders (the spine) — only lower(payment_method)='cod' rows, latest per order ────
     cod_orders_raw = f"""
       SELECT brand_id,
@@ -111,7 +161,7 @@ def build(con):
              {prop('pj','financial_status')} AS financial_status,
              occurred_at, ingested_at
       FROM ({read_gated_events_sql(ORDER_EVENTS)})
-      WHERE {prop('pj','order_id')} IS NOT NULL AND lower({prop('pj','payment_method')}) = 'cod'
+      WHERE {prop('pj','order_id')} IS NOT NULL AND lower({prop('pj','payment_method')}) = 'cod'{changed_filter}
     """
     cod_orders = _latest_per_order(
         cod_orders_raw,
@@ -128,7 +178,7 @@ def build(con):
              {prop('pj','risk_reason')} AS rto_risk_reason,
              occurred_at, ingested_at
       FROM ({read_gated_events_sql([RTO_PREDICT_EVENT])})
-      WHERE {prop('pj','order_id')} IS NOT NULL
+      WHERE {prop('pj','order_id')} IS NOT NULL{changed_filter}
     """
     pred = _latest_per_order(
         pred_raw,
@@ -145,7 +195,7 @@ def build(con):
              lower({prop('pj','terminal_class')}) AS awb_terminal_class,
              occurred_at, ingested_at
       FROM ({read_gated_events_sql([AWB_EVENT])})
-      WHERE {prop('pj','order_id')} IS NOT NULL
+      WHERE {prop('pj','order_id')} IS NOT NULL{changed_filter}
     """
     awb = _latest_per_order(
         awb_raw,

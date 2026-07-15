@@ -51,23 +51,43 @@ higher cadence cheap and safe.
 
 ## The plan
 
-### Phase 0 — incremental foundation (this PR, flag-gated, default OFF)
-- Add opt-in `SILVER_INCREMENTAL=1` + `FULL_REFRESH=1` escape hatch to `_base.py`
-  (`incremental_window()`), and make `run_job` advance the watermark against the
-  **correct source table** (per-job, not always the gated keystone).
-- Convert the **keystone** `silver_collector_event` to incremental (per-event; single
-  biggest full-scan — reads all of `collector_events_connect` every run).
-- Default OFF → byte-identical to today. Ship inert. Flip on prod after verifying the
-  keystone on one run (row-count + money reconcile unchanged).
+### Phase 0 — incremental foundation + keystone (PR #193, MERGED, flag-gated, default OFF)
+- Opt-in `SILVER_INCREMENTAL=1` + `FULL_REFRESH=1` escape in `_base.py`
+  (`incremental_window()`); `run_job` advances the watermark against the **correct
+  source table** (per-job). Keystone `silver_collector_event` windows its Bronze read on
+  `kafka_timestamp`.
 
-### Phase 0b — remaining per-event jobs (follow-up PR)
-Convert the per-event/`*_normalize` jobs to windowed reads. Verify each with an
-idempotent re-run (same rows).
+### Phase 0b/0c — ALL remaining Silver jobs (this PR, flag-gated, default OFF)
+Applied the incremental read across all 44 non-keystone Silver jobs, classified by grain
+(a 37-agent read-only classification workflow + adversarial money-safety audit):
 
-### Phase 0c — entity-fold jobs (follow-up PR)
-Apply the entity-incremental pattern (changed-entity id set → full re-fold of those
-entities) to the fold jobs. Reuse the pattern already proven for `silver_order_state` /
-`silver_touchpoint` (Spark era).
+- **24 per-event** → window the source read directly. Gated jobs thread `lo/hi` into
+  `read_gated_events_sql`; the 7 `*_normalize` jobs use the new `_normalize_base` helpers
+  (`lane_window`/`lane_window_predicate`/`advance_lane_watermark`) with **per-(job,lane)
+  `kafka_timestamp` sub-watermarks** so a multi-lane job (ad-spend = meta+google) tracks
+  each lane independently.
+- **14 entity-fold** → **changed-entity refold**: a windowed read discovers the set of
+  changed entity keys; the fold reads the FULL, unwindowed source semi-joined to that set,
+  so only changed entities re-fold over their complete history (guarded on `lo is not
+  None` → default-OFF is byte-identical). `order_state` unions both driver lanes (order +
+  AWB); the 4 `silver_table`-sourced folds (customer/product/sessions/shipment) re-key off
+  their upstream mart's watermark.
+- **6 global** (identity/Neo4j/PG-sourced: `silver_identity_{alias,map,unmerge}`,
+  `silver_customer_identity`, `silver_probabilistic_stitch`, `silver_session_identity`) →
+  **left full-scan** (no event clock / whole-corpus by design).
+
+**The hard invariant** (adversarially verified per job): `lo is None ⟺ hi is None ⟺ a
+full scan` — the default-OFF path emits NO window predicate and is byte-identical to
+today. `incremental_window` returns `(None, None)` (not `(None, hi)`) when off/first-run,
+so no bound leaks (the fix for the sole issue the adversarial pass caught in the Phase-0
+foundation).
+
+**Residual to validate before flipping ON:** the 4 `silver_table`-sourced folds drive
+their changed-set off the *primary* upstream only — an identity-only change with no
+upstream-mart touch could be missed for one cycle. Mitigations: (a) run these with a
+periodic `FULL_REFRESH=1` (e.g. nightly) even after the flip; (b) validate row-count +
+money parity (incremental vs `FULL_REFRESH`) on prod before enabling. This is why the
+whole tier ships **inert**.
 
 ### Phase 1 — raise cadence + compaction (after Phase 0 verified)
 Once reads are incremental, per-run work is O(new events) not O(all history):

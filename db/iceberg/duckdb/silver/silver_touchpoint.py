@@ -68,7 +68,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write to silver_touchpoint_duckdb_test beside the
@@ -269,14 +276,48 @@ def build(con):
 
     in_list = ", ".join(f"'{e}'" for e in TOUCHPOINT_EVENT_TYPES)
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — GRAIN = entity_fold (CHANGED-ENTITY REFOLD) ──
+    #   silver_touchpoint sessionizes MANY source rows into ONE row per (brand_id, brain_anon_id, touch_seq)
+    #   via lag()/row_number() windows OVER the whole anon journey. session_seq / touch_seq / first-last of a
+    #   visitor depend on events that may sit BELOW the watermark, so we must NEVER window the fold input
+    #   directly (that would silently drop history → mis-split sessions / wrong touch_seq). Instead: use the
+    #   [lo, hi) window ONLY to discover which VISITORS have new touchpoint events, then re-fold each such
+    #   visitor's FULL history via a semi-join on the entity key. Default OFF (lo=None) → NO changed-set / NO
+    #   semi-join → byte-identical full recompute. Source IS the gated keystone → ts_col=ingested_at.
+    lo, hi = incremental_window(con, "silver-touchpoint", GATED_SOURCE, ts_col="ingested_at")
+
+    # Changed-visitor set: the SAME entity-key derivation (brain_anon_id from payload) + the SAME
+    # not-null/'' guard the fold's Stage-1 gate applies, over a WINDOWED read of the gated keystone. Empty
+    # string ("" when lo is None) → no changed-set materialized, no semi-join emitted below.
+    changed_cte = ""
+    changed_semijoin = ""
+    if lo is not None:
+        windowed_src = read_gated_events_sql(
+            TOUCHPOINT_EVENT_TYPES, lo=lo, hi=hi, source=SOURCE
+        )
+        changed_cte = f"""
+          changed AS (
+            SELECT DISTINCT brand_id, {prop('brain_anon_id')} AS brain_anon_id
+            FROM ({windowed_src})
+            WHERE {prop('brain_anon_id')} IS NOT NULL AND {prop('brain_anon_id')} <> ''
+          ),
+        """
+        # Re-fold ONLY changed visitors over their FULL (unwindowed) history. `raw` already has a WHERE, so
+        # this is an "AND (...)". Carries its OWN leading newline+indent so the EMPTY case (lo is None) adds
+        # ZERO bytes → the stg SQL is byte-identical to the pre-incremental full scan.
+        changed_semijoin = (
+            "\n        AND (brand_id, json_extract_string(payload, '$.properties.brain_anon_id')) "
+            "IN (SELECT brand_id, brain_anon_id FROM changed)"
+        )
+
     # ── stg_touchpoint_events: type payload.properties.*, structural PK guard, Stage-1 anon drop, dedup ──
     # The Stage-1 empty_identifier drop + dq drop are plain filters here (quarantine side-write SKIPPED —
     # admitted set unchanged). Dedup keeps EARLIEST occurred_at (ASC) — the exact dbt/Spark stg dedup.
     stg = f"""
-      WITH raw AS (
+      WITH {changed_cte}raw AS (
         SELECT brand_id, event_id, event_type, occurred_at, payload AS pj
         FROM {SOURCE}
-        WHERE event_type IN ({in_list})
+        WHERE event_type IN ({in_list}){changed_semijoin}
       ),
       typed AS (
         SELECT

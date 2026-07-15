@@ -49,7 +49,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_journey{os.environ.get('MIGRATION_TABLE_SUFFIX', '')}"
@@ -114,21 +122,36 @@ def _channel() -> str:
     )
 
 
-def _gated_utc(event_types):
+def _gated_utc(event_types, *, lo=None, hi=None):
     """read_gated_events_sql, re-projecting occurred_at/ingested_at to UTC-naive (parity with Spark UTC
-    instants; a bare TIMESTAMPTZ would render in the session-local zone and shift the wall-clock)."""
+    instants; a bare TIMESTAMPTZ would render in the session-local zone and shift the wall-clock).
+
+    lo/hi are the incremental [lo, hi) ingested_at bounds. Both default None → the read_gated_events_sql
+    call adds NO window predicate → byte-identical to the pre-incremental full scan (default OFF no-op).
+    Only the changed-KEY discovery read passes lo/hi; the fold input always calls with lo=None (full)."""
     return (
         "SELECT brand_id, event_id, event_type, "
         "occurred_at AT TIME ZONE 'UTC' AS occurred_at, "
         "ingested_at AT TIME ZONE 'UTC' AS ingested_at, pj "
-        f"FROM ({read_gated_events_sql(event_types)})"
+        f"FROM ({read_gated_events_sql(event_types, lo=lo, hi=hi)})"
     )
 
 
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(first_touch_at)")
 
-    # ── Touch-grain projection (mirrors the Spark `base` select). ──
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD via CHANGED-KEY REFOLD ──────────
+    #   GRAIN = entity_fold: MANY source touches sessionize/aggregate into ONE (brand_id, brain_anon_id)
+    #   journey row whose value depends on events that may be BELOW the watermark. We therefore NEVER
+    #   window the fold input directly (that would silently drop history → wrong session_count / first
+    #   touch). Instead: window the source ONLY to discover which entity keys CHANGED, then re-fold each
+    #   changed key over its FULL history via a semi-join on the fold's `base`. Default OFF → lo=None →
+    #   NO changed-set, NO semi-join → byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-journey", GATED_SOURCE, ts_col="ingested_at")
+
+    # ── Touch-grain projection (mirrors the Spark `base` select). Reads the FULL, UNWINDOWED gated source
+    #    so a changed entity re-folds over ALL its history — the semi-join below (guarded on lo) is the ONLY
+    #    narrowing, and only to the set of entities that had a new touch in [lo, hi). ──
     base = f"""
       SELECT brand_id, event_id, event_type, occurred_at,
              {prop('pj','brain_anon_id')}   AS brain_anon_id,
@@ -148,6 +171,26 @@ def build(con):
       FROM ({_gated_utc(JOURNEY_EVENTS)})
       WHERE brand_id IS NOT NULL AND event_id IS NOT NULL
     """
+
+    # ── CHANGED-KEY refold: when incremental is on, restrict the fold to entities that had a touch land in
+    #    [lo, hi). The changed set uses the SAME entity-key derivation + the SAME not-null/'' guards the
+    #    fold applies (brand_id NOT NULL from `base`; brain_anon_id NOT NULL/'' from `keyed`). When lo is
+    #    None this whole block is skipped → NO semi-join emitted (byte-identical full scan). ──
+    if lo is not None:
+        changed = f"""
+          SELECT DISTINCT brand_id, brain_anon_id FROM (
+            SELECT brand_id, {prop('pj','brain_anon_id')} AS brain_anon_id
+            FROM ({_gated_utc(JOURNEY_EVENTS, lo=lo, hi=hi)})
+            WHERE brand_id IS NOT NULL
+          )
+          WHERE brain_anon_id IS NOT NULL AND brain_anon_id <> ''
+        """
+        base = f"""
+          SELECT * FROM ({base})
+          WHERE (brand_id, brain_anon_id) IN (
+            SELECT brand_id, brain_anon_id FROM ({changed})
+          )
+        """
 
     # ── Stage-1 empty_identifier drop (anon-keyed grain) + Stage-1 DQ gate (occurred_at present AND not
     #    future beyond skew). money/currency/quantity DQ rules are N/A on this entity. ──

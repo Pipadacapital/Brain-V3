@@ -242,7 +242,11 @@ resource "aws_rds_cluster" "postgres" {
 
   deletion_protection = var.environment == "prod" ? true : false
 
-  enabled_cloudwatch_logs_exports = ["postgresql"]
+  # AUD-COST (2026-07-15): CloudWatch hold — Aurora postgresql log export OFF to stop
+  # ongoing CloudWatch ingestion (paired with the held observability stack + disabled EKS
+  # control-plane logging). Aurora's own error/slow logs remain queryable in-DB; re-enable
+  # by restoring ["postgresql"] if a forensic window is needed.
+  enabled_cloudwatch_logs_exports = []
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-${var.environment}-postgres"

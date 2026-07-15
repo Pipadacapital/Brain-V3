@@ -41,14 +41,15 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  // ── Shopify generic per-brand connect (owner requirement 2026-07-12) ──────────
-  // The catalog method is 'credential' (custom-app Client ID/Secret + store URL); the
-  // authorization-code OAuth flow survives only as the env-gated fallback in writeRoutes.
-  describe('shopify generic per-brand credential connect', () => {
+  // ── Shopify per-brand BYO app (Dev Dashboard OAuth primary, 2026-07-15) ───────
+  // Shopify deprecated creating admin "legacy custom apps" on 2026-01-01, so the primary path is
+  // a Partner Dev Dashboard app via the authorization-code OAuth redirect. The client-credentials
+  // exchange survives as a FIRST-TRY for existing pre-2026 legacy custom apps in writeRoutes.
+  describe('shopify per-brand BYO-app OAuth connect', () => {
     const shopify = getDefinition('shopify')!;
 
-    it('connectMethod is credential', () => {
-      expect(shopify.connectMethod).toBe('credential');
+    it('connectMethod is oauth (Dev Dashboard app redirect is the primary path)', () => {
+      expect(shopify.connectMethod).toBe('oauth');
     });
 
     it('requires shop_domain + client_id + client_secret (all non-optional)', () => {
@@ -61,14 +62,14 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
       expect(secrets).toEqual(['client_secret']);
     });
 
-    it('carries the custom-app how-to hint incl. the Admin API scopes', () => {
+    it('carries the Dev Dashboard how-to hint incl. the Admin API scopes', () => {
       const clientId = (shopify.authFields ?? []).find((f) => f.key === 'client_id');
-      expect(clientId?.hint).toContain('Develop apps');
+      expect(clientId?.hint).toContain('Dev Dashboard');
       expect(clientId?.hint).toContain('read_orders');
       expect(clientId?.hint).toContain('read_customers');
     });
 
-    it('has NO generic credentialConnect spec (bespoke command handles the connect)', () => {
+    it('has NO generic credentialConnect spec (bespoke command handles the legacy-app try)', () => {
       expect(shopify.credentialConnect).toBeUndefined();
     });
   });

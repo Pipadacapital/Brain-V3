@@ -171,9 +171,10 @@ const OAUTH_APP_HINT = "Optional — leave blank to use Brain's app";
  * the Admin API access scopes Brain's sync + pixel install need.
  */
 const SHOPIFY_CUSTOM_APP_HINT =
-  'Create a custom app in your Shopify admin → Settings → Apps and sales channels → Develop apps. ' +
-  'Grant the Admin API scopes read_orders, read_products, read_customers, write_script_tags, ' +
-  'write_pixels, read_customer_events, then paste the app credentials here.';
+  'Create an app in the Shopify Dev Dashboard (partners), add the redirect URL shown in the ' +
+  'setup panel, grant the Admin API scopes read_orders, read_products, read_customers, ' +
+  'write_script_tags, write_pixels, read_customer_events, then paste the Client ID and Client ' +
+  'Secret here. Credentials from an existing pre-2026 admin custom app also work.';
 
 /** The optional BYO-app OAuth credential pair, shared by every OAuth tile. */
 const OAUTH_APP_FIELDS: ConnectorAuthField[] = [
@@ -187,14 +188,14 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     id: 'shopify',
     category: 'storefront',
     displayName: 'Shopify',
-    // GENERIC PER-BRAND CONNECT (owner requirement 2026-07-12): every brand connects THEIR OWN
-    // store with the Client ID + Client Secret of a custom app created in their own Shopify admin.
-    // The server exchanges them via the CLIENT-CREDENTIALS grant (token expires in 24h; the
-    // shopify-token-refresh cron re-exchanges) — NO browser OAuth redirect on this path. The
-    // authorization-code OAuth flow remains an env-gated fallback: when SHOPIFY_CLIENT_ID is set
-    // (shared Brain app) AND the brand submits no credentials, the connect handler falls back to
-    // the OAuth redirect (see bootstrap/connectors/writeRoutes.ts).
-    connectMethod: 'credential',
+    // PER-BRAND BYO APP (REQUIRED): every brand connects THEIR OWN store with the Client ID +
+    // Client Secret of their own app. PRIMARY PATH (2026-07-15): a Partner Dev Dashboard app via
+    // the authorization-code OAuth redirect — Shopify DEPRECATED creating admin "legacy custom
+    // apps" on 2026-01-01, so the client-credentials grant is unavailable to new stores (it
+    // returns `shop_not_permitted` for Dev Dashboard apps). EXISTING legacy custom apps still
+    // work: the connect handler tries the client-credentials exchange FIRST and falls through to
+    // the OAuth redirect on a credentials-invalid answer (see bootstrap/connectors/writeRoutes.ts).
+    connectMethod: 'oauth',
     availability: 'available',
     description: 'Sync orders, products, customers.',
     // Shopify Custom Apps are single-store: the workspace user MUST bring their own app's

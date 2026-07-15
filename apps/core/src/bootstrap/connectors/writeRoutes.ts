@@ -257,6 +257,60 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
               ...(appCreds['developer_token'] ? { developerToken: appCreds['developer_token'] } : {}),
             });
           }
+
+          // Shopify legacy custom apps (created in the store admin BEFORE 2026-01-01) support the
+          // client-credentials grant — try it FIRST so those stores connect without a redirect.
+          // Partner Dev Dashboard apps are refused by Shopify with `shop_not_permitted` (a 4xx →
+          // ShopifyCredentialsInvalidError): fall through to the authorization-code OAuth redirect
+          // with the brand's own app below. Shopify deprecated CREATING legacy custom apps on
+          // 2026-01-01, so the redirect is the primary path for every new store.
+          const shopifyShopDomain = ((appCreds?.['shop_domain'] ?? body.shop_domain) ?? '').trim();
+          if (
+            connectorType === 'shopify' &&
+            appCreds?.['client_id'] &&
+            appCreds?.['client_secret'] &&
+            shopifyShopDomain
+          ) {
+            try {
+              const result = await connectShopifyWithCredentials.execute({
+                brandId,
+                shopDomain: shopifyShopDomain,
+                clientId: appCreds['client_id'],
+                clientSecret: appCreds['client_secret'],
+                idempotencyKey: (req.headers['idempotency-key'] as string | undefined) ?? requestId,
+              });
+              await auditWriter.append({
+                brand_id: brandId,
+                actor_id: auth?.userId ?? null,
+                actor_role: auth?.role ?? 'unknown',
+                action: 'connector.connected',
+                entity_type: 'connector_instance',
+                entity_id: result.connectorInstanceId,
+                // NEVER the credentials — only the connect metadata (I-S09).
+                payload: { connector_type: 'shopify', auth_method: 'client_credentials', shop_domain: result.shopDomain },
+              });
+              return reply.code(200).send({
+                request_id: requestId,
+                data: {
+                  kind: 'credential',
+                  connected: true,
+                  connector_instance_id: result.connectorInstanceId,
+                  webhook: { url: result.webhookUrl, api_key: null, routing_header: null },
+                },
+              });
+            } catch (err) {
+              if (err instanceof InvalidShopDomainError) {
+                return reply.code(400).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+              }
+              if (err instanceof StorefrontExclusivityError) {
+                return reply.code(409).send({ request_id: requestId, error: { code: err.code, message: err.message } });
+              }
+              if (!(err instanceof ShopifyCredentialsInvalidError)) throw err;
+              // Credentials refused for the grant (e.g. shop_not_permitted for a Dev Dashboard
+              // app) → continue to the OAuth redirect with the brand's own client_id.
+            }
+          }
+
           const clientId = await resolveBrandOAuthClientId(
             connectorSecretsManager,
             provider,
@@ -265,7 +319,7 @@ export function registerConnectorWriteRoutes(app: FastifyInstance, deps: Registe
           );
           const { oauth_url } = await dispatch.initiate({
             brandId,
-            shopDomain: body.shop_domain,
+            shopDomain: shopifyShopDomain || body.shop_domain,
             callbackUrl: config.shopifyCallbackUrl,
             clientId,
           });

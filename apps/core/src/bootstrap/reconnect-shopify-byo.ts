@@ -10,7 +10,7 @@
  * satisfies migration 0112's `LIKE '%RECONNECT_REQUIRED%'` repull back-off (no 45s retry
  * spam), and the BYO_APP_REQUIRED suffix drives the connect UI's reconnect banner.
  *
- * Idempotency: guarded by ops.migration_state (migration 0121) — the marker row is inserted
+ * Idempotency: guarded by ops.migration_state (migration 0133) — the marker row is inserted
  * LAST, so a mid-run crash re-runs safely on next boot (per-row UPDATE is idempotent).
  *
  * Scope: reads across brands (superuser txn — ops layer). Emits the same event lane the OAuth

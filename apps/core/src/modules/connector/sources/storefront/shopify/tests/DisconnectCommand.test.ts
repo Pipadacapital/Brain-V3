@@ -26,7 +26,7 @@ const SHARED_SECRET_REF =
 function makeInstance(overrides: {
   id: string;
   accountKey: string;
-  status?: 'connected' | 'disconnected';
+  status?: 'connected' | 'disconnected' | 'error';
   secretRef?: string;
 }): ConnectorInstance {
   return ConnectorInstance.create({
@@ -108,6 +108,27 @@ describe('DisconnectCommand — shared-secret refcount', () => {
       'connector.disconnected',
       expect.objectContaining({ connector_instance_id: target.id }),
     );
+  });
+
+  it('does NOT delete the secret when a sibling in ERROR status still references it (live install, transient failure)', async () => {
+    const target = makeInstance({ id: '11111111-0000-4000-8000-000000000001', accountKey: 'act_1' });
+    // Sibling is 'error' (e.g. rate-limit / re-pull failure) — still a live install that needs the
+    // shared secret to recover, so the secret must survive the disconnect of its sibling.
+    const errorSibling = makeInstance({
+      id: '11111111-0000-4000-8000-000000000003',
+      accountKey: 'act_3',
+      status: 'error',
+    });
+    const connectorRepo = makeConnectorRepo(target, [
+      makeInstance({ id: target.id, accountKey: 'act_1', status: 'disconnected' }),
+      errorSibling,
+    ]);
+    const secretsManager = makeSecretsManager();
+
+    const cmd = new DisconnectCommand(connectorRepo, makeSyncStatusRepo(), secretsManager, vi.fn().mockResolvedValue(undefined));
+    await cmd.execute({ connectorInstanceId: target.id, brandId: BRAND_ID, idempotencyKey: 'idem-err' });
+
+    expect(secretsManager.deleteSecret).not.toHaveBeenCalled();
   });
 
   it('deletes the secret when the disconnecting instance is the LAST live holder of the secret_ref', async () => {

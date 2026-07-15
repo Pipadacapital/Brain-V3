@@ -348,6 +348,30 @@ data "aws_iam_policy_document" "analytics_s3" {
     resources = ["${aws_s3_bucket.bronze.arn}/brain_serving/*"]
   }
 
+  # Iceberg MAINTENANCE writes on bronze/silver/gold (2026-07-15 incident). After the
+  # Spark→DuckDB cutover, DuckDB cannot run the Iceberg maintenance procedures, so
+  # bronze-maintenance / v4-maintenance execute `ALTER TABLE … EXECUTE
+  # optimize / expire_snapshots / remove_orphan_files` THROUGH Trino — the writes/deletes
+  # of the compacted + superseded data files happen as the Trino IRSA (this role).
+  # The original read-only posture predates that: it broke maintenance with 403
+  # DeleteObject → "Error committing write parquet to Hive" (HIVE_WRITER_CLOSE_ERROR),
+  # exactly like the 2026-07-12 preagg case above. Symptom: compaction never consolidates,
+  # expire/remove-orphan never delete → the hot MERGE-written silver_collector_event
+  # fragmented to ~14k tiny files → every DuckDB silver scan paid thousands of S3 GETs
+  # (~390s/job) → the v4-silver/gold transform blew its deadline. Grant Put+Delete on the
+  # medallion object prefixes (serving already covered above; bucket ROOT stays DENY below).
+  statement {
+    sid    = "AllowMedallionMaintenanceWrite"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
+    ]
+    resources = local.namespace_object_arns
+  }
+
   statement {
     sid       = "AllowBucketList"
     effect    = "Allow"

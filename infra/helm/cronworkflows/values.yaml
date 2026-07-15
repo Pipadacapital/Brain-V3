@@ -167,8 +167,13 @@ sparkV4:
   # With S3_ENDPOINT unset (real S3) the job uses the default AWS credential chain (IRSA WebIdentity,
   # zero static keys), so ORPHAN_FILES=1 is safe in prod. ORPHAN_FILES=0 remains the escape hatch.
   maintenance:
+    # DAILY, not weekly (2026-07-15 incident). silver_collector_event is MERGE-rewritten HOURLY;
+    # weekly compaction let it fragment to ~14k tiny files by mid-week → every DuckDB silver scan
+    # paid thousands of S3 GETs (~390s/job) → v4-silver/gold blew their deadline. Daily compaction
+    # keeps the hot keystone consolidated so per-job read cost stays flat. (Requires the Trino IRSA
+    # medallion write/delete grant — s3-iceberg AllowMedallionMaintenanceWrite — or optimize 403s.)
     enabled: true
-    schedule: "45 4 * * 0"          # weekly Sun 04:45 IST — off the daily 03:00 Bronze maintenance slot
+    schedule: "45 4 * * *"          # daily 04:45 IST — after the 03:00 Bronze maintenance slot
     activeDeadlineSeconds: 3600     # full two-namespace sweep, table-by-table (failures logged, exit≠0)
     env:
       - { name: ORPHAN_FILES, value: "1" }

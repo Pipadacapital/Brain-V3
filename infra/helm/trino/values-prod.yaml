@@ -32,7 +32,17 @@ coordinator:
       memory: 7Gi
 
 workers:
-  replicaCount: 3
+  # 2, not 3 (2026-07-15 stability incident). The `trino` Karpenter nodepool caps at
+  # cpu:8 (infra/helm/karpenter/values.yaml) = 2 × t4g.xlarge, and a 2-cpu worker +
+  # coordinator/daemonsets fills one node → the pool fits at most 2 workers. With
+  # replicaCount/maxReplicas=3, KEDA perpetually spawned an UNSCHEDULABLE 3rd worker
+  # → continuous FailedScheduling + Karpenter "exceeds nodepool limit" reconcile churn,
+  # which helped tip workers into TOO_MANY_REQUESTS_FAILED during the heavy compaction
+  # sweep. Aligning to 2 is cost-neutral (the 3rd never ran) and REMOVES the churn.
+  # If daily v4-maintenance later shows worker crashes under compaction, escalate by
+  # either bumping the trino nodepool limits.cpu 8→12 (adds ~1 spot node, headroom for
+  # a real 3rd worker) or enabling the pre-wired batchCluster FTE below.
+  replicaCount: 2
   # AUD-PROD-006/-011: workers pin to the dedicated `trino` Karpenter pool (t4g.xlarge
   # Spot, infra/helm/karpenter/values.yaml) via Karpenter's automatic nodepool label —
   # without this, pool weights preferred the streaming pool for worker pods.
@@ -56,7 +66,7 @@ workers:
   autoscaling:
     enabled: true
     minReplicas: 1
-    maxReplicas: 3
+    maxReplicas: 2    # 2026-07-15: was 3 — nodepool cpu:8 fits only 2 workers (see replicaCount note)
 
 # ── BATCH cluster — Fault-Tolerant Execution (ADR-0002) ──────────────────────────────────────────
 # OFF by default per the selective-rebuild ground rules: the interactive serving cluster above is

@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { CONNECTOR_CATALOG, getDefinition, isConnectable } from './index.js';
+import { SHOPIFY_SCOPES_LIST } from './registry.js';
 
 describe('connector catalog gate (sole provider-validity guard after the CHECK was dropped)', () => {
   it('getDefinition returns null for an unknown provider (→ connect endpoint 400)', () => {
@@ -40,14 +41,15 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  // ── Shopify generic per-brand connect (owner requirement 2026-07-12) ──────────
-  // The catalog method is 'credential' (custom-app Client ID/Secret + store URL); the
-  // authorization-code OAuth flow survives only as the env-gated fallback in writeRoutes.
-  describe('shopify generic per-brand credential connect', () => {
+  // ── Shopify per-brand BYO app (Dev Dashboard OAuth primary, 2026-07-15) ───────
+  // Shopify deprecated creating admin "legacy custom apps" on 2026-01-01, so the primary path is
+  // a Partner Dev Dashboard app via the authorization-code OAuth redirect. The client-credentials
+  // exchange survives as a FIRST-TRY for existing pre-2026 legacy custom apps in writeRoutes.
+  describe('shopify per-brand BYO-app OAuth connect', () => {
     const shopify = getDefinition('shopify')!;
 
-    it('connectMethod is credential', () => {
-      expect(shopify.connectMethod).toBe('credential');
+    it('connectMethod is oauth (Dev Dashboard app redirect is the primary path)', () => {
+      expect(shopify.connectMethod).toBe('oauth');
     });
 
     it('requires shop_domain + client_id + client_secret (all non-optional)', () => {
@@ -60,14 +62,14 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
       expect(secrets).toEqual(['client_secret']);
     });
 
-    it('carries the custom-app how-to hint incl. the Admin API scopes', () => {
+    it('carries the Dev Dashboard how-to hint incl. the Admin API scopes', () => {
       const clientId = (shopify.authFields ?? []).find((f) => f.key === 'client_id');
-      expect(clientId?.hint).toContain('Develop apps');
+      expect(clientId?.hint).toContain('Dev Dashboard');
       expect(clientId?.hint).toContain('read_orders');
       expect(clientId?.hint).toContain('read_customers');
     });
 
-    it('has NO generic credentialConnect spec (bespoke command handles the connect)', () => {
+    it('has NO generic credentialConnect spec (bespoke command handles the legacy-app try)', () => {
       expect(shopify.credentialConnect).toBeUndefined();
     });
   });
@@ -104,5 +106,43 @@ describe('connector catalog gate (sole provider-validity guard after the CHECK w
     it('has NO generic credentialConnect spec (bespoke HandleGa4ConnectCommand handles the connect)', () => {
       expect(ga4.credentialConnect).toBeUndefined();
     });
+  });
+});
+
+describe('Shopify catalog entry — BYO-app required', () => {
+  const shopify = CONNECTOR_CATALOG.find((c) => c.id === 'shopify');
+
+  it('declares byoAppRequired', () => {
+    expect(shopify?.byoAppRequired).toBe(true);
+  });
+
+  it('declares byoAppSetup with scopes matching SHOPIFY_SCOPES_LIST', () => {
+    expect(shopify?.byoAppSetup).toBeDefined();
+    expect(shopify?.byoAppSetup?.scopes).toEqual(SHOPIFY_SCOPES_LIST);
+  });
+
+  it('marks client_id + client_secret as REQUIRED (not optional)', () => {
+    const cid = shopify?.authFields?.find((f) => f.key === 'client_id');
+    const csec = shopify?.authFields?.find((f) => f.key === 'client_secret');
+    expect(cid).toBeDefined();
+    expect(csec).toBeDefined();
+    expect(cid?.optional).not.toBe(true);
+    expect(csec?.optional).not.toBe(true);
+  });
+});
+
+describe('Meta + Google Ads catalog entries — BYO-app remains OPTIONAL', () => {
+  it('meta.authFields client_id + client_secret stay optional', () => {
+    const meta = CONNECTOR_CATALOG.find((c) => c.id === 'meta');
+    expect(meta?.byoAppRequired).not.toBe(true);
+    expect(meta?.authFields?.find((f) => f.key === 'client_id')?.optional).toBe(true);
+    expect(meta?.authFields?.find((f) => f.key === 'client_secret')?.optional).toBe(true);
+  });
+
+  it('google_ads.authFields client_id + client_secret stay optional', () => {
+    const ga = CONNECTOR_CATALOG.find((c) => c.id === 'google_ads');
+    expect(ga?.byoAppRequired).not.toBe(true);
+    expect(ga?.authFields?.find((f) => f.key === 'client_id')?.optional).toBe(true);
+    expect(ga?.authFields?.find((f) => f.key === 'client_secret')?.optional).toBe(true);
   });
 });

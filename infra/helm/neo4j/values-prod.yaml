@@ -34,16 +34,16 @@ neo4j:
   # keyed brand_id-first and every query binds brand_id (ADR-0004); the DB is
   # never exposed outside the cluster (ClusterIP only, see services below).
   passwordFromSecret: neo4j-auth
-  # AUD-COST/PERF (2026-07-13): cpu 2 → 3. Neo4j (identity SoR) was pinned at its
-  # 2-core limit (Prometheus: 3h avg 1.94 cores) while working the identity-bridge
-  # backlog drain — CPU-THROTTLED on a t4g.xlarge (4 cores) with ~2 idle. Giving it
-  # 3 guaranteed cores uses the headroom it ALREADY pays for ($0 extra — same node)
-  # so the backlog drains faster. Still fits the t4g.xlarge (3 + ~0.5 daemonsets <
-  # 3.86 allocatable), so no node/pool change. Memory unchanged (usage ~2.5Gi/4Gi).
-  # Once the drain completes, recheck steady-state — if it settles low, revisit
-  # both this AND the t4g.large downsize that's currently blocked by the saturation.
+  # AUD-COST (2026-07-15): cpu 3 → 2 — REVERT the 07-13 backlog-drain bump. That bump
+  # (2→3) was for a ONE-TIME identity-bridge backlog drain (then avg 1.94 cores); the
+  # drain is done and steady-state has "settled low" exactly as the prior note said to
+  # recheck: Prometheus/kubectl-top now shows ~6m CPU. The 3-core request also broke
+  # the intended Neo4j+Trino-coordinator co-location on ONE on-demand xlarge (3 + 1 >
+  # ~3.9 allocatable), forcing a SECOND xlarge (~$95/mo). Back to 2 cores: co-location
+  # is restored (2 + 1 < 3.9) → Karpenter empties + reclaims the extra node. 2 cores
+  # still covers the periodic identity-bridge drain (1.94 peak); mem unchanged (2.4/4Gi).
   resources:
-    cpu: "3"
+    cpu: "2"
     memory: 4Gi
 
 # AUD-COST-018: pin the identity SoR to the ON-DEMAND Karpenter pool. The upstream

@@ -53,6 +53,29 @@ def read_gated_events_sql(event_types: list[str], *, lo=None, hi=None, source: s
     )
 
 
+def _split_top_level_commas(columns_sql: str) -> list[str]:
+    """Split a COLUMNS_SQL block on commas at paren-depth 0 ONLY — commas inside a composite
+    type like `struct(step bigint, from_channel string)[]` or `decimal(10,2)` are part of the
+    TYPE, not column separators. A naive split invents phantom columns from the struct fields,
+    and the evolution loop then ALTER-ADDs garbage (`ADD COLUMN to_channel string)[]` → parser
+    error; seen live on gold_journey_paths 2026-07-15)."""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in columns_sql:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
 def _parse_columns_sql(columns_sql: str) -> list[tuple[str, str]]:
     """Parse a COLUMNS_SQL block into [(name, type_without_constraints), ...].
 
@@ -60,7 +83,7 @@ def _parse_columns_sql(columns_sql: str) -> list[tuple[str, str]]:
     Type = everything after the name up to (and excluding) NOT/DEFAULT/comment.
     """
     out: list[tuple[str, str]] = []
-    for raw in columns_sql.split(","):
+    for raw in _split_top_level_commas(columns_sql):
         line = raw.strip()
         if not line or line.startswith("--") or line.startswith(")"):
             continue

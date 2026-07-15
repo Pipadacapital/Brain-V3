@@ -100,6 +100,36 @@ export interface CredentialConnectSpec {
   webhookRoutingHeader?: string;
 }
 
+/**
+ * ByoAppSetup — declarative setup instructions surfaced to the merchant when a connector
+ * requires its own OAuth app. Rendered by the connect UI as a copy-buttoned panel.
+ *
+ * `redirectUrl` is emitted as '' from the catalog and filled at request time from
+ * config.shopifyCallbackUrl (the public OAuth callback URL), because the catalog is
+ * static-typed compile-time state.
+ */
+export interface ByoAppSetup {
+  /** Public OAuth redirect URL the merchant must paste into their Custom App config. */
+  redirectUrl: string;
+  /** OAuth scope list the merchant must enable — must match the InitiateOAuthCommand scopes. */
+  scopes: readonly string[];
+  /** Optional external docs link. */
+  docsUrl?: string;
+}
+
+/**
+ * Shopify's required OAuth scopes — hoisted here so the catalog can hand them to the connect
+ * UI's setup panel and InitiateOAuthCommand can consume the same list.
+ */
+export const SHOPIFY_SCOPES_LIST = [
+  'read_orders',
+  'read_products',
+  'read_customers',
+  'write_script_tags',
+  'write_pixels',
+  'read_customer_events',
+] as const;
+
 export interface ConnectorDefinition {
   /** Canonical type key — matches provider CHECK in connector_instance where it has a backend. */
   id: string;
@@ -122,6 +152,14 @@ export interface ConnectorDefinition {
    * and coming_soon tiles.
    */
   credentialConnect?: CredentialConnectSpec;
+  /**
+   * OAuth connectors only. When true, the workspace user MUST supply per-brand Client ID /
+   * Client Secret — env fallback (SHOPIFY_CLIENT_ID/SECRET etc.) is refused for this provider.
+   * Requires `byoAppSetup` populated for the connect UI's setup panel.
+   */
+  byoAppRequired?: boolean;
+  /** Declarative setup instructions rendered by the connect UI when `byoAppRequired`. */
+  byoAppSetup?: ByoAppSetup;
 }
 
 /** Shared hint for OAuth "bring your own app" client credentials (all optional). */
@@ -133,9 +171,10 @@ const OAUTH_APP_HINT = "Optional — leave blank to use Brain's app";
  * the Admin API access scopes Brain's sync + pixel install need.
  */
 const SHOPIFY_CUSTOM_APP_HINT =
-  'Create a custom app in your Shopify admin → Settings → Apps and sales channels → Develop apps. ' +
-  'Grant the Admin API scopes read_orders, read_products, read_customers, write_script_tags, ' +
-  'write_pixels, read_customer_events, then paste the app credentials here.';
+  'Create an app in the Shopify Dev Dashboard (partners), add the redirect URL shown in the ' +
+  'setup panel, grant the Admin API scopes read_orders, read_products, read_customers, ' +
+  'write_script_tags, write_pixels, read_customer_events, then paste the Client ID and Client ' +
+  'Secret here. Credentials from an existing pre-2026 admin custom app also work.';
 
 /** The optional BYO-app OAuth credential pair, shared by every OAuth tile. */
 const OAUTH_APP_FIELDS: ConnectorAuthField[] = [
@@ -149,16 +188,19 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     id: 'shopify',
     category: 'storefront',
     displayName: 'Shopify',
-    // GENERIC PER-BRAND CONNECT (owner requirement 2026-07-12): every brand connects THEIR OWN
-    // store with the Client ID + Client Secret of a custom app created in their own Shopify admin.
-    // The server exchanges them via the CLIENT-CREDENTIALS grant (token expires in 24h; the
-    // shopify-token-refresh cron re-exchanges) — NO browser OAuth redirect on this path. The
-    // authorization-code OAuth flow remains an env-gated fallback: when SHOPIFY_CLIENT_ID is set
-    // (shared Brain app) AND the brand submits no credentials, the connect handler falls back to
-    // the OAuth redirect (see bootstrap/connectors/writeRoutes.ts).
-    connectMethod: 'credential',
+    // PER-BRAND BYO APP (REQUIRED): every brand connects THEIR OWN store with the Client ID +
+    // Client Secret of their own app. PRIMARY PATH (2026-07-15): a Partner Dev Dashboard app via
+    // the authorization-code OAuth redirect — Shopify DEPRECATED creating admin "legacy custom
+    // apps" on 2026-01-01, so the client-credentials grant is unavailable to new stores (it
+    // returns `shop_not_permitted` for Dev Dashboard apps). EXISTING legacy custom apps still
+    // work: the connect handler tries the client-credentials exchange FIRST and falls through to
+    // the OAuth redirect on a credentials-invalid answer (see bootstrap/connectors/writeRoutes.ts).
+    connectMethod: 'oauth',
     availability: 'available',
     description: 'Sync orders, products, customers.',
+    // Shopify Custom Apps are single-store: the workspace user MUST bring their own app's
+    // Client ID / Client Secret (byoAppRequired — no env fallback). All three fields REQUIRED
+    // (optional defaults to false); shop_domain feeds the bespoke client-credentials connect.
     authFields: [
       {
         key: 'shop_domain',
@@ -179,6 +221,12 @@ export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
     // NO credentialConnect spec: Shopify credential connect is the bespoke
     // ConnectShopifyWithCredentialsCommand (client-credentials exchange + token verify + webhook
     // registration), not the generic store-and-save path.
+    byoAppRequired: true,
+    byoAppSetup: {
+      // Filled at request-build time from config.shopifyCallbackUrl — see marketplace tile builder.
+      redirectUrl: '',
+      scopes: SHOPIFY_SCOPES_LIST,
+    },
   },
   {
     id: 'woocommerce',

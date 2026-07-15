@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import type { AuditWriter } from '@brain/audit';
 
 import { registerOAuthDispatch } from '../../modules/connector/catalog/dispatch.js';
+import { getDefinition } from '../../modules/connector/catalog/index.js';
 import { HandleOAuthCallbackCommand, HmacValidationError, StateNonceError, ShopDomainError } from '../../modules/connector/sources/storefront/shopify/application/commands/HandleOAuthCallbackCommand.js';
 import { registerMetaCallbackRoute } from '../../modules/connector/sources/advertising/meta/interfaces/http/metaConnectorRoutes.js';
 import { registerGoogleAdsCallbackRoute } from '../../modules/connector/sources/advertising/google/interfaces/http/googleAdsConnectorRoutes.js';
@@ -37,12 +38,17 @@ export function registerConnectorOAuthRoutes(app: FastifyInstance, deps: Registe
   const { config, connectorRepo, syncStatusRepo, connectorSecretsManager, oauthStateStore, auditWriter, emitEvent } = deps;
   const { initiateOAuth, initiateMetaOAuth, handleMetaCallback, initiateGoogleAdsOAuth, handleGoogleAdsCallback } = deps.oauthCommands;
 
+  // BYO-required from the catalog (SoR): when set, the callback refuses the env-app fallback for
+  // HMAC + token exchange. appEnv/webhookCallbackBaseUrl stay on their constructor defaults.
   const handleCallback = new HandleOAuthCallbackCommand(
     connectorSecretsManager,
     oauthStateStore,
     connectorRepo,
     syncStatusRepo,
     emitEvent,
+    undefined,
+    undefined,
+    getDefinition('shopify')?.byoAppRequired ?? false,
   );
 
   // Audit hook for a successful ads OAuth connect (brandId is state-derived — D-1).

@@ -48,7 +48,24 @@ export class DisconnectCommand {
 
     // Delete secret from Secrets Manager (generic path — works for both oauth and credential)
     // Sec-C3: provider-side OAuth revocation is out of scope for M1 (non-goal, documented).
-    await this.secretsManager.deleteSecret(instance.secretRef);
+    // Shared-secret refcount (Gap B): multi-account providers (meta/google_ads) store ONE token
+    // secret shared by every sibling instance's secret_ref. Only delete it when NO other
+    // NON-DISCONNECTED instance of this brand+provider references the same ARN — otherwise
+    // disconnecting one ad account kills the surviving accounts' credentials. NOTE: spare it for
+    // ANY status except 'disconnected' (i.e. 'connected' OR 'error'): an instance in 'error' is a
+    // live install with a transient problem (rate-limit / re-pull failure) that still needs the
+    // secret to recover — only 'disconnected' has truly released it (ConnectorInstance.status is
+    // 'connected' | 'disconnected' | 'error').
+    const siblings = await this.connectorRepo.findAllByBrandAndProvider(brandId, instance.provider);
+    const sharedByLiveSibling = siblings.some(
+      (s) =>
+        s.id !== connectorInstanceId &&
+        s.status !== 'disconnected' &&
+        s.secretRef === instance.secretRef,
+    );
+    if (!sharedByLiveSibling) {
+      await this.secretsManager.deleteSecret(instance.secretRef);
+    }
 
     // Update sync status to error/disconnected state
     const syncStatus = await this.syncStatusRepo.findByConnectorInstanceId(

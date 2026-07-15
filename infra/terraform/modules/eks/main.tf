@@ -156,7 +156,14 @@ resource "aws_eks_cluster" "main" {
   # authenticator / controllerManager / scheduler are control-plane DEBUG logs
   # that nothing monitors today (alerting not yet wired) and can be re-enabled
   # instantly when debugging. In-place cluster update, non-disruptive.
-  enabled_cluster_log_types = ["audit"]
+  #
+  # 2026-07-15 COST DECISION (owner): disabled — [] instead of ["audit"]. Control-plane
+  # log delivery to CloudWatch (`VendedLog-Bytes`) was ~$19/mo, the single biggest
+  # CloudWatch line, and nothing consumes the audit log today (GuardDuty + the CW
+  # observability stack are both HELD for cost). TRADE-OFF: no EKS "who-did-what" audit
+  # trail while off. Re-enable instantly (in-place, non-disruptive) by restoring ["audit"]
+  # — do so before any compliance/audit need or once credits stop covering the gross.
+  enabled_cluster_log_types = []
 
   # AUD-OPS-028: omitted while null (no-op on the live cluster); set STANDARD
   # after the 1.33 upgrade so a future lapse into extended support fails the

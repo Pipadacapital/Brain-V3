@@ -87,10 +87,21 @@ QUARANTINE: none written — same as silver_order_state.py and the framework's o
   Spark chain's Stage-1 dq quarantine side-write (brain_silver.silver_quarantine stage='dq') is NOT
   reproduced here (no _silver_technical analogue); Bronze keeps the originals so the ledger can be rebuilt.
 
-Parity target: brain_gold.gold_revenue_ledger.
+AUDIT-G1 — ADDITIVE, FLAG-GATED brain_id_v2 (per-brand `identity.revenue_querytime`, DEFAULT OFF, fail-
+  closed): alongside the legacy FLAT single-key brain_id (hashed_customer_email → silver_identity_alias),
+  this job ALSO emits an additive `brain_id_v2` column resolved at QUERY TIME from the bi-temporal MULTI-KEY
+  silver_identity_map (email + phone + platform_customer_id; identity_current predicate is_current=TRUE AND
+  system_to IS NULL; merge-reconciled; never-guess on |B|>1) — the SAME canonical pattern
+  gold_journey_events / gold_customer_360 use (via the shared _revenue_identity module). The two resolutions
+  sit side-by-side on the row for PARALLEL-RUN parity comparison. brain_id_v2 is NOT part of ledger_event_id
+  (like brain_id), so the money key + amounts are byte-identical regardless of the flag. When OFF for a brand
+  (default) or the map is absent → brain_id_v2 is NULL and the legacy flat brain_id/ledger is UNCHANGED.
+
+Parity target: brain_gold.gold_revenue_ledger (flag OFF → brain_id_v2 NULL, legacy columns byte-identical).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 
@@ -98,6 +109,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
+from _revenue_identity import enabled_brands as _revenue_qt_brands  # noqa: E402
+from _revenue_identity import resolve_brain_id_v2_sql  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_revenue_ledger_duckdb_test beside the
 # Spark-produced live table (parallel run → compare → cut over). Empty in production.
@@ -111,6 +124,8 @@ AWB_EVENT = "shiprocket.shipment_status.v1"
 # Iceberg siblings of the PG operational dimensions (see module docstring / silver_order_state.py).
 IDENTITY_ALIAS = f"{CATALOG}.{SILVER_NAMESPACE}.silver_identity_alias"
 CUSTOMER_IDENTITY = f"{CATALOG}.{SILVER_NAMESPACE}.silver_customer_identity"
+# audit-G1: the bi-temporal MULTI-KEY identity map — the query-time (flag-ON) brain_id_v2 resolution source.
+IDENTITY_MAP = f"{CATALOG}.{SILVER_NAMESPACE}.silver_identity_map"
 
 # tenancy.brand.prepaid_recognition_horizon_days DEFAULT — the graceful fallback when PG is unreachable.
 DEFAULT_PREPAID_HORIZON = 7
@@ -148,6 +163,7 @@ COLUMNS_SQL = """
   ledger_event_id        string    NOT NULL,
   order_id               string,
   brain_id               string,
+  brain_id_v2            string,
   event_type             string,
   amount_minor           bigint,
   currency_code          string,
@@ -162,7 +178,7 @@ COLUMNS_SQL = """
 """.strip("\n")
 
 COLUMNS = [
-    "brand_id", "ledger_event_id", "order_id", "brain_id", "event_type", "amount_minor",
+    "brand_id", "ledger_event_id", "order_id", "brain_id", "brain_id_v2", "event_type", "amount_minor",
     "currency_code", "fee_minor", "occurred_at", "economic_effective_at", "recognition_label",
     "billing_posted_period", "ingested_at", "data_source", "updated_at",
 ]
@@ -223,6 +239,64 @@ def _identity_link_sql() -> str:
     """
 
 
+# audit-G1: the dev salt SoR for the SALTED external_id space (byte-identical to silver_session_identity /
+# the connector normalize salt derivation) so a payload storefront_customer_id hashes to the SAME value the
+# identity graph stored for that brand. Email/phone are already pre-hashed on the payload (no salt).
+_DEV_SALT_PREFIX = os.environ.get("DEV_IDENTITY_SALT_PREFIX", "brain-dev-identity-salt-v1")
+
+
+def _dev_salt(brand_id: str) -> str:
+    return hashlib.sha256(f"{_DEV_SALT_PREFIX}||{brand_id.lower()}".encode("utf-8")).hexdigest()
+
+
+def _table_exists(con, fq: str) -> bool:
+    try:
+        con.execute(f"SELECT 1 FROM {fq} LIMIT 0")
+        return True
+    except Exception:  # noqa: BLE001 — absent map → no query-time resolution (fail-closed).
+        return False
+
+
+def _brain_id_v2_join_sql(con, stg_sql: str) -> str:
+    """The additive, FLAG-GATED query-time resolver: (brand_id, order_id, brain_id_v2) for the flag-ON
+    brands, from the bi-temporal MULTI-KEY silver_identity_map. Fail-closed to an EMPTY result (every order
+    → NULL brain_id_v2 via the caller's LEFT JOIN) when the flag is OFF for all brands or the map is absent —
+    so the legacy flat single-key output stays byte-identical (parity preserved)."""
+    empty = (
+        "SELECT NULL::VARCHAR AS brand_id, NULL::VARCHAR AS order_id, "
+        "NULL::VARCHAR AS brain_id_v2 WHERE FALSE"
+    )
+    if not _table_exists(con, IDENTITY_MAP):
+        return empty
+    try:
+        brands = [r[0] for r in con.execute(f"SELECT DISTINCT brand_id FROM ({stg_sql})").fetchall() if r[0]]
+    except Exception:  # noqa: BLE001 — stg unreadable → nothing to resolve.
+        return empty
+    on_brands = _revenue_qt_brands(con, brands)
+    if not on_brands:
+        return empty
+
+    # Per-order hashes for the MULTI-KEY resolution: email/phone pass through (pre-hashed); the platform id
+    # is SALT-hashed with the per-brand dev salt via a CASE ladder (small, driver-known brand set).
+    salt_cases = " ".join(
+        f"WHEN brand_id = '{b}' THEN '{_dev_salt(b)}'" for b in on_brands
+    )
+    # external_id space hash — byte-identical to _raw_normalize.hash_identifier / silver_session_identity:
+    # sha256( salt_hex || '||' || trim(value) ). trim (NOT lower) matches the normalize/connector SoR.
+    platform_hash_expr = (
+        "CASE WHEN storefront_customer_id IS NULL OR trim(storefront_customer_id) = '' THEN NULL "
+        f"ELSE sha256(concat(CASE {salt_cases} ELSE '' END, '||', trim(storefront_customer_id))) END"
+    )
+    orders_cte = f"""
+      SELECT brand_id, order_id,
+             hashed_customer_email,
+             hashed_customer_phone,
+             {platform_hash_expr} AS platform_customer_id_hash
+      FROM ({stg_sql})
+    """
+    return resolve_brain_id_v2_sql(IDENTITY_MAP, orders_cte, on_brands)
+
+
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
 
@@ -246,13 +320,19 @@ def build(con):
              lower({prop('pj','payment_method')})                      AS payment_method_raw,
              {prop('pj','financial_status')}                           AS financial_status,
              {prop('pj','cancelled_at')}                               AS cancelled_at,
-             {prop('pj','hashed_customer_email')}                      AS hashed_customer_email
+             {prop('pj','hashed_customer_email')}                      AS hashed_customer_email,
+             -- audit-G1 (flag-ON only): additional MULTI-KEY hashes for query-time brain_id_v2. Extra
+             -- columns — they do NOT change the flat single-key output (which reads hashed_customer_email
+             -- alone). phone is pre-hashed on the payload; the platform id is salt-hashed below.
+             {prop('pj','hashed_customer_phone')}                      AS hashed_customer_phone,
+             {prop('pj','storefront_customer_id')}                     AS storefront_customer_id
       FROM ({read_gated_events_sql(ORDER_EVENTS)})
     """
     stg = f"""
       SELECT brand_id, event_id, order_id, amount_minor, currency_code,
              CASE WHEN payment_method_raw = 'cod' THEN 'cod' ELSE 'prepaid' END AS payment_method,
              financial_status, cancelled_at, hashed_customer_email,
+             hashed_customer_phone, storefront_customer_id,
              occurred_at, ingested_at
       FROM (
         SELECT *, row_number() OVER (
@@ -279,9 +359,16 @@ def build(con):
       ) WHERE _rn = 1
     """
 
+    # ── audit-G1: additive, FLAG-GATED query-time brain_id_v2 (default OFF → NULL, parity preserved). ──
+    # For the brands whose identity.revenue_querytime flag is ON, resolve brain_id at query time from the
+    # bi-temporal MULTI-KEY silver_identity_map (email + phone + platform_customer_id; identity_current;
+    # merge-reconciled; never-guess) — the SAME canonical pattern gold_journey_events/gold_customer_360 use.
+    # The legacy flat single-key brain_id (b.brain_id below) is UNCHANGED. OFF/absent-map → empty → NULL.
+    brain_id_v2_join = _brain_id_v2_join_sql(con, stg)
+
     # ── silver_order_recognition.enriched: one enriched canonical order (+ brain_id, prepaid horizon, awb) ──
     enriched = f"""
-      SELECT o.brand_id, o.order_id, b.brain_id, o.amount_minor, o.currency_code,
+      SELECT o.brand_id, o.order_id, b.brain_id, v2.brain_id_v2, o.amount_minor, o.currency_code,
              o.payment_method, o.financial_status, o.cancelled_at, o.occurred_at, o.ingested_at,
              CAST({horizon_col} AS INTEGER) AS prepaid_horizon,
              a.terminal_class AS awb_terminal_class
@@ -290,6 +377,8 @@ def build(con):
         ON b.brand_id = o.brand_id AND b.hashed_customer_email = o.hashed_customer_email
       LEFT JOIN ({awb_latest}) a
         ON a.brand_id = o.brand_id AND a.order_id = o.order_id
+      LEFT JOIN ({brain_id_v2_join}) v2
+        ON v2.brand_id = o.brand_id AND v2.order_id = o.order_id
       {horizon_join}
     """
 
@@ -299,11 +388,11 @@ def build(con):
     fin_threshold = f"occurred_at + (coalesce(prepaid_horizon, {DEFAULT_PREPAID_HORIZON}) * INTERVAL 1 DAY)"
     recognition = f"""
       WITH e AS ({enriched})
-      SELECT brand_id, order_id, brain_id, 'provisional_recognition' AS event_type,
+      SELECT brand_id, order_id, brain_id, brain_id_v2, 'provisional_recognition' AS event_type,
              amount_minor, currency_code, occurred_at, occurred_at AS economic_effective_at, ingested_at
       FROM e
       UNION ALL
-      SELECT brand_id, order_id, brain_id, 'finalization' AS event_type,
+      SELECT brand_id, order_id, brain_id, brain_id_v2, 'finalization' AS event_type,
              amount_minor, currency_code, occurred_at,
              {fin_interval} AS economic_effective_at, ingested_at
       FROM e
@@ -312,22 +401,22 @@ def build(con):
         AND cancelled_at IS NULL
         AND coalesce(financial_status, '') NOT IN ('refunded', 'voided', 'cancelled')
       UNION ALL
-      SELECT brand_id, order_id, brain_id, 'cod_delivery_confirmed' AS event_type,
+      SELECT brand_id, order_id, brain_id, brain_id_v2, 'cod_delivery_confirmed' AS event_type,
              amount_minor, currency_code, occurred_at, occurred_at AS economic_effective_at, ingested_at
       FROM e
       WHERE payment_method = 'cod' AND awb_terminal_class = 'delivered'
       UNION ALL
-      SELECT brand_id, order_id, brain_id, 'cod_rto_clawback' AS event_type,
+      SELECT brand_id, order_id, brain_id, brain_id_v2, 'cod_rto_clawback' AS event_type,
              -amount_minor AS amount_minor, currency_code, occurred_at, occurred_at AS economic_effective_at, ingested_at
       FROM e
       WHERE payment_method = 'cod' AND awb_terminal_class = 'rto'
       UNION ALL
-      SELECT brand_id, order_id, brain_id, 'cancellation' AS event_type,
+      SELECT brand_id, order_id, brain_id, brain_id_v2, 'cancellation' AS event_type,
              -amount_minor AS amount_minor, currency_code, occurred_at, occurred_at AS economic_effective_at, ingested_at
       FROM e
       WHERE cancelled_at IS NOT NULL
       UNION ALL
-      SELECT brand_id, order_id, brain_id, 'refund' AS event_type,
+      SELECT brand_id, order_id, brain_id, brain_id_v2, 'refund' AS event_type,
              -amount_minor AS amount_minor, currency_code, occurred_at, occurred_at AS economic_effective_at, ingested_at
       FROM e
       WHERE coalesce(financial_status, '') = 'refunded' AND cancelled_at IS NULL
@@ -343,6 +432,7 @@ def build(con):
         sha256(concat_ws(chr(0), brand_id, order_id, event_type, {_SR_DT_STR}))    AS ledger_event_id,
         order_id,
         brain_id,
+        brain_id_v2,
         event_type,
         CAST(amount_minor AS BIGINT)                                               AS amount_minor,
         currency_code,

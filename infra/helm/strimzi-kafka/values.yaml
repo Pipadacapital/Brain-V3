@@ -177,6 +177,19 @@ topics:
     # A.2.4 unmerge lane (WA-19); the restitch-dirty consumer subscribes to it — a missing topic
     # crashes the stream-worker on startup (auto-create OFF). Must exist in prod too.
     - identity.unmerged.v1
+    # M1 application/domain events published by core's M1EventPublisher (workspace-access,
+    # pixel, connector, auth). These were never declared before and, with auto-create OFF,
+    # silently failed to publish ("This server does not host this topic-partition") — surfaced
+    # 2026-07-16 after a full topic wipe. Declared here so they exist in every env.
+    - workspace.created.v1
+    - brand.created.v1
+    - pixel.installed.v1
+    - pixel.verified.v1
+    - connector.connected.v1
+    - connector.sync_started.v1
+    - user.registered.v1
+    - user.logged_in.v1
+    - user.invited.v1
 
   # Internal canonical fan-out lanes -> brain.<entity>
   fanout:

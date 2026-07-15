@@ -78,6 +78,19 @@ export const PLATFORM_FLAGS = {
     description: 'Canonical journey generation v2 (versioned journey_events consumers).',
   },
 
+  // ── Audit gap G1 — query-time bi-temporal identity for the REVENUE spine ──────
+  'identity.revenue_querytime': {
+    wave: 'A',
+    spec: 'A.2.2 / audit-G1',
+    description:
+      'Revenue spine (silver_order_state / gold_revenue_ledger / gold_customer_360) resolves ' +
+      'brain_id at QUERY TIME against the bi-temporal, MULTI-KEY silver_identity_map ' +
+      '(email + phone + platform_customer_id; identity_current predicate; merge-reconciled) into ' +
+      'an ADDITIVE brain_id_v2 column, run in PARALLEL with the legacy flat single-key ' +
+      '(pre_hashed_email → silver_identity_alias) brain_id for parity comparison. OFF (default, ' +
+      'fail-closed) → brain_id_v2 is NULL and the legacy flat brain_id stays byte-identical to pre-wave.',
+  },
+
   // ── Wave C — measurement ────────────────────────────────────────────────────
   'measurement.marts_migration': {
     wave: 'C',

@@ -43,6 +43,11 @@ FLAG_JOURNEY_ENGINE = "journey.engine"
 # SPEC: C.2.6 — per-brand gate for the OPTIONAL gold_measurement_inventory movement fact. OFF (default) →
 # the brand emits no movement rows (byte-identical to pre-wave: an empty fact).
 FLAG_MEASUREMENT_INVENTORY_MOVEMENT = "measurement.inventory_movement"
+# SPEC: A.2.2 / audit-G1 — per-brand gate for QUERY-TIME, MULTI-KEY (email+phone+platform_customer_id),
+# bi-temporal (identity_current), merge-aware brain_id resolution on the REVENUE spine. OFF (default) →
+# the additive brain_id_v2 column is NULL and the legacy flat single-key brain_id is byte-identical to
+# pre-wave (parity preserved). ON for a brand → brain_id_v2 is populated for parallel-run comparison.
+FLAG_IDENTITY_REVENUE_QUERYTIME = "identity.revenue_querytime"
 
 _ENABLED_VALUE = b"true"
 _DEFAULT_REDIS_URL = "redis://localhost:6379"

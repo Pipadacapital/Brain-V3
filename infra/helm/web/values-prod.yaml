@@ -3,7 +3,7 @@ replicaCount: 3
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-web-prod
   tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:7b95d023201df04f4a0b730b9441aa25cf2be1067c22ca3b407e74821de2266c"
+  digest: "sha256:2bf1a35feed06cf8eef9dd4b2410c8f315a3542a601bccc5320ba0bb3a0e66da"
 
 envSecretName: web-env
 

@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:1aa31ee9f0fb9376f267adda1c5fe59176dc43e4b485827db1a600e499037c34"
+  digest: "sha256:3c275fa3908dc23ab65dc28d0c7ac7507ca378da1f6aba9914680b81c7148f3c"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:c6032365ea6420eb126b0695cad2ce19983a738fbc1f33351feeb301b7052392"
+  digest: "sha256:40956ef2b5153f021628082dfde896f86ddb894491196eeb7bc296d0492228cd"
 # duckdb image — bronze/medallion maintenance + erasure (via the Trino client it carries) AND the V4
 # Silver/Gold transform crons (.sparkV4.image — CI promotes both digests build-once from staging, one
 # image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover: replaces
@@ -15,7 +15,7 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:a9479c646133aa5a6b7c164bb757b105213cede223e114cc1ba4d4f99c8fd47d"
+    digest: "sha256:165b53cd3a7a4171f8df22396e067f5d95e73469aa83fa7579921157390e9cd9"
   # AUD-PROD-006: the maintenance/erasure cron pods run on the streaming Karpenter pool (the batch pool
   # was removed in the Spark→DuckDB cutover — the DuckDB crons are lightweight python, no JVM). A
   # Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry + idempotent maintenance.
@@ -27,7 +27,7 @@ sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:a9479c646133aa5a6b7c164bb757b105213cede223e114cc1ba4d4f99c8fd47d"
+    digest: "sha256:165b53cd3a7a4171f8df22396e067f5d95e73469aa83fa7579921157390e9cd9"
   # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the streaming pool (batch pool removed).
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:

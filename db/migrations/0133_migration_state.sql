@@ -1,5 +1,5 @@
 -- ============================================================================
--- 0121_migration_state.sql — Additive: ops.migration_state
+-- 0133_migration_state.sql — Additive: ops.migration_state
 --
 -- One-shot idempotency guard for boot-time data migrations that must run
 -- exactly once per deployment (e.g. bootstrap/reconnect-shopify-byo.ts).

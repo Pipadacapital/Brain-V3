@@ -546,8 +546,14 @@ export class ShopifyWebhookStrategy implements IWebhookStrategy {
         try {
           await client.query('BEGIN');
           await client.query(`SELECT set_config('app.current_brand_id', $1, true)`, [_brandId]);
+          // SCHEMA-QUALIFIED: `connectors.connector_journey_stitch_map`. On the raw pg pool the
+          // session search_path is not guaranteed to include `connectors` (pgbouncer transaction
+          // pooling can carry a leaked/non-default search_path), and an unqualified name then makes
+          // ON CONFLICT arbiter inference fail with "no unique or exclusion constraint matching the
+          // ON CONFLICT specification" even though the PK (brand_id, order_id) exists. Qualifying
+          // removes the search_path dependency entirely (fix 2026-07-16).
           await client.query(
-            `INSERT INTO connector_journey_stitch_map
+            `INSERT INTO connectors.connector_journey_stitch_map
                (brand_id, order_id, stitched_anon_id, click_ids, utms)
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (brand_id, order_id) DO UPDATE

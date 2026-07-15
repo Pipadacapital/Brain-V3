@@ -40,15 +40,19 @@ const SHOPIFY_API_VERSION = '2025-07' as const;
  *   Mapped in ShopifyWebhookStrategy with the SAME deterministic dedup ids the resumable backfill
  *   derives, so a record seen on both lanes lands ONCE in Bronze (live↔backfill dedup parity).
  */
+// GDPR/DPDP MANDATORY COMPLIANCE webhooks (customers/data_request, customers/redact, shop/redact)
+// are DELIBERATELY NOT here: Shopify does NOT accept them via the Admin webhook-subscription API —
+// a POST returns 404 "Could not find the webhook topic customers/data_request". They are configured
+// on the APP itself (Partner Dashboard → App setup → Compliance webhooks / shopify.app.toml), which
+// delivers them to Brain's /shopify/customers_data_request, /customers_redact, /shop_redact routes.
+// Registering them here previously THREW on the 404 and aborted the loop, so every topic AFTER them
+// (products/customers/refunds/fulfillments/inventory) was silently never registered. (2026-07-16.)
 const ALL_WEBHOOK_TOPICS = [
   'orders/create',
   'orders/updated',
   'orders/paid',
   'orders/fulfilled',
   'orders/cancelled',
-  'customers/data_request',
-  'customers/redact',
-  'shop/redact',
   'app/uninstalled',
   // P1 webhook expansion — resource grains (products/customers/refunds/fulfillments/inventory):
   'products/create',
@@ -168,6 +172,17 @@ export class RegisterWebhooksCommand {
       }
 
       const body = await response.text().catch(() => '');
+      // 404 "Could not find the webhook topic …" → Shopify doesn't accept this topic via the
+      // subscription API (e.g. an app-config-only compliance webhook, or a topic removed in the
+      // pinned API version). SKIP it — a single unregisterable topic must never abort registration
+      // of the remaining resource webhooks (regression fixed 2026-07-16). Other non-OK statuses
+      // (401/403/5xx) are genuine failures and still throw.
+      if (response.status === 404) {
+        log.warn(
+          `webhook topic=${topic} not registerable via API (404) for shop=${input.shopDomain} — skipping: ${body.slice(0, 120)}`,
+        );
+        continue;
+      }
       throw new Error(
         `[RegisterWebhooksCommand] failed to register topic=${topic} status=${response.status}: ${body.slice(0, 200)}`,
       );

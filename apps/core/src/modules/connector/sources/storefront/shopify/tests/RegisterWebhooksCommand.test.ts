@@ -23,10 +23,9 @@ const EXPECTED_TOPICS = [
   'orders/paid',
   'orders/fulfilled',
   'orders/cancelled',
-  'customers/data_request',
-  'customers/redact',
-  'shop/redact',
   'app/uninstalled',
+  // GDPR compliance webhooks (customers/data_request, customers/redact, shop/redact) are NOT
+  // API-registered — they're app-config (Partner Dashboard) webhooks; the Admin API 404s on them.
   // P1 webhook expansion — real-time resource peers of the scheduled resource backfills
   // (RegisterWebhooksCommand ALL_WEBHOOK_TOPICS). Kept in lock-step with the command's list.
   'products/create',
@@ -97,10 +96,13 @@ describe('RegisterWebhooksCommand', () => {
     // Slash-form topic in the body, underscore-encoded single path segment in the address.
     const create = posted.find((p) => p.topic === 'orders/create')!;
     expect(create.address).toBe(`${CALLBACK_URL}/orders_create`);
-    const dataReq = posted.find((p) => p.topic === 'customers/data_request')!;
-    expect(dataReq.address).toBe(`${CALLBACK_URL}/customers_data_request`);
-    // Mandatory compliance topics are present.
-    for (const t of ['customers/redact', 'customers/data_request', 'shop/redact', 'app/uninstalled']) {
+    // GDPR compliance topics are NOT registered via the API (they're app-config webhooks) — Shopify
+    // 404s on them, and a POST here would abort the loop for the resource topics after them.
+    for (const t of ['customers/data_request', 'customers/redact', 'shop/redact']) {
+      expect(posted.some((p) => p.topic === t)).toBe(false);
+    }
+    // The regular topics ARE registered.
+    for (const t of ['orders/create', 'app/uninstalled', 'products/create', 'refunds/create']) {
       expect(posted.some((p) => p.topic === t)).toBe(true);
     }
   });

@@ -28,6 +28,7 @@ import type { FastifyRequest } from 'fastify';
 import type { Producer } from 'kafkajs';
 
 import { WebhookPipeline } from '../platform/WebhookPipeline.js';
+import { registerAllWebhookRoutes } from '../platform/registerWebhookRoutes.js';
 import { ShopifyWebhookStrategy } from '../strategies/ShopifyWebhookStrategy.js';
 import { setCounterSink } from '@brain/observability';
 
@@ -324,6 +325,65 @@ describe('ShopifyWebhookStrategy × WebhookPipeline — live path (Slice A)', ()
     expect(res.statusCode).toBe(200);
     expect(getMessages()).toHaveLength(1);
     expect(resolver).not.toHaveBeenCalled(); // bundle secret short-circuited the resolver
+    await app.close();
+  });
+
+  // ── BYO-required (shopify-byo-app-required Task 6): the DEFAULT resolver built inside
+  // registerAllWebhookRoutes must REFUSE the env app secret when the catalog says byoAppRequired.
+  // This goes through registerAllWebhookRoutes (not an injected resolver) on purpose.
+  it('byoAppRequired: brand has no stored app secret → env-signed HMAC fails 401 (env NOT consulted)', async () => {
+    const { producer, getMessages } = makeMockProducer();
+    const app = Fastify({ logger: false });
+    await app.register(fastifyRawBody as unknown as Parameters<typeof app.register>[0], {
+      field: 'rawBody', global: false, encoding: false, runFirst: true,
+    });
+
+    const secretsManager = {
+      getSecret: vi.fn().mockResolvedValue(null), // no per-brand shopify_app bundle
+      getShopifyClientSecret: vi.fn().mockResolvedValue('env-secret'), // env fallback exists
+      storeSecret: vi.fn(),
+      deleteSecret: vi.fn(),
+      storeShopifyToken: vi.fn(),
+      getShopifyToken: vi.fn().mockResolvedValue(null),
+      deleteShopifyToken: vi.fn(),
+      putSecretValue: vi.fn(),
+    };
+
+    registerAllWebhookRoutes(app, {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      secretsManager: secretsManager as any,
+      rawPgPool: makeFakePool(
+        { connector_instance_id: CONNECTOR_ID, brand_id: BRAND_ID, secret_ref: 'arn:test:shopify' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ) as any,
+      producer,
+      liveTopic: 'collector.event.v1',
+      getSaltHex: async () => SALT_HEX,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      redis: new InMemoryRedis() as any,
+      // NO shopifyHmacSecretResolver override — the default (catalog-driven) resolver is under test.
+    });
+    await app.ready();
+
+    // A webhook signed with the ENV secret — the receiver must REFUSE it for byoAppRequired.
+    const body = orderBody(new Date().toISOString());
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/webhooks/shopify/orders_create',
+      headers: {
+        'content-type': 'application/json',
+        'x-shopify-shop-domain': SHOP_DOMAIN,
+        'x-shopify-topic': 'orders/create',
+        'x-shopify-hmac-sha256': shopifyHmac(body, 'env-secret'),
+      },
+      body,
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body).error.code).toBe('HMAC_INVALID');
+    // The env app secret was NEVER fetched — BYO-required skips the fallback entirely.
+    expect(secretsManager.getShopifyClientSecret).not.toHaveBeenCalled();
+    expect(getMessages()).toHaveLength(0);
     await app.close();
   });
 });

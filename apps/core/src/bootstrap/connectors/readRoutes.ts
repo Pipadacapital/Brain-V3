@@ -18,9 +18,10 @@ import type { PgConnectorInstanceRepository } from '../../modules/connector/sour
 import type { PgConnectorSyncStatusRepository } from '../../modules/connector/sources/storefront/shopify/infrastructure/repositories/PgConnectorSyncStatusRepository.js';
 import { requireRole } from '../../modules/workspace-access/internal/security/rbac.js';
 
-import { getBrandId } from './shared.js';
+import { getBrandId, type ConnectorContextConfig } from './shared.js';
 
 export interface RegisterConnectorReadRoutesDeps {
+  config: ConnectorContextConfig;
   connectorRepo: PgConnectorInstanceRepository;
   syncStatusRepo: PgConnectorSyncStatusRepository;
   sessionPreHandler: preHandlerAsyncHookHandler;
@@ -44,7 +45,7 @@ function connectorHasWebhook(def: ConnectorDefinition): boolean {
 }
 
 export function registerConnectorReadRoutes(app: FastifyInstance, deps: RegisterConnectorReadRoutesDeps): void {
-  const { connectorRepo, syncStatusRepo, sessionPreHandler } = deps;
+  const { config, connectorRepo, syncStatusRepo, sessionPreHandler } = deps;
 
   const getConnectorStatus = new GetConnectorStatusQuery(connectorRepo, syncStatusRepo);
 
@@ -65,6 +66,17 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
         list.push(inst);
         activeByProvider.set(inst.provider, list);
       }
+
+      // last_error per instance (connector_sync_status) — drives e.g. the BYO reconnect banner.
+      const lastErrorByInstance = new Map<string, string | null>();
+      await Promise.all(
+        instances
+          .filter((inst) => inst.status !== 'disconnected')
+          .map(async (inst) => {
+            const status = await syncStatusRepo.findByConnectorInstanceId(inst.id, brandId).catch(() => null);
+            lastErrorByInstance.set(inst.id, status?.lastError ?? null);
+          }),
+      );
 
       const tiles = CONNECTOR_CATALOG.map((def) => {
         const activeInstances = activeByProvider.get(def.id) ?? [];
@@ -94,6 +106,7 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
             activated_at: inst.activatedAt ? inst.activatedAt.toISOString() : null,
             is_active: isAdPlatformProvider(inst.provider) ? inst.isActive : true,
             requires_activation: isAdPlatformProvider(inst.provider) && !inst.isActive,
+            last_error: lastErrorByInstance.get(inst.id) ?? null,
           };
         };
 
@@ -114,6 +127,17 @@ export function registerConnectorReadRoutes(app: FastifyInstance, deps: Register
             optional: f.optional ?? false,
             hint: f.hint ?? null,
           })),
+          // BYO-required (Shopify): the connect UI must collect the brand's own app creds — no env
+          // fallback. redirect_url is filled at request-build time (the catalog stores '') so the
+          // setup panel shows the EXACT callback the user pastes into their Custom App config.
+          byo_app_required: def.byoAppRequired ?? false,
+          byo_app_setup: def.byoAppSetup
+            ? {
+                redirect_url: def.id === 'shopify' ? config.shopifyCallbackUrl : def.byoAppSetup.redirectUrl,
+                scopes: [...def.byoAppSetup.scopes],
+                docs_url: def.byoAppSetup.docsUrl ?? null,
+              }
+            : null,
           instance: firstInstance ? toInstanceShape(firstInstance) : null,
           instances: activeInstances.map(toInstanceShape),
           // Always-visible webhook target for webhook connectors (the URL is not

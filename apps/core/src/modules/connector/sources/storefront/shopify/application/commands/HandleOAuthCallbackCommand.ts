@@ -107,6 +107,12 @@ export class HandleOAuthCallbackCommand {
     private readonly appEnv: string =
       process.env['APP_ENV'] ?? process.env['NODE_ENV'] ?? 'development',
     private readonly webhookCallbackBaseUrl: string = defaultWebhookCallbackBaseUrl(),
+    /**
+     * When true, resolve the brand's Shopify app creds WITHOUT the env fallback (BYO-required).
+     * Driven by catalog: getDefinition('shopify').byoAppRequired. Defaults to false to keep the
+     * existing 5-7 arg construction (and unit tests) compiling unchanged.
+     */
+    private readonly requireBrandCreds: boolean = false,
   ) {}
 
   async execute(input: OAuthCallbackInput): Promise<OAuthCallbackResult> {
@@ -129,12 +135,21 @@ export class HandleOAuthCallbackCommand {
     if (!peeked) {
       throw new StateNonceError('State nonce not found, expired, or already used');
     }
-    // The brand's app creds (its own app → env app fallback). Secret used for HMAC + token exchange;
-    // never logged (I-S09).
-    const appCreds = await resolveBrandOAuthAppCreds(this.secretsManager, 'shopify', peeked.brandId, {
-      clientId: process.env['SHOPIFY_CLIENT_ID'] ?? '',
-      clientSecret: await this.secretsManager.getShopifyClientSecret(),
-    });
+    // The brand's app creds (its own app → env app fallback — UNLESS BYO-required, where the env
+    // fallback is refused and its secret fetch is skipped entirely). Secret used for HMAC + token
+    // exchange; never logged (I-S09).
+    const appCreds = await resolveBrandOAuthAppCreds(
+      this.secretsManager,
+      'shopify',
+      peeked.brandId,
+      this.requireBrandCreds
+        ? null
+        : {
+            clientId: process.env['SHOPIFY_CLIENT_ID'] ?? '',
+            clientSecret: await this.secretsManager.getShopifyClientSecret(),
+          },
+      { requireBrandCreds: this.requireBrandCreds },
+    );
     if (!appCreds?.clientSecret) {
       throw new HmacValidationError();
     }

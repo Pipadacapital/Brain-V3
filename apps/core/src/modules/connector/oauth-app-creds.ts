@@ -61,18 +61,24 @@ function envClientId(provider: OAuthProvider): string | undefined {
  * Resolve the client_id to use when building a brand's authorize URL: the brand's stored app
  * client_id (Secrets Manager) → the env app client_id (back-compat) → undefined (not configured).
  * Only the client_id is needed at initiation; the secret is resolved at callback.
+ *
+ * When `opts.requireBrandCreds` is true, the env fallback is REFUSED — used by BYO-required
+ * connectors (e.g. Shopify) so a brand without its own OAuth app cannot silently ride a shared env
+ * app. In that mode a missing/partial brand bundle returns `undefined`.
  */
 export async function resolveBrandOAuthClientId(
   secretsManager: ISecretsManager,
   provider: OAuthProvider,
   brandId: string,
+  opts?: { requireBrandCreds?: boolean },
 ): Promise<string | undefined> {
   try {
     const bundle = await secretsManager.getSecret(appSecretName(provider, brandId));
     if (bundle?.['client_id']) return bundle['client_id'];
   } catch {
-    // fall through to env
+    // fall through to env (unless required)
   }
+  if (opts?.requireBrandCreds) return undefined;
   return envClientId(provider);
 }
 
@@ -99,16 +105,35 @@ export async function storeBrandOAuthAppCreds(
   );
 }
 
+/** True if the brand has its own stored OAuth app creds for this provider. */
+export async function hasBrandOAuthAppCreds(
+  secretsManager: ISecretsManager,
+  provider: OAuthProvider,
+  brandId: string,
+): Promise<boolean> {
+  try {
+    const bundle = await secretsManager.getSecret(appSecretName(provider, brandId));
+    return Boolean(bundle?.['client_id'] && bundle?.['client_secret']);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Resolve the OAuth app creds to use for a brand: the brand's stored creds first, else the provided
  * env fallback (back-compat), else null. The env fallback is passed by the caller because each
  * connector sources it differently (Shopify's secret comes via getShopifyClientSecret).
+ *
+ * When `opts.requireBrandCreds` is true, the `envFallback` is IGNORED — used by BYO-required
+ * connectors (e.g. Shopify) so a brand without its own OAuth app cannot silently ride a shared env
+ * app. In that mode a missing/partial brand bundle returns `null`.
  */
 export async function resolveBrandOAuthAppCreds(
   secretsManager: ISecretsManager,
   provider: OAuthProvider,
   brandId: string,
   envFallback: OAuthAppCreds | null,
+  opts?: { requireBrandCreds?: boolean },
 ): Promise<OAuthAppCreds | null> {
   try {
     const bundle = await secretsManager.getSecret(appSecretName(provider, brandId));
@@ -121,8 +146,9 @@ export async function resolveBrandOAuthAppCreds(
       return { clientId, clientSecret, ...(developerToken ? { developerToken } : {}) };
     }
   } catch {
-    // fall through to env fallback
+    // fall through to env fallback (unless required)
   }
+  if (opts?.requireBrandCreds) return null;
   if (envFallback?.clientId && envFallback?.clientSecret) return envFallback;
   return null;
 }

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import timedelta
 
 from _catalog import CATALOG, SILVER_NAMESPACE, connect, fqtn  # noqa: F401
 
@@ -160,6 +161,59 @@ def merge_on_pk(con, target: str, staged_sql: str, columns: list[str], pk: list[
     return n
 
 
+# ── Incremental reads (opt-in, default OFF) ───────────────────────────────────────────────────────────
+# SILVER_INCREMENTAL=1 turns on watermark-windowed reads for jobs that call incremental_window().
+# FULL_REFRESH=1 forces a full pass even when incremental is on (backfill / schema-widen / recovery — the
+# entity-incremental FULL_REFRESH gotcha: widening a fold job's reads must re-fold ALL history once).
+# Default (both unset) → (None, hi): a full scan, byte-identical to the pre-incremental behavior.
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no")
+
+
+INCREMENTAL = _flag("SILVER_INCREMENTAL")
+FULL_REFRESH = _flag("FULL_REFRESH")
+# Trailing safety lookback: re-scan [watermark - lookback, hi) each run so a slightly out-of-order arrival
+# (Kafka timestamps across partitions; a lagging producer clock) can never be skipped by an advanced
+# watermark. The idempotent MERGE makes the re-scanned overlap free of duplicates — only extra CPU, never
+# lost or doubled rows. Default 10 min; 0 disables the margin.
+LOOKBACK_SECONDS = int(os.environ.get("WATERMARK_LOOKBACK_SECONDS", "600") or "600")
+
+# The batch hi pinned by run_job for the duration of one job process (race-safe read/advance bound).
+_CURRENT_HI = None
+
+
+def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ingested_at"):
+    """Return (lo, hi) `ts_col` bounds for an incremental read of `source_table`, or (None, hi) for a full
+    scan.
+
+    Full scan (lo=None) when: SILVER_INCREMENTAL is off, FULL_REFRESH is on, or this job has no prior
+    watermark (first run). Otherwise lo = (last committed watermark − LOOKBACK_SECONDS) as a half-open
+    [lo, hi) window (the lookback re-admits a trailing margin; the idempotent MERGE dedups it). hi = the
+    batch max `ts_col` pinned by run_job. `ts_col` is `ingested_at` for entity jobs reading the gated
+    keystone, but `kafka_timestamp` for the keystone job reading Bronze collector_events_connect (which has
+    no lifted ingested_at column).
+
+    Per-event jobs pass (lo, hi) straight into their source WHERE. Entity-fold jobs use the window only to
+    discover CHANGED entity ids, then re-fold each changed entity's full history (never window the fold
+    input directly — that would drop below-watermark rows).
+    """
+    # run_job pins the batch's hi ONCE (before build) so the read bound and the watermark advance are the
+    # SAME value — a row landing mid-run is captured by the NEXT window, never skipped. Fall back to a live
+    # max() when called outside run_job (e.g. a unit harness).
+    hi = _CURRENT_HI
+    if hi is None:
+        try:
+            hi = con.execute(f"SELECT max({ts_col}) FROM {source_table}").fetchone()[0]
+        except Exception:  # noqa: BLE001 — source not created yet
+            return None, None
+    if not INCREMENTAL or FULL_REFRESH:
+        return None, hi
+    lo = read_watermark(con, job_name)
+    if lo is not None and LOOKBACK_SECONDS > 0:
+        lo = lo - timedelta(seconds=LOOKBACK_SECONDS)
+    return lo, hi
+
+
 def read_watermark(con, job_name: str):
     """Last SOURCE ingested_at this job processed, or None (first run / table absent → full pass)."""
     try:
@@ -189,26 +243,38 @@ def write_watermark(con, job_name: str, ts) -> None:
     )
 
 
-def run_job(job_name: str, build_fn, *, target_table: str) -> None:
+def run_job(job_name: str, build_fn, *, target_table: str, source_table: str = GATED_SOURCE,
+            ts_col: str = "ingested_at") -> None:
     """
-    Thin runner: connect → build(con) → advance watermark → structured log line.
+    Thin runner: connect → pin batch hi → build(con) → advance watermark → structured log line.
     build_fn(con) does the read+transform+MERGE and returns the upserted row count (or None).
+
+    `source_table`/`ts_col` name the column whose max the watermark tracks — `ingested_at` on the GATED
+    keystone for entity jobs, but `kafka_timestamp` on Bronze `collector_events_connect` for the keystone
+    job itself. The hi is pinned ONCE here (before build) so an incremental build's read bound and the
+    watermark advance are the SAME value, and a row landing mid-run is picked up by the next window rather
+    than skipped.
     """
+    global _CURRENT_HI
     t0 = time.time()
     con = connect()
     try:
-        upserted = build_fn(con)
-        # Advance the watermark to the max source ingested_at now visible (best-effort, non-fatal).
         try:
-            hi = con.execute(f"SELECT max(ingested_at) FROM {GATED_SOURCE}").fetchone()[0]
-            if hi is not None:
-                write_watermark(con, job_name, hi)
+            _CURRENT_HI = con.execute(f"SELECT max({ts_col}) FROM {source_table}").fetchone()[0]
+        except Exception:  # noqa: BLE001 — source not created yet → full pass, no advance
+            _CURRENT_HI = None
+        upserted = build_fn(con)
+        # Advance the watermark to the SAME pinned hi the build read up to (best-effort, non-fatal).
+        try:
+            if _CURRENT_HI is not None:
+                write_watermark(con, job_name, _CURRENT_HI)
         except Exception:  # noqa: BLE001
             pass
         dt = time.time() - t0
         print(f'{{"job":"{job_name}","target":"{target_table}","upserted":{upserted or 0},'
               f'"seconds":{dt:.2f},"engine":"duckdb"}}', flush=True)
     finally:
+        _CURRENT_HI = None
         con.close()
 
 

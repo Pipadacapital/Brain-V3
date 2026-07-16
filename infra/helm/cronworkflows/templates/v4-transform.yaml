@@ -123,13 +123,18 @@ spec:
           command: ["/bin/bash", "-c"]
           args:
             - |
-              set -uo pipefail   # NOT -e: a single mart failure must NOT abort the other ~30 (best-effort
-              # per-job refresh, matching tools/dev/duckdb-refresh.sh). Failures are counted; the workflow
-              # still exits non-zero so alerting fires.
-              fails=0
+              set -uo pipefail   # NOT -e: a single mart failure must NOT abort the others (best-effort).
               # Derive BRONZE/SILVER/GOLD PG env from core-env (DATABASE_URL_DIRECT) — else the PG-reading
               # jobs fall back to localhost and silently drop the pixel-lane R2 install→brand resolution.
               {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
+              {{- if .Values.sparkV4.singleProcess }}
+              # Phase 1d (AUD-2026-07-16): ONE process — attach the Iceberg catalog once, run all 45 jobs
+              # against a single connection. Kills the ~85s/job process+attach overhead that made a 90-spawn
+              # run take ~130 min. run_all.py preserves each job's run_job discipline + the 2-pass converge.
+              echo "── silver: single-process runner (Phase 1d) ──"
+              python /opt/brain/duckdb/run_all.py silver
+              {{- else }}
+              fails=0
               # keystone + spine are HARD deps (every other job reads them) — abort if they fail.
               for req in silver_collector_event.py silver_order_state.py; do
                 echo "▶ ${req} (required)"
@@ -146,6 +151,7 @@ spec:
                 done
               done
               [ "$fails" -eq 0 ] || { echo "── ${fails} silver job(s) failed (rest refreshed) ──"; exit 1; }
+              {{- end }}
           env:
             # ADR-0010: the silver jobs read the Kafka Connect Bronze tables (collector_events_connect
             # + <lane>_raw_connect) — fixed, no BRONZE_SOURCE switch (rollback = git revert).
@@ -226,10 +232,16 @@ spec:
           args:
             - |
               set -uo pipefail   # NOT -e: one mart failure must not abort the rest (best-effort refresh).
-              fails=0
               # Derive BRONZE/SILVER/GOLD PG env from core-env (DATABASE_URL_DIRECT) — the cost/margin
               # Gold marts read PG (gold_measurement_costs/contribution_margin/product_costs).
               {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
+              {{- if .Values.sparkV4.singleProcess }}
+              # Phase 1d: ONE process (attach once, run all 45 gold jobs) — run_all.py keeps the required
+              # gold_revenue_ledger + the ordered attribution chain (credit → marketing → paths) first.
+              echo "── gold: single-process runner (Phase 1d) ──"
+              python /opt/brain/duckdb/run_all.py gold
+              {{- else }}
+              fails=0
               # gold_revenue_ledger is the revenue basis many marts read — hard-fail if it breaks.
               echo "▶ gold_revenue_ledger.py (required)"
               python "/opt/brain/duckdb/gold/gold_revenue_ledger.py" || { echo "✗ REQUIRED gold_revenue_ledger failed — aborting run"; exit 1; }
@@ -244,6 +256,7 @@ spec:
                 run_job "$b"
               done
               [ "$fails" -eq 0 ] || { echo "── ${fails} gold job(s) failed (rest refreshed) ──"; exit 1; }
+              {{- end }}
           env:
             # ADR-0010: the gold jobs' Silver inputs derive from the Kafka Connect Bronze tables —
             # fixed, no BRONZE_SOURCE switch (rollback = git revert).

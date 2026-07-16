@@ -2,7 +2,7 @@
 /**
  * C.5.1 — measurement lineage: every executive metric traces to Measurement facts.
  *
- * Unit-level proof over a fake TrinoPool (no live stack): asserts the descriptor invariants and the
+ * Unit-level proof over a fake ServingPool (no live stack): asserts the descriptor invariants and the
  * brand-scoped query shape (every count/version SQL carries the ${BRAND_PREDICATE} sentinel → the
  * withSilverBrand seam injects `brand_id = ?`). The live golden numbers are recorded in GATE-C.md.
  */
@@ -22,7 +22,7 @@ function fakePool(): { pool: SilverPool; seen: string[] } {
   const pool: SilverPool = {
     async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
       seen.push(sql);
-      // withSilverBrand → withTrinoBrand replaces the sentinel with `brand_id = ?` before calling query.
+      // withSilverBrand → withServingBrand replaces the sentinel with `brand_id = ?` before calling query.
       if (/count\(\*\)/i.test(sql)) return [{ c: 7 }] as unknown as T[];
       if (/DISTINCT/i.test(sql)) return [{ v: 'c3.economics.v1' }] as unknown as T[];
       return [] as T[];

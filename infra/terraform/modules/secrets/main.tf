@@ -147,10 +147,10 @@ resource "aws_secretsmanager_secret" "app_boot" {
 
 locals {
   k8s_env_secrets = {
-    "core-env"                = "core + BFF + cronworkflows env (DATABASE_URL via pgbouncer, DATABASE_URL_DIRECT, REDIS/KAFKA/TRINO/ICEBERG/NEO4J wiring)"
+    "core-env"                = "core + BFF + cronworkflows env (DATABASE_URL via pgbouncer, DATABASE_URL_DIRECT, REDIS/KAFKA/DUCKDB-SERVING/ICEBERG/NEO4J wiring)"
     "web-env"                 = "web (BFF_BASE_URL / CORE_API_URL)"
     "collector-env"           = "collector (DATABASE_URL, REDIS_URL, KAFKA_BROKERS, HMAC/pixel config)"
-    "stream-worker-env"       = "stream-worker (DIRECT Aurora DATABASE_URL — leader lock, KAFKA/TRINO/NEO4J, connector app creds)"
+    "stream-worker-env"       = "stream-worker (DIRECT Aurora DATABASE_URL — leader lock, KAFKA/DUCKDB-SERVING/NEO4J, connector app creds)"
     "pgbouncer-env"           = "pgbouncer upstream admin credentials (DB_USER/DB_PASSWORD)"
     "iceberg-rest-catalog-db" = "iceberg-rest JdbcCatalog credentials (exactly: jdbc-user, jdbc-password)"
     "neo4j-auth"              = "official neo4j chart auth (exactly: NEO4J_AUTH = neo4j/<password>)"

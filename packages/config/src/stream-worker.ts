@@ -160,18 +160,18 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   // Mirrors the sync-request-claimer: without it, dev backfills sit 'queued' forever (prod runs a cron).
   BACKFILL_CLAIMER_INTERVAL_MS: z.coerce.number().int().default(60000),
 
-  // ── Trino serving (Silver/Gold) readers — Brain V4 (StarRocks removed) ───────
+  // ── duckdb-serving (Silver/Gold) readers — Brain V4 (Trino removed, ADR-0014) ─
   /**
    * Optional — when absent, the Silver-tier DQ checks + the journey-stitch / feature
    * materialization jobs degrade to honest no_data (the serving tier is the SOLE source).
    * Defaults to 'localhost' to MATCH the core config (packages/config/src/core.ts) — without a
-   * default the journey-stitch-from-identity job (reads mv_silver_touchpoint over Trino) silently
-   * SKIPPED when TRINO_HOST was absent from the env file, starving stitches → attribution. The
+   * default the journey-stitch-from-identity job (reads mv_silver_touchpoint over serving) silently
+   * SKIPPED when the host was absent from the env file, starving stitches → attribution. The
    * serving tier is always present in dev/prod, so localhost is the correct default; override per env.
    */
-  TRINO_HOST: z.string().default('localhost'),
-  /** Trino HTTP/JDBC port (container: 8080, host: 8090 in docker-compose). */
-  TRINO_PORT: z.coerce.number().int().default(8090),
+  DUCKDB_SERVING_HOST: z.string().default('localhost'),
+  /** duckdb-serving HTTP port (uvicorn :8091 — same port in-container and on the host). */
+  DUCKDB_SERVING_PORT: z.coerce.number().int().default(8091),
 
   // ── Identity store (Neo4j) — main.ts + phone-guard + identity-export ─────────
   NEO4J_URI: z.string().default('bolt://localhost:7687'),

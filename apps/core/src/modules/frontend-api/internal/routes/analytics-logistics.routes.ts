@@ -193,7 +193,7 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
         return reply.send({ request_id: requestId, data: { state: 'no_data', generated_at: new Date().toISOString() } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
       const brandId = auth.brandId; // narrowed string — stable inside the cache closure
       const result: ContractDeliveryTime = await cachedRead(brandId, 'delivery_time', {}, () =>

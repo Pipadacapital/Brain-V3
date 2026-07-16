@@ -4,11 +4,11 @@
  * The SOLE reader of the per-journey serving view brain_serving.mv_gold_journey (one row per
  * (brand_id, brain_anon_id) — the deterministic journey roll-up over the Silver spine), served
  * through withSilverBrand (I-ST01 — the engine is the only serving reader; the UI never queries
- * Trino). A THIN projection: newest-first by last_touch_at, KEYSET-paginated on the composite
+ * the engine directly). A THIN projection: newest-first by last_touch_at, KEYSET-paginated on the composite
  * (last_touch_at, brain_anon_id) tuple so the page boundary is stable under ties (no OFFSET drift).
  *
  * NO MONEY: a journey list is behavioral (mirrors journey-mix.ts / journey-paths.ts). brain_anon_id
- * is the opaque anon key (no PII). Counts are bigint (Trino COUNT) carried as strings (BigInt-safe
+ * is the opaque anon key (no PII). Counts are bigint (serving COUNT) carried as strings (BigInt-safe
  * JSON). first_channel/last_channel are mapped to the canonical JourneyChannel set (the same closed
  * enum the first-touch mix renders — unknown/absent folds deterministically to 'direct').
  *
@@ -42,7 +42,7 @@ function toChannel(v: unknown): JourneyChannel {
   return CHANNEL_SET.has(s) ? (s as JourneyChannel) : 'direct';
 }
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] ?? '0');
 }
@@ -54,7 +54,7 @@ function str(v: unknown): string | null {
   return s.length === 0 ? null : s;
 }
 
-/** Normalize a Trino boolean (native boolean, or 0/1 over a legacy wire) → boolean. */
+/** Normalize a serving boolean (native boolean, or 0/1 over a legacy wire) → boolean. */
 function asBool(v: unknown): boolean {
   return v === true || v === 1 || v === '1';
 }
@@ -66,9 +66,9 @@ const MAX_LIMIT = 100;
 export interface JourneyListRow {
   /** Opaque anon journey key (no PII); also the keyset tiebreaker. */
   brainAnonId: string;
-  /** Raw Trino/Iceberg timestamp string (UTC), serialized verbatim. */
+  /** Raw serving/Iceberg timestamp string (UTC), serialized verbatim. */
   firstTouchAt: string;
-  /** Raw Trino/Iceberg timestamp string (UTC); the primary sort key. */
+  /** Raw serving/Iceberg timestamp string (UTC); the primary sort key. */
   lastTouchAt: string;
   /** First-touch channel, mapped to the canonical set. */
   firstChannel: JourneyChannel;
@@ -159,7 +159,7 @@ interface JourneyTotalRow {
  * computeJourneyList — one page of a brand's recent customer journeys, newest-first.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - the Trino serving pool (createTrinoPool) injected at the root.
+ * @param deps    - the serving pool (createDuckDbServingPool) injected at the root.
  * @param params  - page size + optional keyset continuation (opaque cursor).
  */
 export async function computeJourneyList(

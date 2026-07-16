@@ -24,7 +24,7 @@ import { computeChannelRoas } from './attribution-channel-roas.js';
 import { computeAdSpendTimeseries } from './ad-spend-timeseries.js';
 import type { SilverPool } from './silver-deps.js';
 
-// A capturing mock TrinoPool: returns the SAME fixture rows regardless of WHICH spend view the SQL
+// A capturing mock ServingPool: returns the SAME fixture rows regardless of WHICH spend view the SQL
 // names (that is the whole point — the measurement view is an alias over the same silver fact).
 function makeMockPool(): { pool: SilverPool; spendSql: string[] } {
   const spendSql: string[] = [];
@@ -37,7 +37,7 @@ function makeMockPool(): { pool: SilverPool; spendSql: string[] } {
         ] as T[];
       }
       if (sql.includes(LEGACY_SPEND_VIEW) || sql.includes(MEASUREMENT_SPEND_VIEW)) {
-        // Timeseries query carries a date_format bucket; return the bucketed shape when present.
+        // Timeseries query carries a strftime bucket; return the bucketed shape when present.
         if (sql.includes('AS bucket')) {
           spendSql.push(sql);
           return [

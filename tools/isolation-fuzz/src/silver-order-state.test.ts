@@ -6,13 +6,13 @@
  *
  * THE MECHANISM UNDER TEST: packages/metric-engine/src/silver-deps.ts `withSilverBrand`.
  *
- * ── BRAIN V4: this seam now runs over TRINO (Iceberg), not StarRocks ──────────────
- * Brain V4 removes StarRocks as the serving engine; `withSilverBrand` delegates to
- * `withTrinoBrand`, and SilverPool IS the Trino query PORT. Trino's REST API has NO
- * native row-level security (unlike managed StarRocks), so the ${BRAND_PREDICATE} →
+ * ── BRAIN V4: this seam now runs over DUCKDB-SERVING (Iceberg), not StarRocks ─────
+ * Brain V4 removes StarRocks (and Trino, ADR-0014) as the serving engine; `withSilverBrand`
+ * delegates to `withServingBrand`, and SilverPool IS the serving query PORT. duckdb-serving's
+ * HTTP API has NO native row-level security (unlike managed StarRocks), so the ${BRAND_PREDICATE} →
  * `brand_id = ?` injection at this seam is the SOLE load-bearing isolation. This test
  * therefore drives the REAL seam (imported from @brain/metric-engine — not a copy) over a
- * Trino-SHAPED in-memory pool, so the positive + mutation-leak proof is deterministic and
+ * serving-SHAPED in-memory pool, so the positive + mutation-leak proof is deterministic and
  * always runs (no live store / no PEND) while exercising exactly the code that ships.
  *
  * THE NON-INERT PROOF (the part that matters):
@@ -23,8 +23,8 @@
  *      doing the work) → the test FAILS LOUD. This makes the guard's effectiveness
  *      observable (the R1/M-01 demand).
  *
- * The Trino-shaped fake honors the injected predicate exactly the way the Trino REST
- * adapter would: when the SQL contains `brand_id = ?`, it filters to the trailing brandId
+ * The serving-shaped fake honors the injected predicate exactly the way the duckdb-serving
+ * HTTP adapter would: when the SQL contains `brand_id = ?`, it filters to the trailing brandId
  * param; when the mutation path rewrites the sentinel to `1 = 1`, it returns ALL brands.
  */
 
@@ -41,17 +41,17 @@ interface OrderStateRow {
 }
 
 /**
- * A Trino-SHAPED in-memory SilverPool. Mirrors how the real Trino adapter would behave
- * AFTER the withSilverBrand/withTrinoBrand seam has substituted the sentinel:
+ * A serving-SHAPED in-memory SilverPool. Mirrors how the real serving adapter would behave
+ * AFTER the withSilverBrand/withServingBrand seam has substituted the sentinel:
  *   • enabled seam  → SQL contains `brand_id = ?`; the trailing param is the brandId →
  *                     the fake filters rows to that brand (no cross-brand rows returned).
  *   • disabled seam → SQL contains `1 = 1` (no `brand_id = ?`) and no brandId param →
  *                     the fake returns ALL brands (the cross-brand leak the mutation proves).
  *
  * This is engine-agnostic: the seam under test is the ${BRAND_PREDICATE} injection, and
- * this fake makes the injected predicate load-bearing exactly as a real Trino read would.
+ * this fake makes the injected predicate load-bearing exactly as a real serving read would.
  */
-function makeTrinoShapedPool(rows: OrderStateRow[]): SilverPool {
+function makeServingShapedPool(rows: OrderStateRow[]): SilverPool {
   return {
     async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
       const hasBrandPredicate = sql.includes('brand_id = ?');
@@ -73,9 +73,9 @@ const SEED_ROWS: OrderStateRow[] = [
 
 const SEED_TABLE = 'brain_serving.mv_silver_order_state';
 
-describe('Silver read seam — per-brand isolation (NN-2 / I-ST01, withSilverBrand over Trino)', () => {
+describe('Silver read seam — per-brand isolation (NN-2 / I-ST01, withSilverBrand over duckdb-serving)', () => {
   it('[positive] withSilverBrand(brandA) returns ONLY brand-A rows, zero brand-B', async () => {
-    const pool = makeTrinoShapedPool(SEED_ROWS);
+    const pool = makeServingShapedPool(SEED_ROWS);
 
     const rows = await withSilverBrand(pool, BRAND_A, async (scope) =>
       scope.runScoped<{ brand_id: string }>(
@@ -89,7 +89,7 @@ describe('Silver read seam — per-brand isolation (NN-2 / I-ST01, withSilverBra
   });
 
   it('[mutation / NON-INERT proof] disabling the seam predicate MUST leak brand-B rows', async () => {
-    const pool = makeTrinoShapedPool(SEED_ROWS);
+    const pool = makeServingShapedPool(SEED_ROWS);
 
     // Same logical read, asked for brand-A, but with predicate injection DISABLED.
     // If the predicate were inert (not doing the work), the result would be unchanged
@@ -109,7 +109,7 @@ describe('Silver read seam — per-brand isolation (NN-2 / I-ST01, withSilverBra
   });
 
   it('[fail-closed] a query missing the ${BRAND_PREDICATE} sentinel THROWS (never runs un-scoped)', async () => {
-    const pool = makeTrinoShapedPool(SEED_ROWS);
+    const pool = makeServingShapedPool(SEED_ROWS);
     await expect(
       withSilverBrand(pool, BRAND_A, async (scope) =>
         scope.runScoped<{ brand_id: string }>(`SELECT brand_id FROM ${SEED_TABLE} WHERE 1 = 1`),
@@ -117,10 +117,10 @@ describe('Silver read seam — per-brand isolation (NN-2 / I-ST01, withSilverBra
     ).rejects.toThrow(/BRAND_PREDICATE/);
   });
 
-  it('[documentation] Trino has no native row policy — the seam predicate IS the isolation', () => {
-    // ALWAYS PASSES — documents the platform boundary honestly. Brain V4 serving is Trino over
-    // Iceberg; unlike managed StarRocks (CREATE ROW POLICY) there is no engine row filter, so the
-    // withSilverBrand/withTrinoBrand seam predicate is the SOLE isolation, proven non-inert above.
-    expect('Silver isolation = app-seam predicate over Trino (non-inert); no native row policy').toBeTruthy();
+  it('[documentation] duckdb-serving has no native row policy — the seam predicate IS the isolation', () => {
+    // ALWAYS PASSES — documents the platform boundary honestly. Brain V4 serving is duckdb-serving
+    // over Iceberg; unlike managed StarRocks (CREATE ROW POLICY) there is no engine row filter, so the
+    // withSilverBrand/withServingBrand seam predicate is the SOLE isolation, proven non-inert above.
+    expect('Silver isolation = app-seam predicate over duckdb-serving (non-inert); no native row policy').toBeTruthy();
   });
 });

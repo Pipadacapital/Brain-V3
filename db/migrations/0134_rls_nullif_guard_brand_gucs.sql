@@ -53,12 +53,20 @@ DROP POLICY IF EXISTS decision_log_isolation ON audit.decision_log;
 CREATE POLICY decision_log_isolation ON audit.decision_log TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- audit.decision_log_p2026_06
-DROP POLICY IF EXISTS decision_log_p2026_06_isolation ON audit.decision_log_p2026_06;
-CREATE POLICY decision_log_p2026_06_isolation ON audit.decision_log_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('audit.decision_log_p2026_06') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS decision_log_p2026_06_isolation ON audit.decision_log_p2026_06$q$;
+    EXECUTE $q$CREATE POLICY decision_log_p2026_06_isolation ON audit.decision_log_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- audit.decision_log_p2026_07
-DROP POLICY IF EXISTS decision_log_p2026_07_isolation ON audit.decision_log_p2026_07;
-CREATE POLICY decision_log_p2026_07_isolation ON audit.decision_log_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('audit.decision_log_p2026_07') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS decision_log_p2026_07_isolation ON audit.decision_log_p2026_07$q$;
+    EXECUTE $q$CREATE POLICY decision_log_p2026_07_isolation ON audit.decision_log_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- audit.decision_log_pdefault
 DROP POLICY IF EXISTS decision_log_pdefault_isolation ON audit.decision_log_pdefault;
@@ -69,12 +77,20 @@ DROP POLICY IF EXISTS dq_check_result_isolation ON audit.dq_check_result;
 CREATE POLICY dq_check_result_isolation ON audit.dq_check_result TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- audit.dq_check_result_p2026_06
-DROP POLICY IF EXISTS dq_check_result_p2026_06_isolation ON audit.dq_check_result_p2026_06;
-CREATE POLICY dq_check_result_p2026_06_isolation ON audit.dq_check_result_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('audit.dq_check_result_p2026_06') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS dq_check_result_p2026_06_isolation ON audit.dq_check_result_p2026_06$q$;
+    EXECUTE $q$CREATE POLICY dq_check_result_p2026_06_isolation ON audit.dq_check_result_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- audit.dq_check_result_p2026_07
-DROP POLICY IF EXISTS dq_check_result_p2026_07_isolation ON audit.dq_check_result_p2026_07;
-CREATE POLICY dq_check_result_p2026_07_isolation ON audit.dq_check_result_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('audit.dq_check_result_p2026_07') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS dq_check_result_p2026_07_isolation ON audit.dq_check_result_p2026_07$q$;
+    EXECUTE $q$CREATE POLICY dq_check_result_p2026_07_isolation ON audit.dq_check_result_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- audit.dq_check_result_pdefault
 DROP POLICY IF EXISTS dq_check_result_pdefault_isolation ON audit.dq_check_result_pdefault;
@@ -85,8 +101,12 @@ DROP POLICY IF EXISTS identity_audit_isolation ON audit.identity_audit;
 CREATE POLICY identity_audit_isolation ON audit.identity_audit TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- audit.identity_audit_p2026_06
-DROP POLICY IF EXISTS identity_audit_p2026_06_isolation ON audit.identity_audit_p2026_06;
-CREATE POLICY identity_audit_p2026_06_isolation ON audit.identity_audit_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('audit.identity_audit_p2026_06') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS identity_audit_p2026_06_isolation ON audit.identity_audit_p2026_06$q$;
+    EXECUTE $q$CREATE POLICY identity_audit_p2026_06_isolation ON audit.identity_audit_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- audit.identity_audit_pdefault
 DROP POLICY IF EXISTS identity_audit_pdefault_isolation ON audit.identity_audit_pdefault;
@@ -97,8 +117,12 @@ DROP POLICY IF EXISTS send_log_isolation ON audit.send_log;
 CREATE POLICY send_log_isolation ON audit.send_log TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- audit.send_log_p2026_06
-DROP POLICY IF EXISTS send_log_p2026_06_isolation ON audit.send_log_p2026_06;
-CREATE POLICY send_log_p2026_06_isolation ON audit.send_log_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('audit.send_log_p2026_06') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS send_log_p2026_06_isolation ON audit.send_log_p2026_06$q$;
+    EXECUTE $q$CREATE POLICY send_log_p2026_06_isolation ON audit.send_log_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- audit.send_log_pdefault
 DROP POLICY IF EXISTS send_log_pdefault_isolation ON audit.send_log_pdefault;
@@ -133,8 +157,12 @@ DROP POLICY IF EXISTS tax_ledger_isolation ON billing.tax_ledger;
 CREATE POLICY tax_ledger_isolation ON billing.tax_ledger TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- billing.tax_ledger_p2026_06
-DROP POLICY IF EXISTS tax_ledger_p2026_06_isolation ON billing.tax_ledger_p2026_06;
-CREATE POLICY tax_ledger_p2026_06_isolation ON billing.tax_ledger_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('billing.tax_ledger_p2026_06') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS tax_ledger_p2026_06_isolation ON billing.tax_ledger_p2026_06$q$;
+    EXECUTE $q$CREATE POLICY tax_ledger_p2026_06_isolation ON billing.tax_ledger_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- billing.tax_ledger_pdefault
 DROP POLICY IF EXISTS tax_ledger_pdefault_isolation ON billing.tax_ledger_pdefault;
@@ -149,16 +177,28 @@ DROP POLICY IF EXISTS connector_dlq_record_isolation ON connectors.connector_dlq
 CREATE POLICY connector_dlq_record_isolation ON connectors.connector_dlq_record TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- connectors.connector_dlq_record_p2026_06
-DROP POLICY IF EXISTS connector_dlq_record_p2026_06_isolation ON connectors.connector_dlq_record_p2026_06;
-CREATE POLICY connector_dlq_record_p2026_06_isolation ON connectors.connector_dlq_record_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_dlq_record_p2026_06') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_dlq_record_p2026_06_isolation ON connectors.connector_dlq_record_p2026_06$q$;
+    EXECUTE $q$CREATE POLICY connector_dlq_record_p2026_06_isolation ON connectors.connector_dlq_record_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_dlq_record_p2026_07
-DROP POLICY IF EXISTS connector_dlq_record_p2026_07_isolation ON connectors.connector_dlq_record_p2026_07;
-CREATE POLICY connector_dlq_record_p2026_07_isolation ON connectors.connector_dlq_record_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_dlq_record_p2026_07') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_dlq_record_p2026_07_isolation ON connectors.connector_dlq_record_p2026_07$q$;
+    EXECUTE $q$CREATE POLICY connector_dlq_record_p2026_07_isolation ON connectors.connector_dlq_record_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_dlq_record_p2026_08
-DROP POLICY IF EXISTS connector_dlq_record_p2026_08_isolation ON connectors.connector_dlq_record_p2026_08;
-CREATE POLICY connector_dlq_record_p2026_08_isolation ON connectors.connector_dlq_record_p2026_08 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_dlq_record_p2026_08') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_dlq_record_p2026_08_isolation ON connectors.connector_dlq_record_p2026_08$q$;
+    EXECUTE $q$CREATE POLICY connector_dlq_record_p2026_08_isolation ON connectors.connector_dlq_record_p2026_08 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_dlq_record_pdefault
 DROP POLICY IF EXISTS connector_dlq_record_pdefault_isolation ON connectors.connector_dlq_record_pdefault;
@@ -181,16 +221,28 @@ DROP POLICY IF EXISTS connector_sync_run_isolation ON connectors.connector_sync_
 CREATE POLICY connector_sync_run_isolation ON connectors.connector_sync_run TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- connectors.connector_sync_run_p2026_07
-DROP POLICY IF EXISTS connector_sync_run_p2026_07_isolation ON connectors.connector_sync_run_p2026_07;
-CREATE POLICY connector_sync_run_p2026_07_isolation ON connectors.connector_sync_run_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_sync_run_p2026_07') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_sync_run_p2026_07_isolation ON connectors.connector_sync_run_p2026_07$q$;
+    EXECUTE $q$CREATE POLICY connector_sync_run_p2026_07_isolation ON connectors.connector_sync_run_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_sync_run_p2026_08
-DROP POLICY IF EXISTS connector_sync_run_p2026_08_isolation ON connectors.connector_sync_run_p2026_08;
-CREATE POLICY connector_sync_run_p2026_08_isolation ON connectors.connector_sync_run_p2026_08 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_sync_run_p2026_08') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_sync_run_p2026_08_isolation ON connectors.connector_sync_run_p2026_08$q$;
+    EXECUTE $q$CREATE POLICY connector_sync_run_p2026_08_isolation ON connectors.connector_sync_run_p2026_08 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_sync_run_p2026_09
-DROP POLICY IF EXISTS connector_sync_run_p2026_09_isolation ON connectors.connector_sync_run_p2026_09;
-CREATE POLICY connector_sync_run_p2026_09_isolation ON connectors.connector_sync_run_p2026_09 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_sync_run_p2026_09') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_sync_run_p2026_09_isolation ON connectors.connector_sync_run_p2026_09$q$;
+    EXECUTE $q$CREATE POLICY connector_sync_run_p2026_09_isolation ON connectors.connector_sync_run_p2026_09 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_sync_status
 DROP POLICY IF EXISTS connector_sync_status_isolation ON connectors.connector_sync_status;
@@ -205,16 +257,28 @@ DROP POLICY IF EXISTS connector_webhook_raw_archive_isolation ON connectors.conn
 CREATE POLICY connector_webhook_raw_archive_isolation ON connectors.connector_webhook_raw_archive_legacy TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
 
 -- connectors.connector_webhook_raw_archive_p2026_06
-DROP POLICY IF EXISTS connector_webhook_raw_archive_p2026_06_isolation ON connectors.connector_webhook_raw_archive_p2026_06;
-CREATE POLICY connector_webhook_raw_archive_p2026_06_isolation ON connectors.connector_webhook_raw_archive_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_webhook_raw_archive_p2026_06') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_webhook_raw_archive_p2026_06_isolation ON connectors.connector_webhook_raw_archive_p2026_06$q$;
+    EXECUTE $q$CREATE POLICY connector_webhook_raw_archive_p2026_06_isolation ON connectors.connector_webhook_raw_archive_p2026_06 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_webhook_raw_archive_p2026_07
-DROP POLICY IF EXISTS connector_webhook_raw_archive_p2026_07_isolation ON connectors.connector_webhook_raw_archive_p2026_07;
-CREATE POLICY connector_webhook_raw_archive_p2026_07_isolation ON connectors.connector_webhook_raw_archive_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_webhook_raw_archive_p2026_07') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_webhook_raw_archive_p2026_07_isolation ON connectors.connector_webhook_raw_archive_p2026_07$q$;
+    EXECUTE $q$CREATE POLICY connector_webhook_raw_archive_p2026_07_isolation ON connectors.connector_webhook_raw_archive_p2026_07 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_webhook_raw_archive_p2026_08
-DROP POLICY IF EXISTS connector_webhook_raw_archive_p2026_08_isolation ON connectors.connector_webhook_raw_archive_p2026_08;
-CREATE POLICY connector_webhook_raw_archive_p2026_08_isolation ON connectors.connector_webhook_raw_archive_p2026_08 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+DO $guard$ BEGIN
+  IF to_regclass('connectors.connector_webhook_raw_archive_p2026_08') IS NOT NULL THEN
+    EXECUTE $q$DROP POLICY IF EXISTS connector_webhook_raw_archive_p2026_08_isolation ON connectors.connector_webhook_raw_archive_p2026_08$q$;
+    EXECUTE $q$CREATE POLICY connector_webhook_raw_archive_p2026_08_isolation ON connectors.connector_webhook_raw_archive_p2026_08 TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid))$q$;
+  END IF;
+END $guard$;
 
 -- connectors.connector_webhook_raw_archive_pdefault
 DROP POLICY IF EXISTS connector_webhook_raw_archive_pdefault_isolation ON connectors.connector_webhook_raw_archive_pdefault;

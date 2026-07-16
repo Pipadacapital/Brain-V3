@@ -10,12 +10,12 @@
 #      prometheus.io scrape annotations (same annotation-based discovery as
 #      kafka-observability.yaml — no Prometheus-Operator CRD dependency).
 #
-# It queries Trino (the sole serving engine) for each mart's latest Iceberg snapshot and
-# emits brain_data_freshness_seconds{mart,schema,sla_class}, read by
+# It queries duckdb-serving (the sole serving engine, ADR-0014) for each mart's latest Iceberg
+# snapshot and emits brain_data_freshness_seconds{mart,schema,sla_class}, read by
 # infra/observe/alerts/freshness.rules.yml (BrainExecutiveMartStale / BrainSegmentMartStale).
 #
-# Namespace: wherever Trino + Prometheus live (default: brain-observe). The exporter needs
-# network reach to the Trino coordinator Service (default URL http://trino:8080).
+# Namespace: wherever duckdb-serving + Prometheus live (default: brain-observe). The exporter
+# needs network reach to the duckdb-serving Service (default URL http://duckdb-serving:8091).
 #
 # NOTE — keep the embedded script in sync with the source of truth at
 # tools/observability/freshness-exporter/freshness_exporter.py. For a real deploy, prefer
@@ -70,11 +70,9 @@ spec:
           image: python:3.13-slim
           command: ["python3", "/app/freshness_exporter.py"]
           env:
-            - name: FRESHNESS_TRINO_URL
-              value: "http://trino:8080"   # ← adjust to your Trino coordinator Service
-            - name: FRESHNESS_TRINO_USER
-              value: "brain"
-            - name: FRESHNESS_TRINO_CATALOG
+            - name: FRESHNESS_SERVING_URL
+              value: "http://duckdb-serving:8091"   # ← adjust to your duckdb-serving Service
+            - name: FRESHNESS_ICEBERG_CATALOG
               value: "iceberg"
             - name: FRESHNESS_GOLD_SCHEMA
               value: "brain_gold"

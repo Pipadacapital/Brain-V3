@@ -1,7 +1,0 @@
-apiVersion: v2
-name: trino
-description: Brain serving tier — Trino-over-Iceberg (SOLE serving engine; BFF/metric-engine read Trino brain_serving.mv_* only)
-type: application
-version: 0.1.0
-# appVersion pins the Trino release line; mirrors the local docker-compose image (trinodb/trino:455).
-appVersion: "455"

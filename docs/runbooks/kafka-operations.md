@@ -90,7 +90,7 @@ Why three Succeeded syncs of guard-carrying revisions changed nothing:
 
 ### Same bug elsewhere (follow-up, do NOT fix ad hoc)
 
-Every other prod/staging Application (`core`, `web`, `collector`, `trino`, `kafka-connect`,
+Every other prod/staging Application (`core`, `web`, `collector`, `duckdb-serving`, `kafka-connect`,
 `cronworkflows`, …) uses the same relative `manifest-generate-paths` form → their syncs can
 also serve stale manifests (e.g. image-digest bumps silently not deploying). Tracked as an
 AUD-INFRA-002 follow-up; fix is the same one-character leading `/` per app, one reviewed PR.

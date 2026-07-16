@@ -7,24 +7,23 @@
  * resolver supplies the binding (no model call); the engine pool reads real seeded ledgers.
  *
  * PHASE G: ad_spend + blended_roas now read the LAKEHOUSE (silver_marketing_spend +
- * gold_revenue_ledger) via withSilverBrand. BRAIN V4: StarRocks is REMOVED — those reads run over TRINO
- * (createTrinoPool), the same Trino-over-Iceberg serving path the app uses in production. This test seeds
+ * gold_revenue_ledger) via withSilverBrand. BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014) — those reads run over DUCKDB-SERVING
+ * (createDuckDbServingPool), the same duckdb-serving-over-Iceberg serving path the app uses in production. This test seeds
  * the base Iceberg tables and passes srPool. cod_rto_rate / order_status_mix stay on PG. The lakehouse
- * cases SKIP if Trino is down.
+ * cases SKIP if duckdb-serving is down.
  *
- * REQUIRES: Postgres on localhost:5432 (ledgers + ai_provenance) + Trino on :8090 (Phase-G Iceberg marts).
+ * REQUIRES: Postgres on localhost:5432 (ledgers + ai_provenance) + duckdb-serving on :8091 (Phase-G Iceberg marts).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { ResolverClient } from '@brain/ai-gateway-client';
-import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import { askBrain, reproduceAnswer } from './ask-brain.js';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 const BRAND = 'a5ca1a01-0a11-4a11-8a11-00000000aa01';
 const ORG = 'a5ca1a01-0a11-4a11-8a11-00000000ff01';
@@ -85,7 +84,7 @@ beforeAll(async () => {
 
   // ── Phase G: seed the LAKEHOUSE equivalents (ad_spend + blended_roas read here now) ──
   try {
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     await srPool.query('SELECT 1');
     srUp = true;
   } catch {
@@ -124,7 +123,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   await pool?.end?.().catch(() => {});
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('askBrain — newly-wired scalar bindings (live Postgres)', () => {

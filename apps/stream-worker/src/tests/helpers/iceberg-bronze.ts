@@ -11,35 +11,35 @@
  * brain-bronze-sink container) are RETIRED.
  *
  * So the "does an event land in Bronze?" e2e tests: PRODUCE a raw-JSON collector envelope to the
- * Bronze-bound Kafka topic → the running Connect sink lands it in Iceberg → READ it back over TRINO
- * through the LIFT VIEW `iceberg.brain_bronze.collector_events_connect_lifted`, which exposes the
- * lifted envelope columns (event_id/brand_id/event_type/occurred_at/...) these pollers filter on.
- * Trino reads Iceberg snapshots directly — no external-table metadata cache to bust; a row is
- * visible on the first snapshot after the Connect sink's commit (POLL TIMEOUTS must tolerate the
- * ~30-60s commit latency — hence the 120s default below).
+ * Bronze-bound Kafka topic → the running Connect sink lands it in Iceberg → READ it back over
+ * DUCKDB-SERVING through the LIFT VIEW `brain_bronze.collector_events_connect_lifted`, which exposes
+ * the lifted envelope columns (event_id/brand_id/event_type/occurred_at/...) these pollers filter on.
+ * duckdb-serving reads Iceberg snapshots directly (epoch rotation re-attaches the catalog) — no
+ * external-table metadata cache to bust; a row is visible on the first post-commit epoch (POLL
+ * TIMEOUTS must tolerate the ~30-60s commit latency + rotation — hence the 120s default below).
  *
  * Tenant isolation in the lakehouse is PREDICATE-BASED at the read seam (every read filters
- * `brand_id = ?`, mirroring metric-engine withTrinoBrand / dq silver-reader), NOT PG RLS. A
+ * `brand_id = ?`, mirroring metric-engine withServingBrand / dq silver-reader), NOT PG RLS. A
  * brand-scoped query therefore returns 0 rows for another brand's event BY CONSTRUCTION.
  *
- * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
- * Suites self-skip via `icebergBronzeAvailable()` when it is not up.
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO +
+ * duckdb-serving). Suites self-skip via `icebergBronzeAvailable()` when it is not up.
  */
-import { createTrinoPool } from '@brain/metric-engine';
+import { createDuckDbServingPool } from '@brain/metric-engine';
 import type { Producer } from 'kafkajs';
 
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 /**
  * The Bronze read target (ADR-0010, CONSTANT — the BRONZE_SOURCE cutover seam is REMOVED): the
- * Trino lift view over the Kafka Connect collector table. The three-part name resolves the view
- * directly through the iceberg catalog; it exposes the event_id/brand_id/event_type columns the
- * pollers below filter on.
+ * lift view over the Kafka Connect collector table. TWO-PART name — duckdb-serving resolves it to
+ * the replica-LOCAL brain_bronze view (a 3-part iceberg.* name would bypass the view and hit the
+ * raw, unlifted catalog table). It exposes the event_id/brand_id/event_type columns the pollers
+ * below filter on.
  */
-const BRONZE_TABLE = 'iceberg.brain_bronze.collector_events_connect_lifted';
+const BRONZE_TABLE = 'brain_bronze.collector_events_connect_lifted';
 
 // The running Connect sink consumes the env-PREFIXED topic; the local-prod stack uses `prod.`
 // (the kafka-connect compose service's collector connector reads prod.collector.event.v1). Default
@@ -49,19 +49,19 @@ const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.
 export const KAFKA_BROKERS = (process.env['KAFKA_BROKERS'] ?? 'localhost:9092').split(',');
 
 /**
- * The Bronze read-back seam: a thin pool over the Trino REST adapter. `end()` is a no-op
- * (stateless HTTP — kept so suites' afterAll teardown stays uniform with real pools).
+ * The Bronze read-back seam: a thin pool over the duckdb-serving HTTP adapter. `end()` is a
+ * no-op (stateless HTTP — kept so suites' afterAll teardown stays uniform with real pools).
  */
 export interface BronzePool {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   end(): Promise<void>;
 }
 
-/** A Trino pool against the iceberg catalog (Bronze is read over Trino — StarRocks is gone). */
-export function makeBronzeTrinoPool(): BronzePool {
-  const trino = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+/** A duckdb-serving pool (Bronze is read through the replica-local lift view — Trino is gone). */
+export function makeBronzeServingPool(): BronzePool {
+  const serving = createDuckDbServingPool({ baseUrl: SERVING_URL });
   return {
-    query: (sql, params) => trino.query(sql, params),
+    query: (sql, params) => serving.query(sql, params),
     end: async () => undefined,
   };
 }
@@ -123,10 +123,11 @@ export interface BronzeMatch {
 }
 
 /**
- * Poll Iceberg Bronze (over Trino) until at least `min` rows match. Trino reads Iceberg snapshots
- * directly — no metadata cache-bust needed; a row is visible on the first snapshot after the
- * Connect sink's ~30s commit, so the default timeout is 120s (ADR-0010: tolerate 30-60s commit
- * latency). Returns the matching row count (>= min on success, or the last count seen at timeout).
+ * Poll Iceberg Bronze (over duckdb-serving) until at least `min` rows match. Each serving epoch
+ * re-attaches the catalog — no metadata cache-bust needed; a row is visible on the first epoch
+ * after the Connect sink's ~30s commit, so the default timeout is 120s (ADR-0010: tolerate 30-60s
+ * commit + rotation latency). Returns the matching row count (>= min on success, or the last count
+ * seen at timeout).
  * A brand-scoped query returns 0 for another brand's event by construction (read-seam isolation) —
  * use that for the negative/isolation controls.
  */

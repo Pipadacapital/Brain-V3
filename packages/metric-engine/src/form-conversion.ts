@@ -1,7 +1,7 @@
 /**
  * @brain/metric-engine — computeFormConversion (lead-form submission rollup, Gold tier).
  *
- * The SOLE reader of the Gold mart gold_conversion_feedback, served through the Trino serving view
+ * The SOLE reader of the Gold mart gold_conversion_feedback, served through the serving view
  * brain_serving.mv_gold_conversion_feedback via withSilverBrand (I-ST01 — the engine is the only Gold
  * reader; the UI never queries the lakehouse directly). The mart is keyed
  * (brand_id, feedback_date, form_id) and holds the daily form-submission volume + session/journey
@@ -20,7 +20,7 @@
  * Rates (integer-basis-point, NO float): submission_rate = submissions/sessions (intent per visit);
  * null when the denominator is 0 (honest, never 0/∞). Honest no_data: hasData=false on zero rows.
  *
- * @see db/iceberg/spark/gold/gold_conversion_feedback.py + db/trino/views/mv_gold_conversion_feedback.sql
+ * @see db/iceberg/duckdb/gold/gold_conversion_feedback.py + db/iceberg/duckdb/views/mv_gold_conversion_feedback.sql
  */
 
 import type { SilverPool } from './silver-deps.js';
@@ -87,7 +87,7 @@ interface DayRow {
   payments_succeeded: string | number;
 }
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] || '0');
 }

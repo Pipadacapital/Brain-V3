@@ -740,7 +740,7 @@ function RecentActivity({ brainId }: { brainId: string }) {
     <ol className="space-y-3">
       {data.events.slice(0, 5).map((e) => {
         const { label, Icon, description } = eventLabel(e.event_type);
-        // Trino serves 'YYYY-MM-DD hh:mm:ss[.fff] UTC' — normalize before parsing (never fabricate).
+        // The serving tier renders 'YYYY-MM-DD hh:mm:ss[.fff] UTC' — normalize before parsing (never fabricate).
         const cleaned = e.occurred_at.replace(/\s*UTC$/, '').trim();
         const iso = cleaned.includes('T') ? cleaned : `${cleaned.replace(' ', 'T')}Z`;
         const time = relativeTime(iso, Number.POSITIVE_INFINITY);

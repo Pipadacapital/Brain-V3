@@ -275,7 +275,7 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         return reply.send({ request_id: requestId, data: { state: 'no_data', generated_at: new Date().toISOString() } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
       const brandId = auth.brandId; // narrowed string — stable inside the cache closure
       const result: ContractRepeatLatency = await cachedRead(brandId, 'repeat_latency', {}, () =>
@@ -331,7 +331,7 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
       const brandId = auth.brandId; // narrowed string — stable inside the cache closure
       const result: ContractCohortUsers = await cachedRead(
@@ -361,7 +361,7 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         return reply.send({ request_id: requestId, data: { state: 'no_data', generated_at: new Date().toISOString() } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
       const brandId = auth.brandId; // narrowed string — stable inside the cache closure
       const result = await cachedRead(brandId, 'utm_source', {}, () =>
@@ -704,7 +704,7 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
       const query = request.query as { limit?: string };
       const limit = query.limit ? parseInt(query.limit, 10) : 50;
@@ -751,7 +751,7 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         return reply.send({ request_id: requestId, data: { state: 'no_data', product_id: productId } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
       const query = request.query as { limit?: string };
       const limit = query.limit ? parseInt(query.limit, 10) : 10;
@@ -794,7 +794,7 @@ export function registerAnalyticsCoreRoutes(fastify: FastifyInstance, deps: BffD
         return reply.send({ request_id: requestId, data: { state: 'not_found', product_id: productId } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
       const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
       const result = await cachedRead(brandId, 'product_detail', { productId }, () =>

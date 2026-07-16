@@ -1,0 +1,124 @@
+# Default values for the duckdb-serving chart. Overridden by values-prod.yaml.
+#
+# duckdb-serving is the Brain V4 SOLE serving engine (ADR-0014, Trino replacement): each replica is
+# a stateless FastAPI+uvicorn pod (db/iceberg/duckdb/serving) holding ONE DuckDB connection attached
+# READ-ONLY to the Iceberg REST catalog as `iceberg`, with the 65 brain_serving.mv_* views applied
+# into a LOCAL schema at startup. The app/BFF/metric-engine POST /v1/query against the ClusterIP
+# Service; scale = N identical replicas behind the HPA (no coordinator/worker split — every pod is
+# the whole engine). A pathological query degrades to a clean 504 via the in-process interrupt
+# watchdog + admission semaphore, never an OOM-killed pod (memory_limit < container limit).
+
+# Environment name → resource naming brain-<environment>-duckdb-serving (e.g.
+# brain-prod-duckdb-serving). Set per-env in values-<env>.yaml.
+environment: prod
+
+# Static replica floor when the HPA is off. When autoscaling.enabled the Deployment OMITS
+# replicas (the HPA owns scaling) and this becomes the rollback value for enabled:false.
+replicaCount: 2
+
+image:
+  # Built by deploy.yml (build-data-images) from db/iceberg/duckdb/serving/Dockerfile —
+  # python:3.12-slim with the iceberg/httpfs/json extensions baked at build, uid 10001.
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-serving
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Node placement. Empty by default (local/dev/kind render unchanged); values-prod pins the
+# replicas to a Karpenter pool per the cost posture.
+nodeSelector: {}
+tolerations: []
+podAnnotations: {}
+
+service:
+  type: ClusterIP
+  port: 8091          # BFF / metric-engine connect to brain-<env>-duckdb-serving:8091
+  targetPort: 8091
+
+# uvicorn HTTP port inside the container (1 worker per pod — one DuckDB, cursor-per-request).
+httpPort: 8091
+
+# ── Iceberg catalog wiring (env contract of db/iceberg/duckdb/_catalog.py) ───────────────────────
+# The SAME REST catalog + warehouse the DuckDB transform tier and Kafka Connect Bronze use. In prod
+# the pod reaches real AWS S3 via the IRSA role (serviceAccount.annotations) — NO static keys,
+# s3Endpoint stays empty. For non-AWS/MinIO set s3Endpoint (static keys then come from the
+# credential env, local compose only — prod never sets them).
+iceberg:
+  catalog: iceberg                        # ICEBERG_CATALOG — MUST be `iceberg` (view bodies reference iceberg.brain_gold.*)
+  restUri: "http://iceberg-rest:8181"     # ICEBERG_REST_URI
+  warehouse: "s3://brain-bronze/"         # ICEBERG_WAREHOUSE (per-env: the medallion warehouse root)
+  restAuth: none                          # ICEBERG_REST_AUTH: none | sigv4 | oauth2
+  s3Endpoint: ""                          # S3_ENDPOINT — empty → native AWS S3 + IRSA credential chain (prod)
+  # AWS_REGION — MUST match the warehouse bucket's region (a SigV4 mismatch 400s every read).
+  region: ap-south-1
+
+# ── Serving engine knobs (env contract of db/iceberg/duckdb/serving/{server,engine}.py) ──────────
+serving:
+  # Per-replica DuckDB memory_limit — MUST sit under resources.limits.memory with headroom for
+  # the Python runtime + Arrow buffers (the local compose posture: 3GB inside a 4g mem_limit).
+  memoryLimit: "3GB"
+  # DuckDB threads per replica — matches the 2-cpu limit shape (scans parallelize; more threads
+  # than cpu just context-switches under the limit).
+  threads: 4
+  # Admission semaphore: concurrent /v1/query executions per replica; excess is refused 503
+  # (duckdb_serving_query_saturated_total) — the HPA scales out on CPU before this bites.
+  maxConcurrent: 8
+  # Interrupt-watchdog per-statement timeout — MUST stay < the TS adapter's 30s abort so the
+  # server kills the cursor (clean 504) before the client gives up.
+  statementTimeoutMs: 25000
+  # Epoch rotation period (re-attach catalog + re-apply views, atomic swap). Live attaches see new
+  # Iceberg commits WITHOUT re-attach (Phase-0 spike b), so rotation is self-heal/view-reapply
+  # only — 900s, not a freshness knob.
+  catalogRefreshSeconds: 900
+  # Spill: DuckDB temp_directory + max_temp_directory_size, backed by the pod's emptyDir below.
+  # maxTempDirectorySize MUST stay under tmpSizeLimit — DuckDB stops spilling (clean query error)
+  # before the kubelet evicts the pod.
+  tempDirectory: /tmp/duckdb-serving-spill
+  maxTempDirectorySize: "3GB"
+  # emptyDir sizeLimit for /tmp (spill + runtime scratch) — kubelet evicts past this, bounding
+  # node-disk blast radius the same way memory_limit bounds RAM.
+  tmpSizeLimit: 4Gi
+
+# Extra environment (list of {name,value}) appended verbatim — the seam for serving knobs added
+# in db/iceberg/duckdb/serving without a chart change.
+extraEnv: []
+
+resources:
+  requests:
+    cpu: "1"
+    memory: 3.5Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# Horizontal Pod Autoscaler — CPU is the right signal (queries are scan/CPU-bound; memory is a
+# fixed per-replica ceiling). Off by default (kind/dev); values-prod enables it. When enabled the
+# Deployment omits static replicas so helm upgrades don't fight the HPA.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 60
+
+probes:
+  enabled: true
+  # /readyz gates on the startup view application (views_applied/views_skipped) — a replica only
+  # receives traffic once its local brain_serving schema is fully built; /healthz is pure liveness.
+  readinessPath: /readyz
+  livenessPath: /healthz
+
+# IRSA role for S3 (Iceberg data buckets) read access. Set per-env in values-<env>.yaml.
+serviceAccount:
+  annotations: {}
+
+# ── Prometheus scrape ─────────────────────────────────────────────────────────────────────────────
+# The service exposes native Prometheus /metrics on the HTTP port (no JMX agent — unlike the Trino
+# chart this needed no initContainer). The PodMonitor job relabel pins job="duckdb-serving" — the
+# exact name DuckDBServingDown / DuckDBServingQueryFailureRateHigh and the BrainTargetDown regex
+# (kube-prometheus-stack values-prod) match on. Off by default (no Prometheus Operator CRDs in
+# kind/staging); values-prod enables it.
+metrics:
+  enabled: false
+  podMonitor:
+    jobLabel: duckdb-serving
+    interval: 30s

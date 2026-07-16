@@ -4,8 +4,8 @@
  * Operational reads (data/tracking health, recent events, orders) read raw Bronze events. Under
  * ADR-0010 the Kafka Connect Iceberg sink is the ONLY Bronze landing writer: the collector lane
  * lands in `iceberg.brain_bronze.collector_events_connect` (truly raw — payload + kafka coords only),
- * and these column-shaped reads go through the Trino LIFT VIEW
- * `iceberg.brain_bronze.collector_events_connect_lifted` (exposes event_id/brand_id/event_type/
+ * and these column-shaped reads go through the LIFT VIEW
+ * `brain_bronze.collector_events_connect_lifted` (exposes event_id/brand_id/event_type/
  * occurred_at/ingested_at/correlation_id/payload). Bronze is APPEND-ONLY — dedup lives in Silver
  * (silver_collector_event MERGE on brand_id/event_id). Historical rows in the retired
  * brain_bronze.events / collector_events tables still exist as DATA but are NOT served here.
@@ -17,18 +17,21 @@
 
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 
-/** Deps for an operational read that sources Bronze from the Iceberg catalog over Trino. */
+/** Deps for an operational read that sources Bronze from the serving tier (duckdb-serving). */
 export interface BronzeReadDeps extends EngineDeps {
-  /** Trino serving pool — required to read the Iceberg Bronze namespace. Absent → honest no_data. */
+  /** Serving pool — required to read the Bronze lift view. Absent → honest no_data. */
   readonly srPool?: SilverPool;
 }
 
 /**
- * The Bronze collector source over Trino (default catalog 'iceberg'): the ADR-0010 lift view over
- * the Kafka Connect collector table. CONSTANT — the legacy BRONZE_SOURCE env switch is REMOVED
- * (connect is the only writer; there is nothing to roll back to).
+ * The Bronze collector source over duckdb-serving: the ADR-0010 lift view over the Kafka Connect
+ * collector table. TWO-PART name — the lift view lives in the replica-LOCAL brain_bronze schema
+ * (which shadows the same-named catalog namespace — the local-views-shadow-catalog resolution);
+ * a 3-part iceberg.* name would bypass it and hit the raw (unlifted) catalog table. CONSTANT —
+ * the legacy BRONZE_SOURCE env switch is REMOVED (connect is the only writer; there is nothing
+ * to roll back to).
  */
-export const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events_connect_lifted';
+export const ICEBERG_BRONZE = 'brain_bronze.collector_events_connect_lifted';
 /**
  * Collector-lane predicate — the lift view is SINGLE-LANE (collector only), so this is a constant
  * no-op `TRUE`. Kept as an export so the callers' `AND ${BRONZE_COLLECTOR_PREDICATE}` SQL shape
@@ -37,7 +40,7 @@ export const ICEBERG_BRONZE = 'iceberg.brain_bronze.collector_events_connect_lif
 export const BRONZE_COLLECTOR_PREDICATE = 'TRUE';
 
 /**
- * True when the Trino serving pool is wired (the only Bronze source now). Guards srPool presence so
+ * True when the serving pool is wired (the only Bronze source now). Guards srPool presence so
  * a deployment without the serving tier returns honest no_data instead of erroring.
  */
 export function hasSilver(deps: BronzeReadDeps): deps is BronzeReadDeps & { srPool: SilverPool } {

@@ -8,14 +8,15 @@
  * creates the brain_silver namespace → every downstream Silver/Gold job fails with
  * "Namespace brain_silver does not exist" (92 failed jobs). Producing even a handful of collector
  * events breaks that cascade: Connect lands them → the keystone builds brain_silver → the rest of the
- * medallion (namespaces + tables) is created transitively, so the refresh + Trino views succeed.
+ * medallion (namespaces + tables) is created transitively, so the refresh + serving views succeed.
  *
  * WHAT: produces realistic `order.live.v1` collector envelopes (the exact shape apps/stream-worker's
- * live-order-bronze-wiring.e2e.test.ts uses) to the Bronze-bound Kafka topic, then POLLS Trino over
- * the Iceberg lift view until the events have landed (Kafka Connect commits on a ~30-60s interval).
+ * live-order-bronze-wiring.e2e.test.ts uses) to the Bronze-bound Kafka topic, then POLLS the
+ * duckdb-serving API over the Iceberg catalog until the events have landed (Kafka Connect commits on
+ * a ~30-60s interval).
  *
  * Usage:
- *   KAFKA_BROKERS=localhost:19092 TRINO_URL=http://localhost:8090 node tools/seed-bronze.mjs
+ *   KAFKA_BROKERS=localhost:19092 DUCKDB_SERVING_URL=http://localhost:8091 node tools/seed-bronze.mjs
  *   (run from apps/stream-worker so `kafkajs` resolves; see the `seed:bronze` package script)
  */
 import { Kafka } from 'kafkajs';
@@ -23,12 +24,13 @@ import { randomUUID } from 'node:crypto';
 
 const KAFKA_BROKERS = (process.env.KAFKA_BROKERS ?? 'localhost:19092').split(',');
 const COLLECTOR_TOPIC = process.env.COLLECTOR_TOPIC ?? 'prod.collector.event.v1'; // the connector's subscribed topic
-const TRINO_URL =
-  process.env.TRINO_URL ?? `http://${process.env.TRINO_HOST ?? 'localhost'}:${process.env.TRINO_PORT ?? '8090'}`;
-const TRINO_USER = process.env.TRINO_USER ?? 'brain';
+const DUCKDB_SERVING_URL =
+  process.env.DUCKDB_SERVING_URL ??
+  `http://${process.env.DUCKDB_SERVING_HOST ?? 'localhost'}:${process.env.DUCKDB_SERVING_PORT ?? '8091'}`;
 // Poll the RAW Connect-landed table (auto-created by the iceberg-bronze-collector connector), NOT the
-// `_lifted` serving view — that view is created LATER by db/trino/views/run-trino-views.sh, so it does
-// not exist yet at seed time (polling it silently returns 0 forever).
+// `_lifted` serving view — that view only exists after a serving epoch built AFTER the table appears
+// applies it (db/iceberg/duckdb/views/), so it may not resolve yet at seed time (polling it would
+// silently return 0 forever).
 const BRONZE_TABLE = 'iceberg.brain_bronze.collector_events_connect';
 const POLL_TIMEOUT_MS = Number(process.env.POLL_TIMEOUT_MS ?? 180_000);
 
@@ -85,45 +87,36 @@ async function produce() {
 }
 
 /**
- * Minimal Trino REST client: POST the query, follow nextUri to completion. Returns the COUNT, or
- * null if the table does not exist yet (the connector auto-creates it on its first commit) — so the
+ * Minimal duckdb-serving client: a single POST /v1/query (synchronous — no nextUri polling).
+ * Returns the COUNT, or null if the table does not exist yet (the connector auto-creates it on its
+ * first commit; the serving replica only sees it after its next catalog-epoch rotation) — so the
  * poller can distinguish "table not created yet" from "table exists, 0 rows".
  */
-async function trinoCount() {
-  let uri = `${TRINO_URL}/v1/statement`;
-  let init = {
+async function servingCount() {
+  const resp = await fetch(`${DUCKDB_SERVING_URL}/v1/query`, {
     method: 'POST',
-    headers: { 'X-Trino-User': TRINO_USER, 'Content-Type': 'text/plain' },
-    body: `SELECT COUNT(*) FROM ${BRONZE_TABLE}`,
-  };
-  let count = null;
-  for (let hops = 0; hops < 50; hops++) {
-    const resp = await fetch(uri, init);
-    if (!resp.ok) throw new Error(`trino HTTP ${resp.status}`);
-    const body = await resp.json();
-    if (body.error) {
-      // TABLE_NOT_FOUND / NoSuchTable while the connector hasn't committed yet → not-ready, poll on.
-      const name = body.error.errorName ?? '';
-      if (/NOT_FOUND|NoSuch|TABLE_NOT_FOUND/i.test(name) || /does not exist/i.test(body.error.message ?? '')) return null;
-      throw new Error(`trino error: ${body.error.message ?? name}`);
-    }
-    if (Array.isArray(body.data) && body.data.length) count = Number(body.data[0][0]);
-    if (!body.nextUri) break;
-    uri = body.nextUri;
-    init = { method: 'GET', headers: { 'X-Trino-User': TRINO_USER } };
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql: `SELECT COUNT(*) FROM ${BRONZE_TABLE}` }),
+  });
+  const body = await resp.json().catch(() => ({}));
+  if (body.error || !resp.ok) {
+    const message = body.error?.message ?? `HTTP ${resp.status}`;
+    // Catalog/binder "does not exist" while the connector hasn't committed yet → not-ready, poll on.
+    if (/does not exist|not found/i.test(message)) return null;
+    throw new Error(`duckdb-serving error: ${message}`);
   }
-  return count;
+  return Array.isArray(body.data) && body.data.length ? Number(body.data[0][0]) : null;
 }
 
 async function pollUntilLanded(minRows) {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
-  console.log(`polling ${BRONZE_TABLE} over Trino until >= ${minRows} rows (Connect commit ~30-60s)…`);
+  console.log(`polling ${BRONZE_TABLE} over duckdb-serving until >= ${minRows} rows (Connect commit ~30-60s)…`);
   while (Date.now() < deadline) {
     let count = null;
     try {
-      count = await trinoCount();
+      count = await servingCount();
     } catch (e) {
-      console.log(`  … trino not ready (${e.message})`);
+      console.log(`  … duckdb-serving not ready (${e.message})`);
     }
     if (count != null && count >= minRows) {
       console.log(`✓ Bronze landed: ${count} rows in ${BRONZE_TABLE}`);

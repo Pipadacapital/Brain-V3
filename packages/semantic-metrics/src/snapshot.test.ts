@@ -16,6 +16,9 @@ import { emitTypes } from './cli.js';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const METRICS_DIR = join(HERE, '..', 'metrics');
 const GEN = join(HERE, 'generated');
+// The DuckDB pre-agg rebuild statements are committed in the transform tree (the brain-duckdb
+// image's build context — see cli.ts) — pinned here all the same, SAME drift guarantee.
+const DUCKDB_PREAGG_DIR = join(HERE, '..', '..', '..', 'db', 'iceberg', 'duckdb', 'serving_preaggs');
 
 async function read(rel: string): Promise<string> {
   return readFile(join(GEN, rel), 'utf8');
@@ -43,8 +46,8 @@ describe('D2.snapshot — committed generated/** equals a fresh compile (drift g
       for (const g of compileMetric(m).grains) {
         if (g.preagg) {
           expect(await read(join('preaggs', `${m.name}_${g.grain}.sql`))).toBe(`${g.preagg.createDdl}\n${g.preagg.refreshSql}`);
-          // AUD-SL-10: the committed Trino atomic-CTAS statement is pinned too.
-          expect(await read(join('preaggs', `${m.name}_${g.grain}.trino.sql`))).toBe(g.preagg.trinoCtasSql);
+          // AUD-SL-10: the committed DuckDB atomic rebuild (in the transform tree) is pinned too.
+          expect(await readFile(join(DUCKDB_PREAGG_DIR, `${m.name}_${g.grain}.duckdb.sql`), 'utf8')).toBe(g.preagg.duckdbRefreshSql);
         }
       }
     }

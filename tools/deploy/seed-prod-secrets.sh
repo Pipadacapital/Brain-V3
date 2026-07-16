@@ -23,8 +23,8 @@ WAREHOUSE_BUCKET=brain-bronze-prod-380254378136
 export PGB="pgbouncer.pgbouncer.svc.cluster.local:6432"
 export REDIS_URL="rediss://master.brain-prod-redis.5eykyx.aps1.cache.amazonaws.com:6379"
 export KAFKA="brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
-export TRINO_HOST="brain-prod-trino.trino.svc.cluster.local"
-export TRINO_PORT="8080"
+export DUCKDB_SERVING_HOST="brain-prod-duckdb-serving.duckdb-serving.svc.cluster.local"
+export DUCKDB_SERVING_PORT="8091"
 export AUR REGION WAREHOUSE_BUCKET
 
 echo "[1/4] Fetching Aurora master password from its RDS-managed secret..."
@@ -109,8 +109,8 @@ print(json.dumps({
  "BRAIN_APP_DATABASE_URL": "postgres://brain_app:%s@%s/brain" % (os.environ["APP_PW"], os.environ["PGB"]),
  "REDIS_URL": os.environ["REDIS_URL"],
  "KAFKA_BROKERS": os.environ["KAFKA"],
- "TRINO_HOST": os.environ["TRINO_HOST"],
- "TRINO_PORT": os.environ["TRINO_PORT"],
+ "DUCKDB_SERVING_HOST": os.environ["DUCKDB_SERVING_HOST"],
+ "DUCKDB_SERVING_PORT": os.environ["DUCKDB_SERVING_PORT"],
  "NEO4J_URI": "bolt://neo4j.neo4j.svc.cluster.local:7687",
  "NEO4J_USER": "neo4j",
  "NEO4J_PASSWORD": os.environ["NEO4J_PW"],

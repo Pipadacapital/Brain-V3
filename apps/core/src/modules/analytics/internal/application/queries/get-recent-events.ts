@@ -121,9 +121,9 @@ export async function getRecentEvents(
       // server-trusted connector events (order.live.v1, spend.*, gokwik.*, …) are excluded.
       scope.runScoped<{ event_id: string; event_type: string; occurred_at: Date | string; anon_id: string | null; session_id: string | null; has_consent: boolean | number; properties_json: string | null }>(
         `SELECT event_id, event_type, occurred_at,
-                json_extract_scalar(payload, '$.properties.brain_anon_id') AS anon_id,
-                json_extract_scalar(payload, '$.hashed_session_id')        AS session_id,
-                CASE WHEN json_extract_scalar(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent,
+                json_extract_string(payload, '$.properties.brain_anon_id') AS anon_id,
+                json_extract_string(payload, '$.hashed_session_id')        AS session_id,
+                CASE WHEN json_extract_string(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent,
                 json_extract(payload, '$.properties')                      AS properties_json
            FROM ${ICEBERG_BRONZE}
           WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}

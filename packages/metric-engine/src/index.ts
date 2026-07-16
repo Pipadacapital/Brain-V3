@@ -228,7 +228,7 @@ export type {
 } from './journey-events.js';
 
 // SPEC: B.3 — the A.4 Redis touchpoint-cache READ seam (journey-timeline hot path; §1.11 cache
-// → Trino fallback). Reads the `{brand_id}:tp:{brain_id}` zset newest-first via an injected
+// → serving fallback). Reads the `{brand_id}:tp:{brain_id}` zset newest-first via an injected
 // structural client (the shared ioredis at the root; no second connection).
 export { readTouchpointCachePage } from './journey-touchpoint-cache.js';
 export type {
@@ -393,15 +393,16 @@ export type { DqLetterGrade } from './cost-confidence.js';
 export { gateMetric, evaluateGate } from './quality-gate.js';
 export type { TrustTier, GateDecision } from './quality-gate.js';
 
-// ── Trino ad-hoc exploration PORT (ADDITIVE, READ-ONLY — NOT a serving dependency) ──
-// brain_serving.mv_* (StarRocks) is the SOLE app/BFF/metric-engine serving path.
-// Trino is operator/explicit ad-hoc exploration only. Known metrics NEVER route here.
-// The AI-ad-hoc-Trino path is DISABLED (routeAiAdHocTrino throws NotImplementedYet).
-export { withTrinoBrand } from './trino-deps.js';
-export type { TrinoPool, TrinoQueryPort, TrinoScope, WithTrinoBrandOptions } from './trino-deps.js';
-// Concrete Trino HTTP adapter (composition root injects via createTrinoPool).
-export { createTrinoPool } from './trino-adapter.js';
-export type { TrinoAdapterConfig } from './trino-adapter.js';
+// ── Serving query PORT (engine-neutral seam; ad-hoc is ADDITIVE, READ-ONLY) ──
+// brain_serving.mv_* (duckdb-serving views over Iceberg) is the SOLE app/BFF/metric-engine
+// serving path. Ad-hoc SQL is operator/explicit exploration only. Known metrics NEVER route there.
+// The AI-ad-hoc-serving path is DISABLED (routeAiAdHocServing throws NotImplementedYet).
+export { withServingBrand } from './serving-deps.js';
+export type { ServingPool, ServingQueryPort, ServingScope, WithServingBrandOptions } from './serving-deps.js';
+// Concrete duckdb-serving HTTP adapter — the Brain V4 serving engine (Trino removal,
+// ADR-0014). Same port (ServingPool); composition roots inject createDuckDbServingPool.
+export { createDuckDbServingPool } from './duckdb-serving-adapter.js';
+export type { DuckDbServingAdapterConfig } from './duckdb-serving-adapter.js';
 
 // ── Analytics cache PORT (brand_id-leading composite keys + stampede guard) ──
 export { buildCacheKey, IoredisCacheAdapter } from './analytics-cache.js';
@@ -425,11 +426,11 @@ export type {
   SemanticServingMetric,
 } from './semantic-serving.js';
 
-// ── SPEC: D.3 / §1.11.3 — per-brand Trino admission gate (concurrency + FIFO + timeout) ──
-export { createPerBrandTrinoGate, defaultBrandKeyOf, TrinoGateRejectedError } from './trino-brand-gate.js';
-export type { PerBrandTrinoGateConfig } from './trino-brand-gate.js';
+// ── SPEC: D.3 / §1.11.3 — per-brand serving admission gate (concurrency + FIFO + timeout) ──
+export { createPerBrandServingGate, defaultBrandKeyOf, ServingGateRejectedError } from './serving-brand-gate.js';
+export type { PerBrandServingGateConfig } from './serving-brand-gate.js';
 
-// ── Serving cache reader (Redis-fronted hot serving reads over the Trino seam) ──
+// ── Serving cache reader (Redis-fronted hot serving reads over the serving seam) ──
 export { createServingCacheReader, hashParams } from './serving-cache.js';
 export type { ServingCacheReader, ServingCacheReaderConfig } from './serving-cache.js';
 
@@ -437,11 +438,11 @@ export type { ServingCacheReader, ServingCacheReaderConfig } from './serving-cac
 export { resolveServingTtlMs, SERVING_TTL_TIER_MS, METRIC_TTL_TIER } from './serving-ttl.js';
 export type { ServingTtlTier } from './serving-ttl.js';
 
-// ── Query routing (known metrics → StarRocks; AI-Trino DISABLED) ──────────────
+// ── Query routing (known metrics → duckdb-serving; AI-ad-hoc DISABLED) ────────
 export {
   QueryRoute,
   routeKnownMetric,
-  routeAiAdHocTrino,
+  routeAiAdHocServing,
   NotImplementedYet,
 } from './query-route.js';
 export type { KnownMetricRoute } from './query-route.js';

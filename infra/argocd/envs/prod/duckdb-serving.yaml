@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: duckdb-serving-prod
+  namespace: argocd
+  annotations:
+    # Selective deploy: only syncs when duckdb-serving manifests change
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/duckdb-serving
+  labels:
+    project: brain
+    environment: prod
+    service: duckdb-serving
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
+    targetRevision: master
+    path: infra/helm/duckdb-serving
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: duckdb-serving
+  # NO automated sync for prod — manual promotion gate required (duckdb-serving is the SOLE serving engine)
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

@@ -34,7 +34,7 @@ below), not dbt — dbt and StarRocks are removed:
    ∩ the recognized order ledger, unambiguous-only → `connector_journey_stitch_map`.
 4. **v4-gold** (:25, DuckDB) — `gold_revenue_ledger` → `gold_attribution_credit` →
    `gold_marketing_attribution` (incl. the data_driven model) + customer/gap/executive marts, served by
-   the `brain_serving.mv_*` Trino views over Iceberg.
+   the `brain_serving.mv_*` duckdb-serving views over Iceberg.
 5. **attribution-reconcile** (:30) — credit recognized orders (`finalization ∪ cod_delivery_confirmed`)
    to their journeys under all 4 per-journey models + the global data-driven (Markov) model; clawbacks.
 
@@ -43,7 +43,7 @@ below), not dbt — dbt and StarRocks are removed:
 **Spark→DuckDB cutover** (`feat/spark-to-duckdb-cutover`): the transform tier is DuckDB-on-Iceberg now
 (Spark is removed; dbt/StarRocks were already gone). The Iceberg medallion
 (`brain_bronze`/`brain_silver`/`brain_gold`) is built by the DuckDB jobs and is the system of record; the
-`brain_serving.mv_*` Trino views are thin projections straight over the Iceberg Gold/Silver marts. These
+`brain_serving.mv_*` duckdb-serving views are thin projections straight over the Iceberg Gold/Silver marts. These
 CronWorkflows invoke `python /opt/brain/duckdb/<layer>/<job>.py` — the mart jobs the `brain-duckdb` image
 **carries** (`db/iceberg/duckdb/{silver,gold}/*.py`, COPYed into `/opt/brain/duckdb` by the Dockerfile).
 Each job self-imports its `_base`/`_catalog` via `sys.path.insert` (no `--py-files`). One python pod per
@@ -54,7 +54,7 @@ cron, no JVM.
 | v4-silver | `5 * * * *` hourly :05 | brain-duckdb | keystone `silver_collector_event` + `silver_order_state` (brain_id spine) + the rest of Silver (×2 convergence passes) |
 | v4-gold | `25 * * * *` hourly :25 | brain-duckdb | `gold_revenue_ledger` → attribution → customer/gap/executive marts |
 
-There is **no `v4-mv-refresh` leg**: once a DuckDB job commits the new Iceberg snapshot, the Trino `mv_*`
+There is **no `v4-mv-refresh` leg**: once a DuckDB job commits the new Iceberg snapshot, the serving `mv_*`
 views resolve it directly. The dev mirror that runs the same keystone→Silver→Gold sequence is
 `tools/dev/duckdb-refresh.sh` (`pnpm dev:v4-refresh`).
 
@@ -73,16 +73,18 @@ a missing digest, B3) and a cluster. Each job is an idempotent Iceberg MERGE, wr
 
 ## Bronze/medallion maintenance (`templates/bronze-maintenance.yaml`, `templates/v4-maintenance.yaml`)
 
-Iceberg maintenance (compaction / `expire_snapshots` / `remove_orphan_files`) is the one thing DuckDB
-can't do — it runs via the **Trino client** the `brain-duckdb` image carries (`ALTER TABLE … EXECUTE …`):
-`python /opt/brain/trino/bronze_maintenance.py` (daily 03:00, `bronze-maintenance`),
+Iceberg maintenance (snapshot expiry / COW compaction; orphan-file sweep is a loud SKIP until
+PyIceberg ships it, ADR-0014) runs via the **PyIceberg + DuckDB maintenance tier** the `brain-duckdb`
+image carries (`db/iceberg/duckdb/maintenance/**`):
+`python /opt/brain/duckdb/maintenance/bronze_maintenance.py` (daily 03:00, `bronze-maintenance`),
 `bronze_raw_retention.py` (daily 03:40, `bronze-raw-retention`, the D4 raw-PII window), and
 `medallion_maintenance.py` (weekly Sun 04:45, `v4-maintenance`, Silver/Gold sweep).
 
 ## Bronze raw-PII erasure (`templates/bronze-erasure.yaml`, AUD-OPS-037)
 
 **Not a cron** — a `WorkflowTemplate` (`bronze-raw-erasure`) wrapping
-`db/iceberg/trino/erasure_raw_delete.py` (run via the Trino client), the RTBF subject hard-delete across the raw Bronze
+`db/iceberg/duckdb/maintenance/erasure_raw_delete.py` (PyIceberg COW deletes + a DuckDB payload-path
+sweep), the RTBF subject hard-delete across the raw Bronze
 Iceberg tables (`*_raw_connect` column-equality DELETEs + the payload-path sweep of
 `collector_events_connect`). The stream-worker **erasure orchestrator** (STEP 4 of the ordered
 crypto-shred sequence, `EraseSubjectUseCase`) submits a Workflow from it per erasure signal:

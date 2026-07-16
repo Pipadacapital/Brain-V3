@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { createPool, type DbPool, type QueryContext } from '@brain/db';
 import { loadCoreConfig } from '@brain/config';
-import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
 import { generateRecommendations, measureRecommendationOutcomes } from '../modules/recommendation/index.js';
 
@@ -26,18 +26,16 @@ const DB_URL =
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
 /**
- * Silver/Gold SERVING pool — Brain V4 reads the lakehouse over TRINO (Iceberg); the detector
- * REVENUE signals read the brain_serving.mv_* views (Epic 1 / B). createTrinoPool is the
- * stateless HTTP adapter — catalog='iceberg' makes the two-part `brain_serving.mv_*` names
- * resolve to the Trino serving views over Iceberg Gold/Silver. No connection pool to tear down.
+ * Silver/Gold SERVING pool — Brain V4 reads the lakehouse over duckdb-serving (Trino removed,
+ * ADR-0014); the detector REVENUE signals read the brain_serving.mv_* views (Epic 1 / B).
+ * createDuckDbServingPool is the stateless HTTP adapter — the two-part `brain_serving.mv_*`
+ * names resolve to the replica-local serving views over Iceberg Gold/Silver. No connection
+ * pool to tear down.
  */
 function createSrPool(): SilverPool {
   const cfg = loadCoreConfig();
-  return createTrinoPool({
-    baseUrl: `http://${cfg.TRINO_HOST}:${cfg.TRINO_PORT}`,
-    catalog: 'iceberg',
-    schema: 'brain_serving',
-    user: 'brain_core',
+  return createDuckDbServingPool({
+    baseUrl: `http://${cfg.DUCKDB_SERVING_HOST}:${cfg.DUCKDB_SERVING_PORT}`,
   });
 }
 
@@ -94,7 +92,7 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
     return { brands, raised, expired, measured, errors };
   } finally {
     if (ownsPool) await pool.end();
-    // srPool is the stateless Trino HTTP adapter (createTrinoPool) — no connection pool to tear down.
+    // srPool is the stateless serving HTTP adapter (createDuckDbServingPool) — no connection pool to tear down.
   }
 }
 

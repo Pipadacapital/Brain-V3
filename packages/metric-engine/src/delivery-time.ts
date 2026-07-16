@@ -1,7 +1,7 @@
 /**
  * @brain/metric-engine — computeDeliveryTime (P3 — per-courier delivery-time distribution).
  *
- * The SOLE reader of the Gold mart gold_delivery_time, served through the Trino serving view
+ * The SOLE reader of the Gold mart gold_delivery_time, served through the serving view
  * brain_serving.mv_gold_delivery_time via withSilverBrand (I-ST01 — the engine is the only Gold
  * reader; the UI never queries the lakehouse directly). The mart, per (brand, courier), computes
  * the distribution of INTEGER delivery days (dispatched→delivered whole-day gap) from
@@ -21,24 +21,24 @@
  * Every read goes through withSilverBrand (brand predicate injected at the seam). brandId is from
  * session (D-1; NEVER body).
  *
- * @see db/iceberg/spark/gold/gold_delivery_time.py + db/trino/views/mv_gold_delivery_time.sql
+ * @see db/iceberg/duckdb/gold/gold_delivery_time.py + db/iceberg/duckdb/views/mv_gold_delivery_time.sql
  * @see packages/metric-engine/src/repeat-latency.ts — the histogram-with-denormalized-scalars sibling
  */
 
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] ?? '0');
 }
 
-/** Coerce a nullable Trino double to number | null (null stays null — honest "no delivered shipments"). */
+/** Coerce a nullable serving double to number | null (null stays null — honest "no delivered shipments"). */
 function toNumOrNull(v: string | number | null | undefined): number | null {
   return v === null || v === undefined ? null : Number(v);
 }
 
-/** Coerce a nullable Trino integer to number | null. */
+/** Coerce a nullable serving integer to number | null. */
 function toIntOrNull(v: string | number | null | undefined): number | null {
   return v === null || v === undefined ? null : Number(String(v).split('.')[0] ?? '0');
 }

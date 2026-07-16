@@ -273,7 +273,10 @@ def build(con):
         in_list = ", ".join("'" + str(b).replace("'", "''") + "'" for b in brands)
         con.execute(f"DELETE FROM {TARGET} WHERE brand_id IN ({in_list})")
 
-    con.execute(f"INSERT INTO {TARGET} SELECT {_SELECT_COLS} FROM journey_paths_src")
+    # Name the target columns explicitly: the live table can carry MORE columns than the
+    # job writes (schema drift — e.g. the phantom `from_channel` the pre-fix comma-split
+    # created), and a bare INSERT ... SELECT binds by position and dies on the count.
+    con.execute(f"INSERT INTO {TARGET} ({_SELECT_COLS}) SELECT {_SELECT_COLS} FROM journey_paths_src")
     con.execute("DROP TABLE IF EXISTS journey_paths_src")
     return n
 

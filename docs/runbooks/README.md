@@ -5,12 +5,12 @@
 - RB-2 EKS recovery (terraform + ArgoCD GitOps re-apply) — see RB-2-eks-recovery.md
 - RB-6 Connector token read denied (backfill/sync `RECONNECT_REQUIRED` despite Healthy connector; IAM/SCP or missing `KMS_KEY_ID` — reconnect does NOT fix it) — see RB-6-connector-token-read-denied.md
 - DR fire drill (coordinated Aurora-PITR + S3-version restore — **pending execution**) — see dr-fire-drill.md
-- ~~RB-3 StarRocks rebuild-from-Iceberg~~ — **RETIRED (Brain V4): StarRocks is REMOVED.** Serving is Trino-over-Iceberg (`brain_serving.mv_*` Trino views); rebuild the medallion with `tools/dev/v4-refresh-loop.sh` (Spark Silver→Gold→`mv` SYNC refresh).
+- ~~RB-3 StarRocks rebuild-from-Iceberg~~ — **RETIRED (Brain V4): StarRocks is REMOVED** (and its successor Trino is too — ADR-0014). Serving is duckdb-serving (`brain_serving.mv_*` views, self-applied at pod start); rebuild the medallion with `tools/dev/duckdb-refresh.sh` (DuckDB Silver→Gold).
 - RB-4 Local lakehouse (Iceberg REST catalog + MinIO) — see RB-4-local-lakehouse.md (**note: pre-V4 StarRocks/dbt/Redpanda framing; see that file's banner**)
 - Rotate the `iceberg_catalog` DB password (owed ONCE after the AUD-INFRA-023 masking fix deploys) — see rotate-iceberg-catalog-db-password.md
 - Kafka operations (prod) — Strimzi sync-safety: NEVER prune-sync strimzi-kafka-prod / NEVER Replace-sync neo4j-prod, PVC prune-guard annotate procedure + AUD-INFRA-002 root cause — see kafka-operations.md
 Historical pointer: docs/04 §M.3 (Brain-docs) — SUPERSEDED for DR/RB-1/RB-2 (it predates
-Aurora/ADR-0010/Trino; the in-repo files above are authoritative — AUD-OPS-013).
+Aurora/ADR-0010 and the current serving tier; the in-repo files above are authoritative — AUD-OPS-013).
 
 ## Full index — every file in this directory, status-tagged (AUD-OPS-026)
 
@@ -30,11 +30,11 @@ Status legend: **CURRENT** = follow it · **SUPERSEDED → X** = do NOT follow, 
 | `adr-0010-kafka-connect-bronze.md` | **CURRENT** | Kafka Connect Bronze landing: ops notes, rollback (git revert), RTBF posture, **connector-registration-lost recovery** (AUD-OPS-018) |
 | `kafka-operations.md` | **CURRENT** | Strimzi sync-safety hard rules + PVC prune guard (AUD-INFRA-002) |
 | `rerun-medallion.md` | **CURRENT** | Re-run/backfill Silver→Gold + **the FULL_REFRESH watermark rule** (silently-wrong-marts trap — AUD-OPS-020) |
-| `restart-services.md` | **CURRENT** | Per-service restart matrix: safety notes (leader lock, Connect commit window, Trino blast radius) + verification (AUD-OPS-021) |
-| `investigate-oom.md` | **CURRENT** | Prod OOM chain: BFF-wide 500s→Trino first; symptom table + PromQL + bounded-heap knobs (AUD-OPS-022) |
+| `restart-services.md` | **CURRENT** | Per-service restart matrix: safety notes (leader lock, Connect commit window, serving blast radius) + verification (AUD-OPS-021) |
+| `investigate-oom.md` | **CURRENT** | Prod OOM chain: BFF-wide 500s→duckdb-serving first; symptom table + PromQL + bounded-memory knobs (AUD-OPS-022) |
 | `dsar-manual-export.md` | **CURRENT** | Manual `customers/data_request` fulfilment: subject resolution, per-store brand-scoped export queries (AUD-OPS-043) |
 | `rotate-iceberg-catalog-db-password.md` | **CURRENT** | Rotate the `iceberg_catalog` DB password (owed once after AUD-INFRA-023) |
-| `enable-shopify-checkout-pixel.md` | **CURRENT** | Web Pixel activation for checkout events (verify blocks Trino-ported — AUD-OPS-025) |
+| `enable-shopify-checkout-pixel.md` | **CURRENT** | Web Pixel activation for checkout events (verify blocks serving-ported — AUD-OPS-025) |
 | `enable-attribution-unlocks.md` | **CURRENT** | The three externally-gated attribution unlocks checklist |
 | `local-dev-startup.md` | **CURRENT** | Fresh clone → full local V4 stack, one command |
 | `enable-prod-cron-pipeline.md` | **SUPERSEDED → GO-LIVE.md steps 10–12 + rerun-medallion.md** | Retired dbt/StarRocks cron pipeline (AUD-OPS-019 banner inside) |

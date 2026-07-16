@@ -172,7 +172,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # 1b. Build + push the DATA-PLANE job image (duckdb — the DuckDB transform tier for the
-  #     V4 Silver/Gold mart crons + the Trino client for Bronze/medallion maintenance + erasure;
+  #     V4 Silver/Gold mart crons + the PyIceberg client for Bronze/medallion maintenance + erasure;
   #     Bronze LANDING is the kafka-connect chart, ADR-0010 — no Spark landing job anymore)
   # ─────────────────────────────────────────────────────────────────────────
   # These are NOT pnpm packages, so the turbo --affected check can't see them. They change rarely,
@@ -181,11 +181,12 @@ jobs:
   # cronworkflows chart. Additive — does not touch the 4-app build above.
   # CUTOVER (feat/spark-to-duckdb-cutover): the Spark image (brain-spark-bronze, db/iceberg/spark) is
   # REPLACED by the DuckDB image (brain-duckdb, db/iceberg/duckdb/Dockerfile). It carries db/iceberg/
-  # duckdb/** (the ~96 Silver/Gold jobs) + db/iceberg/trino/** (the 4 maintenance/erasure scripts); the
-  # cronworkflows chart's sparkV4 / sparkBronze image blocks now point at brain-duckdb. dbt was already
-  # removed in Brain V4 (Phase 6b); Spark is now removed too.
+  # duckdb/** — the ~96 Silver/Gold jobs + maintenance/ (the 4 PyIceberg maintenance/erasure scripts;
+  # the Trino maintenance client is REMOVED, ADR-0014). The cronworkflows chart's sparkV4 / sparkBronze
+  # image blocks now point at brain-duckdb. dbt was already removed in Brain V4 (Phase 6b); Spark and
+  # Trino are now removed too.
   build-data-images:
-    name: Build, Sign, Push data images (duckdb)
+    name: Build, Sign, Push data images (duckdb, duckdb-serving)
     # NATIVE arm64 runner — the image targets the arm64 Karpenter pools (no QEMU).
     runs-on: ubuntu-24.04-arm
     strategy:
@@ -195,7 +196,14 @@ jobs:
           - image: duckdb
             dockerfile: db/iceberg/duckdb/Dockerfile
             context: db/iceberg
-            paths: '^db/iceberg/(duckdb|trino)/'
+            paths: '^db/iceberg/duckdb/'
+          # duckdb-serving (ADR-0014): the serving-tier HTTP service. Shares the db/iceberg
+          # context (it COPYs _catalog.py + views/ alongside serving/); rebuilt whenever the
+          # serving code, the shared catalog seam, or the serving views change.
+          - image: duckdb-serving
+            dockerfile: db/iceberg/duckdb/serving/Dockerfile
+            context: db/iceberg
+            paths: '^db/iceberg/duckdb/(serving/|views/|_catalog\.py)'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -314,7 +322,9 @@ jobs:
       - name: Bump image in staging Helm chart values
         run: |
           set -euo pipefail
-          for app in collector stream-worker core web; do
+          # duckdb-serving rides this loop too: its chart uses the same 2-space
+          # image.repository/digest block the app charts do (ADR-0014).
+          for app in collector stream-worker core web duckdb-serving; do
             ref_file="/tmp/imgref/${app}"
             values="infra/helm/${app}/values-staging.yaml"
             [ -f "$ref_file" ] || { echo "no imgref for ${app} (not affected) — skip"; continue; }
@@ -344,7 +354,7 @@ jobs:
           bump core          .image
           bump stream-worker .streamWorkerImage
           # CUTOVER: the single brain-duckdb image now backs BOTH cron image blocks — .sparkBronze.image
-          # (bronze/medallion maintenance + erasure, run via the Trino client the image carries) and
+          # (bronze/medallion maintenance + erasure, run via the PyIceberg client the image carries) and
           # .sparkV4.image (the DuckDB Silver/Gold transform crons). One image, two blocks (the block
           # names are retained to keep the chart values diff minimal; an empty digest fail-closes each
           # template). Both are pinned from the same `duckdb` imgref.
@@ -406,7 +416,9 @@ jobs:
           set -euo pipefail
           # Build-once / promote-the-same-artifact: copy the immutable repository@digest
           # from each staging chart values into the prod chart values.
-          for app in collector stream-worker core web; do
+          # duckdb-serving is promoted the same way (ADR-0014); the all-zeros bootstrap
+          # placeholder in its values-prod is skipped until the first staging digest exists.
+          for app in collector stream-worker core web duckdb-serving; do
             stg="infra/helm/${app}/values-staging.yaml"
             prd="infra/helm/${app}/values-prod.yaml"
             [ -f "$stg" ] && [ -f "$prd" ] || continue

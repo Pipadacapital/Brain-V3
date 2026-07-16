@@ -1,7 +1,7 @@
 /**
  * @brain/metric-engine — computeSearchBehavior (storefront on-site SEARCH rollup, Gold tier).
  *
- * The SOLE reader of the `search` slice of the Gold mart gold_behavior, served through the Trino
+ * The SOLE reader of the `search` slice of the Gold mart gold_behavior, served through the
  * serving view brain_serving.mv_gold_behavior via withSilverBrand (I-ST01 — the engine is the only
  * Gold reader; the UI never queries the lakehouse directly). gold_behavior is keyed
  * (brand_id, behavior_date, page_type); this projects the page_type = 'search' bucket — the daily
@@ -16,7 +16,7 @@
  * ── ISOLATION: every read via withSilverBrand (brand predicate at the seam, LAST in the WHERE).
  *    brandId from session (D-1; NEVER request body). Honest no_data: hasData=false on zero rows.
  *
- * @see db/iceberg/spark/gold/gold_behavior.py + db/trino/views/mv_gold_behavior.sql
+ * @see db/iceberg/duckdb/gold/gold_behavior.py + db/iceberg/duckdb/views/mv_gold_behavior.sql
  * @see packages/metric-engine/src/storefront-behavior.ts — the silver_touchpoint browse sibling
  */
 
@@ -65,7 +65,7 @@ interface SearchRow {
   journeys: string | number;
 }
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] || '0');
 }

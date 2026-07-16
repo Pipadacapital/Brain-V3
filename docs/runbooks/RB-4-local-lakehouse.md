@@ -3,11 +3,12 @@
 > **HISTORICAL FRAMING (pre-Brain-V4).** This runbook was written during the Iceberg-Bronze flip and
 > describes the **then-live** local stack: `StarRocks` (serving), `dbt` (Silver/Gold compute),
 > `Redpanda` (broker), with Bronze still on Postgres. **None of those are live under Brain V4:**
-> StarRocks and dbt are **REMOVED** (serving is **Trino-over-Iceberg** + Redis via `brain_serving.mv_*`
-> Trino views; Spark-on-Iceberg is the **sole** compute), and Redpanda was replaced by **Apache Kafka
+> StarRocks and dbt are **REMOVED** (serving is **duckdb-serving** + Redis via `brain_serving.mv_*`
+> views — Trino briefly held this seat and is removed too, ADR-0014; DuckDB-on-Iceberg is the **sole**
+> compute), and Redpanda was replaced by **Apache Kafka
 > (KRaft)** (the compose DNS name `redpanda` was kept). The Iceberg REST catalog + MinIO substrate
 > below is still accurate and Bronze is now Iceberg sole-SoR. To stand up + refresh the local medallion
-> today use `pnpm dev:up` + `tools/dev/v4-refresh-loop.sh` (Spark Silver→Gold→`mv` SYNC refresh) — **not**
+> today use `pnpm dev:up` + `tools/dev/duckdb-refresh.sh` (DuckDB Silver→Gold) — **not**
 > the `dbt` / `StarRocks` steps in the Slice sections below. Read those sections for catalog/object-store
 > wiring only. **Further (ADR-0010, 2026-07-05):** the Spark-SS Bronze landing this runbook exercised
 > (`bronze_materialize.py`, `run-bronze-spike.sh`) is REMOVED — Bronze landing is the always-on

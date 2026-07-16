@@ -40,8 +40,9 @@ identifiers/aliases + anon/device ids. If no node exists, the export may legitim
    crypto-shredded (`pii_erasure_log.vault_shredded`), record "erased on <date>" instead.
 2. **PG `ops` schema:** consent records, `pii_erasure_log` entries, ML
    inference log rows for the `brain_id`, identity/journey export rows.
-3. **Iceberg Bronze (via Trino, port-forward per `GO-LIVE.md` step 11):** the SAME predicates
-   the RTBF job uses (`db/iceberg/spark/erasure_raw_delete.py` — keep the two in lockstep):
+3. **Iceberg Bronze (via duckdb-serving `POST /v1/query`, port-forward per `GO-LIVE.md` step 11
+   — note DuckDB's function is `json_extract_string`):** the SAME predicates the RTBF job uses
+   (`db/iceberg/duckdb/maintenance/erasure_raw_delete.py` — keep the two in lockstep):
    - `iceberg.brain_bronze.collector_events_connect` — payload-path predicates, brand first:
      ```sql
      SELECT payload FROM iceberg.brain_bronze.collector_events_connect

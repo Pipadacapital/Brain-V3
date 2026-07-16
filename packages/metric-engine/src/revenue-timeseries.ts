@@ -78,7 +78,7 @@ export async function computeRevenueTimeseries(
       provisional_minor: string | number;
     }>(
       `SELECT
-         date_format(date_trunc('${grain}', occurred_at), '%Y-%m-%d') AS bucket,
+         strftime(date_trunc('${grain}', occurred_at), '%Y-%m-%d') AS bucket,
          currency_code,
          SUM(CASE WHEN event_type <> 'provisional_recognition' THEN amount_minor ELSE 0 END) AS realized_minor,
          SUM(CASE WHEN event_type = 'provisional_recognition' THEN amount_minor ELSE 0 END)  AS provisional_minor

@@ -19,19 +19,18 @@ import pg from 'pg';
 import {
   computeCm2RevenueSignal,
   computeCm2MarketingSignal,
-  createTrinoPool,
+  createDuckDbServingPool,
   type SilverPool,
 } from '@brain/metric-engine';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
-// BRAIN V4: StarRocks is REMOVED. The Gold/Silver seam runs over TRINO (createTrinoPool) — the same
-// Trino-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg tables;
+// BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014). The Gold/Silver seam runs over DUCKDB-SERVING (createDuckDbServingPool) — the same
+// duckdb-serving-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg tables;
 // reads go through the brain_serving.mv_* views via the metric-engine seam.
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 const BRAND = 'd1517a01-0a11-4a11-8a11-00000000aa01';
 const ORG = 'd1517a01-0a11-4a11-8a11-00000000ff01';
@@ -59,14 +58,14 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPER, connectionTimeoutMillis: 4000, max: 3 });
     await superPool.query('SELECT 1');
     appPool = new pg.Pool({ connectionString: APP, max: 3 });
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     await srPool.query('SELECT 1');
     await cleanup();
     await superPool.query(`INSERT INTO app_user (id,email,email_normalized,password_hash) VALUES ($1,$2,$3,'x')`, [USER, `${USER}@x.invalid`, `${USER}@x.invalid`]);
     await superPool.query(`INSERT INTO organization (id,name,slug,owner_user_id) VALUES ($1,'CS',$2,$3)`, [ORG, `cs-${ORG.slice(-6)}`, USER]);
     await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CS','INR','active')`, [BRAND, ORG]);
     // REVENUE half → lakehouse gold ledger (one finalized order @ 1,000.00 INR). Iceberg ts columns are
-    // `timestamp` (no zone) → TYPED `TIMESTAMP '...'` literals (Trino will not coerce a bare varchar).
+    // `timestamp` (no zone) → TYPED `TIMESTAMP '...'` literals (the engine will not coerce a bare varchar).
     await srPool.query(
       `INSERT INTO brain_gold.gold_revenue_ledger
          (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
@@ -102,7 +101,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   await appPool?.end?.().catch(() => {});
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
   await superPool?.end?.().catch(() => {});
 });
 

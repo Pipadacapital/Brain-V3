@@ -2,7 +2,7 @@
  * live-order-bronze-wiring.e2e.test.ts — P0: order.live.v1 lands in (Iceberg) Bronze.
  *
  * ICEBERG-BRONZE (ADR-0010): Bronze is the Kafka Connect Iceberg sink (the compose kafka-connect
- * service — the SOLE Bronze writer) → `brain_bronze.collector_events_connect`, read over Trino via
+ * service — the SOLE Bronze writer) → `brain_bronze.collector_events_connect`, read over duckdb-serving via
  * the lift view (the PG data_plane.bronze_events table is dropped — migration 0070). Bronze is
  * append-only and ungated; order.live.v1 is a SERVER_TRUSTED lane event, so the Silver admission
  * gate also passes it under its claimed (server-derived) brand_id with no token/consent gate.
@@ -11,16 +11,16 @@
  * would have quarantined them as tenant_unresolved).
  *
  * This test produces a realistic re-pull order.live.v1 envelope to the collector topic and asserts it
- * lands in Iceberg Bronze (read over Trino via the lift view).
+ * lands in Iceberg Bronze (read over duckdb-serving via the lift view).
  *
  * UN-WIRE PROOF: if the kafka-connect sink is not running, SKIP_IF_NO_LAKEHOUSE fires (PENDING).
- * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + duckdb-serving).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
 import {
-  makeBronzeTrinoPool,
+  makeBronzeServingPool,
   icebergBronzeAvailable,
   produceCollectorEvent,
   pollIcebergBronzeCount,
@@ -65,7 +65,7 @@ function liveOrderEnvelope(): CollectorEnvelope {
 
 beforeAll(async () => {
   try {
-    sr = makeBronzeTrinoPool();
+    sr = makeBronzeServingPool();
     if (!(await icebergBronzeAvailable(sr))) {
       infraUp = false;
       return;

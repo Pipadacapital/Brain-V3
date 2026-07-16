@@ -63,7 +63,7 @@ export async function computeOrdersTimeseries(
       realized_minor: string | number;
     }>(
       `SELECT
-         date_format(date_trunc('${grain}', occurred_at), '%Y-%m-%d') AS bucket,
+         strftime(date_trunc('${grain}', occurred_at), '%Y-%m-%d') AS bucket,
          currency_code,
          COUNT(DISTINCT order_id) AS order_count,
          COUNT(DISTINCT CASE WHEN event_type IN ('rto_reversal', 'cod_rto_clawback') THEN order_id END) AS rto_count,

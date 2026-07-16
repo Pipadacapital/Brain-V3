@@ -3,35 +3,37 @@
  *
  * WHAT it answers: "for the analytics serving tier, which marts have data, how many rows, and how
  * stale is each one?" — the operational health read the data-health surface needs under Brain V4,
- * where Spark materializes Iceberg Silver/Gold and TRINO serves them through `brain_serving.mv_*` views.
+ * where DuckDB materializes Iceberg Silver/Gold and duckdb-serving serves them through the
+ * `brain_serving.mv_*` views.
  *
- * SOURCE (Brain V4 — StarRocks REMOVED). StarRocks is gone, so there is no
+ * SOURCE (Brain V4 — StarRocks REMOVED; Trino REMOVED, ADR-0014). StarRocks is gone, so there is no
  * `information_schema.materialized_views` with TABLE_ROWS / LAST_REFRESH_FINISHED_TIME / LAST_REFRESH_STATE
- * to read — those were StarRocks-ASYNC-MV specifics. The honest, minimal V4 replacement reads TRINO over
- * Iceberg directly:
+ * to read — those were StarRocks-ASYNC-MV specifics. The honest, minimal V4 replacement reads
+ * duckdb-serving over Iceberg directly:
  *   1. Enumerate the serving marts that carry a freshness column from `information_schema.columns`
- *      (every `brain_serving.mv_*` view that projects `updated_at` — the Spark-write watermark).
- *   2. For each, read `max(updated_at)` (freshness — when Spark last wrote a row this view sees) and
- *      `count(*)` (the "does this mart have data" / row-count signal). Both are cheap: Trino answers
- *      count from Iceberg metadata and max() from per-file column stats — no full data scan.
+ *      (every `brain_serving.mv_*` view that projects `updated_at` — the transform-write watermark).
+ *   2. For each, read `max(updated_at)` (freshness — when the transform tier last wrote a row this
+ *      view sees) and `count(*)` (the "does this mart have data" / row-count signal). Both are cheap:
+ *      DuckDB answers count from Iceberg metadata and max() from per-file column stats — no full data scan.
  * The `mv_*` name maps 1:1 to its Iceberg mart (mv_gold_funnel ← iceberg.brain_gold.gold_funnel).
  *
  * WHY only the freshness-bearing views: 5 serving views (the snapshot `mv_snap_*`, `mv_gold_customer_scores`,
  * `mv_silver_order_line`) do not project an `updated_at` column, so there is no honest freshness signal to
  * report for them — they are omitted rather than faked as 'never'. Coverage is whatever carries a watermark.
  *
- * NO StarRocks refresh-state under Trino: Trino views always reflect the latest Iceberg snapshot (there is
- * no async refresh to FAIL), so `refreshState` is always null and the verdict derives from age alone
+ * NO StarRocks refresh-state under duckdb-serving: the serving views track the Iceberg snapshot the
+ * replica's current catalog epoch sees (re-attached every rotation; there is no async refresh to FAIL),
+ * so `refreshState` is always null and the verdict derives from age alone
  * (fresh|stale|never). The 'failed' verdict is retained in the type for shape stability but never produced.
  *
  * WHY NOT brand-scoped (no ${BRAND_PREDICATE} / withSilverBrand): this is cross-brand PIPELINE health
  * — "is the serving tier fresh", an admin/ops signal, NOT a tenant data read. The signals here are
  * per-mart aggregates (max(updated_at), count(*)) across all brands; there is nothing tenant-bearing to
- * leak. It is therefore read through the pool's plain `.query` (the read-only Trino pool), deliberately
+ * leak. It is therefore read through the pool's plain `.query` (the read-only serving pool), deliberately
  * outside the tenant seam — the ONLY place in this module that does so, because the read is pipeline metadata.
  *
- * NO money, NO PII — counts + timestamps + view names only. Fail-soft: Trino down / serving schema absent →
- * honest `{ state: 'no_data' }` (never a 500, never a fabricated freshness).
+ * NO money, NO PII — counts + timestamps + view names only. Fail-soft: serving tier down / serving schema
+ * absent → honest `{ state: 'no_data' }` (never a 500, never a fabricated freshness).
  *
  * Freshness verdict (text, never colour-only): per the staleness of max(updated_at) against a bounded SLA
  * window, surfaced as 'fresh' | 'stale' | 'failed' | 'never' so the UI renders an icon+label. Worst-of
@@ -40,7 +42,7 @@
 
 import type { SilverPool } from '@brain/metric-engine';
 
-/** The serving schema the V4 Trino views live in (matches db/trino/views/mv_*.sql + run-trino-views.sh). */
+/** The serving schema the V4 duckdb-serving views live in (matches db/iceberg/duckdb/views/mv_*.sql, applied at replica startup/rotation). */
 const SERVING_SCHEMA = 'brain_serving';
 
 /**
@@ -64,8 +66,8 @@ export interface ServingMartRow {
   /** Minutes since the latest row's updated_at (null when the mart is empty). */
   ageMinutes: number | null;
   /**
-   * Refresh state — always null under Trino (a view has no async-refresh state to fail). Retained for
-   * shape stability with the StarRocks-era surface; the verdict derives from age alone.
+   * Refresh state — always null under duckdb-serving (a view has no async-refresh state to fail).
+   * Retained for shape stability with the StarRocks-era surface; the verdict derives from age alone.
    */
   refreshState: string | null;
   /** The derived freshness verdict. */
@@ -88,7 +90,7 @@ export type ServingFreshnessResult =
     };
 
 export interface ServingFreshnessDeps {
-  /** Trino pool (read-only, over Iceberg). Absent → honest no_data. */
+  /** Serving pool (read-only, over Iceberg). Absent → honest no_data. */
   readonly srPool?: SilverPool;
 }
 
@@ -117,16 +119,16 @@ function toIso(v: Date | string | null | undefined): string | null {
 
 function deriveFreshness(refreshState: string | null, ageMinutes: number | null): MartFreshness {
   // A non-SUCCESS refresh state means the serving tier could not track its base — surface it loudly.
-  // (Under Trino refreshState is always null, so this branch is dormant; kept for shape stability.)
+  // (Under duckdb-serving refreshState is always null, so this branch is dormant; kept for shape stability.)
   if (refreshState != null && refreshState !== 'SUCCESS' && refreshState !== '') return 'failed';
   if (ageMinutes == null) return 'never';
   return ageMinutes > STALE_AFTER_MINUTES ? 'stale' : 'fresh';
 }
 
 /**
- * getServingFreshness — the V4 serving-tier freshness + row-count read (Trino over Iceberg).
+ * getServingFreshness — the V4 serving-tier freshness + row-count read (duckdb-serving over Iceberg).
  *
- * Brand-agnostic pipeline health (see file header). Fail-soft to no_data on any Trino error / absent schema.
+ * Brand-agnostic pipeline health (see file header). Fail-soft to no_data on any serving error / absent schema.
  */
 export async function getServingFreshness(
   deps: ServingFreshnessDeps,
@@ -134,8 +136,8 @@ export async function getServingFreshness(
   if (!deps.srPool) return { state: 'no_data' };
 
   // ── 1. Enumerate the serving marts that expose a freshness watermark (updated_at). ──
-  // Plain pool query — pipeline metadata, no tenant predicate (see file header). Trino's
-  // information_schema lists views/tables for the default (iceberg) catalog.
+  // Plain pool query — pipeline metadata, no tenant predicate (see file header). DuckDB's
+  // information_schema lists the replica's local schemas, including the brain_serving views.
   let viewNames: string[];
   try {
     const cols = await deps.srPool.query<FreshnessViewRow>(
@@ -151,7 +153,7 @@ export async function getServingFreshness(
       .map((r) => r.table_name)
       .filter((n): n is string => typeof n === 'string' && SAFE_MV_NAME.test(n));
   } catch {
-    // Trino down / information_schema unavailable → honest no_data (never a 500).
+    // Serving tier down / information_schema unavailable → honest no_data (never a 500).
     return { state: 'no_data' };
   }
   if (viewNames.length === 0) return { state: 'no_data' };

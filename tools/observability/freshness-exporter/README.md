@@ -5,8 +5,9 @@ stale each Gold serving mart is and exposes `brain_data_freshness_seconds` on `/
 
 It is the serving-side complement to `infra/observe/alerts/brain-slo.rules.yml` (which covers
 Bronze-spine ingest freshness). Iceberg is the system of record, so "freshness" is the age of
-each mart's **latest successful Iceberg snapshot** (`max(committed_at)`), read through Trino —
-the sole serving engine — via the same `iceberg` catalog the app uses.
+each mart's **latest successful Iceberg snapshot** (`max(timestamp_ms)` from the DuckDB
+`iceberg_snapshots()` metadata function), read through duckdb-serving — the sole serving
+engine (ADR-0014) — via the same `iceberg` catalog attach the app uses.
 
 ## Metrics
 
@@ -18,7 +19,7 @@ the sole serving engine — via the same `iceberg` catalog the app uses.
 | `brain_data_freshness_scrape_duration_seconds` | gauge | — | wall time of the last background scrape |
 | `brain_data_freshness_last_scrape_timestamp_seconds` | gauge | — | unix time of the last scrape |
 | `brain_data_freshness_scrape_total` | counter | — | completed scrapes |
-| `brain_data_freshness_up` | gauge | — | 1 if Trino was reachable last scrape |
+| `brain_data_freshness_up` | gauge | — | 1 if duckdb-serving was reachable last scrape |
 
 `sla_class` is `executive` (15m SLA) or `segment` (1h SLA). The thresholds live in the alert
 rules, not here — see `infra/observe/alerts/freshness.rules.yml`. Adding a mart is a one-line
@@ -37,22 +38,22 @@ fires" doctrine documented in `brain-slo.rules.yml`.
 It is a single stdlib script — run it with stock Python 3.11+ (no `pip install`):
 
 ```sh
-# Local dev against the docker-compose stack (Trino host port is 8090):
-FRESHNESS_TRINO_URL=http://localhost:8090 \
+# Local dev against the docker-compose stack (duckdb-serving host port is 8091):
+FRESHNESS_SERVING_URL=http://localhost:8091 \
   python3 tools/observability/freshness-exporter/freshness_exporter.py
 # → serves http://localhost:9095/metrics
 
 # One-shot (print exposition and exit — handy for CI / a CronJob+Pushgateway):
-FRESHNESS_TRINO_URL=http://localhost:8090 \
+FRESHNESS_SERVING_URL=http://localhost:8091 \
   python3 tools/observability/freshness-exporter/freshness_exporter.py --once
 ```
 
-In-cluster / inside the compose network the default `FRESHNESS_TRINO_URL=http://trino:8080` is
-correct. To run on the stock image without baking a Dockerfile:
+In-cluster / inside the compose network the default `FRESHNESS_SERVING_URL=http://duckdb-serving:8091`
+is correct. To run on the stock image without baking a Dockerfile:
 
 ```sh
 docker run --rm --network brain_default -p 9095:9095 \
-  -e FRESHNESS_TRINO_URL=http://trino:8080 \
+  -e FRESHNESS_SERVING_URL=http://duckdb-serving:8091 \
   -v "$PWD/tools/observability/freshness-exporter:/app:ro" \
   python:3.13-slim python3 /app/freshness_exporter.py
 ```
@@ -61,13 +62,12 @@ docker run --rm --network brain_default -p 9095:9095 \
 
 | var | default | meaning |
 | --- | --- | --- |
-| `FRESHNESS_TRINO_URL` | `http://trino:8080` | Trino coordinator base URL |
-| `FRESHNESS_TRINO_USER` | `brain` | `X-Trino-User` |
-| `FRESHNESS_TRINO_CATALOG` | `iceberg` | Trino catalog |
+| `FRESHNESS_SERVING_URL` | `http://duckdb-serving:8091` | duckdb-serving base URL (POST /v1/query) |
+| `FRESHNESS_ICEBERG_CATALOG` | `iceberg` | attached Iceberg catalog name |
 | `FRESHNESS_GOLD_SCHEMA` | `brain_gold` | Iceberg Gold schema |
 | `FRESHNESS_LISTEN_ADDR` / `FRESHNESS_LISTEN_PORT` | `0.0.0.0` / `9095` | `/metrics` bind |
 | `FRESHNESS_REFRESH_SEC` | `60` | background refresh interval |
-| `FRESHNESS_QUERY_TIMEOUT_SEC` | `20` | per-HTTP-hop timeout |
+| `FRESHNESS_QUERY_TIMEOUT_SEC` | `20` | per-HTTP-request timeout |
 | `FRESHNESS_MARTS_FILE` | (built-in) | path to a JSON mart-registry override |
 
 ## Wire into Prometheus

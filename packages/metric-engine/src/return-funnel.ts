@@ -136,8 +136,8 @@ export async function computeReturnFunnel(
           COUNT(*)                                                            AS total,
           COALESCE(SUM(CASE WHEN is_return_complete = true THEN 1 ELSE 0 END), 0) AS completed
         FROM brain_serving.mv_silver_return
-        WHERE CAST(first_event_at AS timestamp(6) with time zone) >= ?
-          AND CAST(first_event_at AS timestamp(6) with time zone) <= ?
+        WHERE CAST(first_event_at AS TIMESTAMPTZ) >= ?
+          AND CAST(first_event_at AS TIMESTAMPTZ) <= ?
           AND ${BRAND_PREDICATE}`,
       [fromTs, toTs2],
     );
@@ -156,8 +156,8 @@ export async function computeReturnFunnel(
     const classRows = await scope.runScoped<ClassRow>(
       `SELECT return_class, COUNT(*) AS count
         FROM brain_serving.mv_silver_return
-        WHERE CAST(first_event_at AS timestamp(6) with time zone) >= ?
-          AND CAST(first_event_at AS timestamp(6) with time zone) <= ?
+        WHERE CAST(first_event_at AS TIMESTAMPTZ) >= ?
+          AND CAST(first_event_at AS TIMESTAMPTZ) <= ?
           AND ${BRAND_PREDICATE}
         GROUP BY return_class`,
       [fromTs, toTs2],
@@ -177,8 +177,8 @@ export async function computeReturnFunnel(
               COUNT(*) AS total,
               COALESCE(SUM(CASE WHEN is_return_complete = true THEN 1 ELSE 0 END), 0) AS completed
         FROM brain_serving.mv_silver_return
-        WHERE CAST(first_event_at AS timestamp(6) with time zone) >= ?
-          AND CAST(first_event_at AS timestamp(6) with time zone) <= ?
+        WHERE CAST(first_event_at AS TIMESTAMPTZ) >= ?
+          AND CAST(first_event_at AS TIMESTAMPTZ) <= ?
           AND courier IS NOT NULL AND courier <> ''
           AND ${BRAND_PREDICATE}
         GROUP BY courier

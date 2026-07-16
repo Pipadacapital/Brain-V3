@@ -19,8 +19,8 @@
  * is honest evidence of HOW the identifier reached the person, additive to the identifier_type +
  * first_seen; a per-connector origin is a future enrichment (a new column on the map, not here).
  *
- * @see db/trino/views/mv_silver_identity_map.sql (the served projection)
- * @see db/trino/views/identity_current_v.sql (the current-only sanctioned accessor)
+ * @see db/iceberg/duckdb/views/mv_silver_identity_map.sql (the served projection)
+ * @see db/iceberg/duckdb/views/identity_current_v.sql (the current-only sanctioned accessor)
  */
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
@@ -58,7 +58,7 @@ interface EvidenceDbRow {
  * computeIdentityEvidence — the per-customer identity evidence for the journey-trace surface.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - the Trino serving pool (srPool).
+ * @param deps    - the serving pool (srPool).
  * @param brainId - the resolved customer key whose identifiers to explain.
  */
 export async function computeIdentityEvidence(

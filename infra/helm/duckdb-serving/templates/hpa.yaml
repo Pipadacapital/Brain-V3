@@ -1,0 +1,29 @@
+{{- if .Values.autoscaling.enabled }}
+# HorizontalPodAutoscaler for the serving replicas. CPU-target (queries are scan/CPU-bound; memory
+# is a fixed per-replica DuckDB memory_limit, so it is NOT a scale signal). Requires
+# resources.requests (set in values) — HPA computes utilization as usage/request. When enabled the
+# Deployment OMITS a static replicas count (see deployment.yaml) so helm upgrades don't fight the HPA.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "duckdb-serving.fullname" . }}
+  labels:
+    {{- include "duckdb-serving.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "duckdb-serving.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300   # 5m cooldown — avoid replica thrash on bursty BFF traffic
+{{- end }}

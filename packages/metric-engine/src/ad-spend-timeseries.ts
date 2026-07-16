@@ -69,7 +69,7 @@ export async function computeAdSpendTimeseries(
       currency_code: string;
       spend_minor: string | number;
     }>(
-      `SELECT date_format(date_trunc('${grainUnit}', CAST(stat_date AS TIMESTAMP)), '%Y-%m-%d') AS bucket,
+      `SELECT strftime(date_trunc('${grainUnit}', CAST(stat_date AS TIMESTAMP)), '%Y-%m-%d') AS bucket,
               platform,
               currency_code,
               SUM(spend_minor) AS spend_minor

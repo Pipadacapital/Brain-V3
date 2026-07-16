@@ -1,13 +1,14 @@
 # integration.yml — real-engine integration suite (C5 / R-48).
 #
 # The PR workflow (pr.yml) runs unit/contract/isolation/parity against a Postgres service container
-# ONLY — the `.live.test.ts` suites (real Trino-over-Iceberg serving, real Kafka) and the Playwright
+# ONLY — the `.live.test.ts` suites (real duckdb-serving-over-Iceberg, real Kafka) and the Playwright
 # e2e are NOT exercised in CI, so a cross-tenant serving leak or a broken live pipeline could merge green.
 # This workflow closes that: it stands up the REAL engines (the repo's docker-compose stack) and runs
 # the live + e2e suites against them.
 #
-# BRAIN V4: StarRocks is REMOVED. Serving is Trino-over-Iceberg (fronted by Redis). This workflow brings
-# up Trino (not StarRocks) and provisions the brain_serving Trino VIEWS via db/trino/views/run-trino-views.sh.
+# BRAIN V4: StarRocks is REMOVED; Trino is REMOVED (ADR-0014). Serving is duckdb-serving (DuckDB
+# read-only over the Iceberg REST catalog, fronted by Redis). The brain_serving VIEWS
+# (db/iceberg/duckdb/views/*.sql) are applied BY the service at startup — /readyz gates on them.
 #
 # ⚠️ INTRODUCED NON-BLOCKING ON PURPOSE: it runs on a schedule, on master pushes, and on demand — NOT
 # on pull_request — so it can stabilize (engine cold-start timing, Playwright full-stack wiring)
@@ -42,18 +43,19 @@ env:
   BRAIN_APP_DATABASE_URL: postgres://brain_app:brain_app@localhost:5432/brain
   REDIS_URL: redis://localhost:6379
   KAFKA_BROKERS: localhost:19092
-  # Brain V4 serving engine: Trino-over-Iceberg (StarRocks removed). The metric-engine/core read the
-  # brain_serving Trino views; createTrinoPool targets TRINO_URL (host:port = TRINO_HOST:TRINO_PORT).
-  TRINO_HOST: localhost
-  TRINO_PORT: '8090'
-  TRINO_URL: http://localhost:8090
+  # Brain V4 serving engine: duckdb-serving-over-Iceberg (StarRocks removed; Trino removed, ADR-0014).
+  # The metric-engine/core read the brain_serving views; createDuckDbServingPool targets
+  # DUCKDB_SERVING_HOST:DUCKDB_SERVING_PORT (the compose duckdb-serving service, host port 8091).
+  DUCKDB_SERVING_HOST: localhost
+  DUCKDB_SERVING_PORT: '8091'
+  DUCKDB_SERVING_URL: http://localhost:8091
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
-  # Real-engine isolation + parity + live suites (Trino-over-Iceberg serving, Kafka).
+  # Real-engine isolation + parity + live suites (duckdb-serving-over-Iceberg, Kafka).
   # ───────────────────────────────────────────────────────────────────────────
   real-engine-tests:
-    name: Live suites on real engines (Trino + Kafka)
+    name: Live suites on real engines (duckdb-serving + Kafka)
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -67,7 +69,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Bring up real engines (Postgres + Trino + Kafka + Redis + MinIO + Iceberg REST)
+      - name: Bring up real engines (Postgres + duckdb-serving + Kafka + Redis + MinIO + Iceberg REST)
         run: |
           # NOT `up --wait`: it exits 1 when a one-shot init container (minio-init, kafka-init,
           # iceberg-catalog-init) exits 0 DURING the wait window — the exact cold-start behavior
@@ -102,23 +104,25 @@ jobs:
       # has no brain_bronze.collector_events_connect to read → the keystone never creates brain_silver
       # → every Silver/Gold job fails with "Namespace brain_silver does not exist". Producing a handful
       # of order.live.v1 collector events (→ Kafka Connect lands Bronze) breaks that cascade so the
-      # refresh builds the full medallion. The script POLLS Trino until the events land (~30-60s commit).
+      # refresh builds the full medallion. The script POLLS the serving tier until the events land
+      # (~30-60s commit).
       - name: Seed Bronze fixture (Kafka → Kafka Connect → Iceberg)
         env:
           KAFKA_BROKERS: localhost:19092
-          TRINO_URL: http://localhost:8090
+          DUCKDB_SERVING_URL: http://localhost:8091
         run: pnpm --filter @brain/stream-worker seed:bronze
 
-      # ── V4 transform: DuckDB Silver → DuckDB Gold → Iceberg, served by Trino views (REPLACES dbt+StarRocks+Spark) ──
-      # Brain V4 removed dbt (Phase 6b), StarRocks (serving → Trino), AND Spark (transform → DuckDB, PR
-      # #148). The analytics transform is DuckDB-on-Iceberg: db/iceberg/duckdb/{silver,gold}/*.py
-      # materialize the EXTERNAL Iceberg Gold/Silver marts from Bronze. This step runs the DuckDB oneshot
-      # refresh (so the marts exist), then the next step provisions the brain_serving Trino VIEWS over
-      # them. The *.live suites below read the same Trino serving tier the dashboards read.
+      # ── V4 transform: DuckDB Silver → DuckDB Gold → Iceberg, served by duckdb-serving views (REPLACES dbt+StarRocks+Spark+Trino) ──
+      # Brain V4 removed dbt (Phase 6b), StarRocks (serving → Trino), Spark (transform → DuckDB, PR
+      # #148), AND Trino (serving → duckdb-serving, ADR-0014). The analytics transform is
+      # DuckDB-on-Iceberg: db/iceberg/duckdb/{silver,gold}/*.py materialize the EXTERNAL Iceberg
+      # Gold/Silver marts from Bronze. This step runs the DuckDB oneshot refresh (so the marts exist),
+      # then the next step rotates duckdb-serving onto them and gates on /readyz. The *.live suites
+      # below read the same duckdb-serving tier the dashboards read.
       #
       # Runs on the HOST against the published compose ports (minio :9000, iceberg-rest :8181, neo4j
       # :7687) — exactly as `pnpm dev:v4-refresh` does in dev, and the same localhost path the other
-      # steps use for Trino :8090. No Spark, no kafka-netns join, no StarRocks MV SYNC.
+      # steps use for duckdb-serving :8091. No Spark, no kafka-netns join, no StarRocks MV SYNC.
       - name: V4 refresh — DuckDB Silver/Gold materialize Iceberg (oneshot)
         env:
           # DuckDB job connection contract (db/iceberg/duckdb/_catalog.py) → the compose services on
@@ -144,28 +148,55 @@ jobs:
           #
           # Best-effort, matching tools/dev/dev-up.sh: with only the minimal order seed, peripheral marts
           # (identity → Neo4j, attribution → pixel touchpoints, ad-spend → connector rows) legitimately
-          # have no inputs and may no-op/fail — that must NOT fail the job. The REAL gates are the Trino
-          # serving-view provisioning + the live suites below, which assert the marts the serving tier feeds.
+          # have no inputs and may no-op/fail — that must NOT fail the job. The REAL gates are the
+          # duckdb-serving /readyz view gate + the live suites below, which assert the marts the serving
+          # tier feeds.
           PYTHON=/tmp/duckvenv/bin/python ONESHOT=1 bash tools/dev/duckdb-refresh.sh \
-            || echo "::warning::DuckDB refresh reported issues (often empty cold-DB peripheral marts) — continuing to Trino views + live suites (the real gates)"
+            || echo "::warning::DuckDB refresh reported issues (often empty cold-DB peripheral marts) — continuing to the /readyz gate + live suites (the real gates)"
 
-      - name: Provision Trino serving views (iceberg.brain_serving.mv_*)
+      # PyIceberg maintenance capability probe (plan §D3) — the merge precondition for the maintenance
+      # tier: proves against the REAL catalog that snapshot expiry physically deletes S3 objects (the
+      # RTBF bytes-gone requirement), that COW delete/overwrite works on DuckDB-written tables (the
+      # ManifestEntry.snapshot_id shim), and that commit conflicts retry. Scratch namespace only —
+      # never touches the marts the live suites read. 0 FAIL gates the job.
+      - name: PyIceberg maintenance capability probe
         env:
-          TRINO_URL: http://localhost:8090
-        run: |
-          # Create iceberg.brain_serving + every brain_serving.mv_* Trino VIEW over the Iceberg Gold/Silver
-          # marts DuckDB just materialized. CREATE OR REPLACE VIEW — idempotent; no async refresh to wait on.
-          bash db/trino/views/run-trino-views.sh
+          S3_ENDPOINT: http://localhost:9000
+          ICEBERG_REST_URI: http://localhost:8181
+          ICEBERG_WAREHOUSE: s3://brain-bronze/
+          AWS_ACCESS_KEY_ID: brain
+          AWS_SECRET_ACCESS_KEY: brainbrain
+          AWS_REGION: us-east-1
+        run: /tmp/duckvenv/bin/python db/iceberg/duckdb/maintenance/maintenance_capability_probe.py
 
-      # Isolation fuzz + parity oracle — now against the REAL Trino serving tier (the PR run has no Silver
+      - name: Wait for duckdb-serving views (readyz gate — replaces run-trino-views.sh)
+        run: |
+          # The brain_serving.mv_* views are applied BY duckdb-serving at epoch build (startup +
+          # rotation), continue-on-error — a view over a not-yet-materialized mart is SKIPPED and
+          # self-heals on the next rotation. The refresh above just materialized the marts, so force a
+          # fresh epoch now (restart = re-attach + re-apply) instead of waiting out the rotation
+          # interval, then poll /readyz until every view applied (views_skipped == []).
+          docker compose --profile core restart duckdb-serving
+          for i in $(seq 1 60); do
+            body="$(curl -fsS http://localhost:8091/readyz 2>/dev/null || true)"
+            if [ -n "$body" ] && [ "$(printf '%s' "$body" | jq -r '.views_skipped | length' 2>/dev/null)" = "0" ]; then
+              echo "duckdb-serving ready: $(printf '%s' "$body" | jq -c '{views_applied, views_skipped}')"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "duckdb-serving never reached views_skipped=[] — last /readyz: ${body:-<no response>}"
+          exit 1
+
+      # Isolation fuzz + parity oracle — now against the REAL duckdb-serving tier (the PR run has no Silver
       # tier, so the cross-tenant negative-control on the ${BRAND_PREDICATE} seam only truly fires here).
       - name: Isolation fuzz (real engines)
         run: pnpm turbo run test:isolation
       - name: Parity oracle (real engines)
         run: pnpm turbo run test:parity
 
-      # The *.live.test.ts suites (credit writer, reconcile, analytics, dq) read the real Trino serving tier.
-      - name: Core live suites (Trino-over-Iceberg serving)
+      # The *.live.test.ts suites (credit writer, reconcile, analytics, dq) read the real duckdb-serving tier.
+      - name: Core live suites (duckdb-serving-over-Iceberg)
         run: pnpm --filter @brain/core exec vitest run --no-file-parallelism live
       - name: Stream-worker e2e (Kafka + Bronze)
         run: pnpm --filter @brain/stream-worker test:e2e
@@ -223,9 +254,9 @@ jobs:
           REDIS_URL=redis://localhost:6379
           KAFKA_BROKERS=localhost:19092
           KAFKA_BROKERS=localhost:19092
-          TRINO_HOST=localhost
-          TRINO_PORT=8090
-          TRINO_URL=http://localhost:8090
+          DUCKDB_SERVING_HOST=localhost
+          DUCKDB_SERVING_PORT=8091
+          DUCKDB_SERVING_URL=http://localhost:8091
           ENV
 
       - name: Start the app stack (core + web + collector + stream-worker)

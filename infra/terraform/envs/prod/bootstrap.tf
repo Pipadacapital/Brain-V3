@@ -311,6 +311,55 @@ resource "aws_ecr_lifecycle_policy" "iceberg_rest" {
   })
 }
 
+# duckdb-serving image (ADR-0014): the serving-tier HTTP service that replaced Trino
+# (db/iceberg/duckdb/serving/Dockerfile, built by deploy.yml build-data-images). Not a
+# pnpm app, so — like iceberg-rest above — it sits outside the eks module's
+# brain-<svc>-prod ECR set; same IMMUTABLE, KMS-encrypted, scanned posture.
+resource "aws_ecr_repository" "duckdb_serving" {
+  name                 = "brain-duckdb-serving-prod"
+  image_tag_mutability = "IMMUTABLE"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = module.kms.root_kms_key_arn
+  }
+}
+
+# Same lifecycle posture as iceberg_rest (AUD-INFRA-018): untagged expire after 7 days,
+# keep-last-10 tagged (IMMUTABLE tags mean every build is a new tag; N=10 keeps any
+# digest a running pod could still pull after a node reschedule).
+resource "aws_ecr_lifecycle_policy" "duckdb_serving" {
+  repository = aws_ecr_repository.duckdb_serving.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 7 days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 7
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only the last 10 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
 ###############################################################################
 # Secrets Manager + S3 Iceberg medallion WAREHOUSE + S3 Audit (WORM).
 # AUD-COST-016: ONE warehouse bucket, NO Object Lock. The local lakehouse runs
@@ -467,15 +516,16 @@ module "irsa_web" {
   policy_arns          = []
 }
 
-# trino — serving engine, read-only over the medallion warehouse namespaces
-# (AUD-COST-016 layout). SA name = trino.fullname = brain-prod-trino.
-module "irsa_trino" {
+# duckdb-serving — serving engine (ADR-0014, Trino replacement), read-only over
+# the medallion warehouse namespaces (AUD-COST-016 layout). SA name =
+# duckdb-serving.fullname = brain-prod-duckdb-serving.
+module "irsa_duckdb_serving" {
   source               = "../../modules/irsa"
-  role_name            = "trino"
+  role_name            = "duckdb-serving"
   oidc_provider_arn    = module.eks.oidc_provider_arn
   oidc_provider_url    = module.eks.oidc_provider_url
-  namespace            = "trino"
-  service_account_name = "brain-${local.environment}-trino"
+  namespace            = "duckdb-serving"
+  service_account_name = "brain-${local.environment}-duckdb-serving"
   environment          = local.environment
   project              = local.project
   policy_arns          = [module.s3_iceberg.analytics_s3_policy_arn]
@@ -849,7 +899,7 @@ output "spark_jobs_role_arn" { value = module.irsa_spark_jobs.role_arn }
 
 # AUD-COST-017: the six platform/serving roles the manifests reference.
 output "web_role_arn" { value = module.irsa_web.role_arn }
-output "trino_role_arn" { value = module.irsa_trino.role_arn }
+output "duckdb_serving_role_arn" { value = module.irsa_duckdb_serving.role_arn }
 output "iceberg_rest_role_arn" { value = module.irsa_iceberg_rest.role_arn }
 output "external_secrets_role_arn" { value = module.irsa_external_secrets.role_arn }
 output "alb_controller_role_arn" { value = module.irsa_alb_controller.role_arn }

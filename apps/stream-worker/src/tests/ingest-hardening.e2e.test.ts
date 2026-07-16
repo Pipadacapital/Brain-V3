@@ -40,7 +40,7 @@ import { BronzeRepository } from '../infrastructure/pg/BronzeRepository.js';
 import { CollectorEventConsumer } from '../interfaces/consumers/CollectorEventConsumer.js';
 import { InMemoryRetryCounter } from './support/InMemoryRetryCounter.js';
 import { buildDedupKey } from '../domain/bronze/DedupPolicy.js';
-import { makeBronzeTrinoPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
+import { makeBronzeServingPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
@@ -71,7 +71,7 @@ let bronze: BronzeRepository;
 let auditPool: Pool;
 let useCase: ProcessEventUseCase;
 let producer: Producer;          // produce to the collector topic → Spark sink → Iceberg
-let sr: BronzePool;              // Trino — reads Iceberg Bronze (the SoR)
+let sr: BronzePool;              // duckdb-serving — reads Iceberg Bronze (the SoR)
 let lakehouseUp = false;         // can we verify Bronze landing in Iceberg?
 
 const cleanupEventIds: string[] = [];
@@ -201,7 +201,7 @@ beforeAll(async () => {
   const kafkaProd = new Kafka({ clientId: 'ingest-hardening-producer', brokers: KAFKA_BROKERS, logLevel: 0, retry: { retries: 3 } });
   producer = kafkaProd.producer();
   await producer.connect();
-  sr = makeBronzeTrinoPool();
+  sr = makeBronzeServingPool();
   lakehouseUp = await icebergBronzeAvailable(sr);
 }, 30_000);
 

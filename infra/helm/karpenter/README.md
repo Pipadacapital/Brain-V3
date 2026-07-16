@@ -9,7 +9,7 @@ CRDs** are installed from the upstream chart via ArgoCD: `infra/argocd/envs/prod
 | Concern | Owner |
 |---|---|
 | Karpenter controller + CRDs | upstream chart (`public.ecr.aws/karpenter`), pinned `1.0.8`, ArgoCD app |
-| NodePools (`streaming`/`batch`/`trino`) + `EC2NodeClass` | this chart (`infra/helm/karpenter`) |
+| NodePools (`streaming`/`ondemand`) + `EC2NodeClass` | this chart (`infra/helm/karpenter`) |
 | The EKS `system` node group | **`modules/eks` — UNCHANGED. Do not touch.** |
 
 ### The system node group stays ON-DEMAND and fixed
@@ -20,19 +20,21 @@ operator. An autoscaler must not run on the Spot capacity it manages, so:
 - This change does **not** edit `modules/eks` node groups.
 - The Karpenter controller is pinned to it via `nodeSelector: { role: system }` (the label the eks
   module already sets) in `infra/argocd/envs/prod/karpenter.yaml`.
-- Everything else (collector, stream-worker, core, web, Trino workers, Argo/Spark batch) runs on
+- Everything else (collector, stream-worker, core, web, duckdb-serving, Argo cron jobs) runs on
   Karpenter-managed Spot nodes.
 
 ## Node pools (match the blueprint node groups)
 
 | Pool | Instance | Capacity | Scale-to-zero | Bound (`limits`) | Consolidation |
 |---|---|---|---|---|---|
-| `streaming` | `t4g.large/xlarge` + `m7g.large/xlarge` | spot | **no** (warm) | cpu 20 / 80Gi | `WhenEmpty` |
-| `batch` | `t4g.xlarge` + `m7g.xlarge` | spot | **yes** (0→3) | cpu 12 / 48Gi | `WhenEmptyOrUnderutilized` |
-| `trino` | `t4g.xlarge` + `m7g.xlarge` | spot | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmptyOrUnderutilized` |
+| `streaming` | `t4g.large/xlarge` + `m7g.large/xlarge` | spot | **no** (warm) | cpu 20 / 80Gi | `WhenEmptyOrUnderutilized` |
 | `ondemand` | `t4g.xlarge` + `m7g.xlarge` | **on-demand** | **yes** (0→2) | cpu 8 / 32Gi | `WhenEmpty` |
 
-**AUD-OPS-033:** the aggregate ceiling (48 vCPU / 192Gi across the 4 pools) is deliberate and
+(The `batch` pool was removed in the Spark→DuckDB cutover; the `trino` pool in the Trino→
+duckdb-serving cutover, ADR-0014 — duckdb-serving replicas + the DuckDB/PyIceberg crons all
+ride the `streaming` pool.)
+
+**AUD-OPS-033:** the aggregate ceiling (28 vCPU / 112Gi across the 2 pools) is deliberate and
 documented in `values.yaml` — it is intentionally below the sum of all HPA maxima under a
 fully-correlated burst; raise pool `limits` and workload maxima together. The `m7g.*` entries
 are the t4g spot-drought fallback (same 1:4 vCPU:GiB shape, Graviton3, arm64 — one EC2NodeClass
@@ -52,11 +54,11 @@ reclaims a node once it is *fully* empty (never bin-packs live consumers off it)
 streaming workloads (collector, live stream-worker) keep a warm baseline of replicas, so the pool
 never drains to zero in practice.
 
-### Pinning workloads to a pool (follow-up, not in this change)
-The pools are **untainted** so today's untainted workloads still schedule. To *pin* Trino workers to
-the `trino` pool (and batch jobs to `batch`), add `nodeSelector: { brain.platform/pool: trino }` to
-the **trino chart** (and a matching toleration if a taint is later added). That edit belongs to the
-trino/cronworkflows charts and is deliberately **out of scope here** (no cross-chart edits).
+### Pinning workloads to a pool
+The `streaming` pool is **untainted** so untainted workloads still schedule freely; duckdb-serving
+pins itself there via `nodeSelector: { karpenter.sh/nodepool: streaming }` in its own chart
+(`infra/helm/duckdb-serving/values-prod.yaml`), as do the cronworkflows job pods. Those edits
+belong to the workload charts, not here (no cross-chart edits).
 
 ## Wiring the operator must do (NOT done by this chart)
 

@@ -7,11 +7,11 @@
  * compiler, and pinned by the D2.snapshot test so silent drift is impossible.
  *
  * Per metric×grain the compiler emits (all snapshot-pinned):
- *   • viewSql        — the CANONICAL compiled view (a Trino query TEMPLATE). For an `interactive`
- *                      time-grain it reads the Spark pre-agg; for a `slow`/`all` grain it reads the
- *                      base semantic entity. Every view embeds the literal ${BRAND_PREDICATE}
+ *   • viewSql        — the CANONICAL compiled view (a DuckDB-serving query TEMPLATE). For an
+ *                      `interactive` time-grain it reads the pre-agg; for a `slow`/`all` grain it
+ *                      reads the base semantic entity. Every view embeds the literal ${BRAND_PREDICATE}
  *                      sentinel EXACTLY ONCE (compile-time row-level tenancy, AMD-07 D3).
- *   • preaggDdl / preaggRefreshSql — for `interactive` time-grains: the Spark-maintained Iceberg
+ *   • preaggDdl / preaggRefreshSql — for `interactive` time-grains: the scheduled Iceberg
  *                      pre-aggregation (additive MEASURES only; the non-additive metric value is
  *                      derived at read). §1.11.1.
  *   • baseFallbackSql — for `interactive` time-grains: the base-entity view for dims NOT covered by
@@ -66,14 +66,17 @@ export interface CompiledPreagg {
   readonly createDdl: string;
   readonly refreshSql: string;
   /**
-   * AUD-SL-10 — the ATOMIC Trino materialization: `CREATE OR REPLACE TABLE … AS SELECT` (an Iceberg
-   * replace transaction — readers see the old rows until the new snapshot commits, never an empty
-   * table mid-refresh). This is what the scheduled semantic-preagg-refresh job executes: the source
-   * entity views (iceberg.brain_serving.semantic_*) are TRINO views, which Spark cannot execute —
-   * so Trino, not Spark, is the pre-agg materializer. createDdl/refreshSql (the Spark dialect)
-   * remain for a future Spark-readable-source cutover; ONE materializer owns a table at a time.
+   * AUD-SL-10 — the ATOMIC DuckDB materialization: CREATE TABLE IF NOT EXISTS + ONE DELETE+INSERT
+   * TRANSACTION (a single Iceberg replace commit — readers see the old rows until the transaction
+   * commits, never an empty table mid-refresh). DuckDB-Iceberg does NOT support CREATE OR REPLACE
+   * TABLE over a REST catalog (Phase-0 gate f), so the DELETE+INSERT transactional form is the
+   * atomic rebuild. This is what the scheduled semantic-preagg-refresh job
+   * (db/iceberg/duckdb/serving_preagg_refresh.py) executes: the source entity views
+   * (brain_serving.semantic_*) are LOCAL DuckDB views the job applies from
+   * db/iceberg/duckdb/views/ before materializing. createDdl/refreshSql (the dormant Spark
+   * dialect) remain committed for audit continuity; ONE materializer owns a table at a time.
    */
-  readonly trinoCtasSql: string;
+  readonly duckdbRefreshSql: string;
 }
 
 export interface CompiledGrain {
@@ -177,9 +180,10 @@ function crossViewSql(m: MetricDefinition, viewName: string): string {
   const allCols = dedupe([...baseCols, ...crossCols]);
 
   const projLeg = (leg: 'base' | 'cross', own: string[]): string => {
-    // A column not owned by this leg is a bare NULL placeholder — Trino coerces the unknown-typed
-    // NULL to the concrete type of the sibling leg's column across the UNION ALL (never CAST here:
-    // the compiler doesn't know the column's physical type, and a wrong CAST would break the union).
+    // A column not owned by this leg is a bare NULL placeholder — the engine coerces the
+    // unknown-typed NULL to the concrete type of the sibling leg's column across the UNION ALL
+    // (never CAST here: the compiler doesn't know the column's physical type, and a wrong CAST
+    // would break the union).
     const cols = allCols.map((c) => (own.includes(c) ? `${c} AS ${c}` : `NULL AS ${c}`));
     const cur = withCurrency ? ['currency_code'] : [];
     return [`    brand_id`, ...cur.map((c) => `    ${c}`), `    '${leg}' AS __src`, ...cols.map((c) => `    ${c}`)].join(',\n');
@@ -261,24 +265,39 @@ function compilePreagg(m: MetricDefinition, grain: TimeGrain): CompiledPreagg {
     `  WHERE ${wheres.join('\n    AND ')}\n` +
     `GROUP BY ${plan.groupBy};\n`;
 
-  // AUD-SL-10 — the Trino-dialect ATOMIC rebuild (CREATE OR REPLACE TABLE AS = one Iceberg replace
-  // transaction; supported by the deployed Trino 455's Iceberg connector). Same plan/measures/
-  // predicates as refreshSql — only the DDL dialect differs (Trino `WITH (partitioning …)` vs Spark
-  // `USING iceberg PARTITIONED BY`; Trino's bucket transform is column-first). Cross-brand batch
-  // (brand_id is a grouping key, NO brand predicate) — consumers read through the compiled
-  // ${'{BRAND_PREDICATE}'}-guarded views, never this table directly.
-  const trinoCtasSql =
-    `-- SPEC:D.2 / §1.11.1 / AUD-SL-10 — ATOMIC Trino materialization for ${tableName}.\n` +
-    `-- Run by the semantic-preagg-refresh cron. GENERATED — DO NOT EDIT (change the YAML + recompile).\n` +
-    `CREATE OR REPLACE TABLE ${tableName}\n` +
-    `WITH (partitioning = ARRAY['bucket(brand_id, 16)'], format_version = 2)\n` +
-    `AS\n` +
+  // AUD-SL-10 — the DuckDB ATOMIC rebuild. DuckDB-Iceberg has NO `CREATE OR REPLACE TABLE` over a
+  // REST catalog (Phase-0 gate f: "use separate Drop and Create Statements"), so the atomic form is
+  // CREATE TABLE IF NOT EXISTS (first run) + ONE DELETE+INSERT TRANSACTION — one Iceberg replace
+  // commit; catalog readers see the previous snapshot until COMMIT, never an empty table. Same
+  // plan/measures/predicates as refreshSql — only the DDL dialect differs (DuckDB `PARTITIONED BY`
+  // + string/timestamptz/bigint column types, the transform tier's ensure_table conventions).
+  // Cross-brand batch (brand_id is a grouping key, NO brand predicate) — consumers read through the
+  // compiled ${'{BRAND_PREDICATE}'}-guarded views, never this table directly.
+  const duckCols: string[] = ['  brand_id string'];
+  duckCols.push('  period timestamptz');
+  if (plan.withCurrency) duckCols.push('  currency_code string');
+  for (const d of m.dimensions_allowed) duckCols.push(`  ${d} string`);
+  for (const x of m.measures) duckCols.push(`  ${x.name} bigint`);
+  const duckdbRefreshSql =
+    `-- SPEC:D.2 / §1.11.1 / AUD-SL-10 — ATOMIC DuckDB materialization for ${tableName}.\n` +
+    `-- Run by the semantic-preagg-refresh cron (db/iceberg/duckdb/serving_preagg_refresh.py).\n` +
+    `-- GENERATED — DO NOT EDIT (change the YAML + recompile: pnpm --filter @brain/semantic-metrics compile).\n` +
+    `CREATE TABLE IF NOT EXISTS ${tableName} (\n${duckCols.join(',\n')}\n)\n` +
+    `PARTITIONED BY (bucket(16, brand_id));\n` +
+    `\n` +
+    `BEGIN TRANSACTION;\n` +
+    `\n` +
+    `DELETE FROM ${tableName};\n` +
+    `\n` +
+    `INSERT INTO ${tableName}\n` +
     `SELECT\n${keySelect},\n${measureSelect}\n` +
     `FROM ${binding.table}\n` +
     `  WHERE ${wheres.join('\n    AND ')}\n` +
-    `GROUP BY ${plan.groupBy}\n`;
+    `GROUP BY ${plan.groupBy};\n` +
+    `\n` +
+    `COMMIT;\n`;
 
-  return { tableName, createDdl, refreshSql, trinoCtasSql };
+  return { tableName, createDdl, refreshSql, duckdbRefreshSql };
 }
 
 function preaggViewSql(m: MetricDefinition, grain: TimeGrain, viewName: string, preagg: CompiledPreagg): string {
@@ -288,7 +307,7 @@ function preaggViewSql(m: MetricDefinition, grain: TimeGrain, viewName: string, 
   const measureNames = m.measures.map((x) => x.name);
   return (
     `-- SPEC:D.2 / §1.11.1 — compiled INTERACTIVE metric view: ${m.name} (${m.version}) @ grain=${grain}.\n` +
-    `-- Reads the Spark pre-agg ${preagg.tableName} (covered dims). Long-tail/uncovered dims → the\n` +
+    `-- Reads the pre-agg ${preagg.tableName} (covered dims). Long-tail/uncovered dims → the\n` +
     `-- base-entity fallback view ${viewName}_slow. Tenancy: BRAND_PREDICATE sentinel → \`brand_id = ?\`.\n` +
     `-- GENERATED by @brain/semantic-metrics compiler — DO NOT EDIT. Change the YAML + recompile.\n` +
     `CREATE OR REPLACE VIEW ${viewName} AS\n` +
@@ -305,9 +324,11 @@ function dedupe<T>(xs: T[]): T[] {
 
 // ── top-level compile ────────────────────────────────────────────────────────────────────────────
 
-/** View name for a metric×grain: mv_metric_<name>_<grain>. */
+/** View name for a metric×grain: mv_metric_<name>_<grain>. Two-part: the compiled views live in
+ *  duckdb-serving's LOCAL brain_serving schema (which shadows the catalog namespace), NOT in the
+ *  attached `iceberg` catalog — only physical tables (the preagg_* targets) are three-part. */
 export function metricViewName(name: string, grain: TimeGrain): string {
-  return `iceberg.brain_serving.mv_metric_${name}_${grain}`;
+  return `brain_serving.mv_metric_${name}_${grain}`;
 }
 
 /** Compile ONE validated metric into its per-grain artifacts. Pure + deterministic. */

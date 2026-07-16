@@ -1,6 +1,6 @@
 # Local dev — profiles (blueprint §4.1/§4.2/§4.3 profile model).
 # core      = the default everyday stack: control plane + ingest + serving + base observability.
-#             Members: kafka, postgres (+pgbouncer), neo4j, redis, minio, iceberg-rest, trino,
+#             Members: kafka, postgres (+pgbouncer), neo4j, redis, minio, iceberg-rest, duckdb-serving,
 #             prometheus, grafana, localstack, apicurio + the kafka/minio/iceberg/jmx init jobs.
 # full-obs  = trace/log pipeline layered on core: tempo, loki, otel-collector.
 # debug     = deep Kafka introspection layered on core: jmx-exporter(-init), kafka-exporter.
@@ -24,7 +24,7 @@
 #
 # Iceberg REST catalog is the local equivalent of AWS Glue for Bronze table metadata.
 # MinIO is the local S3 equivalent; the stream-worker, seed, and testcontainer harness all need a
-# writable object store, and Trino serving resolves its warehouse through it — so both are in core.
+# writable object store, and duckdb-serving resolves its warehouse through it — so both are in core.
 
 services:
   # ────────────────────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ services:
     # mem_limit would OOM-kill neo4j on boot. Kept the budget-verified 1500m (heap 512m + pagecache
     # 256m + JVM overhead — docs/ops/local-memory-budget.md). See structured notes.
     mem_limit: 1500m
-    oom_score_adj: -500   # identity graph store — protected, but below PG/Kafka/Trino
+    oom_score_adj: -500   # identity graph store — protected, but below PG/Kafka/duckdb-serving
     environment:
       NEO4J_AUTH: neo4j/brain_neo4j
       NEO4J_server_memory_pagecache_size: 256M
@@ -125,7 +125,7 @@ services:
     oom_score_adj: -300     # serving-critical cache, but rebuildable → killed before the SoRs
     # Evict instead of OOM-kill: without maxmemory (redis default 0 = unlimited) keyspace growth
     # past the 256m cgroup limit gets the WHOLE container killed — dropping every cache entry,
-    # dedup slot, retry counter and in-flight stampede lock at once (thundering herd onto Trino).
+    # dedup slot, retry counter and in-flight stampede lock at once (thundering herd onto duckdb-serving).
     # maxmemory 192mb = 75% of the cgroup limit (headroom for jemalloc overhead + COW on fork).
     # volatile-lru (not allkeys-lru): every writer today sets a TTL (analytics cache SET PX,
     # stampede lock SET PX NX, webhook/event dedup SET EX, OAuth state SET EX NX, retry counters
@@ -142,9 +142,9 @@ services:
       retries: 10
 
   minio:
-    # core: the Iceberg warehouse S3 backend for the Trino serving engine + bronze/audit S3 for the
+    # core: the Iceberg warehouse S3 backend for the duckdb-serving engine + bronze/audit S3 for the
     # app. Previously profile-less ("always-on"); now an explicit core member (blueprint §4.1) — the
-    # everyday `--profile core` invocation brings it (and Trino's warehouse) up.
+    # everyday `--profile core` invocation brings it (and the serving warehouse) up.
     image: minio/minio:RELEASE.2024-04-06T05-26-02Z
     profiles: ["core"]
     command: server /data --console-address ":9001"
@@ -172,7 +172,7 @@ services:
       start_period: 10s
 
   # MinIO bucket + prefix bootstrap (runs once; idempotent). DEFAULT (always-on)
-  # alongside minio so the Trino serving warehouse buckets exist without a profile.
+  # alongside minio so the Iceberg serving warehouse buckets exist without a profile.
   minio-init:
     image: minio/mc:latest
     profiles: ["core"]   # bootstrap for minio (core); runs whenever the warehouse comes up
@@ -561,11 +561,11 @@ services:
   # Iceberg REST catalog — local equivalent of AWS Glue Data Catalog (ADR-0002).
   # Apache's reference iceberg-rest-fixture, backing the Iceberg warehouse onto MinIO (S3).
   # Replaces the previously-broken projectnessie/nessie:0.90.2 (unpullable tag, PR #72) with
-  # a pinned, pullable image. Spark Structured Streaming (the Bronze writer, ADR-0002) and
-  # Trino (the serving engine) read Iceberg through this catalog.
+  # a pinned, pullable image. The Kafka Connect Bronze sink (ADR-0010) and duckdb-serving
+  # (the serving engine, ADR-0014) read Iceberg through this catalog.
   #
-  # core member: the Trino serving engine resolves the Iceberg medallion through this catalog, and the
-  # host-run Spark Bronze/Silver/Gold jobs write through it — so it belongs to the default core stack.
+  # core member: the duckdb-serving engine resolves the Iceberg medallion through this catalog, and the
+  # host-run DuckDB Silver/Gold jobs write through it — so it belongs to the default core stack.
   # One-shot: make the `iceberg-catalog` volume writable by the iceberg-rest fixture's runtime user
   # (uid 1000 `iceberg`). A freshly-created named Docker volume is root-owned, so on first boot the
   # file-backed SQLite catalog would fail to open (SQLITE_CANTOPEN: "unable to open database file").
@@ -587,7 +587,7 @@ services:
 
   iceberg-rest:
     image: apache/iceberg-rest-fixture:1.9.2
-    profiles: ["core"]   # Iceberg catalog (Glue-equivalent) — core member; Trino + host Spark resolve through it
+    profiles: ["core"]   # Iceberg catalog (Glue-equivalent) — core member; duckdb-serving + host DuckDB jobs resolve through it
     # CONFLICT REFUSED: blueprint §4.2 says 128m, but iceberg-rest-fixture is a JVM (Jetty) — a 128m
     # hard limit would OOM-kill the JVM on startup. The budget doc lumps it as "small/unbounded".
     # Applied a SAFE bounded 512m (defense-in-depth without being OOM-prone). See structured notes.
@@ -650,37 +650,47 @@ services:
   # volumes were dropped from the `volumes:` block below.
   # ────────────────────────────────────────────────────────────────────────────
 
-  # ── Trino — serving query engine over Iceberg (core profile) ──
-  # Read-only query layer over the SAME Iceberg REST catalog + MinIO that Spark
-  # uses. This is now the app serving path: App / BFF / metric-engine read the
-  # Trino `mv_*` views (db/trino/views) over Iceberg + a Redis cache. StarRocks
-  # has been removed entirely. Host port 8090 (not 8080) avoids collision with
-  # Apicurio's 8080:8080 mapping when the ingest profile runs simultaneously.
-  trino:
-    image: trinodb/trino:455
-    profiles: ["core"]   # sole serving engine — core member; app/BFF/metric-engine read its mv_* views
-    # Auto-recover: Trino is the SOLE serving engine — if it ever dies (OOM, crash) every BFF
-    # analytics read 500s with "fetch failed". restart:unless-stopped means a crash self-heals
-    # instead of staying down until someone notices and runs `docker compose up -d trino`.
+  # ── duckdb-serving — DuckDB serving engine over Iceberg (core profile; ADR-0014) ──
+  # The SOLE serving engine (Trino removed, ADR-0014): a stateless FastAPI + DuckDB replica
+  # attached READ-ONLY to the SAME Iceberg REST catalog (as `iceberg`), serving the
+  # brain_serving.mv_* views (local schemas over db/iceberg/duckdb/views/*.sql) via
+  # POST /v1/query — one round-trip, no /v1/statement polling. NO JVM: 4g bound
+  # vs the 7g the retired Trino JVM needed.
+  duckdb-serving:
+    build:
+      # Context is db/iceberg/duckdb (NOT serving/): the image needs the sibling _catalog.py
+      # (shared DuckDB⇄REST-catalog seam) and views/ (the ported serving views).
+      context: ./db/iceberg/duckdb
+      dockerfile: serving/Dockerfile
+    profiles: ["core"]
+    # Auto-recover: this is the SOLE serving engine — a dead replica means every BFF
+    # analytics read 500s, so a crash must self-heal, not wait for a human.
     restart: unless-stopped
-    # CONFLICT REFUSED: blueprint §4.2 says 1g, but the budget doc verifies Trino needs 7g
-    # (jvm.config MaxRAMPercentage=70 → ~4.9g heap + non-heap headroom). A 1g limit reproduces the
-    # serving-tier OOM-kill outage. Kept 7g (docs/ops/local-memory-budget.md). See structured notes.
-    mem_limit: 7g
-    mem_reservation: 3g
-    oom_score_adj: -700   # sole serving engine — protected (a kill 500s every analytics read)
+    mem_limit: 4g
+    mem_reservation: 1g
+    oom_score_adj: -700   # serving engine — protected (a kill 500s every analytics read)
     depends_on:
       iceberg-rest:
         condition: service_healthy
       minio:
         condition: service_healthy
     ports:
-      - "8090:8080"   # Trino HTTP UI + JDBC (host 8090 → container 8080)
-    volumes:
-      - ./db/trino/catalog:/etc/trino/catalog:ro
-      - ./db/trino/jvm.config:/etc/trino/jvm.config:ro   # bounded heap (prevents OOM-kill of the serving tier)
+      - "8091:8091"   # duckdb-serving HTTP (/v1/query, /healthz, /readyz, /metrics)
+    environment:
+      # Attach the catalog as `iceberg` so the view bodies' 3-part iceberg.brain_gold.* refs
+      # resolve, while unqualified brain_serving.mv_* hits the LOCAL views (shadowing).
+      ICEBERG_CATALOG: iceberg
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      ICEBERG_WAREHOUSE: s3://brain-bronze/
+      S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: brain
+      AWS_SECRET_ACCESS_KEY: brainbrain
+      # DuckDB memory_limit UNDER the 4g container bound: headroom for python + arrow buffers
+      # so a heavy query degrades to a clean spill/error, never an OOM-killed container.
+      DUCKDB_SERVING_MEMORY_LIMIT: 3GB
+    # python:3.12-slim ships no curl/wget — probe /readyz with stdlib urllib (raises on non-200).
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/readyz', timeout=5)"]
       interval: 15s
       timeout: 10s
       retries: 20

@@ -15,22 +15,21 @@
  *   5. as_of filtering: rows after as_of are excluded from realized (existence still → has_data).
  *   6. structural: no ad-hoc SUM(amount_minor) in the analytics module (D-3).
  *
- * REQUIRES: Trino-over-Iceberg on :8090 with brain_gold.gold_revenue_ledger. Lakehouse sections SKIP if down.
+ * REQUIRES: duckdb-serving-over-Iceberg on :8091 with brain_gold.gold_revenue_ledger. Lakehouse sections SKIP if down.
  *
- * BRAIN V4: StarRocks is REMOVED. The revenue snapshot reads the gold ledger over TRINO (createTrinoPool)
- * — the same Trino-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg
+ * BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014). The revenue snapshot reads the gold ledger over DUCKDB-SERVING (createDuckDbServingPool)
+ * — the same duckdb-serving-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg
  * table; the reader reads through the brain_serving.mv_* view via the metric-engine seam.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { computeRealizedRevenue, createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { computeRealizedRevenue, createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import { getRevenueMetrics } from '../index.js';
 
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 // Deterministic test brand UUIDs (analytics-specific; aa10 prefix avoids collision with other suites).
 const BRAND_A = 'aa100a1a-0a1a-0a1a-0a1a-000000000001';
@@ -47,8 +46,8 @@ async function clearGold(brandId: string): Promise<void> {
 }
 
 // Iceberg gold_revenue_ledger: occurred_at/economic_effective_at/updated_at are `timestamp` (no zone) →
-// `localtimestamp` (Trino's no-zone now; `now()`/current_timestamp are zoned and would not coerce).
-// data_source is NOT NULL → seed 'live' explicitly (StarRocks defaulted it; Iceberg-via-Trino enforces it).
+// `localtimestamp` (the engine's no-zone now; `now()`/current_timestamp are zoned and would not coerce).
+// data_source is NOT NULL → seed 'live' explicitly (StarRocks defaulted it; Iceberg enforces it).
 
 /** Seed a finalized (realized) row into the gold ledger, economic_effective_at = localtimestamp. */
 async function seedFinalizedRow(brandId: string, amountMinor: bigint): Promise<void> {
@@ -76,7 +75,7 @@ async function seedProvisionalRow(brandId: string, amountMinor: bigint): Promise
 
 beforeAll(async () => {
   try {
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     await srPool.query('SELECT 1');
     srUp = true;
   } catch {
@@ -89,7 +88,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await clearGold(BRAND_A);
   await clearGold(BRAND_B);
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 // ── 1. engine==use-case exact-bigint (sole-read-path, D-3) ──────────────────────

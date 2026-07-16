@@ -9,8 +9,8 @@ cannot read outside the chart dir). This follows the infra/observe/k8s/freshness
 dev stub's own "for a real deploy" guidance while keeping GitOps-managed content (no
 apply-time kubectl injection).
 
-Failure semantics are the exporter's own C2 anti-false-safety design: Trino unreachable ⇒
-brain_data_freshness_up=0; mart missing ⇒ brain_data_freshness_query_success=0; exporter
+Failure semantics are the exporter's own C2 anti-false-safety design: duckdb-serving unreachable
+⇒ brain_data_freshness_up=0; mart missing ⇒ brain_data_freshness_query_success=0; exporter
 dead/unscraped ⇒ absent() in BrainFreshnessExporterDown. Nothing here can fail silently-green.
 */ -}}
 {{- if .Values.freshnessExporter.enabled }}
@@ -60,12 +60,10 @@ spec:
           image: {{ .Values.freshnessExporter.image }}
           command: ["python3", "/app/freshness_exporter.py"]
           env:
-            - name: FRESHNESS_TRINO_URL
-              value: {{ .Values.freshnessExporter.trinoUrl | quote }}
-            - name: FRESHNESS_TRINO_USER
-              value: {{ .Values.freshnessExporter.trinoUser | quote }}
-            - name: FRESHNESS_TRINO_CATALOG
-              value: {{ .Values.freshnessExporter.trinoCatalog | quote }}
+            - name: FRESHNESS_SERVING_URL
+              value: {{ .Values.freshnessExporter.servingUrl | quote }}
+            - name: FRESHNESS_ICEBERG_CATALOG
+              value: {{ .Values.freshnessExporter.icebergCatalog | quote }}
             - name: FRESHNESS_GOLD_SCHEMA
               value: {{ .Values.freshnessExporter.goldSchema | quote }}
             - name: FRESHNESS_LISTEN_PORT

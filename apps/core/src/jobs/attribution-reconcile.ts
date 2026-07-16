@@ -7,13 +7,14 @@
  * non-zero only if ANY brand hit a REAL error — an unprovisioned/empty serving tier (nothing to
  * reconcile yet, fresh env) is an HONEST-EMPTY no-op per brand (skipped_empty), exit 0.
  *
- * Reads the Postgres Gold ledger (as brain_app) + the Silver/Gold SERVING tier over TRINO (Iceberg).
- * When TRINO_HOST is unset the job logs and exits 0 (no serving tier → nothing to attribute) rather
- * than crash. Invoked by the core image's job entrypoint (CLI): `node dist/jobs/attribution-reconcile.js`.
+ * Reads the Postgres Gold ledger (as brain_app) + the Silver/Gold SERVING tier over duckdb-serving
+ * (Iceberg; Trino removed, ADR-0014). When DUCKDB_SERVING_HOST is unset the job logs and exits 0
+ * (no serving tier → nothing to attribute) rather than crash. Invoked by the core image's job
+ * entrypoint (CLI): `node dist/jobs/attribution-reconcile.js`.
  */
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { createTrinoPool, isServingTierUnavailable, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, isServingTierUnavailable, type SilverPool } from '@brain/metric-engine';
 import { createLogger } from '@brain/observability';
 import { loadCoreConfig } from '@brain/config';
 import { reconcileAttribution, reconcileDataDrivenAttribution } from '../modules/attribution/index.js';
@@ -44,26 +45,24 @@ export async function runAttributionReconcile(deps?: {
   pool?: pg.Pool;
   srPool?: SilverPool;
 }): Promise<AttributionJobResult> {
-  // Skip-when-unavailable: gate on TRINO_HOST (the V4 serving tier). Unset OR EMPTY → no serving
-  // tier to attribute over → log + exit 0 rather than crash. The empty-string case matters: a
-  // present-but-blank secret key would otherwise pass the gate and build `http://:PORT`, making
+  // Skip-when-unavailable: gate on DUCKDB_SERVING_HOST (the V4 serving tier). Unset OR EMPTY → no
+  // serving tier to attribute over → log + exit 0 rather than crash. The empty-string case matters:
+  // a present-but-blank secret key would otherwise pass the gate and build `http://:PORT`, making
   // EVERY per-brand reconcile fail its first fetch (the errors:1 / exit-1 crash class).
-  const srHost = process.env['TRINO_HOST'];
+  const srHost = process.env['DUCKDB_SERVING_HOST'];
   if (!deps?.srPool && !srHost) {
-    log.warn('attribution-reconcile skipped — TRINO_HOST unset/empty (no serving tier to attribute over)');
+    log.warn('attribution-reconcile skipped — DUCKDB_SERVING_HOST unset/empty (no serving tier to attribute over)');
     return { brands: 0, credited: 0, clawed_back: 0, unattributed: 0, skipped_empty: 0, errors: 0 };
   }
 
   const pool = deps?.pool ?? new pg.Pool({ connectionString: DB_URL, max: 3 });
-  // Trino HTTP adapter — catalog='iceberg' resolves the two-part `brain_serving.mv_*` names to the
-  // Trino serving views over Iceberg Gold/Silver. Stateless REST — no connection pool to tear down.
+  // duckdb-serving HTTP adapter — the two-part `brain_serving.mv_*` names resolve to the
+  // replica-local serving views over Iceberg Gold/Silver. Stateless REST — no connection pool to
+  // tear down.
   const srPool: SilverPool =
     deps?.srPool ??
-    createTrinoPool({
-      baseUrl: `http://${srHost}:${loadCoreConfig().TRINO_PORT}`,
-      catalog: 'iceberg',
-      schema: 'brain_serving',
-      user: 'brain_core',
+    createDuckDbServingPool({
+      baseUrl: `http://${srHost}:${loadCoreConfig().DUCKDB_SERVING_PORT}`,
     });
   const ownsPool = !deps?.pool;
 
@@ -115,7 +114,7 @@ export async function runAttributionReconcile(deps?: {
     return result;
   } finally {
     if (ownsPool) await pool.end();
-    // srPool is the stateless Trino HTTP adapter (createTrinoPool) — no connection pool to tear down.
+    // srPool is the stateless serving HTTP adapter (createDuckDbServingPool) — no connection pool to tear down.
   }
 }
 

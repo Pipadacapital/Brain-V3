@@ -4,7 +4,7 @@
  * ICEBERG-BRONZE (ADR-0010): the stream-worker no longer writes Bronze to PostgreSQL
  * (data_plane.bronze_events dropped — migration 0070). The SOLE Bronze writer is the Kafka Connect
  * Iceberg sink (the compose `kafka-connect` service) → `brain_bronze.collector_events_connect`,
- * read over Trino via the lift view `collector_events_connect_lifted`. These tests produce raw-JSON
+ * read over duckdb-serving via the lift view `collector_events_connect_lifted`. These tests produce raw-JSON
  * collector envelopes to the topic and assert the Connect sink's Bronze contract end-to-end:
  *
  *   1. Landing:     a produced event becomes a Bronze row.
@@ -21,13 +21,13 @@
  * without the pixel-lane R2/R3 gate — that gate is covered end-to-end by ingest-hardening.e2e.test.ts
  * (and under ADR-0010 it lives in the Silver admission, not in front of Bronze).
  *
- * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + duckdb-serving).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
 import {
-  makeBronzeTrinoPool,
+  makeBronzeServingPool,
   icebergBronzeAvailable,
   produceCollectorEvent,
   pollIcebergBronzeCount,
@@ -60,7 +60,7 @@ function makeEnvelope(eventId: string, brandId: string): CollectorEnvelope {
 
 beforeAll(async () => {
   try {
-    sr = makeBronzeTrinoPool();
+    sr = makeBronzeServingPool();
     if (!(await icebergBronzeAvailable(sr))) {
       infraUp = false;
       return;
@@ -85,7 +85,7 @@ describe('E2E: produce event → Kafka Connect sink → Iceberg Bronze row', () 
     expect(true).toBe(true);
   });
 
-  it('a produced event lands as exactly one Bronze row (read over Trino via the lift view)', async () => {
+  it('a produced event lands as exactly one Bronze row (read over duckdb-serving via the lift view)', async () => {
     if (!infraUp) return;
     const eventId = randomUUID();
     await produceCollectorEvent(producer, makeEnvelope(eventId, BRAND_A));

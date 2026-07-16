@@ -10,7 +10,7 @@ the structure here matches **doc 05 §2–§3**.
 - `packages/` — shared libs: contracts (Zod = source of truth), metric-engine, money,
   tenant-context, identity-core, audit, db, events, observability,
   ai-gateway-client, config
-- `db/` — migrations · trino/views (serving views) · iceberg (Spark medallion)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt + StarRocks removed — Spark is sole compute, Trino is sole serving)_
+- `db/` — migrations · iceberg/duckdb (DuckDB medallion + views + serving + maintenance)   ·   `infra/` — terraform · helm · argocd  _(Brain V4: dbt + StarRocks + Spark + Trino removed — DuckDB is sole compute, duckdb-serving is sole serving; ADR-0014)_
 - `tools/` — parity-oracle · eval · isolation-fuzz · seed · lint (v4-naming-guard)   ·   `docs/` — adr · runbooks · playbooks · architecture
 
 ## The two rules that keep it a *modular* monolith
@@ -25,8 +25,9 @@ cp .env.local-prod.example .env.local-prod   # then fill in OAuth app IDs/secret
 pnpm dev:up                                   # infra (--wait) → migrate → bootstrap → refresh → all 4 apps
 ```
 `pnpm dev:up` is the single from-zero command: it brings the full Docker substrate up *healthy*,
-applies migrations, seeds LocalStack Secrets Manager + KMS, runs a one-shot Silver→Gold→Trino-view
-refresh, then starts core + web + collector + stream-worker. Re-runnable and idempotent.
+applies migrations, seeds LocalStack Secrets Manager + KMS, runs a one-shot Silver→Gold DuckDB
+refresh (duckdb-serving picks the new snapshots up on its next epoch rotation), then starts
+core + web + collector + stream-worker. Re-runnable and idempotent.
 
 ```bash
 pnpm test:isolation && pnpm test:parity        # the non-negotiable Phase-1a gates
@@ -44,17 +45,18 @@ Manager/KMS, KMS PII-vault DEK). Use this after `docker compose down -v` (dispos
 docker compose --profile core --profile full-obs --profile debug --profile ai down -v
 
 # 1. ONE COMMAND — infra (up --wait → HEALTHY) → migrate → bootstrap (LocalStack SM/KMS)
-#    → one-shot Spark Silver→Gold + Trino serving views → start all 4 apps.
+#    → one-shot DuckDB Silver→Gold (duckdb-serving applies the views) → start all 4 apps.
 pnpm dev:up
 ```
 `pnpm dev:up` runs the production-faithful sequence end to end (`NODE_ENV=production` against Docker +
 LocalStack: AWS Secrets Manager/KMS, KMS PII-vault DEK). `brain_app` LOGIN is auto-provisioned on a
 fresh volume (`db/init/00_provision_brain_app_role.sql`) — no manual `ALTER ROLE`. The medallion
-transform is Spark-on-Iceberg (dbt removed); serving is Trino views over Iceberg (StarRocks removed).
+transform is DuckDB-on-Iceberg (dbt + Spark removed); serving is the duckdb-serving views over
+Iceberg (StarRocks + Trino removed, ADR-0014).
 
 Then open **http://localhost:3000** → register → onboard a brand → connect Shopify → **Sync now**.
-Real events flow **Collector → Kafka (KRaft) → Spark sink → Iceberg Bronze → Spark Silver/Gold → Trino
-`brain_serving.mv_*`**; re-run `ONESHOT=1 pnpm dev:v4-refresh` to repopulate Gold and the
+Real events flow **Collector → Kafka (KRaft) → Kafka Connect Iceberg sink → Iceberg Bronze → DuckDB
+Silver/Gold → duckdb-serving `brain_serving.mv_*`**; re-run `ONESHOT=1 pnpm dev:v4-refresh` to repopulate Gold and the
 dashboards/`/insights` light up, or run `pnpm dev:v4-refresh` (no ONESHOT) to keep it fresh on a loop.
 
 **Already up?** Skip the bring-up and just (re)materialize analytics with `ONESHOT=1 pnpm dev:v4-refresh`.
@@ -62,9 +64,9 @@ dashboards/`/insights` light up, or run `pnpm dev:v4-refresh` (no ONESHOT) to ke
 ### Gotchas (all expected, not bugs)
 - **Marts/dashboards are empty until real data flows** — the honest-empty state by design.
   Data appears only after register → connect → sync → `ONESHOT=1 pnpm dev:v4-refresh`.
-- **Dashboards stale after a sync?** The V4 serving mv_* only track Iceberg after the Spark Silver/Gold
-  jobs run. Re-run `ONESHOT=1 pnpm dev:v4-refresh` (or leave `pnpm dev:v4-refresh` looping) to
-  re-materialize Iceberg + SYNC-refresh the brain_serving mv_*.
+- **Dashboards stale after a sync?** The V4 serving mv_* only show new data after the DuckDB Silver/Gold
+  jobs run AND duckdb-serving rotates onto the new Iceberg snapshots (default 60s). Re-run
+  `ONESHOT=1 pnpm dev:v4-refresh` (or leave `pnpm dev:v4-refresh` looping) to re-materialize Iceberg.
 - **Customer marts (churn/VIP scores) stay empty without identity resolution** — they need `brain_id`
   on the order ledger; revenue + RTO insights work from order data alone. Historical ledger rows:
   `tools/backfill/backfill-ledger-brain-id.sh <brand>` (after migration 0095).

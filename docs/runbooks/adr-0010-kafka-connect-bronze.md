@@ -48,9 +48,10 @@ the service up with the infra step. What the cutover did, for the record:
 - Silver was re-baselined ONCE (`FULL_REFRESH=1 db/iceberg/spark/silver/run-silver-collector-event.sh`
   — a source-table switch is a watermark gotcha: rows below the old watermark are silently
   skipped otherwise). Idempotent MERGEs made the rescan safe.
-- Operational Bronze reads (core / stream-worker) go through the Trino lift view
-  `brain_bronze.collector_events_connect_lifted` (created by `run-trino-views.sh` — it applies
-  cleanly only AFTER the Connect table exists, i.e. after the first commit).
+- Operational Bronze reads (core / stream-worker) go through the serving lift view
+  `brain_bronze.collector_events_connect_lifted` (applied by duckdb-serving at epoch build —
+  it applies cleanly only AFTER the Connect table exists, i.e. after the first commit; skipped
+  then self-healed on rotation otherwise).
 - Prod posture: `kafkaConnect.enabled=true`; `sparkBronze` is maintenance-only
   (`bronze_maintenance.py` / raw-retention / erasure crons — no landing job).
 
@@ -88,7 +89,8 @@ kubectl -n kafka exec deploy/kafka-connect-prod-kafka-connect -- \
 # kafka_consumergroup_lag{consumergroup=~"connect-.*"} has NO group at all (group gone ≠ lag 0)
 # Freshness: brain_data_freshness_seconds climbing on every mart at once
 ```
-Trino cross-check: `SELECT max(kafka_timestamp) FROM iceberg.brain_bronze.collector_events_connect`
+Serving cross-check (duckdb-serving `POST /v1/query`):
+`SELECT max(kafka_timestamp) FROM iceberg.brain_bronze.collector_events_connect`
 frozen while the collector is accepting 2xx.
 
 **Recovery** — re-register all sink connectors from the chart's ConfigMap (the same configs the

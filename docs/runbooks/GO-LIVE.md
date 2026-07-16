@@ -22,7 +22,7 @@ in this runbook; nothing does them for you):
 | 7 | `iceberg_catalog` DB bootstrap SQL on Aurora (private-only — run from inside the VPC) | 8 |
 | 8 | ACM certificate request + DNS validation; Route53 zone / registrar delegation | 9 |
 | 9 | ~~pgbouncer has a chart but no ArgoCD Application~~ — CLOSED (AUD-COST-019): `infra/argocd/envs/prod/pgbouncer.yaml` exists; sync it like every other app | 10 |
-| 10 | Trino serving views (`run-trino-views.sh`) — not part of any sync wave | 11 |
+| 10 | duckdb-serving view verification (`/readyz` → `views_skipped: []`) — the views apply themselves at pod startup, but YOU confirm it | 11 |
 | 11 | Every prod ArgoCD sync (all prod apps are manual-gate by design) | 10, 12 |
 | 12 | Connector OAuth tokens — minted by reconnecting each connector in the UI post-launch (cannot be seeded) | 13 |
 
@@ -38,8 +38,8 @@ Suggested split: **Day 1 = steps 1–9** (AWS + identity + secrets + DNS),
 - Decisions you must have made: apex domain (e.g. `brain.example.com`),
   hostnames (`px.` collector / `app.` web / `api.` core), whether external-dns
   manages Route53 or you CNAME manually.
-- Everything below is **ap-south-1** (AUD-COST-008 fixed Trino's stray
-  us-east-1; do not introduce another).
+- Everything below is **ap-south-1** (AUD-COST-008 fixed the serving engine's
+  stray us-east-1 — then Trino, now duckdb-serving; do not introduce another).
 
 ---
 
@@ -131,7 +131,7 @@ tokens) and a `--strict` gate in `deploy.yml prod-promote` that refuses to commi
 a prod promotion while ANY placeholder remains (`tools/lint/prod-placeholder-guard.sh`).
 
 **IRSA roles (AUD-COST-017 — nothing to do):** all six roles the manifests
-reference — `brain-prod-web`, `brain-prod-trino`, `brain-prod-iceberg-rest`,
+reference — `brain-prod-web`, `brain-prod-duckdb-serving`, `brain-prod-iceberg-rest`,
 `brain-prod-external-secrets`, `brain-prod-aws-load-balancer-controller`,
 `brain-prod-external-dns` — are `modules/irsa` instances in
 `envs/prod/bootstrap.tf` and were created by the step-3 apply (policies per
@@ -145,7 +145,7 @@ down from the `hostedzone/*` bootstrap fallback.
 
 Merging to `master` fires `.github/workflows/deploy.yml`: build → push (immutable
 digest) → cosign sign for `collector`, `stream-worker`, `core`, `web`
-(turbo-affected) and `spark-bronze` (path-based, `db/iceberg/spark/**`) into the
+(turbo-affected) and `duckdb` (path-based, `db/iceberg/duckdb/**`) into the
 `brain-<name>-prod` repos, then the gitops jobs pin the digests into the chart
 values. First run after go-live: dispatch a no-op merge or push a trivial
 change so every image builds at least once (the affected-set skips unchanged
@@ -198,11 +198,11 @@ entries (flat JSON objects; each key becomes an env var — full key contracts i
 
 ```
 brain/prod/k8s/core-env                 # DATABASE_URL (pgbouncer.pgbouncer.svc.cluster.local:6432) + DATABASE_URL_DIRECT (Aurora!),
-                                        # REDIS_URL, KAFKA_BROKERS, TRINO_HOST, ICEBERG_REST_URI,
+                                        # REDIS_URL, KAFKA_BROKERS, DUCKDB_SERVING_HOST, ICEBERG_REST_URI,
                                         # NEO4J_URI/USER/PASSWORD, CHECKPOINT_LOCATION (s3a://), topics, AWS_REGION
 brain/prod/k8s/web-env                  # BFF_BASE_URL / CORE_API_URL
 brain/prod/k8s/collector-env            # DATABASE_URL, REDIS_URL, KAFKA_BROKERS, HMAC/pixel config
-brain/prod/k8s/stream-worker-env        # DATABASE_URL (DIRECT Aurora — leader lock), KAFKA_BROKERS, TRINO_HOST, NEO4J_*, connector creds
+brain/prod/k8s/stream-worker-env        # DATABASE_URL (DIRECT Aurora — leader lock), KAFKA_BROKERS, DUCKDB_SERVING_HOST, NEO4J_*, connector creds
 brain/prod/k8s/pgbouncer-env            # DB_USER / DB_PASSWORD
 brain/prod/k8s/iceberg-rest-catalog-db  # exactly: jdbc-user, jdbc-password
 brain/prod/k8s/neo4j-auth               # exactly: NEO4J_AUTH = neo4j/<password>
@@ -274,7 +274,8 @@ argocd app sync neo4j-prod                     # identity SoR (ADR-0004); auth f
                                                # Pinned to the ON-DEMAND Karpenter pool (AUD-COST-018 —
                                                # sync karpenter-nodepools first); PVC binds via gp3/EBS CSI
 argocd app sync iceberg-rest-prod              # JdbcCatalog on Aurora (step 8 DB + secret first)
-argocd app sync trino-prod                     # serving engine; iceberg.s3.region=ap-south-1 (AUD-COST-008)
+argocd app sync duckdb-serving-prod            # serving engine (ADR-0014: DuckDB read-only over the
+                                               # REST catalog, :8091); region ap-south-1 (AUD-COST-008)
 ```
 
 **Rollback (any app):** `argocd app rollback <app>` to the previous synced
@@ -305,16 +306,22 @@ is routine:
 
 On failure inspect the Job: `kubectl -n stream-worker logs job/db-migrate-once`.
 
-Trino serving views are NOT in any sync wave — apply once after `trino-prod`
-is up (idempotent, `CREATE OR REPLACE VIEW`):
+Serving views apply THEMSELVES: each duckdb-serving replica applies
+`db/iceberg/duckdb/views/*.sql` into its local `brain_serving` schema at pod
+startup (and on every epoch rotation — a view over a not-yet-materialized mart
+is skipped and self-heals). Your job here is to VERIFY, not to run anything:
 
 ```bash
-kubectl -n trino port-forward svc/<trino-coordinator> 8090:8080 &
-TRINO_URL=http://127.0.0.1:8090 bash db/trino/views/run-trino-views.sh   # 42 mv_* views into iceberg.brain_serving
+kubectl -n duckdb-serving port-forward svc/duckdb-serving 8091:8091 &
+curl -fsS http://127.0.0.1:8091/readyz | jq '{views_applied, views_skipped}'
+# views_skipped MUST be [] once the first v4-silver/v4-gold cycle has run (step 12);
+# on a cold warehouse a skipped mart-view is expected — restart the pods (fresh
+# epoch) or wait one rotation interval after the marts exist.
 ```
 
 **Rollback:** migrations are forward-only (write a down-migration if needed);
-views are replaceable/droppable with no data impact.
+views are replaceable/droppable with no data impact (restart duckdb-serving to
+re-apply).
 
 ## 12. App tier + Bronze cutover + refresh crons (AUD-COST-013)
 
@@ -360,19 +367,20 @@ In order — each proves the layer below it:
    `curl -si https://px.<domain>/v1/events -H 'content-type: application/json' -d '<pixel envelope>'`
    → 2xx (accept-before-validate spool; anything else is an event-loss bug).
 3. **Event lands in Bronze:** within ~1 min (the Kafka Connect sink commits every
-   30s — ADR-0010):
-   `SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect` (Trino) — must include your test event.
+   30s — ADR-0010), via duckdb-serving (port-forward per step 11):
+   `curl -s http://127.0.0.1:8091/v1/query -H 'content-type: application/json' -d '{"sql":"SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect"}'`
+   — must include your test event.
 4. **mv_* views serve:**
-   `SELECT * FROM iceberg.brain_serving.mv_gold_revenue_ledger LIMIT 1` — a
-   result set (honest-empty on a cold brand is a PASS; a 5xx/table-not-found is
-   a FAIL → re-run step 11 views or check v4-gold logs).
+   `curl -s http://127.0.0.1:8091/v1/query -H 'content-type: application/json' -d '{"sql":"SELECT * FROM brain_serving.mv_gold_revenue_ledger LIMIT 1"}'`
+   — a result set (honest-empty on a cold brand is a PASS; a 5xx/view-not-found
+   is a FAIL → re-check the step 11 `/readyz` gate or the v4-gold logs).
 5. **Dashboards 200:** log into web, onboard the pilot brand — every dashboard
    renders 200 with honest-empty states (no empty-chart-as-success, no 500s).
 6. **Connectors:** connect Shopify/Meta/etc. in the UI (mints the OAuth tokens
    into Secrets Manager — cannot be pre-seeded).
 7. **Load + integrity (recommended before announcing):** `tools/load-test/` k6
    against collector+BFF; `bronze-dedup-effectively-once.live.test.ts` against
-   prod Kafka+Trino; `tools/isolation-fuzz` green (tenant isolation);
+   prod Kafka+duckdb-serving; `tools/isolation-fuzz` green (tenant isolation);
    `brain_data_freshness_seconds` under SLA.
 
 ## 14. Post-launch hardening (same week)

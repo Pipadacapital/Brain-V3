@@ -8,10 +8,10 @@
  * (AUTH_COOKIE env, the `brain_session=...` cookie from a logged-in browser).
  *
  * The read path is ADR-002 sole-read-path: route → analytics query wrapper → metric engine →
- * Trino-over-Iceberg, fronted by the Redis serving cache (ServingCacheReader.getOrSet keyed by
+ * duckdb-serving-over-Iceberg, fronted by the Redis serving cache (ServingCacheReader.getOrSet keyed by
  * brand/metric/paramsHash/servingVersion). Latency is therefore bimodal:
  *   - cache HIT  → Redis round-trip, target p95 < 500ms
- *   - cache MISS → Trino scan of the Gold/Silver marts, target p95 < 3s
+ *   - cache MISS → duckdb-serving scan of the Gold/Silver marts, target p95 < 3s
  * We model this with TWO scenarios so the thresholds are honest and separable:
  *   - `warmup` runs FIRST against a cold cache  → its p95 is the cache-MISS budget (< 3s)
  *   - `steady` runs after warmup against a hot cache → its p95 is the cache-HIT budget (< 500ms)
@@ -75,7 +75,7 @@ export const options = {
   },
   thresholds: {
     http_req_failed: ['rate<0.01'], // < 1% errors across both phases
-    // Cache MISS budget (cold warmup pass against Trino-over-Iceberg).
+    // Cache MISS budget (cold warmup pass against duckdb-serving-over-Iceberg).
     'http_req_duration{phase:warmup}': ['p(95)<3000'],
     // Cache HIT budget (hot steady-state from the Redis serving cache).
     'http_req_duration{phase:steady}': ['p(95)<500'],
@@ -91,7 +91,7 @@ function params(endpointName, phase) {
 }
 
 // Assert a healthy BFF read: 200 + the { request_id, data } envelope every route returns. A 401
-// means AUTH_COOKIE is missing/expired (fail loud, do not silently pass); 503 means the Silver/Trino
+// means AUTH_COOKIE is missing/expired (fail loud, do not silently pass); 503 means the Silver/serving
 // tier is down — both are real failures the threshold should catch.
 function hit(ep, phase) {
   const res = http.get(`${BASE_URL}${ep.path}`, params(ep.name, phase));
@@ -134,7 +134,7 @@ export function handleSummary(data) {
   return {
     stdout:
       '\n  Thresholds: cache-HIT (steady) p95<500ms, cache-MISS (warmup) p95<3s, http_req_failed<1%.\n' +
-      '  OUT-OF-BAND: confirm zero Trino OOM during the run (see README "Operator post-run assertions").\n',
+      '  OUT-OF-BAND: confirm zero duckdb-serving OOM-kill/504 during the run (see README "Operator post-run assertions").\n',
     'load-test-serving-summary.json': JSON.stringify(data, null, 2),
   };
 }

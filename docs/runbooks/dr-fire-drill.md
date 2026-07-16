@@ -14,7 +14,7 @@
 1. RB-1 works end-to-end (PITR to a new cluster, data verifiable).
 2. `tools/dr/s3-version-restore.sh` restores a Bronze table's S3 objects to T correctly.
 3. A PITR'd `iceberg_catalog` + version-restored S3 prefix = a READABLE Iceberg table at T
-   (pointers resolve; Trino serves it) — the actual H1 claim.
+   (pointers resolve; duckdb-serving serves it) — the actual H1 claim.
 4. Measured RTO numbers to replace the conservative estimates in DR.md §2.
 
 ## Blast-radius containment (why this is safe to run against prod data)
@@ -38,7 +38,7 @@ hours. S3: request costs only (copies are within-bucket). Total: a few dollars.
       (or any modest `*_raw_connect` lane; NOT `collector_events_connect` — size).
 
 ### 1. Create the drill table (a real Iceberg table with history)
-Via a Spark shell in-cluster (same image as the crons) or Trino:
+Via a DuckDB shell in-cluster (same brain-duckdb image as the crons — read-write `_catalog.connect()`):
 ```sql
 CREATE TABLE iceberg.brain_bronze.drill_restore_target AS
   SELECT * FROM iceberg.brain_bronze.<drill-source-table>;
@@ -70,9 +70,10 @@ kubectl -n iceberg-rest rollout restart deploy && kubectl -n iceberg-rest rollou
 ```
 
 ### 5. Verify (the H1 acceptance gate)
-- [ ] `SELECT count(*) FROM iceberg.brain_bronze.drill_restore_target` = **count0** via Trino.
-- [ ] `...$snapshots` lists the T0 snapshot as current; no `NotFoundException` on metadata reads.
-- [ ] A Spark read of the same table returns count0 (both engines resolve the restored pointers).
+- [ ] `SELECT count(*) FROM iceberg.brain_bronze.drill_restore_target` = **count0** via
+      duckdb-serving (`POST /v1/query`).
+- [ ] `iceberg_snapshots(...)` lists the T0 snapshot as current; no `NotFoundException` on metadata reads.
+- [ ] A PyIceberg scan of the same table returns count0 (both clients resolve the restored pointers).
 - [ ] Record wall-clock: total drill time = measured coordinated-restore RTO.
 
 ### 6. Teardown

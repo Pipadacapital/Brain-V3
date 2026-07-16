@@ -8,7 +8,7 @@
  *    Verifies that the DlqRecordRepository's INSERT path always sets the brand GUC before
  *    writing, and that a second insert with the same (source_topic, partition, kafka_offset)
  *    returns { inserted: false } (idempotency). Uses a mock pg.Pool that intercepts queries
- *    and asserts the correct set_config call precedes every INSERT.
+ *    and asserts the correct SET LOCAL brand-GUC statement precedes every INSERT.
  *
  * 2. DlqRedriver persistence wiring:
  *    Verifies that when DlqRedriver scans a DLQ message, it calls dlqRecordRepo.persist()
@@ -82,7 +82,7 @@ describe('DlqRecordRepository — born-secure RLS + idempotent insert', () => {
     errorDetail: 'max_retry_exceeded: ECONNREFUSED postgres',
   };
 
-  it('sets the brand GUC (set_config) BEFORE the INSERT in the same transaction', async () => {
+  it('sets the brand GUC (SET LOCAL) BEFORE the INSERT in the same transaction', async () => {
     const { pool, calls } = buildMockPool(1);
     const repo = new DlqRecordRepository(pool);
 
@@ -91,20 +91,22 @@ describe('DlqRecordRepository — born-secure RLS + idempotent insert', () => {
     // BEGIN is first.
     expect(calls[0]?.sql.trim().toUpperCase()).toBe('BEGIN');
 
-    // set_config must appear before INSERT.
-    const setConfigIdx = calls.findIndex(
-      (c) => c.sql.includes('set_config') && c.sql.includes('app.current_brand_id'),
+    // The brand-GUC write must appear before INSERT. The repository builds it via
+    // @brain/db buildContextGucSql, which emits `SET LOCAL app.current_brand_id = '<uuid>'`
+    // (SET LOCAL cannot be parameterised — the UUID-validated value is inlined).
+    const setGucIdx = calls.findIndex(
+      (c) => c.sql.includes('SET LOCAL') && c.sql.includes('app.current_brand_id'),
     );
     const insertIdx = calls.findIndex(
       (c) => c.sql.trimStart().toUpperCase().startsWith('INSERT'),
     );
-    expect(setConfigIdx).toBeGreaterThan(-1);
+    expect(setGucIdx).toBeGreaterThan(-1);
     expect(insertIdx).toBeGreaterThan(-1);
-    expect(setConfigIdx).toBeLessThan(insertIdx);
+    expect(setGucIdx).toBeLessThan(insertIdx);
 
-    // set_config receives the correct brand_id.
-    const setConfigCall = calls[setConfigIdx];
-    expect(setConfigCall?.params[0]).toBe(validInput.brandId);
+    // The GUC statement carries the correct brand_id (inlined, not a bind param).
+    const setGucCall = calls[setGucIdx];
+    expect(setGucCall?.sql).toContain(validInput.brandId);
 
     // COMMIT is last.
     const lastSql = calls[calls.length - 1]?.sql.trim().toUpperCase();

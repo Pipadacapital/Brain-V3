@@ -304,7 +304,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
         return reply.send({ request_id: requestId, data: { state: 'no_data', model } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
 
       const result: ContractCampaignAttribution = await getCampaignAttribution(
@@ -359,7 +359,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: fromStr, to: toStr, grain, model } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
 
       const result: ContractCampaignTimeseries = await getCampaignTimeseries(
@@ -414,7 +414,7 @@ export function registerAttributionRoutes(fastify: FastifyInstance, deps: BffDep
         return reply.send({ request_id: requestId, data: { state: 'no_data', from: fromStr, to: toStr, grain, model } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
 
       const result: ContractAttributedRevenueTimeseries = await getAttributedRevenueTimeseries(

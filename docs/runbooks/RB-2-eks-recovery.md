@@ -63,14 +63,15 @@ argocd app sync pgbouncer-prod
 # Neo4j — STATEFUL. BEFORE syncing: if the old data volume survived, pre-bind a PV to it (or
 # restore per DR.md §6); syncing first provisions an EMPTY volume.
 argocd app sync neo4j-prod neo4j-backup-prod
-argocd app sync iceberg-rest-prod trino-prod
+argocd app sync iceberg-rest-prod duckdb-serving-prod
 ```
 
 ## 5. Migrations + serving views (GO-LIVE step 11)
 
 Aurora survived ⇒ migrations are already applied and the Iceberg catalog is intact — the
-`tools/deploy/run-migrations.sh` job will no-op-verify. Re-apply the Trino serving views only if
-the views job reports missing (`brain_serving` metadata lives in the warehouse bucket — survived).
+`tools/deploy/run-migrations.sh` job will no-op-verify. Serving views re-apply themselves at
+duckdb-serving pod startup (local views, not catalog state) — just verify `/readyz` reports
+`views_skipped: []` once the pods are up.
 
 ## 6. App tier + crons (GO-LIVE step 12)
 

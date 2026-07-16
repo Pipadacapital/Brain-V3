@@ -77,8 +77,8 @@ Install in this order. **Honest status flags** for what exists vs. is to-be-crea
 | **ArgoCD** | GitOps controller | `infra/argocd/app-of-apps.yaml` (root app) | install ArgoCD, then apply app-of-apps |
 | **Strimzi** (Kafka operator) | prod Kafka broker (KRaft) | ⚠️ **NOT in repo** — only referenced in comments (`infra/observe/k8s/kafka-observability.yaml`). No Strimzi `Kafka` CR / chart exists yet. **To-be-created.** | install Strimzi operator + author a `Kafka` CR producing the `prod.*` topics (see naming standard §3) |
 | **Karpenter** | data-plane autoscaling | ⚠️ **NOT in repo** — no Karpenter manifests/IRSA. **To-be-created.** | install Karpenter + NodePool/EC2NodeClass; until then rely on the `brain-prod-system` managed node group |
-| **KEDA** | Trino worker autoscaling | stub present, **OFF by default** (`infra/helm/trino/templates/worker-scaledobject.yaml`, `keda.sh/v1alpha1 ScaledObject`; `values-prod.yaml` `autoscaling.enabled: false`) | install KEDA, then flip `workers.autoscaling.enabled=true` after a scale baseline is measured |
-| **Trino** | serving engine (sole serving compute over Iceberg) | ✅ chart `infra/helm/trino` (`values-prod.yaml`: coordinator 1×, workers 3×, image `trinodb/trino:455`) | deployed via ArgoCD app `trino-prod` |
+| **KEDA** | event-driven worker autoscaling | installed; serving now scales via a plain HPA (`infra/helm/duckdb-serving`) — the old Trino worker ScaledObject is gone with the chart (ADR-0014) | — |
+| **duckdb-serving** | serving engine (sole serving compute over Iceberg, ADR-0014 — replaced Trino) | ✅ chart `infra/helm/duckdb-serving` (`values-prod.yaml`: stateless replicas, min 2, HPA) | deployed via ArgoCD app `duckdb-serving-prod` |
 
 > The compose-local broker service is named `redpanda` but runs Apache Kafka
 > KRaft; in prod the equivalent is the **Strimzi-managed** Kafka. Topic names are
@@ -101,15 +101,15 @@ kubectl apply -f infra/argocd/app-of-apps.yaml      # brain-app-of-apps (project
 
 | Order | ArgoCD Application | Namespace | Chart | Why this order |
 | --- | --- | --- | --- | --- |
-| 3.1 | `trino-prod` | `trino` | `infra/helm/trino` | serving substrate; app reads depend on it |
-| 3.2 | `core-prod` | `core` | `infra/helm/core` | API/BFF (reads Trino + RDS + Redis) |
+| 3.1 | `duckdb-serving-prod` | `duckdb-serving` | `infra/helm/duckdb-serving` | serving substrate; app reads depend on it |
+| 3.2 | `core-prod` | `core` | `infra/helm/core` | API/BFF (reads duckdb-serving + RDS + Redis) |
 | 3.3 | `web-prod` | `web` | `infra/helm/web` | UI (reads core) |
 | 3.4 | `collector-prod` | `collector` | `infra/helm/collector` | ingest accept tier |
 | 3.5 | `stream-worker-prod` | `stream-worker` | `infra/helm/stream-worker` | drain → Kafka → Bronze |
 | 3.6 | `cronworkflows-prod` | `argo` | `infra/helm/cronworkflows` | Spark Bronze + V4 Silver/Gold crons |
 
 ```sh
-for app in trino-prod core-prod web-prod collector-prod stream-worker-prod cronworkflows-prod; do
+for app in duckdb-serving-prod core-prod web-prod collector-prod stream-worker-prod cronworkflows-prod; do
   argocd app sync "$app"
   argocd app wait "$app" --health --timeout 600
 done
@@ -133,8 +133,8 @@ done
 ### 4.1 Connectivity / health
 
 ```sh
-kubectl -n trino get pods                       # coordinator + 3 workers Ready
-kubectl -n core  get pods                        # core Ready, talks to RDS + Redis + Trino
+kubectl -n duckdb-serving get pods              # ≥2 stateless replicas Ready (/readyz green)
+kubectl -n core  get pods                        # core Ready, talks to RDS + Redis + duckdb-serving
 kubectl -n argo  get cronworkflows               # bronze-materialize, v4-silver, v4-gold present
 argocd app list -p brain-prod                    # all 6 apps Healthy + Synced
 ```
@@ -198,7 +198,7 @@ replay-and-recount in `DEDUP-GUARANTEE.md`: produce a batch, force a re-delivery
 | Strimzi `Kafka` CR / operator manifests | prod Kafka broker | not in repo (only doc comments); to-be-created |
 | Karpenter NodePool / EC2NodeClass / IRSA | data-plane autoscaling | not in repo; to-be-created |
 | `pgbouncer-prod` ArgoCD Application | RDS connection pooling | chart exists, prod Application missing; to-be-created |
-| KEDA install | Trino worker autoscaling | ScaledObject stub exists OFF-by-default; KEDA itself must be installed in-cluster |
+| KEDA install | event-driven worker autoscaling | KEDA is installed; serving autoscaling is a plain HPA in `infra/helm/duckdb-serving` (the old Trino ScaledObject stub is gone — ADR-0014) |
 
 Everything else referenced (Terraform modules, Helm charts, ArgoCD apps,
 CronWorkflows, k6 scripts, dedup test) was verified to exist in the repo.

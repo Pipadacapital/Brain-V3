@@ -6,11 +6,11 @@
 # the raw table directly can silently drop one axis (read is_current=true but ignore that the row was
 # system-superseded) → corrupt point-in-time / replay answers. So EVERY read of silver_identity_map must go
 # through a SANCTIONED accessor:
-#   • Spark : _identity_views.identity_current / identity_asof / identity_raw
-#   • Trino : iceberg.brain_serving.identity_current_v  /  iceberg.brain_serving.identity_asof
+#   • Serving : brain_serving.identity_current_v  /  brain_serving.identity_asof
+#               (duckdb-serving views — db/iceberg/duckdb/views/identity_{current_v,asof}.sql)
 #
 # This guard FAILS (exit 1) when a NON-allowlisted, NON-comment source line under the scan roots
-# (db/iceberg/duckdb, db/iceberg/trino, db/trino/views, apps, packages) references silver_identity_map as a QUALIFIED table
+# (db/iceberg/duckdb, apps, packages) references silver_identity_map as a QUALIFIED table
 # (`.silver_identity_map`) or a QUOTED table name (`"silver_identity_map"` / `'silver_identity_map'`).
 #
 # NOT a violation (so no false positives):
@@ -68,7 +68,7 @@ is_allowlisted() { # $1 = repo-relative path
 # tree; grep -rl is the fallback. (New/untracked files are picked up by the fallback and, once committed,
 # by git grep in CI.)
 candidate_files() {
-  local roots=(db/iceberg/duckdb db/iceberg/trino db/trino/views apps packages)
+  local roots=(db/iceberg/duckdb apps packages)
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git grep -lE 'silver_identity_map' -- "${roots[@]}" 2>/dev/null || true
   else
@@ -130,7 +130,7 @@ scan() {
     while IFS= read -r line; do
       l="${line%%:*}"; content="${line#*:}"
       if printf '%s' "$content" | grep -qE "$READ_RE"; then
-        flag "$f:$l" "direct read of silver_identity_map — use the sanctioned accessor (Spark: identity_current/identity_asof/identity_raw; Trino: identity_current_v/identity_asof): ${content#"${content%%[![:space:]]*}"}"
+        flag "$f:$l" "direct read of silver_identity_map — use the sanctioned accessor (serving views: identity_current_v/identity_asof): ${content#"${content%%[![:space:]]*}"}"
       fi
     done < <(noncomment_lines "$f")
   done < <(candidate_files | sort -u)
@@ -215,8 +215,8 @@ if [ "$violations" -gt 0 ]; then
   echo ""
   echo "${RED}identity-view-guard FAILED: ${violations} direct read(s) of silver_identity_map.${RST}"
   echo "silver_identity_map is BI-TEMPORAL (valid-time × system-time, AMD-07). Read it ONLY through a"
-  echo "sanctioned accessor: Spark _identity_views.identity_current / identity_asof / identity_raw, or the"
-  echo "Trino views iceberg.brain_serving.identity_current_v / identity_asof. A genuinely-sanctioned reader"
+  echo "sanctioned accessor: the serving views brain_serving.identity_current_v / identity_asof"
+  echo "(db/iceberg/duckdb/views/identity_{current_v,asof}.sql). A genuinely-sanctioned reader"
   echo "goes in tools/lint/identity-view-guard-allowlist.txt with a WHY comment."
   exit 1
 fi

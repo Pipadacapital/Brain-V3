@@ -163,12 +163,18 @@ def _register_installs(con) -> bool:
         dsn = _jdbc_to_libpq(PG_JDBC_URL)
         con.execute(f"ATTACH IF NOT EXISTS '{dsn}' AS _pg (TYPE postgres, READ_ONLY);")
         con.execute("SELECT 1 FROM pg_catalog.pg_class LIMIT 1;")  # probe: unreachable fails HERE
+        # RLS-BYPASS via SECURITY DEFINER (migration 0135): a direct scan of _pg.pixel.pixel_installation
+        # returns ZERO rows on prod — the ETL session connects as brain_app (RLS-scoped, no brand GUC) and
+        # pixel_installation is ENABLE+FORCE RLS, so every pixel event dropped as tenant_unresolved (live
+        # 2026-07-16, install_tokens:0 while the table had rows). pixel_installations_for_etl() is the
+        # 0019-pattern cross-brand system read (owner carries BYPASSRLS); postgres_query pushes the call
+        # down so it executes server-side. Dev is unaffected (superuser 'brain' bypassed RLS either way).
         con.execute(
             """
             CREATE OR REPLACE TEMP VIEW _sce_installs AS
-            SELECT install_token::text AS install_token, brand_id::text AS derived_brand_id
-            FROM _pg.pixel.pixel_installation
-            WHERE install_token IS NOT NULL;
+            SELECT install_token, brand_id AS derived_brand_id
+            FROM postgres_query('_pg',
+              'SELECT install_token, brand_id FROM pixel.pixel_installations_for_etl()');
             """
         )
         n = con.execute("SELECT count(*) FROM _sce_installs").fetchone()[0]

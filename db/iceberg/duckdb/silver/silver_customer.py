@@ -43,6 +43,19 @@ STAGE-1 DQ GATE (parity-preserving, NOT a quarantine side-write): the Spark job 
 Idempotency: a full GROUP-BY recompute over the current Silver spine is deterministic; MERGE on the PK
   (brand_id, brain_id) is the authoritative latest roll-up (never double-counts / regresses on re-run).
 Parity target: brain_silver.silver_customer (3202 rows). Run twice — idempotent.
+
+GAP-A (2026-07): the incremental arrival clock is silver_order_state.updated_at (UTC-pinned), NOT
+  `ingested_at` — the order spine has NO `ingested_at` COLUMN (its arrival columns are max_ingested_at /
+  updated_at), so the previous ts_col='ingested_at' window ALWAYS binder-errored inside
+  incremental_window/run_job and silently fell back to a full scan with no watermark ever written (inert,
+  correct-but-wasteful). updated_at is the CORRECT clock for this fold because it is bumped by EVERY
+  restatement of an order row — including the identity-backfill case where a brain_id lands on an OLD
+  order (its payload-derived max_ingested_at does NOT move, and no new keystone event exists), so a
+  max_ingested_at window would silently skip newly-stitched customers. NOTE: this discovers changed
+  entities only for orders silver_order_state itself restated — after a bulk identity backfill the lead
+  must run silver_order_state with FULL_REFRESH=1 FIRST (its own changed-set windows the keystone, which
+  does not change when an identity alias appears), then this job picks the restated rows up on its next
+  scheduled run (no FULL_REFRESH needed here, though it remains supported).
 """
 from __future__ import annotations
 
@@ -79,6 +92,14 @@ COLUMNS = [
     "first_seen_at", "first_identified_at", "last_seen_at", "customer_watermark", "updated_at",
 ]
 
+# The order spine's ARRIVAL CLOCK for this fold (GAP-A): updated_at, pinned to UTC so the watermark
+# comparison is deterministic regardless of the DuckDB session TZ (the source column is timestamptz;
+# the watermark table stores naive UTC). updated_at is restated on EVERY silver_order_state MERGE of an
+# order row — a new order event AND an identity re-stitch (brain_id NULL→value on an old order) both
+# bump it, whereas max_ingested_at is payload-derived and does NOT move on a re-stitch. The spine has
+# no `ingested_at` column at all (the previous clock — a binder error → permanent inert full scan).
+ORDER_TS = "(updated_at AT TIME ZONE 'UTC')"
+
 
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
@@ -90,18 +111,19 @@ def build(con):
     #   So we window ONLY to DISCOVER which entities changed (a new order landed since the last run), then
     #   re-fold each changed entity over its FULL, UNWINDOWED order history. The MERGE on the PK
     #   (brand_id, brain_id) upserts exactly those restated rollups. The fold-driving source is the order
-    #   spine silver_order_state (ts_col=ingested_at); its max_ingested_at feeds customer_watermark.
+    #   spine silver_order_state on its RESTATEMENT clock ORDER_TS (updated_at, UTC-pinned — GAP-A: it
+    #   moves on an identity re-stitch too; max_ingested_at does not, and `ingested_at` does not exist).
     #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
     #   byte-identical to the pre-incremental full recompute.
-    lo, hi = incremental_window(con, "silver-customer", ORDER_STATE, ts_col="ingested_at")
+    lo, hi = incremental_window(con, "silver-customer", ORDER_STATE, ts_col=ORDER_TS)
 
     # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range
     # over the order spine's arrival clock otherwise. Same entity-key guard as the fold (brain_id NOT NULL).
     win = []
     if lo is not None:
-        win.append(f"ingested_at >= '{lo}'")
+        win.append(f"{ORDER_TS} >= '{lo}'")
     if hi is not None:
-        win.append(f"ingested_at <= '{hi}'")
+        win.append(f"{ORDER_TS} <= '{hi}'")
     order_window = f" AND {' AND '.join(win)}" if win else ""
 
     # CHANGED-KEY set: entities whose order spine changed within [lo, hi], using the SAME (brand_id,
@@ -178,7 +200,9 @@ def build(con):
 
 
 if __name__ == "__main__":
-    # The watermark tracks the order spine's arrival clock (silver_order_state.ingested_at), NOT the gated
-    # keystone default — this job reads sibling Silver marts, not silver_collector_event.
+    # The watermark tracks the order spine's RESTATEMENT clock (silver_order_state.updated_at, UTC-pinned
+    # — see ORDER_TS), NOT the gated keystone default — this job reads sibling Silver marts, not
+    # silver_collector_event. updated_at (not max_ingested_at) so an identity re-stitch of an OLD order
+    # (brain_id NULL→value, no new keystone event) still lands in the next changed-entity window (GAP-A).
     run_job("silver-customer", build, target_table="silver_customer",
-            source_table=ORDER_STATE, ts_col="ingested_at")
+            source_table=ORDER_STATE, ts_col=ORDER_TS)

@@ -54,6 +54,20 @@ QUARANTINE: the Spark job has NO Stage-1/quarantine side-write (this is a pure S
   the gated keystone) — run_job's best-effort watermark advance over the gated keystone is a harmless
   non-fatal no-op for this job.
 
+GAP-B (2026-07-16) — silver_fulfillment DELIBERATELY NOT WIRED (honest-empty for Shopify-only brands):
+  the sibling gold_logistics_performance gained a silver_fulfillment fallback lane (storefront-side
+  delivery OUTCOMES are computable from a latest-state row), but delivery TIME is NOT computable from
+  silver_fulfillment's columns: that mart is a latest-STATE-per-(brand_id, fulfillment_id) fold whose ONE
+  timestamp pair is (occurred_at = the LATEST status transition, ingested_at = its landing) — there is no
+  dispatched/created anchor (no first_event_at, no created_at) and no per-status event progression (the
+  MERGE keeps only the newest state; the per-event history lives only in Bronze fulfillment.recorded.v1).
+  Deriving a duration from a single timestamp would FABRICATE data — so for a brand with silver_shipment=0
+  this mart stays honestly empty. UNBLOCK paths (either): (a) widen silver_fulfillment with a
+  first_event_at/created_at anchor folded as MIN(occurred_at) over the fulfillment's event history (needs a
+  one-time FULL_REFRESH re-fold per the entity-incremental gotcha), or (b) a per-event
+  silver_fulfillment_event ledger, or (c) courier-side silver_shipment coverage. Requires its own change +
+  review; nothing here reads silver_fulfillment today.
+
 Honors MIGRATION_TABLE_SUFFIX (→ gold_delivery_time_duckdb_test) for the parallel-run parity harness.
 Parity target: brain_gold.gold_delivery_time (Spark oracle: 10 rows).
 """

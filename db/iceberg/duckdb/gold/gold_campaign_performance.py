@@ -160,7 +160,10 @@ def build(con):
              campaign_id,
              COALESCE(currency_code, 'INR') AS currency_code
       FROM {SILVER_SPEND}
-      WHERE brand_id IS NOT NULL AND campaign_id IS NOT NULL AND campaign_id <> ''{spend_window}
+      WHERE brand_id IS NOT NULL AND campaign_id IS NOT NULL AND campaign_id <> ''
+        -- GAP-C: pin to 'campaign' level — adset rows carry the same campaign_id + spend and would
+        -- double-count into the per-campaign rollup (adsets roll up to their campaign).
+        AND level = 'campaign'{spend_window}
     """
 
     # Semi-join clause: when incremental, restrict the FULL-history `spend` fold to only the changed
@@ -216,6 +219,8 @@ def build(con):
                 SUM(conv_value_minor)                      AS platform_conv_value_minor
             FROM {SILVER_SPEND}
             WHERE brand_id IS NOT NULL AND campaign_id IS NOT NULL AND campaign_id <> ''
+              -- GAP-C: 'campaign' level only — adset rows share campaign_id + spend and would 2×-count.
+              AND level = 'campaign'
 {refold_filter}            GROUP BY brand_id, COALESCE(platform, 'unknown'), campaign_id, COALESCE(currency_code, 'INR')
         ),
         dim AS (

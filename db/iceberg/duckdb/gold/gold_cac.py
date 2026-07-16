@@ -105,6 +105,10 @@ def build(con):
       FROM {SILVER_MARKETING_SPEND}
       WHERE stat_date IS NOT NULL
         AND currency_code IS NOT NULL
+        -- GAP-C: silver_marketing_spend carries the SAME money at both 'campaign' and 'adset' levels
+        -- (adsets roll up to their campaign). Summing both double-counts spend (~2×) and inflates CAC.
+        -- Pin to the canonical top-of-hierarchy 'campaign' level for the true account spend total.
+        AND level = 'campaign'
       GROUP BY brand_id, strftime(stat_date AT TIME ZONE 'UTC', '%Y-%m'), currency_code
     """
 

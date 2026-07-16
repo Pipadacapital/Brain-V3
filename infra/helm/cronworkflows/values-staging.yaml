@@ -1,7 +1,7 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:57a3e23227820b0bb8d7f4de806f3e992f6a62bb3925e571a92259a8b6bd25cc"
+  digest: "sha256:ee5041ce3ef8f19ecded17c2478397d7adb80f914a61e6eff0f14379f3e62f96"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
@@ -16,13 +16,13 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:6c67005c1f969751a0c7f538ad4e39feb7acb04f9b3facd2fcd127635f756938"
+    digest: "sha256:29115d380b73858482b357ebf9df76f4bf469f781521c062d22b0e2c2c7071d4"
 # duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image).
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:6c67005c1f969751a0c7f538ad4e39feb7acb04f9b3facd2fcd127635f756938"
+    digest: "sha256:29115d380b73858482b357ebf9df76f4bf469f781521c062d22b0e2c2c7071d4"
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
 # BRAIN_APP_DATABASE_URL, TRINO_HOST/TRINO_PORT, ICEBERG_*). External Secrets ← AWS Secrets Manager.
 envSecretName: core-env

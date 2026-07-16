@@ -48,6 +48,9 @@ class _SharedConn:
 
     def __init__(self, con):
         object.__setattr__(self, "_con", con)
+        # UDF names already registered on the shared connection — the PRE-CHECK for idempotency, so a
+        # re-registration (pass 2, or a name shared across jobs) never even reaches DuckDB.
+        object.__setattr__(self, "_registered", set())
 
     def __getattr__(self, name):
         return getattr(self._con, name)
@@ -56,10 +59,22 @@ class _SharedConn:
         return None
 
     def create_function(self, name, *args, **kwargs):
+        # First registration wins; later ones are no-ops. Set-based pre-check FIRST (robust), then a
+        # message-match fallback. NOTE the match text: DuckDB's real duplicate-UDF error says "A function
+        # by the name of 'X' is already CREATED, creating multiple functions with the same name is not
+        # supported yet" — not "already exists". The first ship matched only "already exists" and
+        # silver_touchpoint failed live (sr_murmur_hash3_32 had been registered by silver_sessions
+        # earlier in the same process; prod 2026-07-16). Match both phrasings, belt-and-braces.
+        if name in self._registered:
+            return None
         try:
-            return self._con.create_function(name, *args, **kwargs)
+            result = self._con.create_function(name, *args, **kwargs)
+            self._registered.add(name)
+            return result
         except Exception as exc:  # noqa: BLE001 — idempotent across jobs/passes; first registration wins
-            if "already exists" in str(exc).lower():
+            msg = str(exc).lower()
+            if "already created" in msg or "already exists" in msg:
+                self._registered.add(name)
                 return None
             raise
 

@@ -171,6 +171,10 @@ def _flag(name: str) -> bool:
 
 
 INCREMENTAL = _flag("SILVER_INCREMENTAL")
+# GOLD_INCREMENTAL gates the Gold tier INDEPENDENTLY of Silver (Phase 1b): Gold marts read Silver/Gold
+# marts, so they must be validatable + flippable separately from SILVER_INCREMENTAL (which is already ON in
+# prod). A Gold job passes `enabled=GOLD_INCREMENTAL` to incremental_window; Silver jobs use the default.
+GOLD_INCREMENTAL = _flag("GOLD_INCREMENTAL")
 FULL_REFRESH = _flag("FULL_REFRESH")
 # Trailing safety lookback: re-scan [watermark - lookback, hi) each run so a slightly out-of-order arrival
 # (Kafka timestamps across partitions; a lagging producer clock) can never be skipped by an advanced
@@ -182,29 +186,35 @@ LOOKBACK_SECONDS = int(os.environ.get("WATERMARK_LOOKBACK_SECONDS", "600") or "6
 _CURRENT_HI = None
 
 
-def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ingested_at"):
+def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ingested_at",
+                       *, enabled: bool | None = None):
     """Return (lo, hi) `ts_col` bounds for an incremental read of `source_table`, or (None, None) for a full
     scan.
 
     HARD INVARIANT: `lo is None` IFF `hi is None` IFF a full scan. `hi` is meaningful ONLY as the upper edge
     of a real window, so it is returned non-None ONLY alongside a non-None `lo`. This makes the default
-    (SILVER_INCREMENTAL off) path emit NO predicate at all → byte-identical to the pre-incremental full
-    scan. (The watermark advance does NOT depend on this return: run_job pins `_CURRENT_HI` independently, so
-    a full-scan run still advances the watermark to the batch max — a later flip to incremental picks up
+    (incremental off) path emit NO predicate at all → byte-identical to the pre-incremental full scan. (The
+    watermark advance does NOT depend on this return: run_job pins `_CURRENT_HI` independently, so a
+    full-scan run still advances the watermark to the batch max — a later flip to incremental picks up
     cleanly from there.)
 
-    Full scan (returns None, None) when: SILVER_INCREMENTAL is off, FULL_REFRESH is on, the source is
-    missing, OR this job has no prior watermark (first run → full-scan bootstrap). Otherwise
-    lo = (last committed watermark − LOOKBACK_SECONDS) and hi = the batch max `ts_col` pinned by run_job, a
-    half-open [lo, hi) window (the lookback re-admits a trailing margin; the idempotent MERGE dedups it).
-    `ts_col` is `ingested_at` for entity jobs reading the gated keystone, but `kafka_timestamp` for the
-    keystone job reading Bronze collector_events_connect (which has no lifted ingested_at column).
+    `enabled` selects the tier gate: None (default) → SILVER_INCREMENTAL (Silver jobs); a Gold job passes
+    `enabled=GOLD_INCREMENTAL` so the two tiers flip independently. FULL_REFRESH forces a full pass for
+    either tier.
+
+    Full scan (returns None, None) when: the tier gate is off, FULL_REFRESH is on, the source is missing, OR
+    this job has no prior watermark (first run → full-scan bootstrap). Otherwise lo = (last committed
+    watermark − LOOKBACK_SECONDS) and hi = the batch max `ts_col` pinned by run_job, a half-open [lo, hi)
+    window (the lookback re-admits a trailing margin; the idempotent MERGE dedups it). `ts_col` is
+    `ingested_at` for entity jobs reading the gated keystone, but `kafka_timestamp` for the keystone job
+    reading Bronze collector_events_connect (which has no lifted ingested_at column).
 
     Per-event jobs pass (lo, hi) straight into their source WHERE. Entity-fold jobs use the window only to
     discover CHANGED entity ids, then re-fold each changed entity's full history (never window the fold
     input directly — that would drop below-watermark rows).
     """
-    if not INCREMENTAL or FULL_REFRESH:
+    active = INCREMENTAL if enabled is None else enabled
+    if not active or FULL_REFRESH:
         return None, None
     lo = read_watermark(con, job_name)
     if lo is None:

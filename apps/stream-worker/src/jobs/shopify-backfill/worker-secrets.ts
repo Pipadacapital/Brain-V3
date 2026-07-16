@@ -44,7 +44,7 @@ export function buildWorkerSecretsManager(): WorkerSecretsProvider {
   if (process.env['NODE_ENV'] === 'production') {
     // Prod: delegate to the shared AwsSecretsManager (@brain/connector-secrets). It implements the
     // full ISecretsManager — including getShopifyToken — so it satisfies WorkerSecretsProvider.
-    const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
+    const region = process.env['BRAIN_AWS_REGION'] ?? process.env['AWS_REGION'] ?? 'ap-south-1';
     const clientSecretArn = process.env['SHOPIFY_CLIENT_SECRET_ARN'] ?? '';
     const kmsKeyId = process.env['KMS_KEY_ID'] ?? '';
     if (!kmsKeyId) throw new Error('[worker-secrets] KMS_KEY_ID env var required in production');

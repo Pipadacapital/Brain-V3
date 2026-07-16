@@ -557,7 +557,7 @@ async function readGoogleSecretBundle(secretRef: string): Promise<GoogleSecretBu
   // impl the connect path wrote it with (#75). Replaces the dev_secret-only resolver in prod.
   if (process.env['NODE_ENV'] === 'production') {
     const { AwsSecretsManager } = await import('@brain/connector-secrets');
-    const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
+    const region = process.env['BRAIN_AWS_REGION'] ?? process.env['AWS_REGION'] ?? 'ap-south-1';
     const mgr = new AwsSecretsManager(region, '', process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? '');
     const b = await mgr.getSecret(secretRef);
     return b ? (b as unknown as GoogleSecretBundle) : null;

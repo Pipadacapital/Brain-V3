@@ -19,6 +19,9 @@ spec:
       annotations:
         # Roll the pods when server config / catalog changes.
         checksum/config: {{ include (print $.Template.BasePath "/configmaps.yaml") . | sha256sum }}
+        {{- with .Values.coordinator.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "trino.fullname" . }}
       {{- with .Values.coordinator.nodeSelector }}

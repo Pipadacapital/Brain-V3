@@ -21,7 +21,7 @@ values when we seed; I generate the rest.
   `arn:aws:secretsmanager:ap-south-1:380254378136:secret:rds!cluster-7ea5a1e7-0ef1-4f59-87e5-565d0e1fc8f3-Ko57oN`
 - Redis: `master.brain-prod-redis.5eykyx.aps1.cache.amazonaws.com:6379` (confirm TLS → `rediss://` if transit-encryption on)
 - Kafka (after strimzi sync): `brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092`
-- Trino (after trino sync): host `brain-prod-trino.trino.svc.cluster.local:8080` — confirm svc name at sync
+- duckdb-serving (after duckdb-serving sync): host `duckdb-serving.duckdb-serving.svc.cluster.local:8091` — confirm svc name at sync
 - iceberg-rest (after sync): `http://brain-prod-iceberg-rest.iceberg-rest.svc.cluster.local:8181` — confirm svc name
 - Warehouse: `s3://brain-bronze-prod-380254378136/` · checkpoints `s3a://brain-bronze-prod-380254378136/_checkpoints`
 - Audit bucket: `brain-audit-prod-380254378136`
@@ -42,7 +42,7 @@ feeds `DATABASE_URL*` and `pgbouncer-env`.
 | `DATABASE_URL`, `BRAIN_APP_DATABASE_URL` | [DERIVED+GEN] `postgres://brain_app:<pw>@pgbouncer.pgbouncer.svc.cluster.local:6432/brain` |
 | `DATABASE_URL_DIRECT` | [DERIVED+GEN] `postgres://brain_app:<pw>@<aurora-writer>:5432/brain` |
 | `REDIS_URL` | [DERIVED] `redis://master.brain-prod-redis…:6379` |
-| `KAFKA_BROKERS`, `TRINO_HOST`, `ICEBERG_REST_URI` | [DERIVED] in-cluster DNS above |
+| `KAFKA_BROKERS`, `DUCKDB_SERVING_HOST`, `ICEBERG_REST_URI` | [DERIVED] in-cluster DNS above |
 | `AWS_REGION` | `ap-south-1` |
 | `ICEBERG_WAREHOUSE`, `CHECKPOINT_LOCATION`, `AUDIT_CHECKPOINT_BUCKET` | [DERIVED] bucket values above (`S3_ENDPOINT` UNSET) |
 | `COLLECTOR_TOPIC`/`BACKFILL_TOPIC`/`TOPIC_ENV_PREFIX` | [DERIVED] chart defaults |
@@ -58,7 +58,7 @@ feeds `DATABASE_URL*` and `pgbouncer-env`.
 
 ## 4. `brain/prod/k8s/stream-worker-env` (→ ns stream-worker)
 | `DATABASE_URL` (**direct** Aurora — leader lock, never pgbouncer) | [DERIVED+GEN] |
-| `KAFKA_BROKERS`, `TRINO_HOST`, `NEO4J_*` | [DERIVED+GEN] |
+| `KAFKA_BROKERS`, `DUCKDB_SERVING_HOST`, `NEO4J_*` | [DERIVED+GEN] |
 | `META_APP_ID`/`META_APP_SECRET`, other connector app creds | [LATER] |
 
 ## 5. `brain/prod/k8s/pgbouncer-env` (→ ns pgbouncer)

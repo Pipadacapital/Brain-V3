@@ -10,8 +10,8 @@ the current password. The credential MUST be rotated once, AFTER the masking
 change is live. This runbook also serves for any future routine rotation.
 
 **Blast radius:** iceberg-rest is a single-replica, stateless catalog front-end
-(AUD-OPS-010/011). A restart is a short catalog blip: Trino serving reads that
-miss the Redis cache and Spark/Connect catalog calls retry. Do it in a
+(AUD-OPS-010/011). A restart is a short catalog blip: duckdb-serving reads that
+miss the Redis cache and DuckDB-job/Connect catalog calls retry. Do it in a
 low-traffic window; no data is at risk (Iceberg data/metadata live in S3, the
 catalog rows in Aurora are untouched by rotation).
 
@@ -53,10 +53,10 @@ catalog rows in Aurora are untouched by rotation).
    kubectl -n iceberg-rest rollout restart deploy/brain-prod-iceberg-rest
    kubectl -n iceberg-rest rollout status  deploy/brain-prod-iceberg-rest
    ```
-6. **Verify:** readiness green (`/v1/config` 200), a Trino
-   `SELECT count(*) FROM brain_serving.mv_*` sanity read works, and the fresh
-   pod's logs contain NO `Creating catalog with properties` line and NO
-   password substring.
+6. **Verify:** readiness green (`/v1/config` 200), a duckdb-serving
+   `SELECT count(*) FROM brain_serving.mv_*` sanity read works (`POST /v1/query`),
+   and the fresh pod's logs contain NO `Creating catalog with properties` line and
+   NO password substring.
 7. **Old copies:** the exposed value now authenticates nothing. If node-level
    log retention matters to you, recycle the node the old pods ran on
    (Karpenter re-provisions) — optional.

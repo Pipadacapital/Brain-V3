@@ -4,21 +4,25 @@
 #
 # Brain V4 invariants this guard enforces (see CLAUDE.md + docs/architecture/v4/):
 #   • Compute is DuckDB-on-Iceberg — DuckDB is the sole TRANSFORM compute (Silver/Gold, run as
-#     `python db/iceberg/duckdb/<layer>/<job>.py`); Bronze maintenance/retention/RTBF is the Trino
-#     maintenance client (db/iceberg/trino/**). The Spark transform tree (db/iceberg/spark/**) is
-#     DELETED (Spark→DuckDB cutover) — R6 forbids `spark-submit` / a `db/iceberg/spark` path creeping
-#     back. dbt is REMOVED — the dbt-internal DBs `brain_gold` / `brain_silver` are RETIRED (dropped).
+#     `python db/iceberg/duckdb/<layer>/<job>.py`); Bronze maintenance/retention/RTBF is the PyIceberg
+#     maintenance client (db/iceberg/duckdb/maintenance/**). The Spark transform tree
+#     (db/iceberg/spark/**) is DELETED (Spark→DuckDB cutover) — R6 forbids `spark-submit` / a
+#     `db/iceberg/spark` path creeping back. dbt is REMOVED — the dbt-internal DBs `brain_gold` /
+#     `brain_silver` are RETIRED (dropped).
 #   • Medallion lives in the Iceberg catalogs brain_{bronze,silver,gold}_local; Gold/Silver are
-#     SERVED to the app ONLY by the Trino views brain_serving.mv_* (iceberg.brain_serving.*), or read
-#     directly from the rest-Iceberg catalogs by the DuckDB/Trino transform jobs. No reader queries a
-#     bare brain_gold./brain_silver. DB.
+#     SERVED to the app ONLY by the duckdb-serving views brain_serving.mv_* (local views over the
+#     read-only-attached iceberg catalog), or read directly from the rest-Iceberg catalogs by the
+#     DuckDB transform/maintenance jobs. No reader queries a bare brain_gold./brain_silver. DB.
 #   • Features are RUNTIME — there is NO permanent feature-precompute table (no feature_customer_daily,
 #     no brain_feature write). brain_feature is dead (dropped).
-#   • Trino is the SERVING engine (Brain V4 removed StarRocks ENTIRELY — wire AND serving). The app /
-#     BFF / metric-engine read brain_serving.mv_* over TRINO (the iceberg.brain_serving.* VIEWS over the
-#     Iceberg Gold/Silver marts), fronted by a Redis analytics cache. A Trino client
-#     (withTrinoBrand/createTrinoPool/TrinoPool) in core serving code is ALLOWED; NEW StarRocks coupling
-#     (a mysql2 driver, the :9030 query port, or a STARROCKS_* env read) in serving app code is FORBIDDEN — R5.
+#   • duckdb-serving is the SERVING engine (Brain V4 removed StarRocks ENTIRELY — wire AND serving;
+#     ADR-0014 then removed Trino ENTIRELY — serving AND maintenance). The app / BFF / metric-engine
+#     read brain_serving.mv_* over the duckdb-serving HTTP API (db/iceberg/duckdb/serving/, :8091),
+#     fronted by a Redis analytics cache. The serving client (withServingBrand/createDuckDbServingPool/
+#     ServingPool) in core serving code is ALLOWED; NEW StarRocks coupling (a mysql2 driver, the :9030
+#     query port, or a STARROCKS_* env read) in serving app code is FORBIDDEN — R5. NEW Trino coupling
+#     (the trinodb/trino image, TRINO_* envs, the retired Trino client identifiers, a db/trino/ or
+#     db/iceberg/trino path, /opt/brain/trino, or a trino:8080|trino…:8090 host form) is FORBIDDEN — R7.
 #
 # It FAILS (exit 1) when LIVE (non-test, non-comment) source contains any of:
 #   R1  a bare `brain_gold.` / `brain_silver.` reference (the retired dbt StarRocks DBs).
@@ -33,17 +37,26 @@
 #         `brain_silver.` (a strict subset of R1, surfaced separately for a clearer message).
 #   R5  NEW StarRocks COUPLING in serving app code (apps/core/** + apps/collector/**, non-test): a
 #         `mysql2` import (the StarRocks wire driver), the StarRocks query port `:9030`, or a `STARROCKS_*`
-#         env read. Brain V4 removed StarRocks ENTIRELY — serving is Trino-over-Iceberg
-#         (createTrinoPool / withTrinoBrand) fronted by Redis. This rule stops StarRocks creeping back into
-#         the app after the Trino cut-over. (Trino clients are ALLOWED; this only bans the StarRocks wire.)
+#         env read. Brain V4 removed StarRocks ENTIRELY — serving is duckdb-serving-over-Iceberg
+#         (createDuckDbServingPool / withServingBrand) fronted by Redis. This rule stops StarRocks creeping back
+#         into the app. (The duckdb-serving client is ALLOWED; this only bans the StarRocks wire.)
 #   R6  NEW Spark COUPLING (Spark→DuckDB cutover, feat/spark-to-duckdb-cutover): a `spark-submit`
 #         invocation, or a `db/iceberg/spark` path reference, in live (non-comment) code. The transform
-#         tier is DuckDB-on-Iceberg (db/iceberg/duckdb/**) + a Trino maintenance client (db/iceberg/
-#         trino/**); the Spark tree and image are DELETED. This rule stops Spark creeping back after the
-#         cutover. (Both db/iceberg/duckdb and db/iceberg/trino are ALLOWED — never matched by this rule.)
+#         tier is DuckDB-on-Iceberg (db/iceberg/duckdb/**) + a PyIceberg maintenance client (db/iceberg/
+#         duckdb/maintenance/**); the Spark tree and image are DELETED. This rule stops Spark creeping back
+#         after the cutover. (db/iceberg/duckdb — incl. maintenance/ — is ALLOWED, never matched by this rule.)
+#   R7  NEW Trino COUPLING (Trino→DuckDB serving cutover, ADR-0014): a `trinodb/trino` image ref, a
+#         `TRINO_*` env token, a retired Trino client identifier (createTrinoPool / withTrinoBrand /
+#         TrinoPool / TrinoQueryPort), a `db/trino/` or `db/iceberg/trino` path, an `/opt/brain/trino`
+#         invocation, or a `trino:8080` / `trino…:8090` host form, in live (non-comment) code. Brain V4
+#         removed Trino ENTIRELY — serving is duckdb-serving (db/iceberg/duckdb/serving/, :8091, the
+#         createDuckDbServingPool/withServingBrand client); maintenance is the PyIceberg client (db/iceberg/
+#         duckdb/maintenance/**). NEVER a bare `:8090` ban — that is the stream-worker metrics port; only
+#         a trino-qualified host:port form matches.
 #
 # EXCLUDED from scanning (by design):
 #   • test fixtures: *.test.ts, *.spec.ts, *.live.test.ts, tools/isolation-fuzz/**, **/test/**
+#   • docs/adr/** + CHANGELOG* — decision history legitimately names the retired engines.
 #   • this guard itself + its self-test corpus.
 #   • node_modules, .git, build output (dist/.next/coverage), and the .engineering-os/ audit trail
 #     (historical run artifacts are data, not live code).
@@ -71,9 +84,10 @@ violations=0
 candidate_files() { # $1 = extended-regex token
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git grep -lE "$1" -- \
-      '*.ts' '*.tsx' '*.sh' '*.sql' '*.yml' '*.yaml' '*.py' '*.json' 'Makefile' '*.mk' 2>/dev/null || true
+      '*.ts' '*.tsx' '*.js' '*.mjs' '*.sh' '*.sql' '*.yml' '*.yaml' '*.py' '*.json' 'Makefile' '*.mk' 2>/dev/null || true
   else
-    grep -rlE "$1" --include='*.ts' --include='*.tsx' --include='*.sh' --include='*.sql' \
+    grep -rlE "$1" --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' \
+      --include='*.sh' --include='*.sql' \
       --include='*.yml' --include='*.yaml' --include='*.py' --include='*.json' \
       --include='Makefile' --include='*.mk' . 2>/dev/null | sed 's#^\./##' || true
   fi
@@ -86,6 +100,7 @@ is_excluded() {
     .git/*) return 0 ;;
     */dist/*|*/.next/*|*/coverage/*|dist/*|.next/*|coverage/*) return 0 ;;
     .engineering-os/*|.eos-workflows/*) return 0 ;;
+    docs/adr/*|CHANGELOG*|*/CHANGELOG*) return 0 ;; # decision history names the retired engines on purpose
     tools/lint/v4-naming-guard.sh) return 0 ;;      # this guard + its self-test corpus
     tools/lint/v4-naming-guard.selftest.*) return 0 ;;
     tools/lint/identity-view-guard.sh) return 0 ;;  # sibling guard: names silver_identity_map in its docstring/self-test fixtures on purpose (A.2.2)
@@ -232,9 +247,10 @@ scan_feature_precompute() {
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # R5: NEW StarRocks coupling in serving app code (apps/core/** + apps/collector/**, non-test).
-#   Brain V4 removed StarRocks ENTIRELY; serving is Trino-over-Iceberg (createTrinoPool / withTrinoBrand)
-#   fronted by Redis. The StarRocks wire MUST NOT creep back: a mysql2 import, the :9030 query port, or a
-#   STARROCKS_* env read in serving app code is a violation. (A Trino client is ALLOWED — not scanned.)
+#   Brain V4 removed StarRocks ENTIRELY; serving is duckdb-serving-over-Iceberg (createDuckDbServingPool /
+#   withServingBrand) fronted by Redis. The StarRocks wire MUST NOT creep back: a mysql2 import, the :9030
+#   query port, or a STARROCKS_* env read in serving app code is a violation. (The duckdb-serving client
+#   is ALLOWED — not scanned.)
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 scan_starrocks_coupling() {
   local f l content
@@ -248,11 +264,11 @@ scan_starrocks_coupling() {
     while IFS= read -r line; do
       l="${line%%:*}"; content="${line#*:}"
       if printf '%s' "$content" | grep -qE "(from[[:space:]]+['\"]mysql2|require\(['\"]mysql2|['\"]mysql2/promise['\"])"; then
-        flag R5 "$f:$l" "mysql2 (the StarRocks wire driver) in serving app code — Brain V4 removed StarRocks; serving is Trino-over-Iceberg (createTrinoPool/withTrinoBrand): ${content#"${content%%[![:space:]]*}"}"
+        flag R5 "$f:$l" "mysql2 (the StarRocks wire driver) in serving app code — Brain V4 removed StarRocks; serving is duckdb-serving-over-Iceberg (createDuckDbServingPool/withServingBrand): ${content#"${content%%[![:space:]]*}"}"
       elif printf '%s' "$content" | grep -qE 'STARROCKS_[A-Z0-9_]+'; then
-        flag R5 "$f:$l" "STARROCKS_* env read in serving app code — StarRocks is removed in Brain V4; use TRINO_* / the Iceberg catalog name (createTrinoPool): ${content#"${content%%[![:space:]]*}"}"
+        flag R5 "$f:$l" "STARROCKS_* env read in serving app code — StarRocks is removed in Brain V4; use DUCKDB_SERVING_* / the Iceberg catalog name (createDuckDbServingPool): ${content#"${content%%[![:space:]]*}"}"
       elif printf '%s' "$content" | grep -qE '(^|[^0-9])9030([^0-9]|$)'; then
-        flag R5 "$f:$l" "the StarRocks query port :9030 in serving app code — Brain V4 serving is Trino (HTTP, default :8090): ${content#"${content%%[![:space:]]*}"}"
+        flag R5 "$f:$l" "the StarRocks query port :9030 in serving app code — Brain V4 serving is duckdb-serving (HTTP, default :8091): ${content#"${content%%[![:space:]]*}"}"
       fi
     done < <(noncomment_lines "$f")
   done < <(candidate_files 'mysql2|STARROCKS_|(^|[^0-9])9030([^0-9]|$)' | grep -E '\.tsx?$' || true)
@@ -261,8 +277,9 @@ scan_starrocks_coupling() {
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # R6: NEW Spark coupling (Spark→DuckDB cutover). A `spark-submit` invocation or a `db/iceberg/spark`
 #   path reference in live (non-comment) code. The Spark tree + image are deleted; the transform tier is
-#   DuckDB (db/iceberg/duckdb/**) + a Trino maintenance client (db/iceberg/trino/**). Comments/docstrings
-#   that mention the ported-from Spark path (provenance) are stripped by noncomment_lines() and allowed.
+#   DuckDB (db/iceberg/duckdb/**) + a PyIceberg maintenance client (db/iceberg/duckdb/maintenance/**).
+#   Comments/docstrings that mention the ported-from Spark path (provenance) are stripped by
+#   noncomment_lines() and allowed.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 scan_spark_coupling() {
   local f l content
@@ -271,12 +288,48 @@ scan_spark_coupling() {
     while IFS= read -r line; do
       l="${line%%:*}"; content="${line#*:}"
       if printf '%s' "$content" | grep -qE 'spark-submit'; then
-        flag R6 "$f:$l" "spark-submit is REMOVED (Spark→DuckDB cutover) — the transform tier is DuckDB (db/iceberg/duckdb) invoked as \`python /opt/brain/duckdb/<layer>/<job>.py\`; maintenance is the Trino client (db/iceberg/trino): ${content#"${content%%[![:space:]]*}"}"
+        flag R6 "$f:$l" "spark-submit is REMOVED (Spark→DuckDB cutover) — the transform tier is DuckDB (db/iceberg/duckdb) invoked as \`python /opt/brain/duckdb/<layer>/<job>.py\`; maintenance is the PyIceberg client (db/iceberg/duckdb/maintenance): ${content#"${content%%[![:space:]]*}"}"
       elif printf '%s' "$content" | grep -qE 'db/iceberg/spark'; then
-        flag R6 "$f:$l" "db/iceberg/spark is DELETED (Spark→DuckDB cutover) — use db/iceberg/duckdb (transform) or db/iceberg/trino (maintenance): ${content#"${content%%[![:space:]]*}"}"
+        flag R6 "$f:$l" "db/iceberg/spark is DELETED (Spark→DuckDB cutover) — use db/iceberg/duckdb (transform) or db/iceberg/duckdb/maintenance (PyIceberg maintenance): ${content#"${content%%[![:space:]]*}"}"
       fi
     done < <(noncomment_lines "$f")
   done < <(candidate_files 'spark-submit|db/iceberg/spark')
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# R7: NEW Trino coupling (Trino→DuckDB serving cutover, ADR-0014). Brain V4 removed Trino ENTIRELY —
+#   serving is duckdb-serving (db/iceberg/duckdb/serving/, HTTP :8091, the createDuckDbServingPool/
+#   withServingBrand client); maintenance is the PyIceberg client (db/iceberg/duckdb/maintenance/**).
+#   Six token-scoped signals on live (non-comment) lines, tree-wide:
+#     1. the trinodb/trino image ref                    4. a db/trino/ or db/iceberg/trino path
+#     2. a TRINO_* env token                            5. an /opt/brain/trino invocation
+#     3. a retired Trino client identifier              6. a trino:8080 / trino…:8090 host form
+#        (createTrinoPool/withTrinoBrand/TrinoPool/TrinoQueryPort)
+#   DELIBERATELY NOT a signal: a bare `:8090` — that is the stream-worker metrics port (e.g.
+#   `http://localhost:8090/metrics`); only a trino-qualified host:port form matches signal 6.
+#   docs/adr/** + CHANGELOG* are excluded (is_excluded) — decision history names Trino on purpose.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+scan_trino_coupling() {
+  local f l content
+  while IFS= read -r f; do
+    is_excluded "$f" && continue
+    while IFS= read -r line; do
+      l="${line%%:*}"; content="${line#*:}"
+      if printf '%s' "$content" | grep -qE 'trinodb/trino'; then
+        flag R7 "$f:$l" "the trinodb/trino image — Trino is REMOVED (ADR-0014); serving is the duckdb-serving image (db/iceberg/duckdb/serving/Dockerfile): ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE 'TRINO_[A-Z0-9_]+'; then
+        flag R7 "$f:$l" "TRINO_* env token — Trino is REMOVED (ADR-0014); the serving contract is DUCKDB_SERVING_* (host/port default localhost:8091): ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE '(createTrinoPool|withTrinoBrand|TrinoPool|TrinoQueryPort)'; then
+        flag R7 "$f:$l" "retired Trino client identifier — the serving port is createDuckDbServingPool/withServingBrand/ServingPool (packages/metric-engine serving-deps): ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE 'db/trino/|db/iceberg/trino'; then
+        flag R7 "$f:$l" "db/trino / db/iceberg/trino is DELETED (ADR-0014) — views live in db/iceberg/duckdb/views, maintenance in db/iceberg/duckdb/maintenance: ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE '/opt/brain/trino'; then
+        flag R7 "$f:$l" "/opt/brain/trino invocation — the cron image carries /opt/brain/duckdb/maintenance/*.py (PyIceberg) instead: ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE 'trino[a-zA-Z0-9._-]*:(8080|8090)'; then
+        flag R7 "$f:$l" "a Trino host:port form (trino:8080 / trino…:8090) — serving is duckdb-serving:8091; a bare :8090 (stream-worker metrics) is fine, a trino host is not: ${content#"${content%%[![:space:]]*}"}"
+      fi
+    done < <(noncomment_lines "$f")
+  done < <(candidate_files '[Tt]rino|TRINO_')
 }
 
 # ── Self-test ──────────────────────────────────────────────────────────────────────────────────────
@@ -310,6 +363,28 @@ EOF
 exec /opt/spark/bin/spark-submit --master local[*] /opt/brain/silver/silver_order_state.py
 python db/iceberg/spark/gold/gold_revenue_ledger.py
 EOF
+  # R7 bad corpus — NEW Trino coupling (one signal per line, all six).
+  cat > "$d/bad.trino.ts" <<'EOF'
+import { createTrinoPool, withTrinoBrand } from '@brain/metric-engine';
+const trino = createTrinoPool({ baseUrl: process.env['TRINO_URL'] ?? 'http://trino:8080', user: 'brain' });
+const prod = 'http://brain-prod-trino.trino.svc.cluster.local:8090';
+EOF
+  cat > "$d/bad.trino.sh" <<'EOF'
+#!/usr/bin/env bash
+bash db/trino/views/run-trino-views.sh
+python /opt/brain/trino/bronze_maintenance.py
+python db/iceberg/trino/medallion_maintenance.py
+EOF
+  cat > "$d/bad.trino.yaml" <<'EOF'
+image:
+  repository: trinodb/trino
+  tag: "455"
+EOF
+  # .mjs corpus — candidate_files() scans *.js/*.mjs too (the seed-bronze.mjs class: a Node tool
+  # querying the serving tier must not carry Trino coupling just because it isn't a .ts file).
+  cat > "$d/bad.trino.mjs" <<'EOF'
+const SERVING = process.env.TRINO_URL ?? 'http://trino:8080';
+EOF
 
   # ── Good corpus (must NOT trigger) ────────────────────────────────────────
   cat > "$d/good.sql" <<'EOF'
@@ -326,18 +401,18 @@ fqtn = f"{CATALOG}.{SILVER_NAMESPACE}.silver_touchpoint"
 df = spark.table("rest.brain_silver.silver_touchpoint")
 # dbt was removed in V4 (comment mentioning dbt — allowed)
 EOF
-  # R5 good corpus — the Trino serving client + iceberg.brain_serving views (allowed, no StarRocks wire).
+  # R5 good corpus — the duckdb-serving client + brain_serving views (allowed, no StarRocks wire).
   cat > "$d/good.starrocks.ts" <<'EOF'
-import { createTrinoPool, withTrinoBrand } from '@brain/metric-engine';
-const trino = createTrinoPool({ baseUrl: process.env['TRINO_URL'] ?? 'http://trino:8090', user: 'brain' });
-// reads iceberg.brain_serving.mv_gold_revenue_ledger over Trino — no mysql2, no :9030, no STARROCKS_ env.
+import { createDuckDbServingPool, withServingBrand } from '@brain/metric-engine';
+const serving = createDuckDbServingPool({ baseUrl: process.env['DUCKDB_SERVING_URL'] ?? 'http://duckdb-serving:8091', user: 'brain' });
+// reads brain_serving.mv_gold_revenue_ledger over duckdb-serving — no mysql2, no :9030, no STARROCKS_ env.
 EOF
-  # R6 good corpus — the DuckDB/Trino cutover invocation + a provenance comment/docstring (allowed).
+  # R6 good corpus — the DuckDB transform/maintenance invocation + a provenance comment/docstring (allowed).
   cat > "$d/good.spark.sh" <<'EOF'
 #!/usr/bin/env bash
 # faithful port of db/iceberg/spark/gold/gold_cac.py — provenance comment, allowed
-python /opt/brain/duckdb/gold/gold_cac.py       # DuckDB transform
-python /opt/brain/trino/bronze_maintenance.py   # Trino maintenance client
+python /opt/brain/duckdb/gold/gold_cac.py                    # DuckDB transform
+python /opt/brain/duckdb/maintenance/bronze_maintenance.py   # PyIceberg maintenance client
 EOF
   cat > "$d/good.spark.py" <<'EOF'
 """
@@ -346,7 +421,7 @@ gold_cac.py (DuckDB) — faithful port of db/iceberg/spark/gold/gold_cac.py (doc
 con.execute("MERGE INTO rest.brain_gold.gold_cac ...")
 EOF
   # Helm-template banner mentioning the ported-from Spark tokens ONLY inside a `{{- /* … */ -}}` block
-  # comment (provenance prose) — the executable args run DuckDB/Trino. Regression guard for the real
+  # comment (provenance prose) — the executable args run the DuckDB tier. Regression guard for the real
   # cronworkflows FP: block-comment bodies must be stripped by noncomment_lines(), so R6 sees nothing.
   cat > "$d/good.spark.yaml" <<'EOF'
 {{- /*
@@ -355,7 +430,21 @@ executionMode/driverMemory knobs were spark-submit-only and were removed. Faithf
 db/iceberg/spark/gold path — provenance only.
 */ -}}
 args:
-  - exec python /opt/brain/trino/bronze_maintenance.py
+  - exec python /opt/brain/duckdb/maintenance/bronze_maintenance.py
+EOF
+  # R7 good corpus — the duckdb-serving client, the maintenance tier, AND a bare :8090 (the
+  # stream-worker metrics port — the one port form R7 must NEVER ban). None of these may flag.
+  cat > "$d/good.trino.ts" <<'EOF'
+import { createDuckDbServingPool, withServingBrand, ServingPool } from '@brain/metric-engine';
+const serving = createDuckDbServingPool({ baseUrl: process.env['DUCKDB_SERVING_URL'] ?? 'http://duckdb-serving:8091', user: 'brain' });
+const metricsUrl = 'http://localhost:8090/metrics'; // stream-worker metrics port — a bare :8090 is NOT a Trino signal
+EOF
+  cat > "$d/good.trino.sh" <<'EOF'
+#!/usr/bin/env bash
+# was db/trino/views/run-trino-views.sh — provenance comment, allowed (Trino removed, ADR-0014)
+python /opt/brain/duckdb/maintenance/medallion_maintenance.py   # PyIceberg maintenance client
+curl -fsS http://localhost:8091/readyz                          # duckdb-serving view-apply gate
+curl -fsS http://localhost:8090/metrics                         # stream-worker metrics (bare :8090 — allowed)
 EOF
 
   local fail_bad=0 fail_good=0
@@ -395,6 +484,24 @@ EOF
   # The 2-line corpus carries both signals; require every one to be caught.
   [ "$r6_hits" -ge 2 ] || { echo "${RED}SELFTEST FAIL: R6 missed a Spark-coupling signal in bad.spark.sh (hits=$r6_hits)${RST}"; fail_bad=1; }
 
+  # ── Check bad.trino.{ts,sh,yaml} catch R7 (all six Trino-coupling signals) ───
+  local r7_hits; r7_hits=0
+  for f in "$d/bad.trino.ts" "$d/bad.trino.sh" "$d/bad.trino.yaml" "$d/bad.trino.mjs"; do
+    while IFS= read -r line; do
+      local content="${line#*:}"
+      printf '%s' "$content" | grep -qE 'trinodb/trino' && r7_hits=$((r7_hits+1))
+      printf '%s' "$content" | grep -qE 'TRINO_[A-Z0-9_]+' && r7_hits=$((r7_hits+1))
+      printf '%s' "$content" | grep -qE '(createTrinoPool|withTrinoBrand|TrinoPool|TrinoQueryPort)' && r7_hits=$((r7_hits+1))
+      printf '%s' "$content" | grep -qE 'db/trino/|db/iceberg/trino' && r7_hits=$((r7_hits+1))
+      printf '%s' "$content" | grep -qE '/opt/brain/trino' && r7_hits=$((r7_hits+1))
+      printf '%s' "$content" | grep -qE 'trino[a-zA-Z0-9._-]*:(8080|8090)' && r7_hits=$((r7_hits+1))
+    done < <(noncomment_lines "$f")
+  done
+  # The corpus carries all six signal classes (client ids ×2 lines, env, image, 3 path forms, 2 host
+  # forms) — require at least one hit per class, i.e. ≥ 6 total with every grep represented above,
+  # PLUS the .mjs corpus line's two signals (env + host) so *.mjs stays a scanned extension.
+  [ "$r7_hits" -ge 8 ] || { echo "${RED}SELFTEST FAIL: R7 missed a Trino-coupling signal in bad.trino.* incl. the .mjs corpus (hits=$r7_hits)${RST}"; fail_bad=1; }
+
   # ── Check good.sql + good.py produce NO false positives ───────────────────
   for f in "$d/good.sql" "$d/good.py"; do
     local hits; hits=0
@@ -407,7 +514,7 @@ EOF
     [ "$hits" -eq 0 ] || { echo "${RED}SELFTEST FAIL: guard false-positived on allowed form in $(basename "$f")${RST}"; fail_good=1; }
   done
 
-  # ── Check good.starrocks.ts (Trino client) produces NO R5 false positives ──────
+  # ── Check good.starrocks.ts (duckdb-serving client) produces NO R5 false positives ──────
   local r5_fp; r5_fp=0
   while IFS= read -r line; do
     local content="${line#*:}"
@@ -415,9 +522,9 @@ EOF
     printf '%s' "$content" | grep -qE 'STARROCKS_[A-Z0-9_]+' && r5_fp=$((r5_fp+1))
     printf '%s' "$content" | grep -qE '(^|[^0-9])9030([^0-9]|$)' && r5_fp=$((r5_fp+1))
   done < <(noncomment_lines "$d/good.starrocks.ts")
-  [ "$r5_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R5 false-positived on the allowed Trino client in good.starrocks.ts (hits=$r5_fp)${RST}"; fail_good=1; }
+  [ "$r5_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R5 false-positived on the allowed duckdb-serving client in good.starrocks.ts (hits=$r5_fp)${RST}"; fail_good=1; }
 
-  # ── Check good.spark.{sh,py} (DuckDB/Trino invocation + provenance comments) produce NO R6 FPs ──
+  # ── Check good.spark.{sh,py,yaml} (DuckDB invocation + provenance comments) produce NO R6 FPs ──
   local r6_fp; r6_fp=0
   for f in "$d/good.spark.sh" "$d/good.spark.py" "$d/good.spark.yaml"; do
     while IFS= read -r line; do
@@ -426,10 +533,25 @@ EOF
       printf '%s' "$content" | grep -qE 'db/iceberg/spark' && r6_fp=$((r6_fp+1))
     done < <(noncomment_lines "$f")
   done
-  [ "$r6_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R6 false-positived on the allowed DuckDB/Trino invocation or a provenance comment (hits=$r6_fp)${RST}"; fail_good=1; }
+  [ "$r6_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R6 false-positived on the allowed DuckDB invocation or a provenance comment (hits=$r6_fp)${RST}"; fail_good=1; }
+
+  # ── Check good.trino.{ts,sh} (serving client + maintenance + a bare :8090 metrics port) produce NO R7 FPs ──
+  local r7_fp; r7_fp=0
+  for f in "$d/good.trino.ts" "$d/good.trino.sh"; do
+    while IFS= read -r line; do
+      local content="${line#*:}"
+      printf '%s' "$content" | grep -qE 'trinodb/trino' && r7_fp=$((r7_fp+1))
+      printf '%s' "$content" | grep -qE 'TRINO_[A-Z0-9_]+' && r7_fp=$((r7_fp+1))
+      printf '%s' "$content" | grep -qE '(createTrinoPool|withTrinoBrand|TrinoPool|TrinoQueryPort)' && r7_fp=$((r7_fp+1))
+      printf '%s' "$content" | grep -qE 'db/trino/|db/iceberg/trino' && r7_fp=$((r7_fp+1))
+      printf '%s' "$content" | grep -qE '/opt/brain/trino' && r7_fp=$((r7_fp+1))
+      printf '%s' "$content" | grep -qE 'trino[a-zA-Z0-9._-]*:(8080|8090)' && r7_fp=$((r7_fp+1))
+    done < <(noncomment_lines "$f")
+  done
+  [ "$r7_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R7 false-positived on the duckdb-serving client / the :8090 metrics port / a provenance comment (hits=$r7_fp)${RST}"; fail_good=1; }
 
   if [ "$fail_bad" -eq 0 ] && [ "$fail_good" -eq 0 ]; then
-    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 + R5 StarRocks + R6 Spark coupling on the bad corpus; no false positives on allowed Trino/Iceberg/DuckDB forms).${RST}"
+    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 + R5 StarRocks + R6 Spark + R7 Trino coupling on the bad corpus; no false positives on allowed Iceberg/DuckDB/duckdb-serving forms incl. the bare :8090 metrics port).${RST}"
     return 0
   fi
   return 1
@@ -447,19 +569,23 @@ scan_dbt_invocations
 scan_feature_precompute
 scan_starrocks_coupling
 scan_spark_coupling
+scan_trino_coupling
 
 if [ "$violations" -gt 0 ]; then
   echo ""
   echo "${RED}v4-naming-guard FAILED: ${violations} violation(s).${RST}"
   echo "Brain V4: DuckDB-on-Iceberg is the sole TRANSFORM compute (db/iceberg/duckdb/**), maintenance is"
-  echo "the Trino client (db/iceberg/trino/**); the Spark transform tree is DELETED (R6 blocks spark-submit"
-  echo "/ db/iceberg/spark). The medallion lives in the brain_*_local Iceberg catalogs; Gold/Silver are"
-  echo "SERVED via Trino views brain_serving.mv_* over Iceberg (fronted by Redis);"
+  echo "the PyIceberg client (db/iceberg/duckdb/maintenance/**); the Spark transform tree is DELETED (R6"
+  echo "blocks spark-submit / db/iceberg/spark). The medallion lives in the brain_*_local Iceberg catalogs;"
+  echo "Gold/Silver are SERVED via the duckdb-serving views brain_serving.mv_* (fronted by Redis);"
   echo "dbt and the dbt-internal brain_gold/brain_silver DBs are REMOVED; features are RUNTIME."
   echo "StarRocks is REMOVED entirely — NEW StarRocks coupling (mysql2 / :9030 / STARROCKS_*) in serving"
-  echo "app code is FORBIDDEN (R5); use the Trino client (createTrinoPool / withTrinoBrand)."
+  echo "app code is FORBIDDEN (R5). Trino is REMOVED entirely (ADR-0014) — NEW Trino coupling"
+  echo "(trinodb/trino / TRINO_* / createTrinoPool|withTrinoBrand|TrinoPool / db/trino / db/iceberg/trino"
+  echo "/ /opt/brain/trino / trino:8080|trino…:8090) is FORBIDDEN (R7); use the duckdb-serving client"
+  echo "(createDuckDbServingPool / withServingBrand) and the PyIceberg maintenance tier."
   exit 1
 fi
 
-echo "${GRN}✓ v4-naming-guard passed — no retired-dbt-DB refs, no dbt invocations, no feature precompute, no StarRocks coupling.${RST}"
+echo "${GRN}✓ v4-naming-guard passed — no retired-dbt-DB refs, no dbt invocations, no feature precompute, no StarRocks coupling, no Trino coupling.${RST}"
 exit 0

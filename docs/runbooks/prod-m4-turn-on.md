@@ -17,7 +17,7 @@
 - `infra/terraform/envs/prod/backend.tf` — `brain-tfstate-prod-<PROD_ACCOUNT_ID>`
 - `infra/terraform/envs/prod/bootstrap.tf` — `<PROD_ACCOUNT_ID>`
 - `infra/argocd/envs/prod/{karpenter,collector}.yaml` — `ACCOUNT_ID` (IRSA role ARNs)
-- `infra/helm/trino/values-prod.yaml` — IRSA role ARN + `restUri`
+- `infra/helm/duckdb-serving/values-prod.yaml` — IRSA role ARN + `ICEBERG_REST_URI`
 
 **Prereq gaps — now CLOSED in-repo (this PR):**
 1. ✅ **App IRSA roles** — `irsa_collector` / `irsa_core` / `irsa_stream_worker` added to `envs/prod/bootstrap.tf` (commented M4 set, mirrors dev).
@@ -96,13 +96,13 @@ kubectl apply -f infra/argocd/envs/prod/strimzi-kafka.yaml      # Strimzi operat
 argocd app sync keda karpenter strimzi-kafka
 kubectl -n kafka wait --for=condition=Ready kafka/brain-prod-kafka --timeout=600s
 
-# 4c. Iceberg REST catalog (infra/helm/iceberg-rest, Aurora-backed) + Trino.
+# 4c. Iceberg REST catalog (infra/helm/iceberg-rest, Aurora-backed) + duckdb-serving.
 #     First create the iceberg_catalog DB in Aurora + the iceberg-rest-catalog-db k8s secret
 #     (jdbc-user/jdbc-password); set values-prod.yaml catalog.jdbcHost = Aurora endpoint.
 kubectl apply -f infra/argocd/envs/prod/iceberg-rest.yaml
 argocd app sync iceberg-rest
-# Trino's iceberg.properties restUri → http://brain-prod-iceberg-rest.iceberg-rest:8181
-argocd app sync trino    # after the catalog is up
+# duckdb-serving's ICEBERG_REST_URI → http://brain-prod-iceberg-rest.iceberg-rest:8181
+argocd app sync duckdb-serving    # after the catalog is up (read-only attach at pod start)
 
 # 4d. App tier
 kubectl apply -f infra/argocd/envs/prod/{core,web,collector,stream-worker,cronworkflows}.yaml
@@ -127,15 +127,17 @@ The IRSA roles (Phase 1) grant the apps read access. Seed:
 
 ```bash
 # Bronze landing is the kafka-connect Deployment (ADR-0010; kafka-connect-prod app); Silver/Gold + bronze-maintenance run as Argo CronWorkflows (cronworkflows app, already synced).
-# Trigger one cycle manually to seed the serving views on a cold catalog:
+# Trigger one cycle manually to seed the marts on a cold catalog:
 argo submit -n argo --from cronworkflow/v4-silver ; argo submit -n argo --from cronworkflow/v4-gold
-# Apply the Trino serving views:
-TRINO_URL=http://<trino-coordinator-svc>:8080 bash db/trino/views/run-trino-views.sh
+# Serving views apply themselves (duckdb-serving startup/rotation epoch) — verify, don't run:
+kubectl -n duckdb-serving rollout restart deploy   # fresh epoch over the new marts
+kubectl -n duckdb-serving port-forward svc/duckdb-serving 8091:8091 &
+curl -fsS http://127.0.0.1:8091/readyz | jq .views_skipped   # must be []
 ```
 
 **Smoke (the acceptance gate):**
 - Ingest + serving load: `tools/load-test/` k6 harness against the prod BFF + collector (set `BASE_URL`/`COLLECTOR_URL`/`AUTH_COOKIE`). Assert p95 + zero OOM.
-- Effectively-once: run `bronze-dedup-effectively-once.live.test.ts` against prod Kafka+Trino.
+- Effectively-once: run `bronze-dedup-effectively-once.live.test.ts` against prod Kafka+duckdb-serving.
 - Freshness: confirm `brain_data_freshness_seconds` (the exporter) is under SLA in Grafana.
 - App health: core/web/collector `/health` 200; a dashboard renders honest-empty (not 500) on the cold brand.
 
@@ -143,10 +145,10 @@ TRINO_URL=http://<trino-coordinator-svc>:8080 bash db/trino/views/run-trino-view
 
 ## 7. Verification checklist (GA gate — `docs/audit/14-production-readiness.md`)
 - [ ] `terraform plan` clean (no drift) post-apply
-- [ ] EKS nodes Ready; Karpenter provisioning batch/trino on demand; KEDA scaling workers
+- [ ] EKS nodes Ready; Karpenter provisioning batch/serving nodes on demand; HPA scaling duckdb-serving
 - [ ] Strimzi Kafka Ready; topics created; apps connected to the bootstrap Service
 - [ ] Aurora reachable (private only); migrations applied (`pnpm migrate` against the prod DB URL)
-- [ ] Trino serving views resolve; Redis cache warm
+- [ ] duckdb-serving views resolve (`/readyz` → `views_skipped: []`); Redis cache warm
 - [ ] SLO rules (`brain-slo.rules.yml` + `freshness.rules.yml`) firing into Alertmanager
 - [ ] Isolation: `tools/isolation-fuzz` green at multi-brand scale
 - [ ] CTO/E1 sign-off
@@ -161,4 +163,4 @@ TRINO_URL=http://<trino-coordinator-svc>:8080 bash db/trino/views/run-trino-view
 ---
 
 ## 9. Cost (starter, deployed)
-≈ **$240–320/mo** running, **~$190/mo** with batch/Trino scaled to zero (per the blueprint estimate): EKS control plane $73 + system node ~$25 + streaming/batch/trino spot $0–130 + Aurora ~$45 + ElastiCache ~$12 + fck-nat ~$4 + S3/endpoints ~$15. **$0 until you run Phase 1.**
+≈ **$240–320/mo** running, **~$190/mo** with batch/serving scaled to zero (per the blueprint estimate): EKS control plane $73 + system node ~$25 + streaming/batch/serving spot $0–130 + Aurora ~$45 + ElastiCache ~$12 + fck-nat ~$4 + S3/endpoints ~$15. **$0 until you run Phase 1.**

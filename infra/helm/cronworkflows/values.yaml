@@ -130,6 +130,12 @@ sparkBronze:
 # brain-duckdb image (B3 fail-closed) + a cluster.
 sparkV4:
   enabled: true
+  # Phase 1d (realtime): run each tier as ONE process (attach the Iceberg catalog once, run all 45 jobs on
+  # a single connection via db/iceberg/duckdb/run_all.py) instead of spawning 90 python processes per run.
+  # Prod telemetry showed ~85s FIXED per-process overhead per job → a 90-spawn run took ~130 min, blocking
+  # the */5 realtime cadence. Default false (the 90-spawn bash loop) until validated on one prod run; flip
+  # true → run collapses to ~single-digit minutes. Rollback = flip false.
+  singleProcess: false
   # ADR-0010: the v4-silver/v4-gold crons read the Kafka Connect Bronze tables
   # (collector_events_connect + <lane>_raw_connect) — fixed in the jobs, no BRONZE_SOURCE
   # switch (rollback = git revert).

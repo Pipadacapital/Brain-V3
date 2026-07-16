@@ -150,6 +150,25 @@ Ships inert. **Promotion gate:** validate `gold_*` money parity (incremental vs
 `FULL_REFRESH=1`) per brand before flipping `GOLD_INCREMENTAL=1`; the 13 full-scan jobs
 keep running full every `*/5` (correct, just not yet cheap).
 
+### Phase 1d — single-process runner (THE freshness unlock; flag-gated, default OFF)
+**Prod validation (2026-07-16) found the real bottleneck was never the scan.** Per-job telemetry:
+the keystone that scans ALL of Bronze and upserts 94 rows takes **91.9s**; a leaf that reads a
+tiny slice and upserts **0** takes **84.9s** — the same. The ~85s is **fixed per-process
+overhead** (Python + DuckDB startup + Iceberg REST-catalog attach + S3/IRSA). The old runner
+spawns **90 processes/run** (45 jobs × 2 passes) → **~130 min/run**, so `Forbid` makes the `*/5`
+schedule effectively ~2h. Incremental (Phase 0/1) cut rows/write-amp (prevents re-fragmentation)
+but rows were never the bottleneck.
+
+Fix: **`db/iceberg/duckdb/run_all.py`** — attach the catalog **once**, run every job's existing
+`__main__` (its `run_job`/`run_normalize_job`) against **one shared connection** (close-proofed;
+`create_function` made idempotent for the 2-pass re-registration). No job rewritten. Gated on
+`sparkV4.singleProcess` (default false → the 90-spawn loop). **Expected ~130 min → single-digit
+minutes** → the `*/5` schedule finally delivers realtime. This is what Phase 0/1/1b's incremental
+work needed to actually pay off in freshness.
+
+**Rollout:** merge → promote → flip `singleProcess=true` → validate one run produces identical
+marts (money parity) in a fraction of the time → the medallion is realtime.
+
 ### Phase 2 — request-time detector serving (DONE; flag-gated, default OFF)
 Even a 5-min Silver cadence has a floor. `GET /api/v1/recommendations` now computes the
 detector set **at request time** from the freshest Silver/Gold (Trino) when the per-brand

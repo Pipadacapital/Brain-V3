@@ -13,6 +13,7 @@ import type { AuthenticatedRequest } from '../../../workspace-access/index.js';
 import { getMetricTrust } from '../../../data-quality/index.js';
 import {
   getRecommendations,
+  getRecommendationsLive,
   generateRecommendations,
   recordRecommendationAction,
   isRecommendationAction,
@@ -38,7 +39,10 @@ import type {
 import type { BffDeps } from './_shared.js';
 
 export function registerDecisionsRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, pool, rawPool, srPool } = deps;
+  const { bffProtectedPreHandler, pool, rawPool, srPool, servingCache, flagService } = deps;
+
+  /** Phase 2: request-time recommendation serving flag (per-brand, default OFF → stored path). */
+  const RECS_REQUEST_TIME_FLAG = 'recommendations.request_time';
 
   // ── Recommendation endpoints (P1 — deterministic decision engine, doc 09) ──
   // Recommend-only: detectors emit ranked risk/opportunity actions with confidence + evidence,
@@ -72,13 +76,29 @@ export function registerDecisionsRoutes(fastify: FastifyInstance, deps: BffDeps)
         const trust = rawPool
           ? await getMetricTrust(auth.brandId, { pool: rawPool })
           : { tier: 'untrusted' as const, gate: { blocksHighRiskRecommendation: true } };
-        const result: ContractRecommendations = await getRecommendations(auth.brandId, requestId, {
-          pool,
-          gate: {
-            tier: trust.tier,
-            blocksHighRiskRecommendation: trust.gate.blocksHighRiskRecommendation,
-          },
-        });
+        const gate = {
+          tier: trust.tier,
+          blocksHighRiskRecommendation: trust.gate.blocksHighRiskRecommendation,
+        };
+
+        // Phase 2: when recommendations.request_time is ON (and the Trino serving pool is wired),
+        // compute the detector set at REQUEST TIME against the freshest Silver/Gold, Redis-cached +
+        // gold.rewritten.v1-invalidated — so the Morning Brief reflects the medallion as of ~now, not
+        // the last cron tick. Default OFF → the stored (cron-fed) getRecommendations. Fail-safe: any
+        // error in the live path is caught by the outer try → 503 (never a stale-but-wrong 200).
+        const useRequestTime =
+          !!srPool &&
+          !!flagService &&
+          (await flagService.isFlagEnabled(auth.brandId, RECS_REQUEST_TIME_FLAG));
+
+        const result: ContractRecommendations = useRequestTime
+          ? await getRecommendationsLive(auth.brandId, requestId, {
+              pool,
+              srPool: srPool!,
+              servingCache,
+              gate,
+            })
+          : await getRecommendations(auth.brandId, requestId, { pool, gate });
         return reply.send({ request_id: requestId, data: result });
       } catch {
         return reply.code(503).send({

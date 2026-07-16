@@ -79,13 +79,40 @@ export interface RecommendationReadDeps {
   gate: ConfidenceGateInputs;
 }
 
-export async function getRecommendations(
+/**
+ * A persisted open recommendation, RAW (before the confidence gate). JSON-safe (created_at is an ISO
+ * string, not a Date) so it can be cached in Redis by the request-time serving path and round-trip
+ * cleanly. The confidence here is the detector's ORIGINAL finding; the gate is applied at serve time
+ * (applyGateToRawRecs) against CURRENT trust, so a trust change reflects immediately without touching
+ * the cache.
+ */
+export interface RawRecommendation {
+  recommendation_id: string;
+  detector: string;
+  kind: 'risk' | 'opportunity';
+  confidence: 'Trusted' | 'Estimated' | 'Insufficient';
+  priority: number;
+  status: string;
+  title: string;
+  summary: string;
+  recommended_action: string;
+  evidence: RecommendationEvidence;
+  outcome: RecommendationOutcome | null;
+  created_at: string;
+}
+
+/**
+ * Read the brand's OPEN recommendations RAW (no gate), ordered by money-weighted priority then
+ * recency, via the RLS-enforced pool. The single source query both the stored (getRecommendations)
+ * and the request-time (getRecommendationsLive) serving paths share.
+ */
+export async function readOpenRecommendationsRaw(
   brandId: string,
   correlationId: string,
-  deps: RecommendationReadDeps,
-): Promise<Recommendations> {
+  pool: DbPool,
+): Promise<RawRecommendation[]> {
   const ctx: QueryContext = { brandId, correlationId };
-  const client = await deps.pool.connect();
+  const client = await pool.connect();
   try {
     const res = await client.query<{
       recommendation_id: string;
@@ -113,39 +140,66 @@ export async function getRecommendations(
         ORDER BY r.priority DESC, r.created_at DESC`,
       [brandId],
     );
-
-    if (res.rows.length === 0) {
-      return { state: 'no_data' };
-    }
-
-    const recommendations = res.rows.map((r) => {
-      // "Confidence before decisions": cap the surfaced confidence at the brand's effective trust
-      // and HOLD high-risk recs below Trusted. The detector's raw finding stays in the row (honest
-      // detection record); the gate is applied here, at the surface, with CURRENT trust.
-      const g = applyConfidenceGate(r.kind, r.confidence, deps.gate);
-      return {
-        recommendation_id: r.recommendation_id,
-        detector: r.detector,
-        kind: r.kind,
-        confidence: g.confidence,
-        priority: r.priority,
-        status: r.status,
-        title: r.payload?.title ?? '',
-        summary: r.payload?.summary ?? '',
-        recommended_action: r.payload?.recommended_action ?? '',
-        evidence: sanitizeEvidence(r.payload?.evidence),
-        outcome: r.outcome ?? null,
-        created_at: toIso(r.created_at),
-        held: g.held,
-        held_reason: g.heldReason,
-      };
-    });
-    // Actionable first (held items sink below), preserving the money-weighted priority order within
-    // each group — the Morning Brief leads with what the brand can act on now.
-    recommendations.sort((a, b) => Number(a.held) - Number(b.held));
-
-    return { state: 'has_data', recommendations };
+    return res.rows.map((r) => ({
+      recommendation_id: r.recommendation_id,
+      detector: r.detector,
+      kind: r.kind,
+      confidence: r.confidence,
+      priority: r.priority,
+      status: r.status,
+      title: r.payload?.title ?? '',
+      summary: r.payload?.summary ?? '',
+      recommended_action: r.payload?.recommended_action ?? '',
+      evidence: sanitizeEvidence(r.payload?.evidence),
+      outcome: r.outcome ?? null,
+      created_at: toIso(r.created_at),
+    }));
   } finally {
     client.release();
   }
+}
+
+/**
+ * Apply the confidence gate to RAW recs at serve time and return the sorted serving shape.
+ * "Confidence before decisions": cap each rec's surfaced confidence at the brand's effective trust
+ * and HOLD high-risk recs below Trusted. Actionable first (held sink below), priority order preserved
+ * within each group.
+ */
+export function applyGateToRawRecs(
+  raw: RawRecommendation[],
+  gate: ConfidenceGateInputs,
+): Recommendation[] {
+  const recommendations = raw.map((r) => {
+    const g = applyConfidenceGate(r.kind, r.confidence, gate);
+    return {
+      recommendation_id: r.recommendation_id,
+      detector: r.detector,
+      kind: r.kind,
+      confidence: g.confidence,
+      priority: r.priority,
+      status: r.status,
+      title: r.title,
+      summary: r.summary,
+      recommended_action: r.recommended_action,
+      evidence: r.evidence,
+      outcome: r.outcome ?? null,
+      created_at: r.created_at,
+      held: g.held,
+      held_reason: g.heldReason,
+    };
+  });
+  recommendations.sort((a, b) => Number(a.held) - Number(b.held));
+  return recommendations;
+}
+
+export async function getRecommendations(
+  brandId: string,
+  correlationId: string,
+  deps: RecommendationReadDeps,
+): Promise<Recommendations> {
+  const raw = await readOpenRecommendationsRaw(brandId, correlationId, deps.pool);
+  if (raw.length === 0) {
+    return { state: 'no_data' };
+  }
+  return { state: 'has_data', recommendations: applyGateToRawRecs(raw, deps.gate) };
 }

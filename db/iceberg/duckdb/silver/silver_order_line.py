@@ -122,8 +122,11 @@ def build(con):
     # When lo is None the extra predicate is OMITTED entirely → byte-identical full scan.
     fold_source_where = ""
     if lo is not None:
+        # AND, not WHERE: read_gated_events_sql already emits `WHERE event_type IN (...)`, so the semi-join
+        # must be ANDed onto it — a leading WHERE here produced `... WHERE ... WHERE ...` (ParserException,
+        # seen live on every incremental run once SILVER_INCREMENTAL was enabled on prod 2026-07-16).
         fold_source_where = (
-            f" WHERE (brand_id, {_ORDER_ID}) IN (SELECT brand_id, order_id FROM ({changed}))"
+            f" AND (brand_id, {_ORDER_ID}) IN (SELECT brand_id, order_id FROM ({changed}))"
         )
 
     # ── Step 1: latest order.* event per (brand_id, order_id) with a non-empty line_items array ──────────

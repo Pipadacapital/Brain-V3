@@ -5,7 +5,7 @@ image:
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:47dc002d99242c46474e568a9b930e6b3491ef3a12ab284d2b5c85fe3af6e580"
+  digest: "sha256:b2c6cca60a0c7d7a8d7d85294fb4b3014ddf7d472f19f47470413f42372afc58"
 # duckdb image — bronze/medallion maintenance + erasure (via the Trino client it carries) AND the V4
 # Silver/Gold transform crons (.sparkV4.image — CI promotes both digests build-once from staging, one
 # image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover: replaces
@@ -15,7 +15,7 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:29115d380b73858482b357ebf9df76f4bf469f781521c062d22b0e2c2c7071d4"
+    digest: "sha256:8a00c8827e467dd539e09e82f002cde60b9ba32d4ce3b1ca828ec354cf893921"
   # AUD-PROD-006: the maintenance/erasure cron pods run on the streaming Karpenter pool (the batch pool
   # was removed in the Spark→DuckDB cutover — the DuckDB crons are lightweight python, no JVM). A
   # Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry + idempotent maintenance.
@@ -27,7 +27,7 @@ sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:29115d380b73858482b357ebf9df76f4bf469f781521c062d22b0e2c2c7071d4"
+    digest: "sha256:8a00c8827e467dd539e09e82f002cde60b9ba32d4ce3b1ca828ec354cf893921"
   # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the streaming pool (batch pool removed).
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:

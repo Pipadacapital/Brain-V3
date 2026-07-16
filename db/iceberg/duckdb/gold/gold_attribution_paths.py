@@ -55,7 +55,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_attribution_paths_duckdb_test beside the
@@ -95,6 +95,45 @@ def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(8, brand_id)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — GRAIN = entity_fold (CHANGED-ENTITY REFOLD) ──
+    #   MANY silver_touchpoint rows aggregate into ONE path row per (brand_id, brain_anon_id,
+    #   stitched_order_id): channel_path / touch_count / endpoints depend on the CONVERTED journey's FULL set
+    #   of touches — including rows BELOW the watermark. Windowing the fold input directly would drop touches
+    #   → wrong path / counts. So we window ONLY to DISCOVER which converted journeys changed, then re-fold
+    #   each changed journey over its FULL, UNWINDOWED touch set. The source silver_touchpoint is an ENTITY
+    #   Silver mart with NO ingested_at — its arrival/write clock is `updated_at` (NOW-stamped on every write:
+    #   exactly "which rows changed since last run"); occurred_at is business time (NOT usable — late arrivals
+    #   below the watermark would be dropped). Gold flips INDEPENDENTLY of Silver via enabled=GOLD_INCREMENTAL.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-attribution-paths", TOUCHPOINT, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the touchpoint mart's write clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    tp_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: converted journeys whose touchpoints changed within [lo, hi], using the SAME PK
+    # (brand_id, brain_anon_id, stitched_order_id) + the SAME stitched_order_id-NOT-NULL guard the fold uses.
+    changed = f"""
+      SELECT DISTINCT brand_id, brain_anon_id, stitched_order_id
+      FROM {TOUCHPOINT}
+      WHERE stitched_order_id IS NOT NULL{tp_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed journeys so each
+    # re-folds over its ENTIRE touch set. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"            AND (brand_id, brain_anon_id, stitched_order_id) IN "
+        f"(SELECT brand_id, brain_anon_id, stitched_order_id FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # The dbt/Spark transform, folded into one DuckDB SQL. See the module header for the Spark→DuckDB
     # translations (list(... ORDER BY) for the ordered path; string_split(...)[-1] for substring_index -1).
     staged = f"""
@@ -104,7 +143,7 @@ def build(con):
                 touch_seq, occurred_at, channel
             FROM {TOUCHPOINT}
             WHERE stitched_order_id IS NOT NULL
-        ),
+{refold_filter}        ),
         endpoints AS (
             SELECT
                 brand_id, brain_anon_id, stitched_order_id,
@@ -152,4 +191,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-attribution-paths", build, target_table=TABLE)
+    # The watermark tracks the touchpoint mart's write clock (silver_touchpoint.updated_at) — this Gold job
+    # reads a sibling Silver mart that has no ingested_at.
+    run_job("gold-attribution-paths", build, target_table=TABLE,
+            source_table=TOUCHPOINT, ts_col="updated_at")

@@ -44,7 +44,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_cohorts_duckdb_test
@@ -72,6 +72,48 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────────
+    #   GRAIN = entity_fold: MANY silver_customer rows aggregate into ONE (brand_id, cohort_month) cohort
+    #   row whose cohort totals depend on EVERY customer first-seen in that month — including customers
+    #   whose row sits BELOW the watermark. Windowing the fold input directly would silently drop those
+    #   customers → wrong cohort money. So we window ONLY to DISCOVER which cohorts changed (a customer
+    #   row was (re)written since the last run), by mapping each changed silver_customer row to its
+    #   cohort_month = strftime(first_seen_at,'%Y-%m'); then we re-fold each changed cohort over its FULL,
+    #   UNWINDOWED customer set. The MERGE on the PK (brand_id, cohort_month) upserts exactly those
+    #   restated cohorts. The fold-driving source is silver_customer, whose only arrival/write clock is
+    #   updated_at (an entity mart NOW-stamped write clock; it has NO ingested_at). Gold flips
+    #   INDEPENDENTLY of Silver via enabled=GOLD_INCREMENTAL. Default OFF / first run / FULL_REFRESH →
+    #   lo=None → NO changed-set, NO semi-join → the SQL below is byte-identical to the pre-incremental
+    #   full recompute.
+    lo, hi = incremental_window(con, "gold-cohorts", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); an [lo, hi] range
+    # over silver_customer's write clock otherwise. Same fold guard (first_seen_at NOT NULL) applies.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    cust_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: cohorts whose customer set changed within [lo, hi], using the SAME (brand_id,
+    # cohort_month) key derivation + first_seen_at-NOT-NULL guard the fold uses. Built ONLY when
+    # incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, strftime(first_seen_at AT TIME ZONE 'UTC', '%Y-%m') AS cohort_month
+      FROM {SOURCE}
+      WHERE first_seen_at IS NOT NULL{cust_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed cohorts so
+    # each re-folds over its ENTIRE customer set. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        "        AND (brand_id, strftime(first_seen_at AT TIME ZONE 'UTC', '%Y-%m')) "
+        f"IN (SELECT brand_id, cohort_month FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # GROUP the silver_customer spine (first_seen_at present) up to the cohort grain (verbatim dbt/Spark
     # fold). strftime(... AT TIME ZONE 'UTC', '%Y-%m') == Spark date_format(first_seen_at,'yyyy-MM').
     # currency_code = max() inside the group (an aggregate, NOT a grouping key). Money is a pure bigint Σ.
@@ -86,7 +128,7 @@ def build(con):
         now() AT TIME ZONE 'UTC'                                       AS updated_at
       FROM {SOURCE}
       WHERE first_seen_at IS NOT NULL
-      GROUP BY brand_id, strftime(first_seen_at AT TIME ZONE 'UTC', '%Y-%m')
+{refold_filter}      GROUP BY brand_id, strftime(first_seen_at AT TIME ZONE 'UTC', '%Y-%m')
     """
 
     # Idempotent MERGE on the (brand_id, cohort_month) PK — parity-equivalent to Spark's full-rebuild MERGE.
@@ -98,4 +140,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-cohorts", build, target_table="gold_cohorts")
+    # The watermark tracks silver_customer's write clock (updated_at) — this Gold job folds the
+    # sibling Silver customer mart, which has no ingested_at (entity mart NOW-stamped write clock).
+    run_job("gold-cohorts", build, target_table="gold_cohorts",
+            source_table=SOURCE, ts_col="updated_at")

@@ -72,7 +72,7 @@ _DUCKDB_ROOT = os.path.dirname(_HERE)              # db/iceberg/duckdb
 sys.path.insert(0, _DUCKDB_ROOT)
 sys.path.insert(0, _HERE)                          # duckdb/gold — for the vendored pure modules
 
-from _base import run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, incremental_window, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 from _customer_360_enrich import (  # noqa: E402 — vendored pure module (byte copy)
     aov_minor,
@@ -168,6 +168,48 @@ def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
     con.execute("INSTALL json; LOAD json;")  # to_json() for the journey_summary array assembly
     _register_udfs(con)
+
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: the 360 emits exactly ONE row per (brand_id, brain_id), FROM the silver_customer
+    #   spine, with the lifecycle rollup + all B2 enrichments folded on top via LEFT JOINs over each entity's
+    #   FULL history (order_state / touchpoint / page_view / order_line — rows that may sit BELOW any
+    #   watermark). Windowing those fold inputs directly would drop history → wrong lifetime/lifecycle money.
+    #   So we window ONLY to DISCOVER which entities changed since the last run, using the SPINE's NOW-stamped
+    #   write clock silver_customer.updated_at (bumped every time silver_customer re-folds a customer — i.e.
+    #   exactly the customers whose 360 needs restating), then re-fold each changed entity over its FULL,
+    #   UNWINDOWED history by semi-joining ONLY the spine driver `c` to the changed-key set. Because the output
+    #   row set IS the spine row set, restricting the spine to changed customers restricts the output to
+    #   changed entities while every enrichment LEFT JOIN still reads unwindowed. The MERGE on the PK
+    #   (brand_id, brain_id) upserts exactly those restated rows. Gold flips INDEPENDENTLY of Silver via
+    #   enabled=GOLD_INCREMENTAL. Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO
+    #   semi-join → the SQL below is byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-customer-360", SILVER_CUSTOMER, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over the
+    # spine's write clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    spine_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: spine customers whose updated_at moved within [lo, hi] — the entities whose 360 must be
+    # restated. Same (brand_id, brain_id) key the fold/PK uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, brain_id
+      FROM {SILVER_CUSTOMER}
+      WHERE 1=1{spine_window}
+    """
+
+    # Semi-join clause on the spine driver `c`: when incremental, restrict the spine to only the changed
+    # entities so each 360 row re-folds its ENTIRE enrichment/lifecycle history. EMPTY string when lo is None
+    # → unwindowed full recompute (byte-identical to before).
+    spine_filter = (
+        f"\n      WHERE (c.brand_id, c.brain_id) IN (SELECT brand_id, brain_id FROM ({changed}))"
+        if lo is not None else ""
+    )
 
     # ── lifecycle rollup: silver_order_state lifecycle_state CASE buckets (verbatim dbt/Spark). Absent
     #    order-state → empty → all counts coalesce to 0 (the LEFT-JOIN-on-missing behavior). ──
@@ -376,7 +418,7 @@ def build(con):
         c.customer_watermark,
         now() AT TIME ZONE 'UTC'                                        AS updated_at
       FROM {SILVER_CUSTOMER} c
-      {join_sql}
+      {join_sql}{spine_filter}
     """
 
     # Idempotent MERGE on the (brand_id, brain_id) PK — the spine yields one row per PK, so the in-batch
@@ -410,4 +452,8 @@ def _reconcile_merged_away(con) -> None:
 
 
 if __name__ == "__main__":
-    run_job("gold-customer-360", build, target_table="gold_customer_360")
+    # The watermark tracks the spine's write clock (silver_customer.updated_at, NOW-stamped on each customer
+    # re-fold), NOT the gated keystone default — this Gold job reads sibling Silver/Gold marts. Gold flips
+    # independently of Silver (GOLD_INCREMENTAL).
+    run_job("gold-customer-360", build, target_table="gold_customer_360",
+            source_table=SILVER_CUSTOMER, ts_col="updated_at")

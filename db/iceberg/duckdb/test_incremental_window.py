@@ -29,9 +29,10 @@ WATERMARK = datetime(2026, 7, 16, 10, 0, 0)
 HI = datetime(2026, 7, 16, 10, 5, 0)
 
 
-def _run(*, incremental: bool, full_refresh: bool, watermark, lookback: int):
+def _run(*, incremental: bool, full_refresh: bool, watermark, lookback: int, enabled=None):
     """Drive incremental_window with the module globals set exactly as the env would set them, _CURRENT_HI
-    pinned (as run_job does), and read_watermark stubbed to `watermark`."""
+    pinned (as run_job does), and read_watermark stubbed to `watermark`. `enabled` overrides the tier gate
+    (None → SILVER_INCREMENTAL; the Gold tier passes enabled=GOLD_INCREMENTAL)."""
     _base.INCREMENTAL = incremental
     _base.FULL_REFRESH = full_refresh
     _base.LOOKBACK_SECONDS = lookback
@@ -39,7 +40,7 @@ def _run(*, incremental: bool, full_refresh: bool, watermark, lookback: int):
     orig = _base.read_watermark
     _base.read_watermark = lambda con, job: watermark
     try:
-        return _base.incremental_window(None, "job-x", "src.tbl", ts_col="kafka_timestamp")
+        return _base.incremental_window(None, "job-x", "src.tbl", ts_col="kafka_timestamp", enabled=enabled)
     finally:
         _base.read_watermark = orig
 
@@ -72,10 +73,23 @@ def test_zero_lookback_is_strict_half_open():
     assert hi == HI
 
 
+def test_gold_tier_gate_is_independent_of_silver():
+    # GOLD gate ON while SILVER off → the Gold job still windows (Phase 1b flips tiers independently).
+    lo, hi = _run(incremental=False, full_refresh=False, watermark=WATERMARK, lookback=600, enabled=True)
+    assert lo == WATERMARK - timedelta(seconds=600) and hi == HI, "enabled=True windows regardless of SILVER"
+    # GOLD gate OFF while SILVER on → the Gold job full-scans (default-OFF byte-identity for the Gold tier).
+    lo, hi = _run(incremental=True, full_refresh=False, watermark=WATERMARK, lookback=600, enabled=False)
+    assert lo is None and hi is None, "enabled=False is a full scan regardless of SILVER"
+    # FULL_REFRESH still wins for the Gold tier.
+    lo, hi = _run(incremental=False, full_refresh=True, watermark=WATERMARK, lookback=600, enabled=True)
+    assert lo is None and hi is None, "FULL_REFRESH forces a full scan for the Gold tier too"
+
+
 if __name__ == "__main__":
     test_default_off_is_full_scan()
     test_on_first_run_no_watermark_is_full_scan()
     test_on_with_watermark_applies_lookback()
     test_full_refresh_forces_full_scan_even_when_on()
     test_zero_lookback_is_strict_half_open()
-    print("PASS: incremental_window window arithmetic (5/5)")
+    test_gold_tier_gate_is_independent_of_silver()
+    print("PASS: incremental_window window arithmetic (6/6)")

@@ -59,7 +59,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_customer_scores_duckdb_test
@@ -97,6 +97,26 @@ PK = ["brand_id", "brain_id"]
 def build(con):
     # brand-first tenant bucketing (mirrors the Spark bucket(8, brand_id) hidden partitioning).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ROW READ ─────────────────────────────
+    #   GRAIN = per_row: silver_customer is already ONE row per (brand_id, brain_id) and this job maps each
+    #   source row to EXACTLY ONE output row (no cross-row fold; the scoring is a pure per-row projection).
+    #   So we window the SOURCE READ directly on silver_customer's arrival/write clock to read only the rows
+    #   that changed since the last run; the idempotent MERGE on the mart PK restates exactly those.
+    #   CLOCK: silver_customer has NO ingested_at (it's an entity Silver mart, not a per-event mart); its
+    #   arrival clock is updated_at — the NOW()-stamped write clock set on every re-fold — so ts_col
+    #   ='updated_at' means "which customer rows were (re)written since last run". enabled=GOLD_INCREMENTAL
+    #   flips the Gold tier INDEPENDENTLY of Silver.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → src_window is the EMPTY string → the SQL below is
+    #   BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-customer-scores", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    src_window = f"\n      WHERE {' AND '.join(win)}" if win else ""
 
     # ── The runtime feature fold + RFM/churn scoring, reproduced verbatim from the Spark materialize().
     #    days_since_last_order = date_diff('day', last_seen_at::date, current_date) — Spark
@@ -142,7 +162,7 @@ def build(con):
         END                                                                 AS churn_risk,
         CAST('live' AS VARCHAR)                                             AS data_source,
         now() AT TIME ZONE 'UTC'                                            AS computed_at
-      FROM {SOURCE}
+      FROM {SOURCE}{src_window}
     """
 
     # Idempotent MERGE on the (brand_id, brain_id) PK — replay-safe restatement. silver_customer is
@@ -152,4 +172,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-customer-scores", build, target_table="gold_customer_scores")
+    # The watermark tracks silver_customer's write clock (updated_at) — this Gold mart reads the sibling
+    # Silver mart, not the gated keystone default; and there is NO ingested_at on silver_customer.
+    run_job("gold-customer-scores", build, target_table="gold_customer_scores",
+            source_table=SOURCE, ts_col="updated_at")

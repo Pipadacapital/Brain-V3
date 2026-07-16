@@ -62,7 +62,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_utm_source_duckdb_test
@@ -166,6 +166,50 @@ def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(16, brand_id)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(16, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-BRAND REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY silver_touchpoint rows fold — via each visitor's FIRST-touch utm — into
+    #   ONE (brand_id, source, medium) matrix row whose visitors/conversions/revenue depend on the FULL
+    #   touchpoint history, INCLUDING rows below the watermark. The fold aggregates on (brand_id, source,
+    #   medium) but a VISITOR (brand_id, brain_anon_id) is the moving unit — its first-touch source/medium
+    #   can change, MOVING it between (source, medium) groups. A MERGE-only restatement can never DECREMENT
+    #   the abandoned group, so we CANNOT key the refold on the visitor. We refold at the BRAND grain — the
+    #   Spark partition-incremental unit (its driver "recompute[s] only changed brands, each over full
+    #   history, then the SAME MERGE"): a windowed read discovers which BRANDS had a touchpoint change since
+    #   the last run, then EVERY (source, medium) group of each changed brand is recomputed over that brand's
+    #   COMPLETE touchpoint history (all visitors re-read → intra-brand group-membership shifts captured).
+    #   The fold-driving source is silver_touchpoint; it carries NO ingested_at — its arrival/write clock is
+    #   the NOW-stamped updated_at (rule 2), exactly "which touchpoint rows changed since last run".
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-utm-source", TOUCHPOINT, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # silver_touchpoint's write clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    tp_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-BRAND set: brands whose touchpoint spine changed within [lo, hi], using the SAME brand guard
+    # the fold uses (brand_id NOT NULL). Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id
+      FROM {TOUCHPOINT}
+      WHERE brand_id IS NOT NULL{tp_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history touchpoint scans to only changed brands
+    # so every (source, medium) group of each changed brand refolds over that brand's ENTIRE touchpoint
+    # history. EMPTY when lo is None → unwindowed full recompute. Applied identically to BOTH touchpoint
+    # base scans (ft, visitor_orders) so the two stay a consistent per-brand slice.
+    refold_filter = (
+        f"              AND brand_id IN (SELECT brand_id FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── the full first-touch attribution matrix, reproduced verbatim from the Spark staged SQL ──
     staged = f"""
         WITH ft AS (
@@ -182,7 +226,7 @@ def build(con):
                 ) AS rn
             FROM {TOUCHPOINT}
             WHERE brand_id IS NOT NULL AND brain_anon_id IS NOT NULL
-        ),
+{refold_filter}        ),
         first_touch AS (
             SELECT brand_id, brain_anon_id, source, medium, stitched_brain_id FROM ft WHERE rn = 1
         ),
@@ -197,7 +241,7 @@ def build(con):
             FROM {TOUCHPOINT}
             WHERE brand_id IS NOT NULL AND brain_anon_id IS NOT NULL
               AND stitched_order_id IS NOT NULL AND stitched_order_id <> ''
-        ),
+{refold_filter}        ),
         attributed_orders AS (
             -- credit each order to its visitor's FIRST-touch source/medium
             SELECT ft.brand_id, ft.source, ft.medium, vo.order_id
@@ -262,4 +306,8 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-utm-source", build, target_table="gold_utm_source")
+    # The watermark tracks the touchpoint spine's write clock (silver_touchpoint.updated_at) — this Gold
+    # mart folds sibling Silver/Gold marts, not the gated collector keystone. silver_touchpoint carries no
+    # ingested_at, so its NOW-stamped updated_at is the arrival/write clock (rule 2).
+    run_job("gold-utm-source", build, target_table="gold_utm_source",
+            source_table=TOUCHPOINT, ts_col="updated_at")

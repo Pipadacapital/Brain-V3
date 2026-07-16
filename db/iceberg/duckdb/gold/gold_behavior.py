@@ -55,7 +55,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_behavior_duckdb_test beside the Spark-produced
@@ -87,6 +87,47 @@ def build(con):
     # brand-first tenant partitioning + per-day anchor (mirrors Spark bucket(64, brand_id), behavior_date).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), behavior_date")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────────
+    #   GRAIN = entity_fold: MANY silver_page_view rows aggregate into ONE (brand_id, behavior_date,
+    #   page_type) row whose daily views/sessions/journeys depend on ALL page-view events of that day —
+    #   including rows BELOW the watermark (a late-arriving page view for a day already partly rolled up).
+    #   Windowing the fold input directly would drop those → wrong daily counts. So we window ONLY to
+    #   DISCOVER which (brand_id, behavior_date) buckets changed (a new page view landed for that day since
+    #   the last run), then re-fold each changed DAY over its FULL, UNWINDOWED page-view history — which
+    #   restates every page_type in that day (page_type follows the day bucket). The MERGE on the PK
+    #   (brand_id, behavior_date, page_type) upserts exactly those restated rows. The fold-driving source is
+    #   silver_page_view — a per-event Silver mart with an arrival clock ingested_at (ts_col=ingested_at).
+    #   GOLD_INCREMENTAL gates the Gold tier INDEPENDENTLY of Silver (already ON in prod).
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-behavior", SOURCE, ts_col="ingested_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the page-view arrival clock otherwise. Same day-bucket guards as the fold (brand_id + occurred_at).
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    view_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: (brand_id, behavior_date) day-buckets whose page views changed within [lo, hi], using
+    # the SAME day derivation + guards the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+        SELECT DISTINCT brand_id, CAST(occurred_at AS DATE) AS behavior_date
+        FROM {SOURCE}
+        WHERE brand_id IS NOT NULL AND occurred_at IS NOT NULL{view_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed day-buckets so
+    # each re-folds every page_type over the whole day. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        "          AND (brand_id, CAST(occurred_at AS DATE)) IN "
+        f"(SELECT brand_id, behavior_date FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── the Spark staged rollup, reproduced verbatim (daily page-type-mix, one row per PK) ──
     staged = f"""
         SELECT
@@ -99,7 +140,7 @@ def build(con):
             now()                                                        AS updated_at
         FROM {SOURCE}
         WHERE brand_id IS NOT NULL AND occurred_at IS NOT NULL
-        GROUP BY brand_id, CAST(occurred_at AS DATE), COALESCE(NULLIF(page_type, ''), 'unknown')
+{refold_filter}        GROUP BY brand_id, CAST(occurred_at AS DATE), COALESCE(NULLIF(page_type, ''), 'unknown')
     """
 
     # The rollup is already 1 row per PK (GROUP BY upstream), so merge_on_pk's in-batch dedup is a no-op;
@@ -108,4 +149,6 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-behavior", build, target_table=TABLE)
+    # The watermark tracks the page-view arrival clock (silver_page_view.ingested_at) — this Gold mart
+    # folds a per-event Silver mart, not the gated keystone default.
+    run_job("gold-behavior", build, target_table=TABLE, source_table=SOURCE, ts_col="ingested_at")

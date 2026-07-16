@@ -203,6 +203,19 @@ def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
     as_of = date.today().isoformat()
 
+    # ── INCREMENTAL (Phase 1b, GOLD_INCREMENTAL): DELIBERATELY LEFT FULL-SCAN — money-safety. ─────────────
+    #   GRAIN = entity_fold: one (brand_id, currency_code) row folds TWO independent Silver sources —
+    #   silver_order_state (net_revenue → cm1) AND silver_marketing_spend (marketing → cm2). An output row's
+    #   cm2_minor can change because EITHER source changed, so a correct changed-entity refold would need the
+    #   UNION of changed keys from BOTH sources. But _base.incremental_window / run_job track a SINGLE source
+    #   clock (run_job pins _CURRENT_HI = max(ts_col) of ONE source_table): windowing the second source by the
+    #   first source's `hi` would drop a marketing update newer than the order-spine max, and the single-source
+    #   watermark would never re-admit it → permanently skipped marketing → WRONG cm2 money. This is the FINAL
+    #   money tier, so per the invariant we LEAVE THIS JOB FULL-SCAN rather than risk an unsafe two-clock
+    #   refold. Both sources carry only `updated_at` as an arrival clock (no `ingested_at`); the blocker is the
+    #   two-source fold vs. the single-clock framework, not a missing column. Default OFF is already a full
+    #   scan; keeping it full-scan under GOLD_INCREMENTAL preserves parity exactly.
+
     # ── Config tier (PG, optional): cost pct rates + brand reporting currency ──
     pg_ok = _try_attach_pg(con)
     _register_config_views(con, pg_ok)

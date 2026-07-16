@@ -67,7 +67,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_engagement_duckdb_test beside the
@@ -102,6 +102,47 @@ def build(con):
     # day() is singular in DuckDB's Iceberg transform vocabulary vs Spark's days()).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), engagement_date")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────────
+    #   GRAIN = entity_fold: MANY silver_engagement_signal rows aggregate into ONE (brand_id,
+    #   engagement_date, signal_type) row whose daily count / distinct-reach / mean-scroll depend on the
+    #   entity's FULL set of signals for that (brand, day, type) — including rows BELOW the watermark.
+    #   Windowing the fold input directly would silently drop signals → wrong counts. So we window ONLY to
+    #   DISCOVER which (brand, day, type) entities changed (a new signal landed since the last run), then
+    #   re-fold each changed entity over its FULL, UNWINDOWED signal history. The MERGE on the PK
+    #   (brand_id, engagement_date, signal_type) upserts exactly those restated rollups. The fold-driving
+    #   source is silver_engagement_signal (ts_col=ingested_at — its arrival clock; see its COLUMNS_SQL).
+    #   GOLD_INCREMENTAL gates the Gold tier INDEPENDENTLY of Silver. Default OFF / first run / FULL_REFRESH
+    #   → lo=None → NO changed-set, NO semi-join → the SQL below is byte-identical to the full recompute.
+    lo, hi = incremental_window(con, "gold-engagement", SOURCE, ts_col="ingested_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the signal source's arrival clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    signal_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: entities whose signals changed within [lo, hi], using the SAME entity-key derivation
+    # the fold uses — brand_id, CAST(occurred_at AS DATE) AS engagement_date, signal_type — with the SAME
+    # NOT-NULL guards. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, CAST(occurred_at AS DATE) AS engagement_date, signal_type
+      FROM {SOURCE}
+      WHERE brand_id IS NOT NULL AND occurred_at IS NOT NULL{signal_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed entities so
+    # each re-folds over its ENTIRE signal set for that (brand, day, type). EMPTY when lo is None →
+    # unwindowed full recompute. Uses the SAME key derivation as the GROUP BY (occurred_at::date).
+    refold_filter = (
+        "          AND (brand_id, CAST(occurred_at AS DATE), signal_type) IN "
+        f"(SELECT brand_id, engagement_date, signal_type FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── the Spark staged rollup, reproduced verbatim (daily per-signal-type friction rollup) ──
     # avg_scroll_pct: integer FLOOR division `//` reproduces Spark's CAST-int-division TRUNCATION
     # (scroll_pct ≥ 0 → floor == truncate), scroll_depth-only, NULL otherwise. No float touches the mart.
@@ -119,7 +160,7 @@ def build(con):
             now()                                                        AS updated_at
         FROM {SOURCE}
         WHERE brand_id IS NOT NULL AND occurred_at IS NOT NULL
-        GROUP BY brand_id, CAST(occurred_at AS DATE), signal_type
+{refold_filter}        GROUP BY brand_id, CAST(occurred_at AS DATE), signal_type
     """
 
     # The rollup is already 1 row per PK (GROUP BY upstream), so merge_on_pk's in-batch dedup is a no-op;
@@ -128,4 +169,6 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-engagement", build, target_table=TABLE)
+    # The watermark tracks the signal source's arrival clock (silver_engagement_signal.ingested_at), NOT
+    # the gated-keystone default — this Gold job reads a sibling Silver mart.
+    run_job("gold-engagement", build, target_table=TABLE, source_table=SOURCE, ts_col="ingested_at")

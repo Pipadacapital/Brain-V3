@@ -60,7 +60,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 TABLE = "gold_measurement_fees"
@@ -121,6 +121,25 @@ def build(con):
               flush=True)
         return 0
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1 — flips INDEPENDENTLY of Silver, Phase 1b) ─────────
+    #   GRAIN = per_row: each silver_settlement row → 0..2 fee rows (payment/tax components via UNION ALL),
+    #   the idempotent MERGE on (brand_id, order_id, event_id) restating each. Because each source row maps
+    #   to its own distinct output rows (never a cross-row fold), windowing the source READ directly is
+    #   parity-safe. silver_settlement carries a per-event ARRIVAL clock `ingested_at` (NOT NULL) — the
+    #   monotonic write clock, so [lo, hi] windows exactly "which settlement rows arrived since last run".
+    #   Default OFF / first run / FULL_REFRESH → lo=None → EMPTY predicate string → byte-identical full scan.
+    lo, hi = incremental_window(con, "gold-measurement-fees", SILVER_SETTLEMENT,
+                                ts_col="ingested_at", enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); an [lo, hi] range over
+    # the settlement arrival clock otherwise, ANDed onto the existing src filter.
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    settlement_window = f" AND {' AND '.join(win)}" if win else ""
+
     # Faithful SQL port of the Spark staged CTE. Two fee components (payment / tax) extracted per settlement
     # item that carries a NON-ZERO fee, each with its own ':payment'/':tax'-suffixed event_id so the two
     # never collide on the merge key. Integer minor units end-to-end (no float touches money).
@@ -131,7 +150,7 @@ def build(con):
                    CAST(coalesce(tax_minor, 0) AS BIGINT) AS tax_minor,
                    currency_code, coalesce(source, 'razorpay') AS source_system, occurred_at, ingested_at
             FROM {SILVER_SETTLEMENT}
-            WHERE brand_id IS NOT NULL AND event_id IS NOT NULL
+            WHERE brand_id IS NOT NULL AND event_id IS NOT NULL{settlement_window}
         ),
         payment_fee AS (
             SELECT brand_id, order_id, event_id || ':payment' AS event_id, 'payment' AS fee_type,
@@ -162,4 +181,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-measurement-fees", build, target_table=TABLE)
+    # The watermark tracks the settlement source's arrival clock (silver_settlement.ingested_at) — this Gold
+    # fact reads that sibling Silver mart directly, not the gated collector-event keystone.
+    run_job("gold-measurement-fees", build, target_table=TABLE,
+            source_table=SILVER_SETTLEMENT, ts_col="ingested_at")

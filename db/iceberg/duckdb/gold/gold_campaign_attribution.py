@@ -58,7 +58,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_campaign_attribution_duckdb_test beside the
@@ -159,6 +159,47 @@ def build(con):
 
     row_kinds = ", ".join(f"'{k}'" for k in _MONEY_ROW_KINDS)
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY gold_attribution_credit rows aggregate into ONE
+    #   (brand_id, campaign_id, model_id, currency_code) attribution row whose attributed_revenue_minor +
+    #   attributed_order_count depend on that entity's FULL credit-ledger history — including rows BELOW the
+    #   watermark. Windowing the SUM/COUNT-DISTINCT input directly would silently drop history → wrong money.
+    #   So we window ONLY to DISCOVER which entities changed (a credit row landed since the last run), then
+    #   re-fold each changed entity over its FULL, UNWINDOWED credit history. The MERGE on the PK restates
+    #   exactly those rollups. The fold-driving source is the credit ledger gold_attribution_credit; it has
+    #   no ingested_at, so ts_col = its NOW-stamped write clock updated_at (CLOCK RULE tier 2). Gold gates
+    #   INDEPENDENTLY of Silver → enabled=GOLD_INCREMENTAL. Default OFF / first run / FULL_REFRESH → lo=None
+    #   → NO changed-set, NO semi-join → the SQL below is byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-campaign-attribution", ATTR_CREDIT_TABLE,
+                                ts_col="updated_at", enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the credit ledger's write clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    credit_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: entities whose credit ledger changed within [lo, hi], using the SAME entity keys +
+    # guards the attr fold uses (campaign_id present/non-empty, money row_kinds only). Built ONLY when
+    # incremental (lo not None).
+    changed = f"""
+        SELECT DISTINCT brand_id, campaign_id, model_id, currency_code
+        FROM {ATTR_CREDIT_TABLE}
+        WHERE campaign_id IS NOT NULL AND campaign_id <> ''
+          AND row_kind IN ({row_kinds}){credit_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history attr fold to only the changed entities so
+    # each re-folds over its ENTIRE credit history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"              AND (brand_id, campaign_id, model_id, currency_code) IN "
+        f"(SELECT brand_id, campaign_id, model_id, currency_code FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # Faithful SQL port. attr (per brand/campaign/model/currency signed revenue) LEFT JOIN spend. Integer
     # `//` matches Spark's `DIV` (truncating); platform coalesced to 'unknown' from the spend side.
     staged = f"""
@@ -173,7 +214,7 @@ def build(con):
             FROM {ATTR_CREDIT_TABLE}
             WHERE campaign_id IS NOT NULL AND campaign_id <> ''
               AND row_kind IN ({row_kinds})
-            GROUP BY brand_id, campaign_id, model_id, currency_code
+{refold_filter}            GROUP BY brand_id, campaign_id, model_id, currency_code
         ),
         {_spend_cte(con)}
         SELECT
@@ -205,4 +246,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-campaign-attribution", build, target_table=TABLE)
+    # The watermark tracks the credit ledger's write clock (gold_attribution_credit.updated_at) — this Gold
+    # mart folds the attribution credit ledger, gated INDEPENDENTLY of Silver via GOLD_INCREMENTAL.
+    run_job("gold-campaign-attribution", build, target_table=TABLE,
+            source_table=ATTR_CREDIT_TABLE, ts_col="updated_at")

@@ -186,7 +186,7 @@ jobs:
   # image blocks now point at brain-duckdb. dbt was already removed in Brain V4 (Phase 6b); Spark and
   # Trino are now removed too.
   build-data-images:
-    name: Build, Sign, Push data images (duckdb)
+    name: Build, Sign, Push data images (duckdb, duckdb-serving)
     # NATIVE arm64 runner — the image targets the arm64 Karpenter pools (no QEMU).
     runs-on: ubuntu-24.04-arm
     strategy:
@@ -197,6 +197,13 @@ jobs:
             dockerfile: db/iceberg/duckdb/Dockerfile
             context: db/iceberg
             paths: '^db/iceberg/duckdb/'
+          # duckdb-serving (ADR-0014): the serving-tier HTTP service. Shares the db/iceberg
+          # context (it COPYs _catalog.py + views/ alongside serving/); rebuilt whenever the
+          # serving code, the shared catalog seam, or the serving views change.
+          - image: duckdb-serving
+            dockerfile: db/iceberg/duckdb/serving/Dockerfile
+            context: db/iceberg
+            paths: '^db/iceberg/duckdb/(serving/|views/|_catalog\.py)'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -315,7 +322,9 @@ jobs:
       - name: Bump image in staging Helm chart values
         run: |
           set -euo pipefail
-          for app in collector stream-worker core web; do
+          # duckdb-serving rides this loop too: its chart uses the same 2-space
+          # image.repository/digest block the app charts do (ADR-0014).
+          for app in collector stream-worker core web duckdb-serving; do
             ref_file="/tmp/imgref/${app}"
             values="infra/helm/${app}/values-staging.yaml"
             [ -f "$ref_file" ] || { echo "no imgref for ${app} (not affected) — skip"; continue; }
@@ -407,7 +416,9 @@ jobs:
           set -euo pipefail
           # Build-once / promote-the-same-artifact: copy the immutable repository@digest
           # from each staging chart values into the prod chart values.
-          for app in collector stream-worker core web; do
+          # duckdb-serving is promoted the same way (ADR-0014); the all-zeros bootstrap
+          # placeholder in its values-prod is skipped until the first staging digest exists.
+          for app in collector stream-worker core web duckdb-serving; do
             stg="infra/helm/${app}/values-staging.yaml"
             prd="infra/helm/${app}/values-prod.yaml"
             [ -f "$stg" ] && [ -f "$prd" ] || continue

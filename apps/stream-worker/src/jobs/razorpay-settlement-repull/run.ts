@@ -449,7 +449,7 @@ export async function resolveRazorpayCredentials(secretRef: string): Promise<Raz
   //    NEVER fabricated creds.
   if (process.env['NODE_ENV'] === 'production') {
     const { AwsSecretsManager } = await import('@brain/connector-secrets');
-    const region = process.env['BRAIN_AWS_REGION'] ?? 'us-east-1';
+    const region = process.env['BRAIN_AWS_REGION'] ?? process.env['AWS_REGION'] ?? 'ap-south-1';
     const mgr = new AwsSecretsManager(region, '', process.env['CONNECTOR_SECRETS_KMS_KEY_ID'] ?? '');
     const bundle = await mgr.getSecret(secretRef);
     if (bundle?.['key_id'] && bundle?.['key_secret']) {

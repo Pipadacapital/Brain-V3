@@ -2,7 +2,7 @@
  * getFunnelUsers — analytics use-case (ADR-002 sole-read-path) for the funnel STEP drill-down.
  *
  * Paginated list of the VISITORS who DROPPED at a given funnel step — reached that step but not the
- * next — over the per-visitor Gold mart gold_funnel_user, served through the Trino serving view
+ * next — over the per-visitor Gold mart gold_funnel_user, served through the serving view
  * brain_serving.mv_gold_funnel_user via the withSilverBrand seam (I-ST01 — the engine is the sole
  * Gold reader; the UI never queries the lakehouse directly). "Dropped at <step>" is exactly
  * furthest_step = '<step>' (the mart records each visitor's DEEPEST reached step in funnel order
@@ -12,7 +12,7 @@
  * no_data (D-2) when the brand/step/window has no visitors. brandId from session (D-1; NEVER body);
  * the ${BRAND_PREDICATE} seam injects brand_id = ? at read time (F-SEC-02).
  *
- * @see db/iceberg/spark/gold/gold_funnel_user.py + db/trino/views/mv_gold_funnel_user.sql
+ * @see db/iceberg/duckdb/gold/gold_funnel_user.py + db/iceberg/duckdb/views/mv_gold_funnel_user.sql
  */
 
 import type { SilverPool } from '@brain/metric-engine';
@@ -51,8 +51,8 @@ export interface FunnelUsersParams {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
-/** Date → Trino timestamp param string (mirrors the metric-engine readers' toStarRocksTs helper). */
-function toTrinoTs(d: Date): string {
+/** Date → serving timestamp param string (mirrors the metric-engine readers' window-bound helpers). */
+function toServingTs(d: Date): string {
   return d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 }
 
@@ -69,7 +69,7 @@ interface CountRow {
  * getFunnelUsers — the brand's visitors who dropped at `step` within the window, newest-first, paged.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - The Trino Gold serving pool (mv_gold_funnel_user).
+ * @param deps    - The Gold serving pool (mv_gold_funnel_user).
  * @param params  - step (validated enum) + window + 1-based page/pageSize (clamped server-side).
  */
 export async function getFunnelUsers(
@@ -83,8 +83,8 @@ export async function getFunnelUsers(
   const offset = (page - 1) * pageSize;
 
   // Window bounds on last_seen_at — inclusive day range (00:00:00 .. 23:59:59).
-  const fromTs = toTrinoTs(new Date(`${params.fromStr}T00:00:00Z`));
-  const toTs = toTrinoTs(new Date(`${params.toStr}T23:59:59Z`));
+  const fromTs = toServingTs(new Date(`${params.fromStr}T00:00:00Z`));
+  const toTs = toServingTs(new Date(`${params.toStr}T23:59:59Z`));
 
   const result = await withSilverBrand(deps.srPool, brandId, async (scope) => {
     // Bound params bind to their `?` placeholders in order; the seam appends brandId for BRAND_PREDICATE.
@@ -99,7 +99,7 @@ export async function getFunnelUsers(
     const total = String(totalRows[0]?.n ?? '0');
     if (total === '0') return { total: '0', rows: [] as VisitorRow[] };
 
-    // pageSize/offset are clamped integers → safe to interpolate (Trino has no OFFSET/LIMIT params).
+    // pageSize/offset are clamped integers → safe to interpolate (the serving API has no OFFSET/LIMIT params).
     const rows = await scope.runScoped<VisitorRow>(
       `SELECT visitor_id, furthest_step, last_seen_at
          FROM brain_serving.mv_gold_funnel_user

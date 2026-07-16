@@ -9,7 +9,7 @@
  * Iceberg sink → Bronze pipeline (ADR-0010: the Connect sink is the SOLE Bronze writer,
  * append-only, ~30s commit interval) is asynchronous; its correctness (event count, streaming
  * lag, zero-OOM) is an OUT-OF-BAND operator assertion documented in README.md (k6 cannot
- * read Connect/Trino/Prometheus directly).
+ * read Connect/duckdb-serving/Prometheus directly).
  *
  * Envelope is grounded in packages/contracts/src/events/sample.collector.event.v1.ts:
  *   - brand_id (top-level) is PARTITIONING-ONLY and untrusted; the authoritative brand is
@@ -38,7 +38,7 @@ const BATCH_RATIO = Number(__ENV.BATCH_RATIO || 0.2); // fraction of iterations 
 const BATCH_SIZE = Math.min(Number(__ENV.BATCH_SIZE || 25), 50); // /batch caps at MAX_BATCH=50
 
 // ── Custom metrics ────────────────────────────────────────────────────────────────────────────
-// events_sent is the SOAK-COUNT denominator: after the run compare it to the Trino Bronze count
+// events_sent is the SOAK-COUNT denominator: after the run compare it to the serving-tier Bronze count
 // (see README "Soak-count assertion"). 200-ACK == durably spooled, so this is the truth set.
 const eventsSent = new Counter('events_sent');
 const acceptLatency = new Trend('accept_latency', true);
@@ -187,7 +187,7 @@ export function handleSummary(data) {
     `\n  events_sent (soak-count denominator) = ${sent}\n` +
     `  OUT-OF-BAND assertion — Bronze count MUST be >= events_sent (ADR-0010: Bronze is APPEND-ONLY\n` +
     `  under the Kafka Connect sink; re-deliveries land as extra rows — dedup lives in Silver).\n` +
-    `  Run in Trino:\n` +
+    `  Run over duckdb-serving (POST /v1/query, or the duckdb CLI on the catalog):\n` +
     `    SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect_lifted\n` +
     `    WHERE brand_id = '${BRAND_ID}' AND ingested_at >= TIMESTAMP '<test-start-utc>';\n` +
     `  See tools/load-test/README.md "Operator post-run assertions".\n`;

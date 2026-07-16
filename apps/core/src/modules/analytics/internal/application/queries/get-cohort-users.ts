@@ -11,11 +11,11 @@
  *
  * Brand from session (D-1; NEVER request body); the ${BRAND_PREDICATE} seam injects brand_id = ? at
  * read time (F-SEC-02). cohort_month + period are STRICTLY validated then interpolated (no `?` for
- * caller params — Trino binds only the single brand `?`; consistent with the other serving reads).
+ * caller params — the serving read binds only the single brand `?`; consistent with the other serving reads).
  * Money is bigint MINOR units serialized to string (I-S07/D-1). Honest no_data (D-2) when the cell is
  * empty. PII posture: the 360 mart carries NO raw name/email/phone — `name` is an honest reserved null.
  *
- * @see db/iceberg/spark/gold/gold_cohort_member.py + db/trino/views/mv_gold_cohort_member.sql
+ * @see db/iceberg/duckdb/gold/gold_cohort_member.py + db/iceberg/duckdb/views/mv_gold_cohort_member.sql
  * @see apps/core/.../analytics/.../get-cohort-retention.ts — the aggregate sibling
  */
 
@@ -95,7 +95,7 @@ interface MemberRow {
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
  * @param params  - cohort_month 'YYYY-MM', period (whole-months-since, int >= 0), 1-based page + size.
- * @param deps    - The Trino Gold serving pool (mv_gold_cohort_member + mv_gold_customer_360).
+ * @param deps    - The Gold serving pool (mv_gold_cohort_member + mv_gold_customer_360).
  */
 export async function getCohortUsers(
   brandId: string,
@@ -107,7 +107,7 @@ export async function getCohortUsers(
   const page = Math.max(1, Math.trunc(params.page || 1));
   const offset = (page - 1) * pageSize;
 
-  // Strict validation BEFORE interpolation (Trino binds only the brand `?`; caller params are
+  // Strict validation BEFORE interpolation (the serving read binds only the brand `?`; caller params are
   // interpolated, so they must be proven-safe first). Invalid cohort cell ⇒ honest no_data.
   const cohortMonth = String(params.cohortMonth || '');
   const period = Math.trunc(Number(params.period));

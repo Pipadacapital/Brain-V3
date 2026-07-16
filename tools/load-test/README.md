@@ -1,12 +1,12 @@
 # Brain V4 — Load-test harness (k6)
 
 Two [k6](https://k6.io) scripts that exercise the two hot paths of the platform and a set of
-**operator post-run assertions** for the things k6 cannot see directly (Spark/Trino/Prometheus).
+**operator post-run assertions** for the things k6 cannot see directly (Connect/duckdb-serving/Prometheus).
 
 | Script | Targets | Path / port |
 | --- | --- | --- |
 | `ingest.js` | Collector accept-before-validate ingest | `POST /collect`, `/v1/events`, `/batch` on **:8787** |
-| `serving.js` | BFF analytics reads (session-auth, Trino-over-Iceberg + Redis cache) | `/api/v1/analytics/*`, `/api/v1/dashboard/*` on **:3000** |
+| `serving.js` | BFF analytics reads (session-auth, duckdb-serving-over-Iceberg + Redis cache) | `/api/v1/analytics/*`, `/api/v1/dashboard/*` on **:3000** |
 
 > These hit the **shared local dev stack**. Keep `VUS`/`DURATION` modest there. Run a real soak
 > against a dedicated/isolated environment. Do **not** point high VUs at a stack others are using.
@@ -80,7 +80,7 @@ k6 run \
 `serving.js` runs in two phases so the cache-hit vs cache-miss budgets are measured separately:
 
 - **warmup** (first 2m, cold cache) — one pass per endpoint per VU → exercises the **cache-MISS**
-  path (Trino scan). Threshold: `p95 < 3s`.
+  path (duckdb-serving scan). Threshold: `p95 < 3s`.
 - **steady** (after warmup, hot cache) — sustained random reads → exercises the **cache-HIT** path
   (Redis serving cache). Threshold: `p95 < 500ms`.
 
@@ -101,13 +101,15 @@ A breached threshold makes `k6 run` exit non-zero, so these scripts are CI/gate-
 
 k6 only sees HTTP. The asynchronous drainer → Kafka → Kafka Connect Iceberg sink → Bronze pipeline
 (ADR-0010: the Connect sink is the SOLE Bronze writer; Bronze is **append-only**, no dedup — the
-effectively-once dedup lives in Silver, see `DEDUP-GUARANTEE.md`) and the JVM heap of Connect/Trino
-are **out of band**. After each soak, run these.
+effectively-once dedup lives in Silver, see `DEDUP-GUARANTEE.md`) and the memory posture of
+Connect (JVM heap) / duckdb-serving (`DUCKDB_SERVING_MEMORY_LIMIT`) are **out of band**. After each
+soak, run these.
 
 ### 1. Soak-count — Bronze count >= events_sent (no event loss)
 
 `ingest.js` prints `events_sent` (a 200-ACK == a durable spool commit, so this is the truth set) and
-echoes the query below. **Record the UTC start time of the run.** Then in Trino:
+echoes the query below. **Record the UTC start time of the run.** Then over duckdb-serving
+(`POST :8091/v1/query`, or the duckdb CLI attached to the catalog):
 
 ```sql
 -- ADR-0010: Bronze is APPEND-ONLY under the Connect sink, so re-deliveries land as EXTRA rows —
@@ -160,31 +162,33 @@ Cross-check the consumer side in Prometheus (Kafka JMX exporter — see the SLO/
 max(kafka_consumergroup_lag{topic="prod.collector.event.v1"})
 ```
 
-### 3. Zero-OOM — no Kafka Connect or Trino OutOfMemory during the run
+### 3. Zero-OOM — no Kafka Connect or duckdb-serving OutOfMemory during the run
 
-Trino is the **sole serving engine** and has been OOM-killed under refresh before (bounded heap fix:
-`jvm.config` RAMPercentage 70 + `mem_limit 7g` + `restart:unless-stopped`). The Connect sink is the
-sole Bronze writer. Confirm neither restarted or OOM'd during the soak:
+duckdb-serving is the **sole serving engine**; its memory posture is bounded by design
+(`DUCKDB_SERVING_MEMORY_LIMIT=3GB` under a `mem_limit: 4g` container + spill `temp_directory` +
+`restart: unless-stopped` — a pathological query degrades to a clean 504, never an OOM-killed
+container). The Connect sink is the sole Bronze writer. Confirm neither restarted or OOM'd during
+the soak:
 
 ```sh
 # No container should show a restart bump or OOMKilled during the window.
-docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'trino|kafka-connect'
-docker inspect trino         --format '{{.RestartCount}} {{.State.OOMKilled}}'
-docker inspect kafka-connect --format '{{.RestartCount}} {{.State.OOMKilled}}'
+docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'duckdb-serving|kafka-connect'
+docker inspect duckdb-serving --format '{{.RestartCount}} {{.State.OOMKilled}}'
+docker inspect kafka-connect  --format '{{.RestartCount}} {{.State.OOMKilled}}'
 
 # Grep the logs for the smoking gun.
-docker logs trino 2>&1 | grep -iE 'OutOfMemory|GC overhead|Query exceeded.*memory' || echo "trino: clean"
+docker logs duckdb-serving 2>&1 | grep -iE 'OutOfMemory|memory limit|killed' || echo "duckdb-serving: clean"
 docker logs kafka-connect 2>&1 | grep -iE 'OutOfMemoryError|java.lang.OutOfMemory' || echo "kafka-connect: clean"
 ```
 
-Prometheus heap watch (if JVM metrics are scraped):
+Prometheus memory watch (if the serving `/metrics` is scraped):
 
 ```promql
-# Trino heap utilization should stay below ~85% of max throughout the run.
-max(jvm_memory_used_bytes{area="heap",job="trino"}) / max(jvm_memory_max_bytes{area="heap",job="trino"})
+# duckdb-serving resident memory should stay below ~85% of the 4g container bound.
+max(process_resident_memory_bytes{job="duckdb-serving"}) / (4 * 1024 * 1024 * 1024)
 ```
 
-**PASS** = `RestartCount` unchanged, `OOMKilled=false`, no OOM log lines, heap < ~85%.
+**PASS** = `RestartCount` unchanged, `OOMKilled=false`, no OOM log lines, resident memory < ~85%.
 
 ## Output artifacts
 

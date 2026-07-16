@@ -11,19 +11,18 @@
  *
  * PHASE G: getAttributionByChannel / getAttributionReconciliation now read the LAKEHOUSE
  * (brain_gold.gold_revenue_ledger for realized, brain_gold.gold_marketing_attribution for credit)
- * via withSilverBrand. BRAIN V4: StarRocks is REMOVED — those reads run over TRINO (createTrinoPool),
- * the same Trino-over-Iceberg serving path the app uses in production. This test seeds the base Iceberg
+ * via withSilverBrand. BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014) — those reads run over DUCKDB-SERVING (createDuckDbServingPool),
+ * the same duckdb-serving-over-Iceberg serving path the app uses in production. This test seeds the base Iceberg
  * tables and passes { srPool }; the exists-check and the compute read the SAME store (via the
- * brain_serving.mv_* views). SKIPS if Trino is down.
+ * brain_serving.mv_* views). SKIPS if duckdb-serving is down.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import { getAttributionByChannel, getAttributionReconciliation } from '../index.js';
 
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 const BRAND_EMPTY = 'a1000a1a-0a1a-4a1a-8a1a-000000000001'; // no revenue → no_data
 const BRAND_NOCREDIT = 'a1000a1a-0a1a-4a1a-8a1a-000000000002'; // revenue, no credit → not_computed
@@ -56,7 +55,7 @@ async function seedRealized(brandId: string) {
 
 async function seedCredit(brandId: string) {
   // attribution_confidence is a STRING column (kept as the numeric string) → quote '1.000' (a bare
-  // decimal literal would not coerce double→varchar on insert in Trino).
+  // decimal literal would not coerce double→varchar on insert).
   await srPool.query(
     `INSERT INTO brain_gold.gold_marketing_attribution
        (brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, campaign_id, model_id, row_kind,
@@ -78,7 +77,7 @@ async function cleanup() {
 
 beforeAll(async () => {
   try {
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     await srPool.query('SELECT 1');
     srUp = true;
     await cleanup();
@@ -92,12 +91,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (srUp) await cleanup();
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('attribution honest states (live lakehouse)', () => {
-  it('SKIP_IF_NO_TRINO', () => {
-    if (!srUp) console.warn('[attribution-not-computed] Trino unavailable — PENDING.');
+  it('SKIP_IF_NO_SERVING', () => {
+    if (!srUp) console.warn('[attribution-not-computed] duckdb-serving unavailable — PENDING.');
     expect(true).toBe(true);
   });
 

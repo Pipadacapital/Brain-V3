@@ -9,7 +9,7 @@
  *
  *   Net revenue → −COGS → = CM1 (gross margin) → −Variable cost → −Marketing → = CM2 (contribution)
  *
- * It reads ONLY the BFF/metric-engine hook (never Trino / the ledger directly, never an inlined
+ * It reads ONLY the BFF/metric-engine hook (never the serving tier / the ledger directly, never an inlined
  * client-side SUM):
  *   - useContributionMargin → CM1 / CM2 + a cost-confidence grade (Wave C).
  *

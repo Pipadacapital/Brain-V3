@@ -8,7 +8,7 @@
  * marketers actually optimize.
  *
  * It reads ONLY via the BFF endpoints (the metric-engine sole read path) — never the credit
- * ledger / Trino directly, never an inlined client-side SUM:
+ * ledger / the serving tier directly, never an inlined client-side SUM:
  *   - useCampaignAttribution  → /v1/analytics/attribution/campaign-attribution
  *       per-campaign attributed revenue + spend + ROAS under the selected model (brand-wide roll-up).
  *   - useCampaignTimeseries   → /v1/analytics/attribution/campaign-timeseries

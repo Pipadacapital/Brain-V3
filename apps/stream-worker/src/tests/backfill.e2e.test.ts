@@ -40,7 +40,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { Kafka, Producer } from 'kafkajs';
 import { PgBackfillJobRepository } from '../infrastructure/pg/BackfillJobRepository.js';
-import { makeBronzeTrinoPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
+import { makeBronzeServingPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
 import { uuidV5FromOrderBackfill, decimalStringToMinor } from '@brain/shopify-mapper';
 import { mapOrderToBackfillEvent, computeAchievedDepthLabel } from '../jobs/shopify-backfill/order-mapper.js';
 import { findQueuedJob } from '../jobs/shopify-backfill/run.js';
@@ -80,7 +80,7 @@ let superPool: Pool;       // setup/teardown only (operational PG: backfill_job)
 let appPool: Pool;         // backfill_job RLS assertions (brain_app)
 let kafkaProducer: Producer;
 let jobRepo: PgBackfillJobRepository;
-let sr: BronzePool;        // Trino — reads Iceberg Bronze (the SoR)
+let sr: BronzePool;        // duckdb-serving — reads Iceberg Bronze (the SoR)
 let infraUp = false;       // lakehouse reachable? (gates the Bronze-landing tests)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -170,8 +170,8 @@ beforeAll(async () => {
 
   // Bronze is the Spark sink → Iceberg (the PG bronze write is retired). The Bronze-landing tests
   // produce order.backfill.v1 to the BACKFILL topic — the Spark sink consumes it and MERGEs into
-  // the Iceberg Bronze table, which we read over Trino. Gated on lakehouse infra.
-  sr = makeBronzeTrinoPool();
+  // the Iceberg Bronze table, which we read over duckdb-serving. Gated on lakehouse infra.
+  sr = makeBronzeServingPool();
   infraUp = await icebergBronzeAvailable(sr);
 
   // Set up IDENTITY_SALT env var for brand A (used by order-mapper tests)

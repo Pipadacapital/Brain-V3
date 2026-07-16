@@ -37,7 +37,7 @@ import { Kafka, type Producer } from 'kafkajs';
 import { uuidV5FromOrderBackfill, uuidV5FromOrderLive } from '@brain/shopify-mapper';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX, ORDER_BACKFILL_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
-  makeBronzeTrinoPool,
+  makeBronzeServingPool,
   icebergBronzeAvailable,
   pollIcebergBronzeCount,
   KAFKA_BROKERS,
@@ -79,7 +79,7 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 let superPool: Pool;
 let appPool: Pool;
 let producer: Producer;
-let sr: BronzePool;        // Trino — reads Iceberg Bronze (the SoR)
+let sr: BronzePool;        // duckdb-serving — reads Iceberg Bronze (the SoR)
 let infraUp = false;       // lakehouse reachable? (gates the Bronze-landing tests)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -149,12 +149,12 @@ beforeAll(async () => {
 
   // Bronze is the Kafka Connect Iceberg sink (ADR-0010; PG bronze write retired). The Bronze-landing
   // tests produce order.live.v1 / order.backfill.v1 to their lanes — the compose kafka-connect
-  // service lands both append-only in `brain_bronze.collector_events_connect`, read over Trino via
+  // service lands both append-only in `brain_bronze.collector_events_connect`, read over duckdb-serving via
   // the lift view. Gated on lakehouse infra.
   const kafka = new Kafka({ clientId: 'live-connector-e2e-producer', brokers: KAFKA_BROKERS, retry: { retries: 3 } });
   producer = kafka.producer();
   await producer.connect();
-  sr = makeBronzeTrinoPool();
+  sr = makeBronzeServingPool();
   infraUp = await icebergBronzeAvailable(sr);
 
   // Seed test brands + connector (via superPool — NEVER touches 60d543dc)

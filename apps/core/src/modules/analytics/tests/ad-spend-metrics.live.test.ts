@@ -19,9 +19,9 @@
  *   5. ISOLATION (I-ST01): the Silver read seam (BRAND_PREDICATE → brand_id = ?) scopes BRAND_A's
  *      spend out for BRAND_B.
  *
- * REQUIRES: Postgres on localhost:5432 (brand fixtures) + Trino on :8090 over Iceberg with
+ * REQUIRES: Postgres on localhost:5432 (brand fixtures) + duckdb-serving on :8091 over Iceberg with
  * brain_silver.silver_marketing_spend + brain_gold.gold_revenue_ledger (Spark-built). The lakehouse
- * sections SKIP if Trino is down.
+ * sections SKIP if duckdb-serving is down.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -29,7 +29,7 @@ import pg from 'pg';
 import {
   computeAdSpendTimeseries,
   computeBlendedRoas,
-  createTrinoPool,
+  createDuckDbServingPool,
   type SilverPool,
 } from '@brain/metric-engine';
 import { getAdSpendTimeseries, getBlendedRoas } from '../index.js';
@@ -41,13 +41,12 @@ function toBillingPostedPeriod(date: Date): string {
 
 const SUPERUSER_URL =
   process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-// BRAIN V4: StarRocks is REMOVED. The spend/ROAS reads run over TRINO (createTrinoPool) — the same
-// Trino-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg tables;
+// BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014). The spend/ROAS reads run over DUCKDB-SERVING (createDuckDbServingPool) — the same
+// duckdb-serving-over-Iceberg serving path the app uses in production. Seeds INSERT the base Iceberg tables;
 // reads go through the brain_serving.mv_* views via the metric-engine seam.
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 // Distinct UUID prefix (ad3) to avoid collision with other analytics test brands.
 const BRAND_A = 'ad300a1a-0a1a-0a1a-0a1a-000000000001';
@@ -121,7 +120,7 @@ beforeAll(async () => {
   await superPool.query('SELECT 1');
 
   try {
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     await srPool.query('SELECT 1');
     srUp = true;
   } catch {
@@ -152,7 +151,7 @@ afterAll(async () => {
   await clearSpendSilver(BRAND_B);
   await superPool.query(`DELETE FROM brand WHERE id IN ($1, $2)`, [BRAND_A, BRAND_B]).catch(() => {});
   await superPool.end().catch(() => {});
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 // ── 1. LAKEHOUSE TOTAL — engine SUM is exact bigint + platform filter (D-3) ──

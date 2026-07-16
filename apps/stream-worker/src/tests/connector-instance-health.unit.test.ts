@@ -15,6 +15,25 @@ import {
   RECOVERABLE_HEALTH_STATES,
 } from '../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 
+// ── Test fixtures ──────────────────────────────────────────────────────────────
+
+// Brand ids MUST be real UUIDs: the repository now builds its GUC statement via
+// @brain/db buildContextGucSql, which validates every id with assertUuid (injection
+// guard) before interpolating it into `SET LOCAL app.current_brand_id = '<uuid>'`.
+const BRAND_1 = 'aaaa0001-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const BRAND_2 = 'aaaa0002-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const BRAND_3 = 'aaaa0003-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const BRAND_4 = 'aaaa0004-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+/**
+ * True when `sql` is the txn-local brand-GUC write for `brandId`. buildContextGucSql
+ * emits `SET LOCAL app.current_brand_id = '<uuid>'` (value inlined post-validation,
+ * NOT a $1 parameter — SET LOCAL cannot be parameterised).
+ */
+function isBrandGucSql(sql: string, brandId: string): boolean {
+  return sql.includes('SET LOCAL') && sql.includes('app.current_brand_id') && sql.includes(brandId);
+}
+
 // ── Minimal mock Pool factory ──────────────────────────────────────────────────
 
 type MockQuery = Mock<(sql: string, params?: unknown[]) => Promise<{ rowCount: number; rows: unknown[] }>>;
@@ -45,7 +64,7 @@ describe('updateConnectorInstanceHealth', () => {
     const pool = makeMockPool();
     await updateConnectorInstanceHealth(
       pool as unknown as import('pg').Pool,
-      'brand-uuid-1',
+      BRAND_1,
       'ci-uuid-1',
       'token_expired',
     );
@@ -53,7 +72,7 @@ describe('updateConnectorInstanceHealth', () => {
     const calls = pool._queries;
     // Should have issued BEGIN, SET GUC, UPDATE, COMMIT
     expect(calls.some((c) => c.sql === 'BEGIN')).toBe(true);
-    expect(calls.some((c) => c.sql.includes('set_config') && c.params?.[0] === 'brand-uuid-1')).toBe(true);
+    expect(calls.some((c) => isBrandGucSql(c.sql, BRAND_1))).toBe(true);
     const updateCall = calls.find((c) => c.sql.includes('UPDATE connector_instance'));
     expect(updateCall).toBeDefined();
     expect(updateCall!.params).toContain('TokenExpired');
@@ -67,7 +86,7 @@ describe('updateConnectorInstanceHealth', () => {
     const pool = makeMockPool();
     await updateConnectorInstanceHealth(
       pool as unknown as import('pg').Pool,
-      'brand-uuid-2',
+      BRAND_2,
       'ci-uuid-2',
       'rate_limited',
     );
@@ -87,7 +106,7 @@ describe('updateConnectorInstanceHealth', () => {
     await expect(
       updateConnectorInstanceHealth(
         pool as unknown as import('pg').Pool,
-        'brand-uuid-3',
+        BRAND_3,
         'ci-uuid-3',
         'token_expired',
       ),
@@ -102,7 +121,7 @@ describe('updateConnectorInstanceHealth', () => {
     });
     await updateConnectorInstanceHealth(
       pool as unknown as import('pg').Pool,
-      'brand-uuid-4',
+      BRAND_4,
       'ci-uuid-4',
       'rate_limited',
     );
@@ -118,13 +137,13 @@ describe('recoverConnectorInstanceHealth', () => {
     const pool = makeMockPool(async () => ({ rowCount: 1, rows: [] }));
     await recoverConnectorInstanceHealth(
       pool as unknown as import('pg').Pool,
-      'brand-uuid-1',
+      BRAND_1,
       'ci-uuid-1',
     );
 
     const calls = pool._queries;
     expect(calls.some((c) => c.sql === 'BEGIN')).toBe(true);
-    expect(calls.some((c) => c.sql.includes('set_config') && c.params?.[0] === 'brand-uuid-1')).toBe(true);
+    expect(calls.some((c) => isBrandGucSql(c.sql, BRAND_1))).toBe(true);
     const updateCall = calls.find((c) => c.sql.includes('UPDATE connector_instance'));
     expect(updateCall).toBeDefined();
     expect(updateCall!.params).toContain('Healthy');
@@ -138,7 +157,7 @@ describe('recoverConnectorInstanceHealth', () => {
     const pool = makeMockPool();
     await recoverConnectorInstanceHealth(
       pool as unknown as import('pg').Pool,
-      'brand-uuid-2',
+      BRAND_2,
       'ci-uuid-2',
     );
 
@@ -164,7 +183,7 @@ describe('recoverConnectorInstanceHealth', () => {
     await expect(
       recoverConnectorInstanceHealth(
         pool as unknown as import('pg').Pool,
-        'brand-uuid-3',
+        BRAND_3,
         'ci-uuid-3',
       ),
     ).resolves.toBeUndefined();
@@ -181,7 +200,7 @@ describe('recoverConnectorInstanceHealth', () => {
     await expect(
       recoverConnectorInstanceHealth(
         pool as unknown as import('pg').Pool,
-        'brand-uuid-4',
+        BRAND_4,
         'ci-uuid-4',
       ),
     ).resolves.toBeUndefined();

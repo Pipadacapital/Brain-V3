@@ -2,15 +2,15 @@
  * @brain/metric-engine — computeAbandonedCart (Gold abandoned-cart recovery rollup, Tier-0).
  *
  * The SOLE reader of the abandoned-cart recovery signal, REPOINTED in Brain V4 to read the
- * pre-materialized Gold mart `gold_abandoned_cart` through the Trino serving view
+ * pre-materialized Gold mart `gold_abandoned_cart` through the serving view
  * `brain_serving.mv_gold_abandoned_cart` via the withSilverBrand seam — instead of recomputing the
- * rollup ad-hoc over `mv_silver_touchpoint` at request time. This closes the "Trino-sole serving"
+ * rollup ad-hoc over `mv_silver_touchpoint` at request time. This closes the "sole-serving-engine"
  * consistency gap: the cart-recovery surface now serves the SAME pre-aggregated daily mart the rest
- * of the platform reads (Spark builds it: db/iceberg/spark/gold/gold_abandoned_cart.py), rather than
+ * of the platform reads (the DuckDB transform builds it: db/iceberg/duckdb/gold/gold_abandoned_cart.py), rather than
  * a bespoke session-grain query. The PUBLIC shape (AbandonedCartResult) is UNCHANGED — the use-case
  * (get-abandoned-cart.ts), route, contract (AbandonedCart), and web hook are all untouched.
  *
- * MART GRAIN (db/trino/views/mv_gold_abandoned_cart.sql) — 1 row per (brand_id, cart_date,
+ * MART GRAIN (db/iceberg/duckdb/views/mv_gold_abandoned_cart.sql) — 1 row per (brand_id, cart_date,
  * currency_code), per UTC day:
  *   cart_sessions   — distinct sessions with ≥1 cart.item_added that day (silver_cart_event).
  *   abandoned_carts — distinct orders that hit a shopflo checkout_abandoned signal that day
@@ -27,7 +27,7 @@
  * ── ISOLATION: every read via withSilverBrand (brand predicate LAST in the WHERE). brandId from
  *    session (D-1; NEVER request body).
  *
- * @see db/iceberg/spark/gold/gold_abandoned_cart.py + db/trino/views/mv_gold_abandoned_cart.sql
+ * @see db/iceberg/duckdb/gold/gold_abandoned_cart.py + db/iceberg/duckdb/views/mv_gold_abandoned_cart.sql
  * @see packages/metric-engine/src/search-behavior.ts — the sibling gold_behavior serving reader
  */
 
@@ -83,7 +83,7 @@ interface CartRow {
  * window total; counts NEVER blend money, so the per-currency rows aggregate cleanly into counts.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - The Gold serving pool (Trino adapter injected at the root).
+ * @param deps    - The Gold serving pool (duckdb-serving adapter injected at the root).
  * @param range   - The cart_date window [from, to] (inclusive, UTC).
  */
 export async function computeAbandonedCart(

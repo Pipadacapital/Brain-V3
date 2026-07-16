@@ -11,7 +11,7 @@
  *   2. Customer timeline — a single customer's (brain_id) newest-first event feed.
  *
  * Reads go ONLY through the use-journey hooks (BFF journey endpoints, the sole read path) — never
- * Trino / the ledger directly, never an inlined client-side derivation. Each hook is DISABLED until
+ * the serving tier / the ledger directly, never an inlined client-side derivation. Each hook is DISABLED until
  * its input is submitted (the *committed* value in state, not the live input text), so nothing is
  * fetched until the user asks.
  *
@@ -44,7 +44,7 @@ type TimelineHasData = Extract<CustomerJourneyTimeline, { state: 'has_data' }>;
 
 /**
  * Format a touch/event timestamp readably. Handles both shapes the journey lanes emit:
- * ISO-8601 strings (Trino ledger) and epoch-ms numbers (cache path). Falls back to the raw value
+ * ISO-8601 strings (serving ledger) and epoch-ms numbers (cache path). Falls back to the raw value
  * if it can't be parsed rather than rendering "Invalid Date".
  */
 function formatTs(ts: string | number): string {

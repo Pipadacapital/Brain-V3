@@ -222,7 +222,7 @@ export const GoldDataProductSchema = z.object({
    *                identity-side snapshots): "who is this person".
    *   'bi'       — business-intelligence marts (attribution, segments, scores, health, cac,
    *                executive, recommendation, retention, …): "what is happening / why".
-   * Mirrors GoldMartSpec.phase (db/iceberg/spark/gold/_gold_registry.py). Pure metadata.
+   * Mirrors GoldMartSpec.phase (db/iceberg/duckdb/gold/_gold_registry.py). Pure metadata.
    */
   phase: z.enum(['identity', 'bi']),
   /** Iceberg catalog the product lives in (V4: brain_{bronze,silver,gold}_local). */
@@ -264,7 +264,7 @@ export type GoldDataProducts = z.infer<typeof GoldDataProductsSchema>;
 
 /**
  * GOLD_DATA_PRODUCT_REGISTRY — the canonical, validated array of the Gold data products that have a
- * built Spark job + a Trino serving view (db/trino/views/mv_*.sql) + a metric-engine read seam. A mart
+ * built DuckDB transform job + a serving view (db/iceberg/duckdb/views/mv_*.sql) + a metric-engine read seam. A mart
  * is "done" only once it has a row HERE (the V4 definition-of-done registry entry). This is the TS
  * mirror of the retired parity oracle's mart_registry.py for the products the intelligence/serving layer
  * binds to — NOT every mart, but the ones with a formal serving contract.
@@ -273,8 +273,8 @@ export type GoldDataProducts = z.infer<typeof GoldDataProductsSchema>;
  */
 export const GOLD_DATA_PRODUCT_REGISTRY: GoldDataProducts = GoldDataProductsSchema.parse([
   {
-    // CONFIRMED against mart_registry.py MartSpec(gold_customer_360) + db/iceberg/spark/gold/
-    // gold_customer_360.py + db/trino/views/mv_gold_customer_360.sql. PK (brand_id, brain_id); the only
+    // CONFIRMED against mart_registry.py MartSpec(gold_customer_360) + db/iceberg/duckdb/gold/
+    // gold_customer_360.py + db/iceberg/duckdb/views/mv_gold_customer_360.sql. PK (brand_id, brain_id); the only
     // money column is lifetime_value_minor (bigint minor + sibling currency_code), carried verbatim from
     // the silver_customer spine (the 360 is a denormalized JOIN, not a money computation).
     name: 'gold_customer_360',
@@ -287,7 +287,7 @@ export const GOLD_DATA_PRODUCT_REGISTRY: GoldDataProducts = GoldDataProductsSche
     tenant_column: 'brand_id',
     currency_column: 'currency_code',
     reads_from: ['silver_customer', 'silver_order_state', 'silver_touchpoint', 'silver_identity_map'],
-    // V4 serving is a Trino view (db/trino/views/mv_gold_customer_360.sql) — the app reads the product
+    // V4 serving is a duckdb-serving view (db/iceberg/duckdb/views/mv_gold_customer_360.sql) — the app reads the product
     // THROUGH this two-part name, never the Iceberg table directly.
     serving_mv: 'brain_serving.mv_gold_customer_360',
     provisional: false,
@@ -303,7 +303,7 @@ export function findGoldDataProduct(name: string): GoldDataProduct | undefined {
 
 /**
  * Deterministic customer-health band — the recency/frequency churn signal, mirroring the
- * db/iceberg/spark/gold/gold_customer_health.py vocabulary (healthy ≤90d, at_risk ≤180d, else churned).
+ * db/iceberg/duckdb/gold/gold_customer_health.py vocabulary (healthy ≤90d, at_risk ≤180d, else churned).
  * The closed set Phase-2 binds to; NEVER a free string at the BI boundary.
  */
 export const HealthBandSchema = z.enum(['healthy', 'at_risk', 'churned']);
@@ -320,7 +320,7 @@ export type ChurnScore = z.infer<typeof ChurnScoreSchema>;
 
 /**
  * Customer LIFECYCLE STAGE — the closed deterministic stage folded onto gold_customer_360 from the
- * gold_customer_health band + the lifetime order count (db/iceberg/spark/gold/_customer_360_enrich.py):
+ * gold_customer_health band + the lifetime order count (db/iceberg/duckdb/gold/_customer_360_enrich.py):
  *   new      — healthy (recent) with <= 1 order (just acquired)
  *   active   — healthy (recent) with  > 1 order (engaged repeat customer)
  *   at_risk  — recency past the at-risk threshold (gold_customer_health 'at_risk')

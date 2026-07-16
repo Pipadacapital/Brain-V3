@@ -9,7 +9,7 @@
  * brain_id, so this read always shows the post-merge truth without rewriting history.
  *
  * Read through withSilverBrand (brand predicate injected at the seam, I-ST01; the engine is the only
- * serving reader — the UI never queries Trino). Newest-first, KEYSET-paginated:
+ * serving reader — the UI never queries the engine directly). Newest-first, KEYSET-paginated:
  * sequence_number is assigned by `row_number() OVER (PARTITION BY brand_id, brain_id ORDER BY
  * occurred_at ASC, touch_seq ASC)` at build time, so within ONE brain_id `ORDER BY occurred_at DESC,
  * sequence_number DESC` is exactly `ORDER BY sequence_number DESC` — the keyset continuation is the
@@ -22,7 +22,7 @@
  * Honest-empty: hasData=false when the customer has no ledger rows (or the serving tier is
  * unavailable — the seam degrades a missing mart to []). NO PII: brain_id is the opaque resolved key.
  *
- * @see db/trino/views/mv_journey_events_current.sql (the served projection)
+ * @see db/iceberg/duckdb/views/mv_journey_events_current.sql (the served projection)
  * @see packages/metric-engine/src/customer-orders.ts (sibling per-customer serving read)
  */
 import type { SilverPool } from './silver-deps.js';
@@ -33,7 +33,7 @@ export interface JourneyEventRow {
   touchpointId: string;
   /** Resolved-timeline position (bigint → string, BigInt-safe JSON); the keyset cursor key. */
   sequenceNumber: string;
-  /** Raw Trino/Iceberg timestamp string (UTC); serialized verbatim. */
+  /** Raw serving/Iceberg timestamp string (UTC); serialized verbatim. */
   occurredAt: string;
   /** Derived event category (the Silver SoT mapping). Null = uncategorized. */
   eventCategory: string | null;
@@ -104,7 +104,7 @@ function str(v: unknown): string | null {
   return s.length === 0 ? null : s;
 }
 
-/** Normalize a Trino boolean (native boolean, or 0/1 over a legacy wire) → boolean. */
+/** Normalize a serving boolean (native boolean, or 0/1 over a legacy wire) → boolean. */
 function asBool(v: unknown): boolean {
   return v === true || v === 1 || v === '1';
 }
@@ -154,7 +154,7 @@ function deriveMatchedVia(r: JourneyEventDbRow): string {
 function toJourneyEventRow(r: JourneyEventDbRow): JourneyEventRow {
   return {
     touchpointId: String(r.touchpoint_id),
-    // bigint-safe: Trino may surface bigint as string or number — String() either way (never float math).
+    // bigint-safe: serving may surface bigint as string or number — String() either way (never float math).
     sequenceNumber: String(r.sequence_number),
     occurredAt: String(r.occurred_at),
     eventCategory: str(r.event_category),
@@ -183,7 +183,7 @@ function toJourneyEventRow(r: JourneyEventDbRow): JourneyEventRow {
  * computeJourneyEventsCurrent — one customer's current journey-ledger page, newest-first.
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - the Trino serving pool (createTrinoPool) injected at the root.
+ * @param deps    - the serving pool (createDuckDbServingPool) injected at the root.
  * @param params  - brainId + optional keyset continuation (afterSequence) + page size.
  */
 export async function computeJourneyEventsCurrent(
@@ -255,9 +255,9 @@ export async function computeJourneyEventsCurrent(
 // anonymous-era subset (B.5.3), while the per-row brain_id_asof honestly shows what identity was known then.
 // Batch-path only (no Redis), responses marked `replayed: true`.
 
-/** A serving timestamp literal 'YYYY-MM-DD HH:MM:SS(.fff)' (UTC) for a Trino `occurred_at <= ?` bound. */
+/** A serving timestamp literal 'YYYY-MM-DD HH:MM:SS(.fff)' (UTC) for a served `occurred_at <= ?` bound. */
 function toServingTs(iso: string): string {
-  // Accept an ISO-8601 instant; normalize the 'T'/'Z' form Trino's bare timestamp comparison rejects.
+  // Accept an ISO-8601 instant; normalize the 'T'/'Z' form a bare timestamp comparison rejects.
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso; // leave as-is; the seam binds it verbatim (may honest-empty)
   return d.toISOString().replace('T', ' ').replace('Z', '');
@@ -283,7 +283,7 @@ export interface JourneyEventsAsOfParams {
  * only — the caller must NOT cache this read (responses are marked replayed downstream).
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
- * @param deps    - the Trino serving pool.
+ * @param deps    - the serving pool.
  * @param params  - brainId + asOf + optional keyset continuation + page size.
  */
 export async function computeJourneyEventsAsOf(
@@ -380,7 +380,7 @@ interface IdentityAsOfDbRow {
  * an `identified` flag (empty ⇒ the customer was still anonymous at asOf). Honest-empty on a missing map.
  *
  * @param brandId - Brand UUID (from session — D-1).
- * @param deps    - the Trino serving pool.
+ * @param deps    - the serving pool.
  * @param params  - brainId + asOf (ISO-8601).
  */
 export async function resolveIdentityAsOf(

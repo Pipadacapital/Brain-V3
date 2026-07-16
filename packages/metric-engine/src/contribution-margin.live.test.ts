@@ -2,39 +2,40 @@
  * contribution-margin.live.test.ts — computeContributionMargin (CM1/CM2), mixed-tier live read.
  *
  * BRAIN V4 re-point: the two MONEY inputs read the LAKEHOUSE via withSilverBrand — which now runs over
- * TRINO (StarRocks removed). Realized from the brain_serving Trino view mv_gold_revenue_ledger (over
- * iceberg.brain_gold.gold_revenue_ledger), marketing spend from mv_silver_marketing_spend (over
+ * DUCKDB-SERVING (Trino removed, ADR-0014). Realized from the brain_serving view mv_gold_revenue_ledger
+ * (over iceberg.brain_gold.gold_revenue_ledger), marketing spend from mv_silver_marketing_spend (over
  * iceberg.brain_silver.silver_marketing_spend). The cost CONFIG (pct rates + confidence) and the brand
  * currency stay on operational Postgres (RLS). The engine takes mixed deps { pool, srPool } — srPool is
- * now a Trino pool (createTrinoPool); the test seeds the Iceberg Gold/Silver marts THROUGH Trino + PG for costs.
+ * now a duckdb-serving pool (createDuckDbServingPool); the seed DML still targets the Iceberg Gold/Silver
+ * marts, but duckdb-serving is READ-ONLY (SELECT/WITH guard) — a rejected seed degrades the lakehouse
+ * assertions to PENDING until the seeds move to a read-write (transform-tier) path.
  *
  *   CM-1: revenue − COGS − variable − marketing = CM1/CM2 exactly (integer minor units).
  *   CM-2: cost_confidence = floor of cost_input confidences ('Trusted' when all trusted).
  *   CM-3: NO cogs input → costConfidence 'Insufficient' (the honest 'D' that blocks the billing cap).
- *   CM-4: ISOLATION — brand B sees none of brand A's revenue (Trino seam) or costs (PG RLS).
+ *   CM-4: ISOLATION — brand B sees none of brand A's revenue (serving seam) or costs (PG RLS).
  *
  * Cost reads run under the brain_app pool (withBrandTxn sets the GUC; seams are SECURITY INVOKER);
  * realized/spend reads run through the serving seam (BRAND_PREDICATE → brand_id = ?). The lakehouse
- * sections cleanly SKIP (guarded PENDING) when Trino is unavailable / the Iceberg marts aren't
- * provisioned (trinoUp=false) — never a hard suite failure on a missing engine.
+ * sections cleanly SKIP (guarded PENDING) when duckdb-serving is unavailable / the Iceberg marts aren't
+ * provisioned (servingUp=false) — never a hard suite failure on a missing engine.
  *
- * REQUIRES (for the lakehouse assertions): Postgres on :5432 (migrations) + Trino on :8090 with the
- * Iceberg marts iceberg.brain_gold.gold_revenue_ledger + iceberg.brain_silver.silver_marketing_spend
- * (Spark-built) and the brain_serving views (db/trino/views). Absent Trino → the suite PENDINGs.
+ * REQUIRES (for the lakehouse assertions): Postgres on :5432 (migrations) + duckdb-serving on :8091 with
+ * the Iceberg marts iceberg.brain_gold.gold_revenue_ledger + iceberg.brain_silver.silver_marketing_spend
+ * (DuckDB-built) and the brain_serving views (db/iceberg/duckdb/views). Absent serving → the suite PENDINGs.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { computeContributionMargin } from './contribution-margin.js';
-import { createTrinoPool } from './trino-adapter.js';
-import type { TrinoPool } from './trino-deps.js';
+import { createDuckDbServingPool } from './duckdb-serving-adapter.js';
+import type { ServingPool } from './serving-deps.js';
 import type { SilverPool } from './silver-deps.js';
 
 const SUPER = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP = process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 const BRAND_A = 'c2c20001-0a11-4a11-8a11-00000000aa01';
 const BRAND_B = 'c2c20001-0a11-4a11-8a11-00000000bb01';
@@ -45,9 +46,9 @@ const AS_OF = new Date('2026-06-30T00:00:00Z');
 
 let superPool: pg.Pool;
 let appPool: pg.Pool;
-let trinoPool: TrinoPool;
+let servingPool: ServingPool;
 let pgAvailable = false;
-let trinoUp = false;
+let servingUp = false;
 
 async function setConfig(client: pg.PoolClient, brandId: string) {
   await client.query(`SELECT set_config('app.current_brand_id', $1, true), set_config('app.current_user_id', $2, true), set_config('app.current_workspace_id', $2, true)`, [brandId, '00000000-0000-0000-0000-000000000000']);
@@ -69,29 +70,29 @@ async function seedCost(brandId: string, costType: string, pctBps: number, confi
 }
 
 /**
- * Seed a finalized realized row into the Iceberg gold ledger (CM revenue source) THROUGH Trino.
- * Trino+Iceberg INSERT: timestamps need an explicit CAST (varchar→timestamp(6)); money params are
+ * Seed a finalized realized row into the Iceberg gold ledger (CM revenue source) THROUGH the engine.
+ * Iceberg INSERT: timestamps need an explicit CAST (varchar→TIMESTAMP); money params are
  * passed as bigint (the adapter renders bare numerics); updated_at/ingested_at use localtimestamp
  * (timestamp without zone, to match the Iceberg `timestamp` column).
  */
 async function seedRealizedGold(brandId: string, amountMinor: bigint, currency: string, effectiveAt: string) {
-  if (!trinoUp) return;
-  await trinoPool.query(
+  if (!servingUp) return;
+  await servingPool.query(
     `INSERT INTO iceberg.brain_gold.gold_revenue_ledger
        (brand_id, ledger_event_id, order_id, brain_id, event_type, amount_minor, currency_code,
         fee_minor, occurred_at, economic_effective_at, recognition_label, billing_posted_period,
         ingested_at, data_source, updated_at)
      VALUES (?, ?, ?, NULL, 'finalization', ?, ?, 0,
-        CAST(? AS timestamp(6)), CAST(? AS timestamp(6)), 'finalized', '2026-06',
+        CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), 'finalized', '2026-06',
         localtimestamp, 'live', localtimestamp)`,
     [brandId, `${brandId}:fin:${String(amountMinor)}`, `order-${brandId.slice(-4)}`, amountMinor, currency, effectiveAt, effectiveAt],
   );
 }
 
-/** Seed the same logical spend into the Iceberg Silver marketing entity (CM marketing source) THROUGH Trino. */
+/** Seed the same logical spend into the Iceberg Silver marketing entity (CM marketing source) THROUGH the engine. */
 async function seedSpendSilver(brandId: string, spendMinor: bigint, currency: string, statDate: string) {
-  if (!trinoUp) return;
-  await trinoPool.query(
+  if (!servingUp) return;
+  await servingPool.query(
     `INSERT INTO iceberg.brain_silver.silver_marketing_spend
        (brand_id, spend_event_id, platform, level, level_id, parent_id, campaign_id, campaign_name,
         stat_date, spend_minor, currency_code, impressions, clicks, account_timezone, occurred_at, updated_at)
@@ -102,9 +103,9 @@ async function seedSpendSilver(brandId: string, spendMinor: bigint, currency: st
 }
 
 async function clearLakehouse(brandId: string) {
-  if (!trinoUp) return;
-  await trinoPool.query(`DELETE FROM iceberg.brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [brandId]).catch(() => {});
-  await trinoPool.query(`DELETE FROM iceberg.brain_silver.silver_marketing_spend WHERE brand_id = ?`, [brandId]).catch(() => {});
+  if (!servingUp) return;
+  await servingPool.query(`DELETE FROM iceberg.brain_gold.gold_revenue_ledger WHERE brand_id = ?`, [brandId]).catch(() => {});
+  await servingPool.query(`DELETE FROM iceberg.brain_silver.silver_marketing_spend WHERE brand_id = ?`, [brandId]).catch(() => {});
 }
 
 async function cleanup() {
@@ -128,13 +129,13 @@ beforeAll(async () => {
   }
 
   try {
-    // Brain V4 serving: a Trino pool (createTrinoPool) over the iceberg catalog. A bare SELECT 1 proves
-    // the coordinator is reachable; if it isn't, the lakehouse assertions PENDING (trinoUp=false).
-    trinoPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
-    await trinoPool.query('SELECT 1');
-    trinoUp = true;
+    // Brain V4 serving: a duckdb-serving pool (createDuckDbServingPool). A bare SELECT 1 proves
+    // the replica is reachable; if it isn't, the lakehouse assertions PENDING (servingUp=false).
+    servingPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
+    await servingPool.query('SELECT 1');
+    servingUp = true;
   } catch {
-    trinoUp = false;
+    servingUp = false;
   }
 
   if (!pgAvailable) return;
@@ -147,19 +148,19 @@ beforeAll(async () => {
   await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CM','INR','active') ON CONFLICT (id) DO NOTHING`, [BRAND_A, ORG]);
   await superPool.query(`INSERT INTO brand (id,organization_id,display_name,currency_code,status) VALUES ($1,$2,'CMB','INR','active') ON CONFLICT (id) DO NOTHING`, [BRAND_B, ORG_B]);
   // Brand A: ₹1000 finalized revenue (lakehouse) + ₹200 ad spend (lakehouse), both ≤ AS_OF.
-  // Guarded: if Trino is up but the Iceberg marts/views aren't provisioned (fresh env), seeding throws —
-  // degrade to PENDING (trinoUp=false) instead of failing beforeAll. The PG cost config still seeds.
-  if (trinoUp) {
+  // Guarded: duckdb-serving is READ-ONLY, and the marts/views may be unprovisioned (fresh env) — either
+  // way seeding throws; degrade to PENDING (servingUp=false) instead of failing beforeAll. PG costs still seed.
+  if (servingUp) {
     try {
       await seedRealizedGold(BRAND_A, 100000n, 'INR', '2026-06-10');
       await seedSpendSilver(BRAND_A, 20000n, 'INR', '2026-06-12');
     } catch (err) {
       console.warn(
-        `[contribution-margin] Iceberg Gold/Silver seed via Trino failed — serving tier not provisioned; lakehouse assertions PENDING: ${
+        `[contribution-margin] Iceberg Gold/Silver seed via serving failed — read-only tier / not provisioned; lakehouse assertions PENDING: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      trinoUp = false;
+      servingUp = false;
     }
   }
   // Brand A: COGS 40%, shipping 10% (both Trusted) — config on PG.
@@ -171,19 +172,19 @@ afterAll(async () => {
   if (pgAvailable) await cleanup();
   await appPool?.end?.().catch(() => {});
   await superPool?.end?.().catch(() => {});
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('computeContributionMargin (mixed-tier: lakehouse revenue/spend + PG cost config)', () => {
   it('SKIP_IF_UNAVAILABLE', () => {
     if (!pgAvailable) console.warn('[contribution-margin] Postgres unavailable — PENDING.');
-    if (!trinoUp) console.warn('[contribution-margin] Trino serving tier unavailable — lakehouse assertions PENDING (skipped).');
+    if (!servingUp) console.warn('[contribution-margin] duckdb-serving tier unavailable — lakehouse assertions PENDING (skipped).');
     expect(true).toBe(true);
   });
 
   it('CM-1+CM-2: exact integer CM1/CM2 + Trusted confidence', async () => {
-    if (!pgAvailable || !trinoUp) return;
-    const r = await computeContributionMargin(BRAND_A, AS_OF, { pool: appPool, srPool: trinoPool as SilverPool });
+    if (!pgAvailable || !servingUp) return;
+    const r = await computeContributionMargin(BRAND_A, AS_OF, { pool: appPool, srPool: servingPool as SilverPool });
     expect(r.netRevenueMinor).toBe(100000n);
     expect(r.cogsMinor).toBe(40000n);          // 100000 * 4000/10000
     expect(r.variableCostMinor).toBe(10000n);  // 100000 * 1000/10000
@@ -194,23 +195,23 @@ describe('computeContributionMargin (mixed-tier: lakehouse revenue/spend + PG co
   });
 
   it('CM-2b: confidence floors to Estimated when any input is Estimated', async () => {
-    if (!pgAvailable || !trinoUp) return;
+    if (!pgAvailable || !servingUp) return;
     await seedCost(BRAND_A, 'shipping', 1000, 'Estimated'); // downgrade shipping
-    const r = await computeContributionMargin(BRAND_A, AS_OF, { pool: appPool, srPool: trinoPool as SilverPool });
+    const r = await computeContributionMargin(BRAND_A, AS_OF, { pool: appPool, srPool: servingPool as SilverPool });
     expect(r.costConfidence).toBe('Estimated');
     await seedCost(BRAND_A, 'shipping', 1000, 'Trusted'); // restore
   });
 
   it('CM-3: no COGS input → Insufficient (blocks the billing cap)', async () => {
-    if (!pgAvailable || !trinoUp) return;
-    const r = await computeContributionMargin(BRAND_B, AS_OF, { pool: appPool, srPool: trinoPool as SilverPool });
+    if (!pgAvailable || !servingUp) return;
+    const r = await computeContributionMargin(BRAND_B, AS_OF, { pool: appPool, srPool: servingPool as SilverPool });
     expect(r.costConfidence).toBe('Insufficient');
     expect(r.cogsMinor).toBe(0n);
   });
 
   it('CM-4: isolation — brand B sees none of brand A’s revenue (lakehouse seam) or costs', async () => {
-    if (!pgAvailable || !trinoUp) return;
-    const r = await computeContributionMargin(BRAND_B, AS_OF, { pool: appPool, srPool: trinoPool as SilverPool });
+    if (!pgAvailable || !servingUp) return;
+    const r = await computeContributionMargin(BRAND_B, AS_OF, { pool: appPool, srPool: servingPool as SilverPool });
     expect(r.netRevenueMinor).toBe(0n); // brand A's ₹1000 is scoped out by BRAND_PREDICATE
     expect(r.marketingMinor).toBe(0n);
   });

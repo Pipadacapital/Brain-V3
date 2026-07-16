@@ -3,12 +3,12 @@
 # backfill-ledger-brain-id.sh — stamp brain_id onto historical realized_revenue_ledger rows.
 #
 # WHY: migration 0089 backfills from an EMBEDDED Bronze snapshot taken at author-time, so it is a
-# no-op for any data ingested later. This tool reads the LIVE Bronze over Trino — the ADR-0010 lift
-# view iceberg.brain_bronze.collector_events_connect_lifted (the Kafka Connect sink is the ONLY
-# Bronze writer; the view lifts brand_id/event_type over the truly-raw connect table) — so it works
-# for whatever orders are actually in the lakehouse now. NOTE: rows landed by the RETIRED Spark
-# sinks live in the legacy brain_bronze.events/collector_events tables (data kept, not served) and
-# are NOT visible through this view.
+# no-op for any data ingested later. This tool reads the LIVE Bronze over the duckdb-serving HTTP
+# API — the ADR-0010 lift view brain_bronze.collector_events_connect_lifted (the Kafka Connect sink
+# is the ONLY Bronze writer; the view lifts brand_id/event_type over the truly-raw connect table) —
+# so it works for whatever orders are actually in the lakehouse now. NOTE: rows landed by the
+# RETIRED Spark sinks live in the legacy brain_bronze.events/collector_events tables (data kept,
+# not served) and are NOT visible through this view.
 #
 # HOW (deterministic, no salt needed): connector order events (order.live.v1) carry the upstream-
 # pre-hashed customer email under payload.properties.hashed_customer_email — the SAME 64-hex value the
@@ -24,19 +24,39 @@ set -euo pipefail
 
 BRAND="${1:-}"
 if [[ -z "$BRAND" ]]; then echo "usage: $0 <BRAND_UUID>" >&2; exit 2; fi
-# Trino is the serving engine (StarRocks removed); TSV output = tab-separated, no header.
-TRINO="docker exec -i brainv3-trino-1 trino --output-format=TSV --execute"
+# duckdb-serving is the serving engine (Trino removed, ADR-0014); POST /v1/query → {columns,data},
+# flattened to TSV (tab-separated, no header) for the awk stage below.
+SERVING_URL="${DUCKDB_SERVING_URL:-http://localhost:8091}"
+serving_tsv() { # $1 = sql → stdout TSV rows
+  python3 - "$1" "$SERVING_URL" <<'PY'
+import json, sys, urllib.error, urllib.request
+sql, url = sys.argv[1], sys.argv[2]
+req = urllib.request.Request(
+    url + "/v1/query",
+    data=json.dumps({"sql": sql}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+try:
+    with urllib.request.urlopen(req) as resp:
+        body = json.load(resp)
+except urllib.error.HTTPError as e:  # surface the DuckDB message, not just the status
+    sys.stderr.write(f"[backfill-ledger] duckdb-serving HTTP {e.code}: {e.read().decode(errors='replace')[:500]}\n")
+    sys.exit(1)
+for row in body.get("data") or []:
+    sys.stdout.write("\t".join("" if v is None else str(v) for v in row) + "\n")
+PY
+}
 PG="docker exec -i brainv3-postgres-1 psql -U brain -d brain -v ON_ERROR_STOP=1"
 TSV=/tmp/bf-ledger-brainid.tsv
 SQL=/tmp/bf-ledger-brainid.sql
 
 echo ">> Extracting (order_id, hashed_customer_email) from live Bronze (connect lift view) for $BRAND ..."
-$TRINO "SELECT json_extract_scalar(payload,'\$.properties.order_id'),
-               json_extract_scalar(payload,'\$.properties.hashed_customer_email')
-        FROM iceberg.brain_bronze.collector_events_connect_lifted
+serving_tsv "SELECT json_extract_string(payload,'\$.properties.order_id'),
+               json_extract_string(payload,'\$.properties.hashed_customer_email')
+        FROM brain_bronze.collector_events_connect_lifted
         WHERE brand_id='$BRAND' AND event_type='order.live.v1'
-          AND json_extract_scalar(payload,'\$.properties.order_id') IS NOT NULL
-          AND json_extract_scalar(payload,'\$.properties.hashed_customer_email') IS NOT NULL" > "$TSV"
+          AND json_extract_string(payload,'\$.properties.order_id') IS NOT NULL
+          AND json_extract_string(payload,'\$.properties.hashed_customer_email') IS NOT NULL" > "$TSV"
 echo ">> $(wc -l < "$TSV") order→email tuples."
 
 {

@@ -70,7 +70,7 @@ export async function computeAttributedRevenueTimeseries(
       attributed_revenue_minor: string | number;
     }>(
       `SELECT
-         date_format(date_trunc('${grain}', economic_effective_at), '%Y-%m-%d') AS bucket,
+         strftime(date_trunc('${grain}', economic_effective_at), '%Y-%m-%d') AS bucket,
          channel,
          currency_code,
          COALESCE(SUM(credited_revenue_minor), 0) AS attributed_revenue_minor

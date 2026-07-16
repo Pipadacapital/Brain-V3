@@ -2,7 +2,7 @@
  * @brain/metric-engine — computeJourneyPaths (#32a — aggregate journey-path Sankey).
  *
  * The SOLE reader of the path-aggregate Gold mart gold_journey_paths, served through the
- * Trino serving view brain_serving.mv_gold_journey_paths via withSilverBrand (I-ST01 — the
+ * serving view brain_serving.mv_gold_journey_paths via withSilverBrand (I-ST01 — the
  * engine is the only Gold reader; the UI never queries the lakehouse directly). The mart
  * pre-aggregates silver_touchpoint into the top-N most-common ORDERED channel paths per brand
  * (grain brand_id, path_signature), each carrying its journey COUNT, the consecutive
@@ -20,7 +20,7 @@
  * Every ratio is an EXACT integer-basis-point decimal string (no float); null when the denominator
  * is 0 (honest no-data, never divide-by-zero). hasData=false when the brand has zero path rows.
  *
- * @see db/iceberg/spark/gold/gold_journey_paths.py + db/trino/views/mv_gold_journey_paths.sql
+ * @see db/iceberg/duckdb/gold/gold_journey_paths.py + db/iceberg/duckdb/views/mv_gold_journey_paths.sql
  * @see packages/metric-engine/src/journey-mix.ts — the per-touch Silver journey sibling
  */
 
@@ -37,12 +37,12 @@ function ratePct(numerator: bigint, denominator: bigint): string | null {
   return `${whole}.${String(absFrac).padStart(2, '0')}`;
 }
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] ?? '0');
 }
 
-/** Normalize a Trino array<varchar> cell (already a JS array) into a clean string[]. */
+/** Normalize a serving array<varchar> cell (already a JS array) into a clean string[]. */
 function toStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.map((x) => String(x ?? ''));
@@ -149,14 +149,17 @@ export async function computeJourneyPaths(
       [],
     );
 
-    // Sankey edges — UNNEST the edges array<row(step, from_channel, to_channel)> in SQL and SUM the
-    // per-path journey_count by edge. Aggregating in Trino avoids parsing nested ROW arrays in TS.
+    // Sankey edges — UNNEST the edges list<struct(step, from_channel, to_channel)> in SQL and SUM the
+    // per-path journey_count by edge. Aggregating in the engine avoids parsing nested STRUCT arrays in
+    // TS. DuckDB's UNNEST lives in the SELECT clause (one row per element, siblings carried along), so
+    // the inner query explodes edges → e and the outer one groups by the struct's fields. Rows with an
+    // empty edges list (single-node paths) vanish in the UNNEST — same as Trino's CROSS JOIN UNNEST.
     const linkRows = await scope.runScoped<LinkRow>(
       `SELECT e.step AS step, e.from_channel AS from_channel, e.to_channel AS to_channel,
               COALESCE(SUM(journey_count), 0) AS journeys
-         FROM brain_serving.mv_gold_journey_paths
-         CROSS JOIN UNNEST(edges) AS e (step, from_channel, to_channel)
-        WHERE ${BRAND_PREDICATE}
+         FROM (SELECT UNNEST(edges) AS e, journey_count
+                 FROM brain_serving.mv_gold_journey_paths
+                WHERE ${BRAND_PREDICATE})
         GROUP BY e.step, e.from_channel, e.to_channel
         ORDER BY e.step ASC, journeys DESC`,
       [],

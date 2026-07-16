@@ -214,7 +214,7 @@ export function registerSegmentsRoutes(fastify: FastifyInstance, deps: BffDeps):
       const auth = (request as AuthenticatedRequest).auth;
       if (!auth.brandId) return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
       const body = request.body as { definition: Record<string, unknown> };
       const result: ContractSegmentPreviewResult = await previewSegment(auth.brandId, body.definition, { srPool });

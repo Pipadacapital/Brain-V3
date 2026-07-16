@@ -3,10 +3,10 @@
  * B3 — Wave-B Journey API routes (AMD-14): /api/v1/customers/:brainId/journey, /api/v1/journeys/trace.
  *
  * Uses the REAL registerJourneyApiRoutes + REAL analytics use-cases + REAL metric-engine seams over
- * fake Trino/zset pools, with a stub session preHandler (the shape bffProtectedPreHandler produces).
+ * fake serving/zset pools, with a stub session preHandler (the shape bffProtectedPreHandler produces).
  * Proves:
  *   1. tenant from SESSION (auth.brandId) — no brand → honest empty (never a query-param brand),
- *   2. the A.4 cache hot path (source='cache') vs the Trino ledger fallback (source='trino'),
+ *   2. the A.4 cache hot path (source='cache') vs the serving-tier ledger fallback (source='serving'),
  *   3. X-Journey-Version header = derived journey_version (AMD-11) on the ledger path only,
  *   4. validation (bad brainId / missing order_id) → 400; no srPool → 503.
  */
@@ -19,7 +19,7 @@ import type { BffDeps } from './_shared.js';
 const BRAND = 'aaaa1111-0000-4000-8000-aaaaaaaaaaaa';
 const BRAIN = 'bbbb2222-0000-4000-8000-bbbbbbbbbbbb';
 
-/** Fake Trino serving pool: routes canned rows by SQL fragment. */
+/** Fake duckdb-serving pool: routes canned rows by SQL fragment. */
 function fakeSrPool(handler: (sql: string, params: unknown[]) => Array<Record<string, unknown>>): SilverPool {
   return {
     async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -94,7 +94,7 @@ describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
     await app.close();
   });
 
-  it('falls back to the Trino ledger when the cache is cold (source=trino) + sets X-Journey-Version', async () => {
+  it('falls back to the serving ledger when the cache is cold (source=serving) + sets X-Journey-Version', async () => {
     const app = await buildApp({
       srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(2, { data_version: 3, brain_id_asof: BRAIN }), ledgerRow(1)] : [])),
       touchpointCacheReader: fakeTpCache([]), // cold
@@ -102,7 +102,7 @@ describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
     const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey?limit=10` });
     expect(res.statusCode).toBe(200);
     const data = res.json().data;
-    expect(data.source).toBe('trino');
+    expect(data.source).toBe('serving');
     expect(data.journey_version).toBe(3); // max data_version (AMD-11)
     expect(res.headers['x-journey-version']).toBe('3');
     // AUD-JE-34 — the ledger path serializes the B.4 coarse matched_via basis (never null):
@@ -125,12 +125,12 @@ describe('B3 (1) GET /api/v1/customers/:brainId/journey', () => {
     await app.close();
   });
 
-  it('no cache client wired → straight to Trino (the §1.11 cold path)', async () => {
+  it('no cache client wired → straight to the serving ledger (the §1.11 cold path)', async () => {
     const app = await buildApp({
       srPool: fakeSrPool((sql) => (sql.includes('mv_journey_events_current') ? [ledgerRow(1)] : [])),
     });
     const res = await app.inject({ method: 'GET', url: `/api/v1/customers/${BRAIN}/journey` });
-    expect(res.json().data.source).toBe('trino');
+    expect(res.json().data.source).toBe('serving');
     await app.close();
   });
 

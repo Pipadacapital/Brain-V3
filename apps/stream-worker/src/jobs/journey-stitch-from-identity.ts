@@ -13,9 +13,9 @@
  * gold_revenue_ledger(order→brain_id, Bronze-sourced)  ⇒  (order_id, stitched_anon_id, brain_id).
  *
  * STORE SPLIT (V4 StarRocks REMOVAL, migration 0116): the anon source (mv_silver_touchpoint) + the
- * order→brain_id ledger (mv_gold_revenue_ledger) are read from the SERVING tier over TRINO (srPool);
- * the anon→brain_id identity link projection (ops.silver_identity_link) is read from PG (pool) — the
- * operational state moved to the PG `ops` schema.
+ * order→brain_id ledger (mv_gold_revenue_ledger) are read from the SERVING tier over duckdb-serving
+ * (srPool — Trino removed, ADR-0014); the anon→brain_id identity link projection
+ * (ops.silver_identity_link) is read from PG (pool) — the operational state moved to the PG `ops` schema.
  *
  * DETERMINISTIC, NEVER GUESSED (Brain rule: journey-before-attribution, never guess attribution):
  *   - The anon↔customer link comes ONLY from identity resolution (a real `identify`/order signal),
@@ -31,7 +31,7 @@
  * Usage: node dist/jobs/journey-stitch-from-identity.js  (Argo cron, after identity + finalization).
  */
 import { Pool } from 'pg';
-import { createTrinoPool, withTrinoBrand, BRAND_PREDICATE, type TrinoPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, withServingBrand, BRAND_PREDICATE, type ServingPool } from '@brain/metric-engine';
 import { hashIdentifier, normalizeIdentifier } from '@brain/identity-core';
 import { createSaltProvider, type SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import { StitchMapWriter } from '../infrastructure/pg/StitchMapWriter.js';
@@ -59,31 +59,32 @@ export async function runJourneyStitchFromIdentity(deps?: {
   srPool?: SilverPoolLike;
   saltProvider?: SaltProvider;
 }): Promise<StitchFromIdentityResult> {
-  const srHost = cfg.TRINO_HOST;
+  const srHost = cfg.DUCKDB_SERVING_HOST;
   if (!deps?.srPool && srHost === undefined) {
-    log.warn('journey-stitch-from-identity skipped — TRINO_HOST unset (no serving tier to read anons)');
+    log.warn('journey-stitch-from-identity skipped — DUCKDB_SERVING_HOST unset (no serving tier to read anons)');
     return { brands: 0, stitched: 0, ambiguousSkipped: 0, errors: 0 };
   }
 
   const pool = deps?.pool ?? new Pool({ connectionString: DB_URL, max: 3 });
-  // Serving reads over TRINO (Brain V4 — StarRocks removed). The Trino HTTP adapter exposes only
-  // .query(sql, params) → rows[]; wrap it to the legacy [rows, fields] tuple shape so the call sites
-  // (and any injected srPool mock) stay unchanged. Stateless REST → end() is a no-op.
+  // Serving reads over duckdb-serving (Brain V4 — Trino removed, ADR-0014). The serving HTTP
+  // adapter exposes only .query(sql, params) → rows[]; wrap it to the legacy [rows, fields] tuple
+  // shape so the call sites (and any injected srPool mock) stay unchanged. Stateless REST → end()
+  // is a no-op.
   const srPool =
     deps?.srPool ??
     ((): SilverPoolLike => {
-      const trino = createTrinoPool({ baseUrl: `http://${srHost}:${cfg.TRINO_PORT}`, catalog: 'iceberg', schema: 'brain_serving', user: 'brain_core' });
+      const serving = createDuckDbServingPool({ baseUrl: `http://${srHost}:${cfg.DUCKDB_SERVING_PORT}` });
       return {
-        query: async (sql, params) => [await trino.query(sql, params), undefined],
+        query: async (sql, params) => [await serving.query(sql, params), undefined],
         end: async () => undefined,
       };
     })();
   // FAIL-CLOSED BRAND SCOPING (AUD-ARCH-012): every serving read below goes through the
-  // withTrinoBrand seam — the SQL carries the ${BRAND_PREDICATE} sentinel and the seam injects
+  // withServingBrand seam — the SQL carries the ${BRAND_PREDICATE} sentinel and the seam injects
   // `brand_id = ?` (throwing if the sentinel is ever dropped), exactly like the metric-engine
   // and DQ read paths. servingPort adapts the tuple-shaped srPool (kept for injected mocks)
-  // to the seam's TrinoPool port.
-  const servingPort: TrinoPool = {
+  // to the seam's ServingPool port.
+  const servingPort: ServingPool = {
     query: async <T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> =>
       (await srPool.query(sql, params))[0] as T[],
   };
@@ -105,7 +106,7 @@ export async function runJourneyStitchFromIdentity(deps?: {
 
         // 1. Distinct raw journey anons from the Silver serving view (brand-scoped via the
         // fail-closed seam; sentinel LAST — the seam appends brand.id as the last param).
-        const anonRows = await withTrinoBrand(servingPort, brand.id, (scope) =>
+        const anonRows = await withServingBrand(servingPort, brand.id, (scope) =>
           scope.runScoped<{ brain_anon_id: string }>(
             `SELECT DISTINCT brain_anon_id FROM brain_serving.mv_silver_touchpoint
               WHERE brain_anon_id IS NOT NULL AND brain_anon_id <> '' AND ${BRAND_PREDICATE}`,
@@ -125,7 +126,7 @@ export async function runJourneyStitchFromIdentity(deps?: {
         // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): identity is the Neo4j SoR; the active hash→brain_id
         // edges are materialized into ops.silver_identity_link by the identity-export job. V4 (StarRocks
         // REMOVAL, migration 0116) moved that projection into the PG `ops` schema — read it from the PG
-        // pool (not srPool). The anon source (silver_touchpoint) + ledger reads stay on StarRocks.
+        // pool (not srPool). The anon source (silver_touchpoint) + ledger reads stay on the serving tier.
         const anonHashes = [...hashToRaw.keys()];
         let linkRows: Array<{ identifier_value: string; brain_id: string }> = [];
         if (anonHashes.length > 0) {
@@ -156,12 +157,12 @@ export async function runJourneyStitchFromIdentity(deps?: {
 
         // 5. brain_id → orders, then upsert the stitch (order_id, raw anon, brain_id).
         // MEDALLION REALIGNMENT (Epic 1): read orders from the lakehouse Gold ledger
-        // (brain_serving.mv_gold_revenue_ledger, Bronze-sourced) via the Trino serving pool — NOT the PG ledger.
+        // (brain_serving.mv_gold_revenue_ledger, Bronze-sourced) via the serving pool — NOT the PG ledger.
         const brainIds = [...brainToAnon.keys()];
         const inPlaceholders = brainIds.map(() => '?').join(',');
         // Brand-scoped via the seam: IN-list placeholders first, ${BRAND_PREDICATE} LAST so the
         // seam-appended brand.id binds positionally to the sentinel's `?`.
-        const orderRows = await withTrinoBrand(servingPort, brand.id, (scope) =>
+        const orderRows = await withServingBrand(servingPort, brand.id, (scope) =>
           scope.runScoped<{ order_id: string; brain_id: string }>(
             `SELECT DISTINCT order_id, brain_id
                FROM brain_serving.mv_gold_revenue_ledger
@@ -207,7 +208,7 @@ export async function runJourneyStitchFromIdentity(deps?: {
 
 /**
  * Process exit code for a completed run. Non-zero ONLY on a SYSTEMIC failure — every attempted brand
- * failed (errors === brands, brands > 0), signalling an infra problem (KMS/Trino/DB down) rather
+ * failed (errors === brands, brands > 0), signalling an infra problem (KMS/serving/DB down) rather
  * than isolated per-tenant data states. A single brand with unprovisioned/stale crypto must NOT fail
  * the whole cross-brand batch (the poison-pill that used to fail the v4-refresh step). Pure + exported
  * so the policy is unit-tested without spawning a process.

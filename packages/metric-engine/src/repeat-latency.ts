@@ -1,7 +1,7 @@
 /**
  * @brain/metric-engine — computeRepeatLatency (#32b — time-to-2nd-purchase retention latency).
  *
- * The SOLE reader of the Gold mart gold_repeat_latency, served through the Trino serving view
+ * The SOLE reader of the Gold mart gold_repeat_latency, served through the serving view
  * brain_serving.mv_gold_repeat_latency via withSilverBrand (I-ST01 — the engine is the only Gold
  * reader; the UI never queries the lakehouse directly). The mart, per brand, computes the
  * distribution of INTEGER days between each customer's 1st and 2nd order from silver_order_state.
@@ -17,24 +17,24 @@
  * day count; NULL when the brand has no repeat customers). Σ bucket_customers == second_order_customers
  * (the median's denominator). hasData=false when the brand has zero rows (no customers yet).
  *
- * @see db/iceberg/spark/gold/gold_repeat_latency.py + db/trino/views/mv_gold_repeat_latency.sql
+ * @see db/iceberg/duckdb/gold/gold_repeat_latency.py + db/iceberg/duckdb/views/mv_gold_repeat_latency.sql
  * @see packages/metric-engine/src/retention.ts — the cohort-grain retention sibling
  */
 
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] ?? '0');
 }
 
-/** Coerce a nullable Trino numeric to bigint | null (null stays null — honest "no repeat customers"). */
+/** Coerce a nullable serving numeric to bigint | null (null stays null — honest "no repeat customers"). */
 function toBigOrNull(v: string | number | null | undefined): bigint | null {
   return v === null || v === undefined ? null : BigInt(String(v).split('.')[0] ?? '0');
 }
 
-/** Coerce a nullable Trino integer to number | null. */
+/** Coerce a nullable serving integer to number | null. */
 function toNumOrNull(v: string | number | null | undefined): number | null {
   return v === null || v === undefined ? null : Number(String(v).split('.')[0] ?? '0');
 }

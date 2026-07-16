@@ -169,7 +169,7 @@ export function createServingCacheReader(config: ServingCacheReaderConfig): Serv
         // computeOutcome === 'pending' → the cache GET failed before compute ran → direct read.
         recordCacheResult('error', metricId);
         console.warn(
-          `[metric-engine] serving cache unavailable — reading Trino directly: ${err instanceof Error ? err.message : String(err)}`,
+          `[metric-engine] serving cache unavailable — reading duckdb-serving directly: ${err instanceof Error ? err.message : String(err)}`,
         );
         return compute();
       }

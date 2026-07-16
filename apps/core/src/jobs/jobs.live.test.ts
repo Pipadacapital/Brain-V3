@@ -4,24 +4,24 @@
  * the orchestration: enumeration works, every brand is processed, one brand's failure is isolated,
  * and the run is idempotent (safe to re-run on a schedule).
  *
- * REQUIRES Postgres (+ Trino-over-Iceberg for the attribution job). Both jobs are idempotent, so
+ * REQUIRES Postgres (+ duckdb-serving-over-Iceberg for the attribution job). Both jobs are idempotent, so
  * running them against the dev lakehouse is safe.
  *
- * BRAIN V4: StarRocks is REMOVED. The Gold serving read runs over TRINO (createTrinoPool) — the same
- * Trino-over-Iceberg serving path the app uses in production. srPool is a stateless Trino HTTP pool.
+ * BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014). The Gold serving read runs over DUCKDB-SERVING
+ * (createDuckDbServingPool) — the same serving path the app uses in production. srPool is a stateless
+ * duckdb-serving HTTP pool.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { createPool, type DbPool } from '@brain/db';
-import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import { runRecommendationDetectors } from './recommendation-detectors.js';
 import { runAttributionReconcile } from './attribution-reconcile.js';
 
 const PG_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 let dbPool: DbPool;
 let pgPool: pg.Pool;
@@ -33,7 +33,7 @@ beforeAll(async () => {
     pgPool = new pg.Pool({ connectionString: PG_URL, connectionTimeoutMillis: 4000 });
     await pgPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: PG_URL });
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     available = true;
   } catch {
     available = false;
@@ -43,7 +43,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (dbPool) await dbPool.end();
   if (pgPool) await pgPool.end();
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('scheduled job entrypoints (live)', () => {

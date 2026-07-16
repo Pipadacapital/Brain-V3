@@ -49,9 +49,9 @@ export interface MetricCatalogEntry {
   readonly owner: string;
   readonly description: string;
   readonly examples: readonly string[];
-  /** grain → compiled Trino view name. */
+  /** grain → compiled serving view name (two-part, local brain_serving schema). */
   readonly views: Record<string, string>;
-  /** Spark pre-agg table names (interactive time-grains only). */
+  /** Iceberg pre-agg table names (interactive time-grains only). */
   readonly preaggs: readonly string[];
   /** How §1.4 probabilistic-exclusion is guaranteed for this metric. */
   readonly deterministic_exclusion: DeterministicExclusion;

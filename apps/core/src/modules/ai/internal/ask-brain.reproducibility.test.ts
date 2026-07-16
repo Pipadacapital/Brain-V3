@@ -27,9 +27,9 @@ const FIXED_REALIZED_MINOR = '123456'; // the deterministic seam value (INR mino
 const seamAsOfCalls: string[] = [];
 
 /**
- * A minimal deterministic fake TRINO serving pool (TrinoPool shape — BRAIN V4, e8f1f999): the
+ * A minimal deterministic fake TRINO serving pool (ServingPool shape — BRAIN V4, e8f1f999): the
  * realized + provisional revenue seams read brain_serving.mv_gold_revenue_ledger via
- * withSilverBrand, which now delegates to withTrinoBrand — `query(sql, params)` returns the ROW
+ * withSilverBrand, which now delegates to withServingBrand — `query(sql, params)` returns the ROW
  * ARRAY directly (no mysql2 [rows, fields] tuple, no getConnection/SET session vars; the
  * `${BRAND_PREDICATE}` → `brand_id = ?` injection is the sole isolation). The realized value is
  * CONSTANT — so the only way the two runs could differ is a snapshot-decode bug, which this test

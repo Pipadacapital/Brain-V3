@@ -13,19 +13,19 @@
  *   5. [EVAL GATE] promoteModel to production blocks a sklearn model with sub-baseline AUC (0.01)
  *      via EvalGateError — the historical gap where any metrics could ship is closed.
  *
- * BRAIN V4: StarRocks is REMOVED. The Gold customer-score read runs over TRINO (the brain_serving Trino
+ * BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014). The Gold customer-score read runs over DUCKDB-SERVING (the brain_serving
  * view mv_gold_customer_scores over iceberg.brain_gold.gold_customer_scores) through the metric-engine
- * seam; srPool is a Trino pool (createTrinoPool). The inference-log write goes to PG
- * ops.ops_ml_prediction_log. Trino-dependent assertions degrade to the honest no_data path when the
+ * seam; srPool is a duckdb-serving pool (createDuckDbServingPool). The inference-log write goes to PG
+ * ops.ops_ml_prediction_log. Serving-dependent assertions degrade to the honest no_data path when the
  * serving tier is unavailable / has no score row — never a hard suite failure on a missing engine.
  *
- * REQUIRES: Postgres (migrations 0083 + 0116 applied). The Gold score read additionally needs Trino on
- * :8090 with the brain_serving views over Iceberg; absent Trino → the score read returns no_data (PENDING).
+ * REQUIRES: Postgres (migrations 0083 + 0116 applied). The Gold score read additionally needs duckdb-serving
+ * on :8091 with the brain_serving views over Iceberg; absent serving → the score read returns no_data (PENDING).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { createPool, type DbPool } from '@brain/db';
-import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import {
   listModels,
   promoteModel,
@@ -38,10 +38,9 @@ import {
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
 const APP_URL =
   process.env['BRAIN_APP_DATABASE_URL'] ?? 'postgres://brain_app:brain_app@localhost:5432/brain';
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 const BRAND_A = 'c5111111-0a1a-4a1a-8a1a-000000000001';
 const BRAND_B = 'c5111111-0a1a-4a1a-8a1a-000000000002';
@@ -53,9 +52,9 @@ const CORR = 'ml-platform-live-test';
 let superPool: pg.Pool;
 let rawPool: pg.Pool;
 let dbPool: DbPool;
-let srPool: SilverPool; // Brain V4: a Trino pool (createTrinoPool) — the serving read port.
+let srPool: SilverPool; // Brain V4: a duckdb-serving pool (createDuckDbServingPool) — the serving read port.
 let pgAvailable = false;
-let trinoUp = false;
+let servingUp = false;
 let prodModelA = '';
 let stagingModelA = '';
 /** A sklearn staging model with auc=0.01 — should be blocked by the eval gate. */
@@ -123,10 +122,10 @@ beforeAll(async () => {
     await superPool.query('SELECT 1');
     rawPool = new pg.Pool({ connectionString: APP_URL, connectionTimeoutMillis: 4000 });
     dbPool = await createPool({ connectionString: APP_URL });
-    // Brain V4 serving: a Trino pool (createTrinoPool) — used ONLY for the Gold score read via the
+    // Brain V4 serving: a duckdb-serving pool (createDuckDbServingPool) — used ONLY for the Gold score read via the
     // metric-engine seam (brain_serving.mv_gold_customer_scores over Iceberg). The inference-log write
     // targets PG ops.ops_ml_prediction_log (migration 0116, created by migrate). StarRocks is removed.
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     await cleanup();
     await seed();
     pgAvailable = true;
@@ -134,12 +133,12 @@ beforeAll(async () => {
     pgAvailable = false;
   }
 
-  // Probe Trino independently — the Gold score read PENDINGs (no_data) when the serving tier is down.
+  // Probe duckdb-serving independently — the Gold score read PENDINGs (no_data) when the serving tier is down.
   try {
     await srPool.query('SELECT 1');
-    trinoUp = true;
+    servingUp = true;
   } catch {
-    trinoUp = false;
+    servingUp = false;
   }
 });
 
@@ -148,7 +147,7 @@ afterAll(async () => {
   if (dbPool) await dbPool.end();
   if (rawPool) await rawPool.end();
   if (superPool) await superPool.end();
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 async function productionCount(brand: string): Promise<number> {
@@ -171,8 +170,8 @@ async function predictionCount(brand: string): Promise<number> {
 describe('ml platform (live)', () => {
   it('SKIP_IF_NO_PG', () => {
     if (!pgAvailable) console.warn('[ml-platform] Postgres unavailable — PENDING.');
-    if (!trinoUp)
-      console.warn('[ml-platform] Trino serving tier unavailable — Gold score read PENDING (no_data path).');
+    if (!servingUp)
+      console.warn('[ml-platform] duckdb-serving tier unavailable — Gold score read PENDING (no_data path).');
     expect(true).toBe(true);
   });
 
@@ -225,11 +224,11 @@ describe('ml platform (live)', () => {
 
   it('4. serveCustomerScore writes exactly one lakehouse prediction row + is cross-brand isolated', async () => {
     if (!pgAvailable) return;
-    // Find a brain_id with a Gold score for SOME brand via the Trino serving view. If Trino is down or
+    // Find a brain_id with a Gold score for SOME brand via the serving view. If duckdb-serving is down or
     // the view is empty, assert the honest no_data path (nothing logged).
     let scoredBrand: string | null = null;
     let scoredBrainId: string | null = null;
-    if (trinoUp) {
+    if (servingUp) {
       try {
         const rows = await srPool.query<{ brand_id: string; brain_id: string }>(
           `SELECT brand_id, brain_id FROM brain_serving.mv_gold_customer_scores LIMIT 1`,

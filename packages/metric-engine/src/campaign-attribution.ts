@@ -1,7 +1,7 @@
 /**
  * @brain/metric-engine — computeCampaignAttribution (#32c — per-campaign attributed revenue + ROAS).
  *
- * The SOLE reader of the Gold mart gold_campaign_attribution, served through the Trino serving view
+ * The SOLE reader of the Gold mart gold_campaign_attribution, served through the serving view
  * brain_serving.mv_gold_campaign_attribution via withSilverBrand (I-ST01 — the engine is the only
  * Gold reader; the UI never queries the lakehouse directly). The mart rolls the SIGNED attribution
  * credit ledger up to per-(brand_id, platform, campaign_id, model_id, currency_code):
@@ -19,7 +19,7 @@
  * 4dp decimal string from integer operands (no float); null when spend = 0 (honest — never a
  * fabricated ∞). hasData=false when the brand has no campaign-attribution rows for the model.
  *
- * @see db/iceberg/spark/gold/gold_campaign_attribution.py + db/trino/views/mv_gold_campaign_attribution.sql
+ * @see db/iceberg/duckdb/gold/gold_campaign_attribution.py + db/iceberg/duckdb/views/mv_gold_campaign_attribution.sql
  * @see packages/metric-engine/src/attribution-campaign-roas.ts — the per-touch ledger ROAS sibling
  */
 
@@ -27,12 +27,12 @@ import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 import type { AttributionModelId } from './attribution-models.js';
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] ?? '0');
 }
 
-/** Coerce a nullable Trino numeric to bigint | null (null stays null — honest "no spend, no ROAS"). */
+/** Coerce a nullable serving numeric to bigint | null (null stays null — honest "no spend, no ROAS"). */
 function toBigOrNull(v: string | number | null | undefined): bigint | null {
   return v === null || v === undefined ? null : BigInt(String(v).split('.')[0] ?? '0');
 }

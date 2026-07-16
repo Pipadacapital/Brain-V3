@@ -72,7 +72,7 @@ export async function computeCampaignTimeseries(
       attributed_revenue_minor: string | number;
     }>(
       `SELECT
-         date_format(date_trunc('${grain}', economic_effective_at), '%Y-%m-%d') AS bucket,
+         strftime(date_trunc('${grain}', economic_effective_at), '%Y-%m-%d') AS bucket,
          campaign_id,
          channel,
          currency_code,

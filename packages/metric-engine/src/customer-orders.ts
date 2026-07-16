@@ -45,10 +45,10 @@ function toIso(v: unknown): string | null {
 // adds an opaque keyset cursor over (sort_ts DESC, order_id ASC) — the proven journey-list pattern —
 // so each page is an index-friendly strictly-older slice, never OFFSET, never a bigger re-scan.
 //
-// SORT KEY: state_effective_at is nullable ("unknown"), and Trino sorts NULLs FIRST under DESC — so
+// SORT KEY: state_effective_at is nullable ("unknown"), and the served ordering places NULLs FIRST under DESC — so
 // the paged variant sorts on `date_trunc('second', COALESCE(state_effective_at, TIMESTAMP
 // '9999-12-31 23:59:59 UTC'))`: the COALESCE sentinel reproduces the NULLS-FIRST-on-DESC placement
-// with a concrete, cursor-encodable value, and the date_trunc matches the trino-adapter's
+// with a concrete, cursor-encodable value, and the date_trunc matches the serving adapter's
 // timestamp-param normalization (it drops fractional seconds — a sub-second sort key would skip
 // rows across pages). Ties within a second break on order_id ASC (unique per brand → total order).
 
@@ -130,7 +130,7 @@ const SORT_TS =
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
  * @param brainId - The resolved customer's brain_id.
- * @param deps    - the Trino serving pool (createTrinoPool) injected at the root.
+ * @param deps    - the serving pool (createDuckDbServingPool) injected at the root.
  * @param params  - page size (clamped 1..200; default 50) + optional keyset continuation.
  */
 export async function getCustomerOrdersPage(
@@ -185,7 +185,7 @@ export async function getCustomerOrdersPage(
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body).
  * @param brainId - The resolved customer's brain_id.
- * @param deps    - the Trino serving pool (createTrinoPool) injected at the root.
+ * @param deps    - the serving pool (createDuckDbServingPool) injected at the root.
  * @param limit   - max orders to return (clamped 1..200; default 50).
  */
 export async function getCustomerOrders(

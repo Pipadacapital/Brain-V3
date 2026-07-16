@@ -26,7 +26,7 @@ describe('D2.catalog — the discovery catalog + MCP tool defs', () => {
   it('D2.catalog.views_per_grain — each metric exposes a compiled view for each declared grain', () => {
     for (const e of buildCatalog(reg.all).metrics) {
       for (const g of e.grain) {
-        expect(e.views[g], `${e.name}@${g}`).toBe(`iceberg.brain_serving.mv_metric_${e.name}_${g}`);
+        expect(e.views[g], `${e.name}@${g}`).toBe(`brain_serving.mv_metric_${e.name}_${g}`);
       }
     }
   });

@@ -19,6 +19,6 @@ SELECT
     currency_code,
     channel,
     SUM(cm1_minor) AS cm1_minor
-FROM iceberg.brain_serving.semantic_order
+FROM brain_serving.semantic_order
   WHERE conversion_at IS NOT NULL
 GROUP BY 1, 2, 3, 4;

@@ -145,11 +145,11 @@ export async function computeInsights(
           prior_minor: string | number;
         }>(
           `SELECT currency_code, event_type,
-                  SUM(CASE WHEN occurred_at >= CAST('${tsCurFrom}' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS cur_minor,
-                  SUM(CASE WHEN occurred_at >= CAST('${tsPriorFrom}' AS timestamp(6) with time zone)
-                            AND occurred_at <  CAST('${tsCurFrom}' AS timestamp(6) with time zone) THEN amount_minor ELSE 0 END) AS prior_minor
+                  SUM(CASE WHEN occurred_at >= CAST('${tsCurFrom}' AS TIMESTAMPTZ) THEN amount_minor ELSE 0 END) AS cur_minor,
+                  SUM(CASE WHEN occurred_at >= CAST('${tsPriorFrom}' AS TIMESTAMPTZ)
+                            AND occurred_at <  CAST('${tsCurFrom}' AS TIMESTAMPTZ) THEN amount_minor ELSE 0 END) AS prior_minor
              FROM brain_serving.mv_gold_revenue_ledger
-            WHERE occurred_at >= CAST('${tsPriorFrom}' AS timestamp(6) with time zone)
+            WHERE occurred_at >= CAST('${tsPriorFrom}' AS TIMESTAMPTZ)
               AND ${BRAND_PREDICATE}
             GROUP BY currency_code, event_type`,
           [],

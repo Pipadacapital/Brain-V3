@@ -10,8 +10,9 @@
 #   3. migrate     — apply DB migrations (APP_ENV=local-prod) before anything reads PG
 #   4. infra       — docker compose up the rest (core+ai profiles) and poll until healthy
 #   5. bootstrap   — seed LocalStack Secrets Manager + KMS (per-brand keyring/secrets)
-#   6. refresh     — one-shot medallion refresh: builds Silver→Gold + the Trino serving
-#                    views so dashboards render (honest empty state on a cold DB, not 500s)
+#   6. refresh     — one-shot medallion refresh: builds Silver→Gold so dashboards render
+#                    (honest empty state on a cold DB, not 500s); the serving views live in
+#                    the duckdb-serving container, which applies them at startup (ADR-0014)
 #   7. apps        — start core + web + collector + stream-worker (APP_ENV=local-prod)
 #
 # Bronze landing is the compose kafka-connect service (ADR-0010) — it comes up with the infra
@@ -25,8 +26,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 ENV_FILE="$ROOT/.env.local-prod"
-# core now folds in the old ingest + lakehouse infra (kafka/apicurio/minio/iceberg/trino) plus the
-# kafka-connect Bronze landing writer (ADR-0010); `ai` adds litellm.
+# core now folds in the old ingest + lakehouse infra (kafka/apicurio/minio/iceberg/duckdb-serving)
+# plus the kafka-connect Bronze landing writer (ADR-0010); `ai` adds litellm.
 COMPOSE_PROFILES=(--profile core --profile ai)
 
 step() { printf '\n\033[1;36m▶ %s\033[0m\n' "$1"; }
@@ -78,13 +79,13 @@ compose_up_healthy
 step "5/7 bootstrap — seed LocalStack Secrets Manager + KMS"
 pnpm bootstrap
 
-# ── 6. one-shot medallion refresh (creates the Trino serving views) ─────────
+# ── 6. one-shot medallion refresh (Silver→Gold; serving views apply in duckdb-serving) ──
 # Spark→DuckDB cutover: the refresh is now tools/dev/duckdb-refresh.sh (via `pnpm dev:v4-refresh`),
 # which runs the DuckDB transform jobs (db/iceberg/duckdb/**) with the host python venv. The DuckDB
 # jobs read the env the caller exports (S3_ENDPOINT / ICEBERG_* / AWS_* / NEO4J_URI) — see the
 # duckdb-refresh.sh header for the exact contract. ONESHOT is a no-op here (the DuckDB refresh always
 # runs a single pass); it is kept for call-site compatibility with the old loop.
-step "6/7 refresh — one-shot Silver→Gold→Trino serving views"
+step "6/7 refresh — one-shot Silver→Gold (duckdb-serving picks up new snapshots on its next epoch)"
 ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh || \
   echo "  ⚠ refresh reported issues (often just an empty cold DB) — continuing; re-run 'pnpm dev:v4-refresh' anytime."
 

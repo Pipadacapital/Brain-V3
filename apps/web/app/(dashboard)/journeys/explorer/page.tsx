@@ -8,7 +8,7 @@
  *   2. Customer timeline — a single customer's (brain_id) newest-first event feed.
  *
  * All reads go through the BFF journey endpoints via the use-journey hooks (the sole read path) —
- * never Trino / the ledger directly. Every state is honest: nothing is searched until the user
+ * never the serving tier / the ledger directly. Every state is honest: nothing is searched until the user
  * submits, a no_data response renders an explained empty, and errors surface a support reference.
  */
 import { JourneyExplorerContent } from './journey-explorer-content';

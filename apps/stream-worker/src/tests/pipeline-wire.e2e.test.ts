@@ -11,7 +11,7 @@
  *     → the Kafka Connect Iceberg sink (the compose kafka-connect service — the SOLE Bronze writer,
  *       ADR-0010, ~30s commit interval) APPENDS the record into Iceberg Bronze
  *       (brain_bronze.collector_events_connect; the PG bronze write is retired)
- *     → the row is readable over Trino via the lift view, brand-scoped
+ *     → the row is readable over duckdb-serving via the lift view, brand-scoped
  *     → wrong-brand-scoped read → 0 rows (read-seam tenant isolation)
  *
  * The event is order.live.v1 (SERVER_TRUSTED lane) so nothing gates it downstream (the pixel-lane
@@ -19,7 +19,7 @@
  * proves the WIRING from the HTTP edge all the way to Iceberg Bronze.
  *
  * REQUIRES the `lakehouse` docker profile (collector deps: Kafka + PG; plus kafka-connect + Iceberg
- * REST + MinIO + Trino). The collector runs as a child process; the Connect sink runs in Docker.
+ * REST + MinIO + duckdb-serving). The collector runs as a child process; the Connect sink runs in Docker.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -29,7 +29,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import { makeBronzeTrinoPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
+import { makeBronzeServingPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
 
 // ── Test config ────────────────────────────────────────────────────────────────
 
@@ -150,7 +150,7 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
   let collectorProc: ChildProcess | null = null;
   let collectorPort: number;
   let superPool: Pool | null = null;     // collector_spool (operational PG)
-  let sr: BronzePool | null = null;      // Trino — reads Iceberg Bronze (the SoR)
+  let sr: BronzePool | null = null;      // duckdb-serving — reads Iceberg Bronze (the SoR)
   let infraAvailable = false;
 
   // Per-run unique event UUID (Iceberg event_id is a string; UUID is fine).
@@ -162,11 +162,11 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
     const [rpHost, rpPortStr] = (broker ?? 'localhost:9092').split(':');
     const rpOk = await tcpReachable(rpHost ?? 'localhost', Number(rpPortStr ?? 9092));
     const pgOk = await tcpReachable('127.0.0.1', 5432);
-    sr = makeBronzeTrinoPool();
+    sr = makeBronzeServingPool();
     const lakehouseOk = await icebergBronzeAvailable(sr);
     infraAvailable = rpOk && pgOk && lakehouseOk;
     if (!infraAvailable) {
-      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Kafka/PG/Trino-Iceberg)');
+      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Kafka/PG/duckdb-serving)');
       return;
     }
 

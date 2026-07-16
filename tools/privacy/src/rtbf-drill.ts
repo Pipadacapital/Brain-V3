@@ -12,7 +12,8 @@
  *                         DEK-shred-in-prod HYPOTHESIS is proven exactly here)
  *                • PG:    identity.pii_erasure_log vault_shredded + completed_at + surrogate
  *                • PG:    contact_pii rows = 0
- *                • Trino: Bronze rows matching the subject (hash / anon_id) = 0
+ *                • Bronze: rows matching the subject (hash / anon_id) = 0, read over the
+ *                         duckdb-serving HTTP API (iceberg catalog)
  *   4. EVIDENCE — write a JSON evidence file (counts + timestamps + hash prefixes, no raw PII
  *                beyond the synthetic address) for the compliance record.
  *
@@ -38,7 +39,7 @@
  *   COLLECTOR_URL=http://localhost:8787 CORE_API_URL=http://localhost:3001 \
  *   CORE_SESSION_COOKIE='brain_session=…' \
  *   DATABASE_URL=postgres://… NEO4J_URI=bolt://localhost:7687 NEO4J_USER=neo4j NEO4J_PASSWORD=… \
- *   TRINO_URL=http://localhost:8080 \
+ *   DUCKDB_SERVING_URL=http://localhost:8091 \
  *   pnpm --filter @brain/tool-privacy drill
  *
  * Optional: RTBF_DRILL_SEED=skip + RTBF_DRILL_SUBJECT_EMAIL=rtbf-drill+…@rtbf-drill.invalid
@@ -46,7 +47,7 @@
  *   guard still applies. RTBF_DRILL_IDENTITY_SETTLE_S (default 60) — seed → trigger wait for the
  *   identity bridge to mint the brain_id (an unlinked subject makes the orchestrator skip as
  *   no_brain_id, which the drill reports as a clear failure). RTBF_DRILL_TIMEOUT_S (default 900)
- *   — Bronze DELETE is async (Argo workflow + Spark), so the deadline is generous.
+ *   — Bronze DELETE is async (Argo workflow + the PyIceberg erasure job), so the deadline is generous.
  *   RTBF_DRILL_STRICT=1 — raw-email Bronze residual becomes FATAL (default: WARN; the payload-path
  *   sweep matches pre-hashed identifier paths + raw anon/device ids, NOT raw-email text — rows
  *   carrying only the raw email age out via raw-lane retention).
@@ -99,9 +100,10 @@ const DATABASE_URL = requireEnv('DATABASE_URL', 'PG (ops) for keyring/erasure-lo
 const NEO4J_URI = requireEnv('NEO4J_URI', 'identity graph asserts');
 const NEO4J_USER = requireEnv('NEO4J_USER', 'identity graph asserts');
 const NEO4J_PASSWORD = requireEnv('NEO4J_PASSWORD', 'identity graph asserts');
-const TRINO_URL = requireEnv('TRINO_URL', 'Bronze-row asserts (iceberg catalog)');
-const TRINO_USER = env('TRINO_USER') ?? 'brain';
-const TRINO_CATALOG = env('TRINO_CATALOG') ?? 'iceberg';
+const DUCKDB_SERVING_URL = requireEnv(
+  'DUCKDB_SERVING_URL',
+  'Bronze-row asserts over the duckdb-serving HTTP API (iceberg catalog)',
+);
 
 const SEED_MODE = env('RTBF_DRILL_SEED') ?? 'pixel'; // 'pixel' | 'skip'
 const IDENTITY_SETTLE_S = Number(env('RTBF_DRILL_IDENTITY_SETTLE_S') ?? '60');
@@ -139,40 +141,33 @@ function log(msg: string): void {
   console.log(`[rtbf-drill] ${nowIso()} ${msg}`);
 }
 
-/** Minimal Trino REST client (POST /v1/statement → follow nextUri) — read-only queries. */
-async function trinoQuery(sql: string): Promise<unknown[][]> {
-  const res = await fetch(`${TRINO_URL}/v1/statement`, {
+/** Minimal duckdb-serving client (single POST /v1/query, no polling) — read-only queries. */
+async function servingQuery(sql: string): Promise<unknown[][]> {
+  const res = await fetch(`${DUCKDB_SERVING_URL}/v1/query`, {
     method: 'POST',
-    headers: { 'X-Trino-User': TRINO_USER, 'Content-Type': 'text/plain' },
-    body: sql,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql }),
   });
-  if (!res.ok) throw new Error(`trino POST ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  let page = (await res.json()) as {
-    nextUri?: string;
+  const body = (await res.json().catch(() => ({}))) as {
     data?: unknown[][];
     error?: { message?: string };
   };
-  const rows: unknown[][] = [];
-  for (;;) {
-    if (page.error) throw new Error(`trino: ${page.error.message}`);
-    if (page.data) rows.push(...page.data);
-    if (!page.nextUri) break;
-    const next = await fetch(page.nextUri, { headers: { 'X-Trino-User': TRINO_USER } });
-    if (!next.ok) throw new Error(`trino GET ${next.status}`);
-    page = (await next.json()) as typeof page;
+  if (!res.ok) {
+    throw new Error(`duckdb-serving HTTP ${res.status}: ${body.error?.message ?? 'unknown error'}`);
   }
-  return rows;
+  if (body.error) throw new Error(`duckdb-serving: ${body.error.message}`);
+  return body.data ?? [];
 }
 
-/** Single-quote-escape for the (drill-generated, shape-validated) literals in Trino SQL. */
+/** Single-quote-escape for the (drill-generated, shape-validated) literals in serving SQL. */
 function sq(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
 }
 
 async function bronzeCount(likeNeedle: string): Promise<number> {
-  const rows = await trinoQuery(
-    `SELECT count(*) FROM ${TRINO_CATALOG}.brain_bronze.collector_events_connect ` +
-    `WHERE json_extract_scalar(payload, '$.brand_id') = ${sq(BRAND_ID)} ` +
+  const rows = await servingQuery(
+    `SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect ` +
+    `WHERE json_extract_string(payload, '$.brand_id') = ${sq(BRAND_ID)} ` +
     `AND payload LIKE ${sq(`%${likeNeedle}%`)}`,
   );
   return Number(rows[0]?.[0] ?? 0);
@@ -345,8 +340,8 @@ async function main(): Promise<void> {
         const n = Number(r.rows[0]?.n ?? 0);
         return { name: 'pg_contact_pii_zero', pass: n === 0, fatal: true, detail: `contact_pii_rows=${n}` };
       },
-      // Trino Bronze: subject-keyed rows gone (anon id + identifier hash — the predicates the
-      // payload-path sweep actually matches). Async (Argo → Spark DELETE) — this is the slow one.
+      // Bronze: subject-keyed rows gone (anon id + identifier hash — the predicates the
+      // payload-path sweep actually matches). Async (Argo → PyIceberg DELETE) — this is the slow one.
       async (c) => {
         const byAnon = await bronzeCount(anonId);
         const byHash = c.subjectHash ? await bronzeCount(c.subjectHash) : 0;
@@ -355,7 +350,7 @@ async function main(): Promise<void> {
           detail: `rows_by_anon_id=${byAnon} rows_by_hash=${byHash}`,
         };
       },
-      // Trino Bronze: raw-email residual (WARN unless STRICT — see header).
+      // Bronze: raw-email residual (WARN unless STRICT — see header).
       async () => {
         const byEmail = await bronzeCount(subjectEmail);
         return {

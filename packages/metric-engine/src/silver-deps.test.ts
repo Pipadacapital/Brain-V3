@@ -2,7 +2,7 @@
  * silver-deps.test.ts — withSilverBrand over TRINO: graceful degradation + fail-closed brand predicate.
  *
  * Brain V4: the Silver/Gold seam runs over Trino (Iceberg), not StarRocks. withSilverBrand delegates to
- * withTrinoBrand but keeps the StarRocks-era contract the ~49 callers depend on:
+ * withServingBrand but keeps the StarRocks-era contract the ~49 callers depend on:
  *   • a missing brain_serving view / Iceberg table (fresh/dev env not yet provisioned, or a transient
  *     outage surfaced as "does not exist") degrades a read to an EMPTY result so the dashboard renders an
  *     honest no_data state — never a 500. Only the table/schema-not-found class is swallowed; any other

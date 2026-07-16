@@ -68,8 +68,8 @@ also preserves tenant isolation on the key itself.
 
 `apps/stream-worker/src/tests/bronze-dedup-effectively-once.live.test.ts` proves it end-to-end against
 the live lakehouse: produce N events with known `event_id`s → wait for them to land → **re-produce the
-same `event_id`s** (the crash-replay) → poll Trino
-`iceberg.brain_bronze.collector_events_connect_lifted` and assert **both copies landed** (append-only
+same `event_id`s** (the crash-replay) → poll duckdb-serving
+`brain_bronze.collector_events_connect_lifted` (the replica-local lift view) and assert **both copies landed** (append-only
 Bronze, >= 2 rows per `event_id`) → then assert `iceberg.brain_silver.silver_collector_event` holds
 **exactly one row per `event_id`** (conditional on a Silver job pass — set `DEDUP_SILVER_ASSERT=1`
 to block on it). It self-skips when the `lakehouse` docker profile is not up (the operator runs it

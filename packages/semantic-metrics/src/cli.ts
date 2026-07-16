@@ -4,15 +4,21 @@
  *
  * Governance entrypoint: reads every `metrics/*.yaml`, validates + compiles them, and writes the
  * regenerable artifacts under `generated/`:
- *   generated/views/<name>_<grain>.sql        — the compiled Trino view (template w/ ${BRAND_PREDICATE})
+ *   generated/views/<name>_<grain>.sql        — the compiled serving view (template w/ ${BRAND_PREDICATE})
  *   generated/views/<name>_<grain>_slow.sql    — base-entity fallback (interactive time-grains)
- *   generated/preaggs/<name>_<grain>.sql       — Spark pre-agg DDL + refresh (interactive time-grains)
- *   generated/preaggs/<name>_<grain>.trino.sql — Trino atomic CTAS rebuild (AUD-SL-10 — the cron's statement)
+ *   generated/preaggs/<name>_<grain>.sql       — dormant Spark-dialect pre-agg DDL + refresh (audit continuity)
  *   generated/catalog.json                     — the GET /v1/semantic/metrics discovery payload
  *   generated/metric-ids.ts                     — the compile-time metric-id + grain TS types
  *
- * The D2.snapshot test asserts these committed artifacts EQUAL a fresh compile → silent drift is
- * impossible (a YAML edit that is not recompiled fails CI).
+ * PLUS one artifact written OUTSIDE the package, into the transform tree (AUD-SL-10):
+ *   db/iceberg/duckdb/serving_preaggs/<name>_<grain>.duckdb.sql — the atomic DuckDB rebuild the
+ *   semantic-preagg-refresh cron executes. It lives under db/iceberg/duckdb/ (NOT generated/)
+ *   because the brain-duckdb image builds with context db/iceberg — the existing `COPY duckdb/`
+ *   carries it to /opt/brain/duckdb/serving_preaggs/, next to the python job that runs it; the
+ *   package dir is unreachable from that build context.
+ *
+ * The D2.snapshot test asserts these committed artifacts (BOTH locations) EQUAL a fresh compile →
+ * silent drift is impossible (a YAML edit that is not recompiled fails CI).
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -27,6 +33,9 @@ import type { ParsedMetricRegistry } from './loader.js';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const METRICS_DIR = join(HERE, '..', 'metrics');
 const GEN_DIR = join(HERE, 'generated');
+// The DuckDB pre-agg rebuild statements land in the transform tree (see the header: the
+// brain-duckdb image's build context is db/iceberg, so the package dir can't be COPY'd).
+const DUCKDB_PREAGG_DIR = join(HERE, '..', '..', '..', 'db', 'iceberg', 'duckdb', 'serving_preaggs');
 
 /** Emit the compile-time TS types (metric-id union + per-metric grain map). Exported for D2.snapshot. */
 export function emitTypes(reg: ParsedMetricRegistry): string {
@@ -52,8 +61,10 @@ export async function compileAll(): Promise<void> {
   const reg = await loadMetricRegistryFrom(createFsMetricSource(METRICS_DIR), yamlParse);
 
   await rm(GEN_DIR, { recursive: true, force: true });
+  await rm(DUCKDB_PREAGG_DIR, { recursive: true, force: true });
   await mkdir(join(GEN_DIR, 'views'), { recursive: true });
   await mkdir(join(GEN_DIR, 'preaggs'), { recursive: true });
+  await mkdir(DUCKDB_PREAGG_DIR, { recursive: true });
 
   for (const m of reg.all) {
     const compiled = compileMetric(m);
@@ -65,9 +76,9 @@ export async function compileAll(): Promise<void> {
       if (g.preagg) {
         const body = `${g.preagg.createDdl}\n${g.preagg.refreshSql}`;
         await writeFile(join(GEN_DIR, 'preaggs', `${m.name}_${g.grain}.sql`), body, 'utf8');
-        // AUD-SL-10: the Trino-dialect atomic rebuild the semantic-preagg-refresh cron executes
-        // (committed for auditability; the job compiles from the registry at run time).
-        await writeFile(join(GEN_DIR, 'preaggs', `${m.name}_${g.grain}.trino.sql`), g.preagg.trinoCtasSql, 'utf8');
+        // AUD-SL-10: the atomic DuckDB rebuild serving_preagg_refresh.py executes — committed IN
+        // the transform tree so the brain-duckdb image carries it (the cron reads it from disk).
+        await writeFile(join(DUCKDB_PREAGG_DIR, `${m.name}_${g.grain}.duckdb.sql`), g.preagg.duckdbRefreshSql, 'utf8');
       }
     }
   }
@@ -76,7 +87,7 @@ export async function compileAll(): Promise<void> {
   await writeFile(join(GEN_DIR, 'catalog.json'), JSON.stringify(catalog, null, 2) + '\n', 'utf8');
   await writeFile(join(GEN_DIR, 'metric-ids.ts'), emitTypes(reg), 'utf8');
 
-  console.log(`[semantic-metrics] compiled ${reg.all.length} metrics → ${GEN_DIR}`);
+  console.log(`[semantic-metrics] compiled ${reg.all.length} metrics → ${GEN_DIR} (+ pre-agg SQL → ${DUCKDB_PREAGG_DIR})`);
 }
 
 // Run when invoked directly (tsx src/cli.ts).

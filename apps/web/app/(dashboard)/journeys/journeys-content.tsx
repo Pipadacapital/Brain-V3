@@ -8,7 +8,7 @@
  * <JourneyTimeline>, which humanizes via lib/event-labels), and estimated/partial data is
  * marked with the shared SyntheticBadge ("Estimated").
  *
- * Composes the BFF metric-engine journey surface (all read over the Trino serving seam,
+ * Composes the BFF metric-engine journey surface (all read over the duckdb-serving seam,
  * never the lakehouse directly):
  *   - "Ranked conversion paths" — the gold_journey_paths aggregate as a table
  *     (Path as channel chips · Conversions · Conversion rate),

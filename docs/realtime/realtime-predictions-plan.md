@@ -89,13 +89,37 @@ periodic `FULL_REFRESH=1` (e.g. nightly) even after the flip; (b) validate row-c
 money parity (incremental vs `FULL_REFRESH`) on prod before enabling. This is why the
 whole tier ships **inert**.
 
-### Phase 1 — raise cadence + compaction (after Phase 0 verified)
-Once reads are incremental, per-run work is O(new events) not O(all history):
-- `silver` `:05` hourly → every ~5 min; `gold` triggered off silver (or every ~5 min).
-- Bump `v4-maintenance` compaction cadence to match the higher write rate (small,
-  frequent compactions instead of one daily catch-up).
-- `recommendation-detectors` daily → every ~15 min (or fold into Phase 2).
-- Watch per-run wall-time + S3 GET/PUT to confirm no fragmentation regression.
+### Phase 1 — raise cadence + compaction (values-only; enables incremental)
+Once reads are incremental, per-run work is O(new events) not O(all history). Changes
+(`infra/helm/cronworkflows/values.yaml`):
+- **`SILVER_INCREMENTAL=1`** + `WATERMARK_LOOKBACK_SECONDS=600` in `sparkV4.env` — activates
+  the flag-gated incremental reads from #193/#194. **The FIRST run is a full-scan bootstrap
+  (~75 min, the old runtime) that seeds the watermark**; keep `activeDeadlineSeconds: 9000`
+  so it completes. After that, runs finish in minutes.
+- `silver` hourly `:05` → **`*/5`** (every 5 min). `gold` hourly `:25` → **`*/5`** (Gold is
+  still full-scan — correct, just more compute — and `concurrencyPolicy: Forbid`
+  self-throttles it, never overlapping).
+- `v4-maintenance` compaction daily → **every 2h** (`0 */2 * * *`) — keeps optimize()/
+  expire_snapshots ahead of the ~12× commit rate on both namespaces (else the 2026-07-15
+  fragmentation incident recurs).
+- `recommendation-detectors` daily `06:00` → **`*/15`** (interim; Phase 2 makes it request-time).
+
+**Why `Forbid` makes `*/5` safe:** a long run just skips the next tick, never overlaps —
+freshness degrades gracefully to whatever each tier sustains.
+
+**PROMOTION GATE (owner) — validate at the release→master promotion:**
+1. Let the bootstrap run complete once (watch `brain_transform_workflow_duration_seconds`
+   drop from ~4500s to low-minutes on the second run).
+2. **Money parity:** compare an incremental Silver→Gold run vs a `FULL_REFRESH=1` run —
+   `gold_revenue_ledger` / `customer_360` totals must be byte-identical. If the 4
+   `silver_table` folds drift (identity-only change missed for a cycle), run a periodic
+   `FULL_REFRESH=1` pass to correct it.
+3. Confirm S3 GET/PUT + per-job wall-time stay flat (no fragmentation regression).
+
+**Cost:** ~288 silver+gold runs/day vs 24, but each incremental run is tiny (only new
+events) — marginal cost is extra short pod-runs on the existing streaming pool, not 12×
+compute. Gold stays full-scan (incrementalizing Gold is a future Phase 1b, gated on Silver
+parity being proven).
 
 ### Phase 2 — request-time detector serving (true per-request freshness)
 Even a 5-min Silver cadence has a floor. For the numbers/predictions that must be

@@ -135,7 +135,7 @@ sparkV4:
   # Prod telemetry showed ~85s FIXED per-process overhead per job → a 90-spawn run took ~130 min, blocking
   # the */5 realtime cadence. Default false (the 90-spawn bash loop) until validated on one prod run; flip
   # true → run collapses to ~single-digit minutes. Rollback = flip false.
-  singleProcess: false
+  singleProcess: true
   # ADR-0010: the v4-silver/v4-gold crons read the Kafka Connect Bronze tables
   # (collector_events_connect + <lane>_raw_connect) — fixed in the jobs, no BRONZE_SOURCE
   # switch (rollback = git revert).

@@ -16,13 +16,13 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:65693c02e1e467c9702111c051eb6ef3b2827ffe3f4ba0cdd984729d5c73be35"
+    digest: "sha256:6c67005c1f969751a0c7f538ad4e39feb7acb04f9b3facd2fcd127635f756938"
 # duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image).
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:65693c02e1e467c9702111c051eb6ef3b2827ffe3f4ba0cdd984729d5c73be35"
+    digest: "sha256:6c67005c1f969751a0c7f538ad4e39feb7acb04f9b3facd2fcd127635f756938"
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
 # BRAIN_APP_DATABASE_URL, TRINO_HOST/TRINO_PORT, ICEBERG_*). External Secrets ← AWS Secrets Manager.
 envSecretName: core-env

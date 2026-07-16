@@ -267,10 +267,16 @@ export type MetaBreakdownName =
   | 'placement'
   | 'hourly';
 
-/** The breakdown `breakdowns=` param dimensions per family (comma-joined into the URL). */
-const META_BREAKDOWN_DIMS: Record<MetaBreakdownName, string[]> = {
+/** The breakdown `breakdowns=` param dimensions per family (comma-joined into the URL). Exported for the
+ *  Meta-compatibility regression guard (a valid `breakdowns=` combination per family). */
+export const META_BREAKDOWN_DIMS: Record<MetaBreakdownName, string[]> = {
   demographic: ['age', 'gender'],
-  geo: ['country', 'region', 'dma'],
+  // geo = country + region ONLY. `dma` is EXCLUSIVE in Meta's Insights geo breakdowns (US-only, cannot be
+  // combined with country/region): `breakdowns=country,region,dma` deterministically returns HTTP 400
+  // code=100 "invalid parameter", which failed EVERY geo pass — and thus the whole meta backfill job
+  // (records_processed=0) — on prod 2026-07-16. country+region is the primary geo grain; DMA-level would
+  // need its own separate single-dimension pass (follow-up).
+  geo: ['country', 'region'],
   placement: ['publisher_platform', 'platform_position', 'device_platform', 'impression_device'],
   hourly: ['hourly_stats_aggregated_by_advertiser_time_zone'],
 };

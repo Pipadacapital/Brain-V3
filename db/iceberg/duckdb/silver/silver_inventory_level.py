@@ -33,7 +33,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_inventory_level_duckdb_test beside the
@@ -67,6 +75,12 @@ def _item(path: str) -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(observed_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1). Default OFF → (None, None) → full scan. Per-event
+    #    grain (each product.upsert.v1 is its own observation via the idempotent MERGE), so windowing the
+    #    gated-keystone read on ingested_at is safe. read_gated_events_sql omits the [lo,hi) predicate when
+    #    lo/hi are None → the default-OFF SQL is byte-identical. ─────────────────────────────────────────
+    lo, hi = incremental_window(con, "silver-inventory-level", GATED_SOURCE, ts_col="ingested_at")
+
     # ── base: every product.upsert.v1 is a point-in-time observation — do NOT collapse to latest here. ──
     base = f"""
       SELECT
@@ -76,7 +90,7 @@ def build(con):
         {prop('pj','variants')}       AS variants_json,
         {prop('pj','sku')}            AS flat_sku,
         {prop('pj','stock_quantity')} AS flat_stock
-      FROM ({read_gated_events_sql([PRODUCT_EVENT])})
+      FROM ({read_gated_events_sql([PRODUCT_EVENT], lo=lo, hi=hi)})
       WHERE {prop('pj','product_id')} IS NOT NULL
     """
 

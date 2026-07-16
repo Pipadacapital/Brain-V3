@@ -24,7 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import GATED_SOURCE, ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_keyword_spend_duckdb_test beside the
@@ -64,6 +64,11 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1). per_event grain reading the gated keystone →
+    # read_gated_events_sql builds the [lo,hi) predicate itself and omits it when lo/hi are None, so the
+    # default-OFF path (lo=None) is byte-identical (a full scan, unchanged).
+    lo, hi = incremental_window(con, "silver-keyword-spend", GATED_SOURCE, ts_col="ingested_at")
+
     typed = f"""
       SELECT
         brand_id,
@@ -83,7 +88,7 @@ def build(con):
         CAST({prop('pj','conv_value_minor')} AS BIGINT) AS conv_value_minor,
         CAST({prop('pj','ctr')} AS DOUBLE)           AS ctr,
         occurred_at, ingested_at
-      FROM ({read_gated_events_sql([SPEND_EVENT])})
+      FROM ({read_gated_events_sql([SPEND_EVENT], lo=lo, hi=hi)})
       WHERE {prop('pj','keyword_id')} IS NOT NULL AND {prop('pj','keyword_id')} <> ''
         AND event_id IS NOT NULL AND CAST({prop('pj','stat_date')} AS DATE) IS NOT NULL
     """

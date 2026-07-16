@@ -32,7 +32,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_campaign{os.environ.get('MIGRATION_TABLE_SUFFIX', '')}"
@@ -94,7 +102,57 @@ def _gated_utc(event_types):
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(last_seen_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — GRAIN=entity_fold, so CHANGED-ENTITY REFOLD ──
+    #   This dim FOLDS many gated-keystone rows (spend.live.v1 + ad.entity.updated) into ONE row per
+    #   (brand_id, platform, campaign_id), and the rollup depends on events BELOW the watermark — so we must
+    #   NOT window the fold input directly. Instead we window the source ONLY to discover which entity keys
+    #   changed this batch, then re-fold each changed entity over its FULL, UNWINDOWED history; the MERGE on
+    #   the entity PK upserts exactly those. Default OFF (lo=None) → NO changed-set, NO semi-join → the SQL
+    #   is byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "silver-campaign", GATED_SOURCE, ts_col="ingested_at")
+
+    # CHANGED-KEY set: UNION of both event types' entity-key derivations, each with the SAME not-null/''
+    # guard its fold side uses — spend uses campaign_id directly; entity uses coalesce(campaign_id, entity_id)
+    # at CAMPAIGN level. Built from a WINDOWED [lo, hi) read; only referenced when lo is not None.
+    changed = None
+    if lo is not None:
+        changed_spend = f"""
+          SELECT brand_id,
+                 coalesce({prop('pj','platform')}, 'unknown') AS platform,
+                 {prop('pj','campaign_id')} AS campaign_id
+          FROM ({read_gated_events_sql([SPEND_EVENT], lo=lo, hi=hi)})
+          WHERE {prop('pj','campaign_id')} IS NOT NULL AND {prop('pj','campaign_id')} <> ''
+        """
+        changed_entity = f"""
+          SELECT brand_id,
+                 coalesce({prop('pj','platform')}, 'unknown') AS platform,
+                 coalesce({prop('pj','campaign_id')}, {prop('pj','entity_id')}) AS campaign_id
+          FROM ({read_gated_events_sql([ENTITY_EVENT], lo=lo, hi=hi)})
+          WHERE lower({prop('pj','level')}) = 'campaign'
+            AND coalesce({prop('pj','campaign_id')}, {prop('pj','entity_id')}) IS NOT NULL
+            AND coalesce({prop('pj','campaign_id')}, {prop('pj','entity_id')}) <> ''
+        """
+        changed = (
+            "SELECT DISTINCT brand_id, platform, campaign_id FROM ("
+            f"({changed_spend}) UNION ALL ({changed_entity}))"
+        )
+
+    # Semi-join clause folded into each fold input's WHERE — only when lo is not None (else empty string).
+    spend_semijoin = (
+        f" AND (brand_id, coalesce({prop('pj','platform')}, 'unknown'), {prop('pj','campaign_id')}) "
+        f"IN (SELECT brand_id, platform, campaign_id FROM ({changed}))"
+        if lo is not None else ""
+    )
+    entity_semijoin = (
+        f" AND (brand_id, coalesce({prop('pj','platform')}, 'unknown'), "
+        f"coalesce({prop('pj','campaign_id')}, {prop('pj','entity_id')})) "
+        f"IN (SELECT brand_id, platform, campaign_id FROM ({changed}))"
+        if lo is not None else ""
+    )
+
     # ── Spend FACT side: per-row projection (campaign_id NOT NULL/'' → account/adset noise dropped). ──
+    #   Reads the FULL, UNWINDOWED spend history; the changed-entity semi-join (empty when lo is None)
+    #   narrows the re-fold to only campaigns touched this batch — full history per changed entity.
     spend = f"""
       SELECT brand_id,
              coalesce({prop('pj','platform')}, 'unknown') AS platform,
@@ -107,7 +165,7 @@ def build(con):
              coalesce(CAST({prop('pj','conversions')} AS BIGINT), CAST(0 AS BIGINT)) AS conversions,
              occurred_at, ingested_at
       FROM ({_gated_utc([SPEND_EVENT])})
-      WHERE {prop('pj','campaign_id')} IS NOT NULL AND {prop('pj','campaign_id')} <> ''
+      WHERE {prop('pj','campaign_id')} IS NOT NULL AND {prop('pj','campaign_id')} <> ''{spend_semijoin}
     """
 
     # latest spend-row name/ccy per campaign (row_number by occurred_at DESC, keep #1).
@@ -156,7 +214,7 @@ def build(con):
       FROM ({_gated_utc([ENTITY_EVENT])})
       WHERE lower({prop('pj','level')}) = 'campaign'
         AND coalesce({prop('pj','campaign_id')}, {prop('pj','entity_id')}) IS NOT NULL
-        AND coalesce({prop('pj','campaign_id')}, {prop('pj','entity_id')}) <> ''
+        AND coalesce({prop('pj','campaign_id')}, {prop('pj','entity_id')}) <> ''{entity_semijoin}
     """
 
     latest_entity = f"""

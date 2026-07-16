@@ -32,7 +32,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, json_str, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE, ensure_table, incremental_window, json_str, merge_on_pk, prop,
+    read_gated_events_sql, run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_message_send_duckdb_test beside the
@@ -80,6 +83,35 @@ _STATUS_FROM_TYPE = (
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — GRAIN = entity_fold ───────────────────────
+    #   MANY lifecycle events (message.{send,delivery,read}.v1 — DIFFERENT event_id, SAME message_id)
+    #   collapse into ONE (brand_id, message_id) row via the latest-ingested-wins MERGE. A message's
+    #   final status therefore depends on events that may be BELOW the watermark, so we must NOT window
+    #   the fold input directly (that would drop the earlier send/delivery below the watermark and mis-
+    #   collapse status). Instead: window the source ONLY to discover CHANGED (brand_id, message_id)
+    #   keys, then re-fold each changed entity over its FULL history via a semi-join. Default OFF →
+    #   lo=None → NO changed-set / semi-join → byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-message-send", GATED_SOURCE, ts_col="ingested_at")
+
+    # CHANGED-KEY set: the SAME entity-key derivation + not-null guards the fold uses, over a WINDOWED
+    # read of the source. Only referenced when lo is not None (guarded semi-join below).
+    changed = f"""
+      SELECT DISTINCT brand_id, coalesce({prop('pj','message_id')}, event_id) AS message_id
+      FROM ({read_gated_events_sql(EVENT_TYPES, lo=lo, hi=hi)})
+      WHERE brand_id IS NOT NULL AND coalesce({prop('pj','message_id')}, event_id) IS NOT NULL
+    """
+
+    # The fold reads the FULL, UNWINDOWED source; when incremental is on, a semi-join restricts it to
+    # ONLY the changed entities so each re-folds over its complete history (send→delivery→read collapse).
+    fold_source = f"({read_gated_events_sql(EVENT_TYPES)})"
+    if lo is not None:
+        fold_source = f"""(
+          SELECT * FROM ({read_gated_events_sql(EVENT_TYPES)})
+          WHERE (brand_id, coalesce({prop('pj','message_id')}, event_id)) IN (
+            SELECT brand_id, message_id FROM ({changed})
+          )
+        )"""
+
     staged = f"""
       SELECT {', '.join(COLUMNS)} FROM (
         SELECT
@@ -102,7 +134,7 @@ def build(con):
           CAST({prop('pj','delivered_at')} AS TIMESTAMP)                      AS delivered_at,
           CAST({prop('pj','read_at')} AS TIMESTAMP)                           AS read_at,
           occurred_at, ingested_at
-        FROM ({read_gated_events_sql(EVENT_TYPES)})
+        FROM {fold_source}
       )
       WHERE brand_id IS NOT NULL AND message_id IS NOT NULL
     """

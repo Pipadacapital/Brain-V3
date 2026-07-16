@@ -31,8 +31,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _normalize_base import (  # noqa: E402
-    connect_source_table, ensure_shadow, merge_collector_event, register_salts, run_normalize_job,
-    source_present,
+    advance_lane_watermark, connect_source_table, ensure_shadow, lane_window, lane_window_predicate,
+    merge_collector_event, register_salts, run_normalize_job, source_present,
 )
 import _raw_normalize_ports as rn  # noqa: E402
 from _raw_normalize_ports import iso_ms_assume_utc as woo_to_utc_iso  # noqa: E402
@@ -93,6 +93,13 @@ def build(con):
     register_salts(con)
     src = connect_source_table(LANE)
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   Per-event grain: each raw Woo order row → 0..1 silver row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the source read is safe. Raw lanes have no lifted ingested_at;
+    #   the physical arrival clock is kafka_timestamp (watermark keyed per (job, lane)). Default OFF →
+    #   lo=None → predicate is "" → BYTE-IDENTICAL full scan.
+    lo_woo, hi_woo = lane_window(con, "silver-woocommerce-order-normalize", LANE)
+
     df = f"""
       SELECT
         CAST(brand_id AS VARCHAR)                        AS brand_id,
@@ -109,6 +116,7 @@ def build(con):
         CAST("order".billing.email AS VARCHAR)           AS cust_email,
         CAST("order".billing.phone AS VARCHAR)           AS cust_phone
       FROM {src}
+      {lane_window_predicate(lo_woo, hi_woo)}
     """
 
     joined = f"SELECT d.*, sl.salt_hex FROM ({df}) d LEFT JOIN _salts sl ON d.brand_id = sl.brand_id"
@@ -180,6 +188,7 @@ def build(con):
     """
 
     n = merge_collector_event(con, TARGET, good)
+    advance_lane_watermark(con, "silver-woocommerce-order-normalize", LANE, hi_woo)
     return TARGET, n
 
 

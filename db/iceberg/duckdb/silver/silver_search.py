@@ -37,7 +37,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_search_duckdb_test beside the Spark-produced
@@ -75,6 +83,13 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   GRAIN=per_event: each gated keystone row → 0..1 silver row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the source read is safe — a row's output depends only on itself.
+    #   Default OFF / first run / FULL_REFRESH → (None, None); read_gated_events_sql then omits the [lo,hi)
+    #   predicate, so the generated SQL is byte-identical to the pre-edit full scan.
+    lo, hi = incremental_window(con, "silver-search", GATED_SOURCE, ts_col="ingested_at")
+
     typed = f"""
       SELECT
         brand_id,
@@ -88,7 +103,7 @@ def build(con):
         {prop('pj','device.ua_class')} AS device_class,
         occurred_at,
         ingested_at
-      FROM ({read_gated_events_sql(SEARCH_EVENTS)})
+      FROM ({read_gated_events_sql(SEARCH_EVENTS, lo=lo, hi=hi)})
     """
 
     # is_zero_result derived ONLY when results_count is present — a NULL count stays unknown (NULL boolean).

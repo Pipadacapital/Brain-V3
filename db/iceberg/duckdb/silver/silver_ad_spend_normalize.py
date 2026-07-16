@@ -37,8 +37,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _normalize_base import (  # noqa: E402
-    COLLECTOR_COLUMNS, connect_source_table, ensure_shadow, merge_collector_event, run_normalize_job,
-    source_present,
+    COLLECTOR_COLUMNS, advance_lane_watermark, connect_source_table, ensure_shadow, lane_window,
+    lane_window_predicate, merge_collector_event, run_normalize_job, source_present,
 )
 import _raw_normalize_ports as rn  # noqa: E402
 from _silver_technical_ports import event_category  # noqa: E402
@@ -188,9 +188,12 @@ def _select_collector(good_body: str) -> str:
     """
 
 
-def _build_meta(con):
+def _build_meta(con, window_predicate: str = ""):
     src = connect_source_table(META_LANE)
     r = META_ROW
+    # Byte-identity guard: when window_predicate is "" (default OFF / full scan) the FROM clause is exactly
+    # `FROM {src}` as before this edit; only a non-empty predicate appends a WHERE line.
+    from_clause = f"{src}\n      {window_predicate}" if window_predicate else src
     df = f"""
       SELECT
         CAST(brand_id AS VARCHAR)                        AS brand_id,
@@ -209,7 +212,7 @@ def _build_meta(con):
         CAST("{r}".ctr AS VARCHAR)                     AS ctr_raw,
         CAST("{r}".cpc AS VARCHAR)                     AS cpc_raw,
         CAST("{r}".cpm AS VARCHAR)                     AS cpm_raw
-      FROM {src}
+      FROM {from_clause}
     """
     canon = f"""
       SELECT *,
@@ -254,9 +257,11 @@ def _build_meta(con):
     return _select_collector(good_body)
 
 
-def _build_google(con):
+def _build_google(con, window_predicate: str = ""):
     src = connect_source_table(GOOGLE_LANE)
     r = GOOGLE_ROW
+    # Byte-identity guard: "" predicate → FROM clause is exactly `FROM {src}` as before this edit.
+    from_clause = f"{src}\n      {window_predicate}" if window_predicate else src
     df = f"""
       SELECT
         CAST(brand_id AS VARCHAR)                        AS brand_id,
@@ -281,7 +286,7 @@ def _build_google(con):
         CAST("{r}".advertising_channel_type AS VARCHAR) AS adv_channel_raw,
         CAST("{r}".segments_date AS VARCHAR)           AS stat_date_raw,
         CAST("{r}".currency_code AS VARCHAR)           AS row_currency_code
-      FROM {src}
+      FROM {from_clause}
     """
     canon = f"""
       SELECT *,
@@ -346,16 +351,33 @@ def build(con):
         return TARGET, 0
 
     _register_udfs(con)
+
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — per lane, keyed (job, lane) ────────────────
+    #   GRAIN = per_event: each raw lane row → 0..1 shadow row via the idempotent merge_collector_event on
+    #   (brand_id, event_id), so windowing the source read is safe. Raw Connect lanes have no lifted
+    #   ingested_at → the watermark tracks each lane's kafka_timestamp independently (a lane skipped by the
+    #   empty-lane guard keeps its old watermark). Default OFF → lo=None → predicate "" → byte-identical full
+    #   scan, and the SQL string is unchanged.
+    lo_meta, hi_meta = lane_window(con, "silver-ad-spend-normalize", META_LANE)
+    lo_google, hi_google = lane_window(con, "silver-ad-spend-normalize", GOOGLE_LANE)
+
     parts = []
     if meta_present:
-        parts.append(_build_meta(con))
+        parts.append(_build_meta(con, lane_window_predicate(lo_meta, hi_meta)))
     if google_present:
-        parts.append(_build_google(con))
+        parts.append(_build_google(con, lane_window_predicate(lo_google, hi_google)))
 
     collist = ", ".join(COLLECTOR_COLUMNS)
     union = " UNION ALL BY NAME ".join(f"SELECT {collist} FROM ({p})" for p in parts)
 
     n = merge_collector_event(con, TARGET, union)
+
+    # Advance each lane's watermark to the SAME hi the read used (only for lanes actually read this run;
+    # a lane skipped by the empty-lane guard keeps its old watermark).
+    if meta_present:
+        advance_lane_watermark(con, "silver-ad-spend-normalize", META_LANE, hi_meta)
+    if google_present:
+        advance_lane_watermark(con, "silver-ad-spend-normalize", GOOGLE_LANE, hi_google)
     return TARGET, n
 
 

@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _base import (  # noqa: E402
     GATED_SOURCE,
     ensure_table,
+    incremental_window,
     merge_on_pk,
     prop,
     read_gated_events_sql,
@@ -99,6 +100,14 @@ def _reason_code_sql(reason_expr: str) -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   per_event grain: each gated keystone row → 0..1 silver_refund row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the refund-lane source read is safe. Default OFF → (None, None)
+    #   → read_gated_events_sql omits the [lo,hi) predicate → full scan, BYTE-IDENTICAL to before.
+    #   NOTE: the order_times CTE reads GATED_SOURCE directly (not via read_gated_events_sql) and is
+    #   intentionally NOT windowed — it must see ALL order-creation times to gate refunds correctly.
+    lo, hi = incremental_window(con, "silver-refund", GATED_SOURCE, ts_col="ingested_at")
+
     # ── Order creation times from the keystone order lane (min occurred_at per brand_id+order_id). ──
     # Absent order lane → empty → every refund resolves NULL → flagged order_unresolved (never dropped).
     order_times = f"""
@@ -127,7 +136,7 @@ def build(con):
              occurred_at, ingested_at,
              coalesce({prop('pj','source')}, 'unknown') AS source_system,
              event_id AS source_event_id
-      FROM ({read_gated_events_sql(REFUND_EVENTS)})
+      FROM ({read_gated_events_sql(REFUND_EVENTS, lo=lo, hi=hi)})
       WHERE event_id IS NOT NULL AND brand_id IS NOT NULL
     """
 

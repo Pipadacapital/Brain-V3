@@ -34,7 +34,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write to silver_product_duckdb_test. Empty in prod.
@@ -62,17 +62,52 @@ COLUMNS = [
 ]
 
 
+# The entity-key derivation, applied IDENTICALLY in the fold's `lines` CTE and the changed-set below.
+_PRODUCT_KEY = "coalesce(nullif(product_id, ''), nullif(sku, ''), 'unknown')"
+
+
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD via CHANGED-ENTITY REFOLD. ─────
+    #   GRAIN=entity_fold: many silver_order_line rows aggregate into ONE (brand_id, product_key,
+    #   currency_code) row whose sums/min/max depend on lines that may be BELOW the watermark. Windowing
+    #   the fold input directly would silently drop history → wrong money. Instead we window ONLY to
+    #   discover CHANGED entity keys (a [lo,hi) read of silver_order_line, using the SAME product_key
+    #   derivation + currency-not-null guard the fold uses), then re-fold each changed entity over its
+    #   FULL history and MERGE on the entity PK. Default OFF (lo=None) → NO changed-set, NO semi-join →
+    #   byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-product", ORDER_LINE_TABLE, ts_col="ingested_at")
+
+    # CHANGED-KEY set: DISTINCT entity keys touched in [lo, hi). Empty string when lo is None (guarded
+    # below), so nothing is emitted and the fold stays a full scan.
+    changed_window = ""
+    if lo is not None:
+        changed_window = f"AND ingested_at >= '{lo}' AND ingested_at <= '{hi}'"
+    changed_sql = f"""
+        SELECT DISTINCT brand_id, {_PRODUCT_KEY} AS product_key, currency_code
+        FROM {ORDER_LINE_TABLE}
+        WHERE currency_code IS NOT NULL {changed_window}
+    """
+
+    # Semi-join predicate: only re-fold entities that changed. EMPTY when lo is None → full recompute.
+    lines_filter = ""
+    if lo is not None:
+        lines_filter = (
+            f" AND (brand_id, {_PRODUCT_KEY}, currency_code) "
+            f"IN (SELECT brand_id, product_key, currency_code FROM ({changed_sql}))"
+        )
+
     # dbt silver_product.sql, verbatim: product_key coalesce, currency-not-null filter, group rollup.
+    # The `lines` CTE reads the FULL, UNWINDOWED source; the semi-join (empty when lo is None) narrows
+    # it to changed entities only — each re-folded over its complete history.
     # ── Stage-1 DQ gate (currency only): non-ISO-4217 currency_code → dropped (Spark: quarantined). ──
     agg_sql = f"""
         WITH lines AS (
             SELECT *,
-                   coalesce(nullif(product_id, ''), nullif(sku, ''), 'unknown') AS product_key
+                   {_PRODUCT_KEY} AS product_key
             FROM {ORDER_LINE_TABLE}
-            WHERE currency_code IS NOT NULL
+            WHERE currency_code IS NOT NULL{lines_filter}
         )
         SELECT
             brand_id,
@@ -98,4 +133,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("silver-product", build, target_table="silver_product")
+    # Source is the ICEBERG Silver mart silver_order_line (NOT the gated keystone) — its ingested_at is
+    # the watermark clock.
+    run_job("silver-product", build, target_table="silver_product",
+            source_table=ORDER_LINE_TABLE, ts_col="ingested_at")

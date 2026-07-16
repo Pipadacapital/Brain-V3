@@ -14,7 +14,17 @@ import type { Redis } from 'ioredis';
 import { log } from '../../../../log.js';
 
 const REPLAY_WINDOW_SECONDS = 5 * 60;   // 5-minute age check (C3)
-const DEDUP_TTL_SECONDS     = 10 * 60;  // 10-minute Redis TTL (window + margin)
+// Redis dedup key TTL. Sized to cover the provider's webhook RETRY window: order webhooks bypass the
+// C3 age gate (ageCheckTimestampSeconds=null), so THIS TTL is the only guard against a late retry
+// landing a DUPLICATE in append-only Bronze. Shopify retries a webhook for ~48h — the old 10-minute
+// TTL let any retry >10min through (observed 2026-07-16: an order event redelivered ~30min later
+// landed twice in Bronze). 48h default covers Shopify's full retry window so Bronze stays effectively
+// exactly-once (Silver dedups downstream regardless). Env-tunable to trade Redis memory (48h of tiny
+// event_id keys per provider) against the dedup window.
+const DEDUP_TTL_SECONDS =
+  Number(process.env.WEBHOOK_DEDUP_TTL_SECONDS) > 0
+    ? Number(process.env.WEBHOOK_DEDUP_TTL_SECONDS)
+    : 48 * 60 * 60; // 48h — Shopify's webhook retry window
 
 export class ProviderRedisDedupAdapter {
   private readonly keyPrefix: string;

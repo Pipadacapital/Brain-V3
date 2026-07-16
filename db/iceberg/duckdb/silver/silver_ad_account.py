@@ -32,7 +32,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_ad_account_duckdb_test beside the
@@ -65,6 +73,40 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(last_seen_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   GRAIN = entity_fold: MANY spend rows roll up into ONE (brand_id, platform, ad_account_id) row whose
+    #   lifetime spend/impressions/clicks + first/last-seen depend on events that may sit BELOW the
+    #   watermark. Windowing the fold input directly would silently drop history → wrong money. So we window
+    #   ONLY to DISCOVER the changed entity keys, then re-fold each changed entity over its FULL history via
+    #   a semi-join. Default OFF → lo=None → NO changed-set, NO semi-join → byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-ad-account", GATED_SOURCE, ts_col="ingested_at")
+
+    # ── typed spend rows: resolve account id (ad_account_id → account_id), default money/counts to 0. ──
+    #    fold_filter is EMPTY when lo is None (full recompute, unchanged) and, when incremental is on, a
+    #    semi-join that restricts the FULL-history fold to ONLY the entities that changed in [lo, hi).
+    fold_filter = ""
+    if lo is not None:
+        changed = f"""
+          SELECT DISTINCT
+            brand_id,
+            coalesce({prop('pj','platform')}, 'unknown')                     AS platform,
+            coalesce({prop('pj','ad_account_id')}, {prop('pj','account_id')}) AS ad_account_id
+          FROM ({read_gated_events_sql([SPEND_EVENT], lo=lo, hi=hi)})
+          WHERE coalesce({prop('pj','ad_account_id')}, {prop('pj','account_id')}) IS NOT NULL
+            AND coalesce({prop('pj','ad_account_id')}, {prop('pj','account_id')}) <> ''
+        """
+        # Leading "\n        " lives INSIDE the string so the EMPTY (lo=None) case leaves the `typed`
+        # SQL byte-identical to the pre-incremental version — no stray blank/whitespace line.
+        fold_filter = (
+            "\n        AND (brand_id, coalesce({p}, 'unknown'), coalesce({a}, {ac})) "
+            "IN (SELECT brand_id, platform, ad_account_id FROM ({changed}))"
+        ).format(
+            p=prop('pj', 'platform'),
+            a=prop('pj', 'ad_account_id'),
+            ac=prop('pj', 'account_id'),
+            changed=changed,
+        )
+
     # ── typed spend rows: resolve account id (ad_account_id → account_id), default money/counts to 0. ──
     typed = f"""
       SELECT
@@ -80,7 +122,7 @@ def build(con):
         occurred_at, ingested_at
       FROM ({read_gated_events_sql([SPEND_EVENT])})
       WHERE coalesce({prop('pj','ad_account_id')}, {prop('pj','account_id')}) IS NOT NULL
-        AND coalesce({prop('pj','ad_account_id')}, {prop('pj','account_id')}) <> ''
+        AND coalesce({prop('pj','ad_account_id')}, {prop('pj','account_id')}) <> ''{fold_filter}
     """
 
     # ── latest currency/timezone for the account (by occurred_at DESC) — a re-pull could restate. ──

@@ -44,7 +44,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import GATED_SOURCE, ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write to silver_cart_event_duckdb_test beside the
@@ -98,6 +98,13 @@ _CART_ACTION = (
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   Per-event grain over the gated keystone: each source row → 0..1 silver row via the idempotent
+    #   MERGE on (brand_id, event_id), so narrowing the source read is safe. read_gated_events_sql builds
+    #   the [lo,hi) predicate on ingested_at itself and OMITS it when lo/hi are None → default OFF (lo=None)
+    #   yields a byte-identical full scan.
+    lo, hi = incremental_window(con, "silver-cart-event", GATED_SOURCE, ts_col="ingested_at")
+
     # ── Lane 1: cart.* interaction events (variant/qty; value only if the storefront emits it) ──────
     cart = f"""
       SELECT brand_id, event_id,
@@ -114,7 +121,7 @@ def build(con):
              {prop('pj','referrer')} AS referrer,
              {prop('pj','device.ua_class')} AS device_class,
              occurred_at, ingested_at
-      FROM ({read_gated_events_sql(CART_EVENTS)})
+      FROM ({read_gated_events_sql(CART_EVENTS, lo=lo, hi=hi)})
     """
 
     # ── Lane 2: coupon.applied folded in as a cart action (carries the discount `code`, NOT PII) ─────
@@ -133,7 +140,7 @@ def build(con):
              {prop('pj','referrer')} AS referrer,
              {prop('pj','device.ua_class')} AS device_class,
              occurred_at, ingested_at
-      FROM ({read_gated_events_sql([COUPON_EVENT])})
+      FROM ({read_gated_events_sql([COUPON_EVENT], lo=lo, hi=hi)})
     """
 
     unioned = f"({cart}) UNION ALL BY NAME ({coupon})"

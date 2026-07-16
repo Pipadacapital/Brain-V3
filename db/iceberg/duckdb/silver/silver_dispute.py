@@ -32,7 +32,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_dispute_duckdb_test beside the
@@ -81,6 +89,12 @@ def _normalize_direction(lifecycle_sql: str) -> str:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1). PER-EVENT grain over the gated keystone: each
+    #    source row → 0..1 silver row via the idempotent MERGE on (brand_id, event_id), so narrowing the
+    #    source read is safe. read_gated_events_sql builds the [lo,hi) ingested_at predicate itself and omits
+    #    it when lo/hi are None → default OFF → (None, None) → full scan, byte-identical to before. ─────────
+    lo, hi = incremental_window(con, "silver-dispute", GATED_SOURCE, ts_col="ingested_at")
+
     # ── Lane 1 (authoritative): settlement.live.v1 discriminated to entity_type='dispute'. ──
     folded = f"""
       SELECT
@@ -98,7 +112,7 @@ def build(con):
         {prop('pj','status')}                                       AS status,
         CAST({prop('pj','respond_by')} AS TIMESTAMP)                AS respond_by,
         occurred_at, ingested_at
-      FROM ({read_gated_events_sql([SETTLEMENT_EVENT])})
+      FROM ({read_gated_events_sql([SETTLEMENT_EVENT], lo=lo, hi=hi)})
       WHERE {prop('pj','entity_type')} = 'dispute'
     """
 
@@ -119,7 +133,7 @@ def build(con):
         {prop('pj','status')}                                       AS status,
         CAST({prop('pj','respond_by')} AS TIMESTAMP)                AS respond_by,
         occurred_at, ingested_at
-      FROM ({read_gated_events_sql(STANDALONE_EVENTS)})
+      FROM ({read_gated_events_sql(STANDALONE_EVENTS, lo=lo, hi=hi)})
     """
 
     staged = f"""

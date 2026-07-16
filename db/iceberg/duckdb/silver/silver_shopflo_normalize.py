@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _normalize_base import (  # noqa: E402
-    connect_source_table, ensure_shadow, merge_collector_event, register_salts, run_normalize_job,
-    source_present,
+    advance_lane_watermark, connect_source_table, ensure_shadow, lane_window, lane_window_predicate,
+    merge_collector_event, register_salts, run_normalize_job, source_present,
 )
 import _raw_normalize_ports as rn  # noqa: E402
 from _raw_normalize_ports import money_to_minor_string  # noqa: E402
@@ -194,12 +194,19 @@ def build(con):
     register_salts(con)
     src = connect_source_table(LANE)
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — narrows the raw-lane read on kafka_timestamp.
+    #    per_event grain: each raw webhook row → 0..1 shadow row via the idempotent MERGE, so windowing the
+    #    source is safe. lo=None (default OFF / first run / FULL_REFRESH) → predicate "" → byte-identical
+    #    full scan; the watermark advances to the SAME hi the read used, AFTER the merge succeeds. ──────────
+    lo_shopflo, hi_shopflo = lane_window(con, "silver-shopflo-normalize", LANE)
+
     df = f"""
       SELECT
         CAST({BRAND_COL} AS VARCHAR)                     AS brand_id,
         CAST({INGESTED_COL} AS TIMESTAMP)                AS ingested_at_raw,
         CAST({RAW_PAYLOAD_COL} AS VARCHAR)               AS payload_raw
       FROM {src}
+      {lane_window_predicate(lo_shopflo, hi_shopflo)}
     """
 
     joined = f"SELECT d.*, sl.salt_hex FROM ({df}) d LEFT JOIN _salts sl ON d.brand_id = sl.brand_id"
@@ -231,6 +238,7 @@ def build(con):
     """
 
     n = merge_collector_event(con, TARGET, good)
+    advance_lane_watermark(con, "silver-shopflo-normalize", LANE, hi_shopflo)
     return TARGET, n
 
 

@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import ensure_table, incremental_window, merge_on_pk, prop, read_gated_events_sql, run_job, GATED_SOURCE  # noqa: E402
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.silver_marketing_spend{os.environ.get('MIGRATION_TABLE_SUFFIX', '')}"
@@ -159,6 +159,13 @@ _STRING_PROPS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   PER-EVENT grain: each gated keystone row → 0..1 spend row via the idempotent MERGE on
+    #   (brand_id, spend_event_id), so windowing the source read is safe — a row's output depends only on
+    #   itself. read_gated_events_sql builds the [lo,hi) predicate on ingested_at itself and OMITS it when
+    #   lo/hi are None. Default OFF → (None, None) → full scan, byte-identical.
+    lo, hi = incremental_window(con, "silver-marketing-spend", GATED_SOURCE, ts_col="ingested_at")
+
     # ── stg_ad_spend_bronze: raw → typed projection from the gated keystone (event_type='spend.live.v1'). ──
     proj = [
         "brand_id",
@@ -179,7 +186,7 @@ def build(con):
     proj.append("ingested_at")
 
     typed = (
-        f"SELECT {', '.join(proj)} FROM ({read_gated_events_sql([SPEND_EVENT])}) "
+        f"SELECT {', '.join(proj)} FROM ({read_gated_events_sql([SPEND_EVENT], lo=lo, hi=hi)}) "
         # Drop malformed events with no spend_event_id (cannot be a canonical spend row).
         "WHERE event_id IS NOT NULL AND event_id <> '' "
         # BASE-GRAIN ONLY: keep the base pass (breakdown_key NULL/''); breakdown rows go to their own marts.

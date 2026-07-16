@@ -138,17 +138,26 @@ sparkV4:
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  silverSchedule: "5 * * * *"     # hourly :05 — keystone + order_state spine + the rest of Silver (after identity :02)
-  goldSchedule: "25 * * * *"      # hourly :25 — revenue → attribution → customer/gap/exec (after stitch :15/:16)
-  # 2026-07-12: 2400→4500. 2026-07-15: 4500→9000 — DuckDB run-time RE-MEASURED in prod (this was the
-  # pending TODO above): v4-silver did 4491s of work and was SIGTERM-killed at the 4500s cap EVERY run
-  # (exit 143 "Step exceeded its deadline"), so Silver never completed → Gold never ran → medallion went
-  # stale. The Neo4j identity jobs alone are ~240s each. 9000s (2.5h) gives the full two-pass run
-  # headroom; Forbid still serializes, so a >60min run just skips the next hourly tick (freshness ~1-2h).
+  # REALTIME PHASE 1 (2026-07-16): every 5 min, incremental. This is ONLY safe because SILVER_INCREMENTAL
+  # is ON below — each run then reads only the [watermark, now) window (seconds/low-minutes), not the full
+  # ~75-min Bronze re-scan. concurrencyPolicy: Forbid self-throttles: if a run runs long it just skips the
+  # next tick (never overlaps), so freshness degrades gracefully to whatever the tier can sustain.
+  silverSchedule: "*/5 * * * *"   # every 5 min — keystone + order_state spine + the rest of Silver (incremental)
+  goldSchedule: "*/5 * * * *"     # every 5 min — reads the latest committed Silver (Gold is still full-scan; Forbid throttles)
+  # activeDeadlineSeconds stays HIGH (9000s / 2.5h): the FIRST run after SILVER_INCREMENTAL is enabled has
+  # no watermark → a full-scan BOOTSTRAP (~75 min, the old runtime) that MUST complete to seed the
+  # watermark. A low cap would kill the bootstrap before it writes the watermark → every run re-bootstraps
+  # and never progresses. After the bootstrap, incremental runs finish in minutes and Forbid skips ticks
+  # until each completes. Leave this ceiling as-is.
   activeDeadlineSeconds: 9000
   # Non-secret config. Secrets (ICEBERG_REST_URI, AWS_*, NEO4J_*) come from envSecretName.
+  # SILVER_INCREMENTAL=1 activates the flag-gated incremental reads shipped in #193/#194 (default OFF).
+  # First run bootstraps (full scan) then windows [watermark, now). WATERMARK_LOOKBACK_SECONDS re-scans a
+  # trailing margin (idempotent MERGE dedups it) so a slightly out-of-order Kafka arrival is never skipped.
   env:
     - { name: ICEBERG_CATALOG, value: "rest" }
+    - { name: SILVER_INCREMENTAL, value: "1" }
+    - { name: WATERMARK_LOOKBACK_SECONDS, value: "600" }
   # Workflow-pod placement (AUD-PROD-006) — shared by v4-silver / v4-gold /
   # v4-maintenance. Empty by default; values-prod pins to the streaming pool (the batch pool is gone).
   nodeSelector: {}
@@ -173,7 +182,11 @@ sparkV4:
     # keeps the hot keystone consolidated so per-job read cost stays flat. (Requires the Trino IRSA
     # medallion write/delete grant — s3-iceberg AllowMedallionMaintenanceWrite — or optimize 403s.)
     enabled: true
-    schedule: "45 4 * * *"          # daily 04:45 IST — after the 03:00 Bronze maintenance slot
+    # REALTIME PHASE 1: daily → every 2h. At */5 Silver+Gold cadence the marts commit ~12× more often,
+    # so daily compaction would let the hot keystone re-fragment mid-day (the 2026-07-15 incident). Every
+    # 2h keeps optimize()/expire_snapshots ahead of the higher commit rate on BOTH namespaces. Forbid
+    # serializes; the guarded orphan sweep (>7d) never touches an in-flight commit.
+    schedule: "0 */2 * * *"         # every 2h — compaction/snapshot-expiry keeps pace with */5 transforms
     activeDeadlineSeconds: 3600     # full two-namespace sweep, table-by-table (failures logged, exit≠0)
     env:
       - { name: ORPHAN_FILES, value: "1" }
@@ -201,7 +214,10 @@ sparkV4:
 #                                          data_driven) + clawbacks.
 jobs:
   - name: recommendation-detectors
-    schedule: "0 6 * * *"          # daily 06:00 IST — the Morning Brief
+    # REALTIME PHASE 1: daily → every 15 min. Recommendations now refresh off the ~5-min-fresh Gold marts
+    # instead of once each morning. (Phase 2 moves the detector logic to the request-time serving path for
+    # true per-request freshness; this batch cadence is the interim.) Idempotent + Forbid → safe overlap.
+    schedule: "*/15 * * * *"       # every 15 min — recompute recommendations off fresh Gold (was daily 06:00)
     command: ["pnpm", "exec", "tsx", "src/jobs/recommendation-detectors.ts"]
   - name: identity-export
     schedule: "2 * * * *"          # hourly at :02 — ATTRIBUTION CHAIN step -1: materialize the identity graph

@@ -54,7 +54,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, BRONZE_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 from _silver_technical_ports import event_category, identify_consent_denied  # noqa: E402
 
@@ -190,6 +190,20 @@ def build(con):
     _register_udfs(con)
     _register_installs(con)
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   The keystone is PER-EVENT admission: each Bronze row → 0..1 silver row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the source read is safe — a row's output depends only on itself.
+    #   Bronze collector_events_connect has no lifted ingested_at column; its physical arrival key is
+    #   kafka_timestamp (the watermark tracks max(kafka_timestamp), with a trailing lookback so a slightly
+    #   out-of-order Kafka arrival can never be skipped). Default OFF → (None, None) → full scan, unchanged.
+    lo, hi = incremental_window(con, "silver-collector-event", CONNECT_TABLE, ts_col="kafka_timestamp")
+    win = []
+    if lo is not None:
+        win.append(f"kafka_timestamp >= '{lo}'")
+    if hi is not None:
+        win.append(f"kafka_timestamp <= '{hi}'")
+    src_window = f"WHERE {' AND '.join(win)}" if win else ""
+
     # ── ENVELOPE-SCALAR LIFT — the exact JSON paths the Spark build() lifts, plus the R2/R3 signals the
     #    gate parses out of the payload. `payload` stays VERBATIM. ─────────────────────────────────────
     #   ingested_at coalesces the envelope ingest clock → now() as the last resort (Spark: coalesce(
@@ -217,6 +231,7 @@ def build(con):
         json_extract_string(payload, '$.properties.device_id')       AS device_id,
         payload
       FROM {CONNECT_TABLE}
+      {src_window}
     """
 
     # ── SCHEMA gate: malformed envelope (missing event_id / brand_id / occurred_at) → excluded.
@@ -284,4 +299,9 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("silver-collector-event", build, target_table="silver_collector_event")
+    # The keystone's watermark tracks the Bronze arrival clock (kafka_timestamp on collector_events_connect),
+    # not the gated keystone's ingested_at — see incremental_window's ts_col.
+    run_job(
+        "silver-collector-event", build, target_table="silver_collector_event",
+        source_table=CONNECT_TABLE, ts_col="kafka_timestamp",
+    )

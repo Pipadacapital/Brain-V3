@@ -44,7 +44,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_return_duckdb_test beside the
@@ -87,8 +95,32 @@ def build(con):
     # with events) — matches the Spark partitioning (bucket(256, brand_id), days(first_event_at)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(first_event_at)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD grain (CHANGED-ENTITY REFOLD) ────
+    #   GRAIN = entity_fold: MANY return-transition events aggregate/rank into ONE (brand_id, order_id)
+    #   latest-state row whose winner may be a transition BELOW the watermark (an old return that just got
+    #   a new event). So we MUST NOT window the fold input — that would drop history and pick a wrong latest
+    #   state. Instead: use the [lo, hi) window ONLY to discover which (brand_id, order_id) entities have a
+    #   NEW event this batch, then re-fold each of those entities over their FULL history. Default OFF →
+    #   lo=None → NO changed-set, NO semi-join → byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-return", GATED_SOURCE, ts_col="ingested_at")
+
+    # changed = the entities touched in [lo, hi), derived with the SAME entity-key guards the fold uses
+    # (order_id present, non-empty). Built ONLY when incremental is active; empty string when lo is None.
+    changed = f"""
+      SELECT DISTINCT brand_id, {prop('pj','order_id')} AS order_id
+      FROM ({read_gated_events_sql([RETURN_EVENT_TYPE], lo=lo, hi=hi)})
+      WHERE {prop('pj','order_id')} IS NOT NULL AND {prop('pj','order_id')} <> ''
+    """
+
     # ── src: project the canonical return properties out of the gated collector lane (1 row/transition).
-    # status_changed_at = coalesce(properties.status_changed_at, cast(occurred_at as string)) — verbatim. ──
+    # status_changed_at = coalesce(properties.status_changed_at, cast(occurred_at as string)) — verbatim.
+    # FULL, UNWINDOWED read of the fold input; the lo-guarded semi-join narrows it to CHANGED entities only,
+    # each re-folded over its complete history. When lo is None the extra predicate is absent (full scan). ──
+    src_semijoin = (
+        f"\n        AND (brand_id, {prop('pj','order_id')}) "
+        f"IN (SELECT brand_id, order_id FROM ({changed}))"
+        if lo is not None else ""
+    )
     src = f"""
       SELECT
         brand_id,
@@ -108,7 +140,7 @@ def build(con):
         coalesce({prop('pj','status_changed_at')}, CAST(occurred_at AS VARCHAR)) AS status_changed_at,
         CASE WHEN {prop('pj','data_source')} = 'synthetic' THEN true ELSE false END AS is_synthetic
       FROM ({read_gated_events_sql([RETURN_EVENT_TYPE])})
-      WHERE {prop('pj','order_id')} IS NOT NULL AND {prop('pj','order_id')} <> ''
+      WHERE {prop('pj','order_id')} IS NOT NULL AND {prop('pj','order_id')} <> ''{src_semijoin}
     """
 
     # ── ranked: terminal (return_completed) wins, then latest status_changed_at (STRING lexical DESC),

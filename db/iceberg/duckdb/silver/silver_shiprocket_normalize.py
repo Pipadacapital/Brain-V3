@@ -31,8 +31,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 from _normalize_base import (  # noqa: E402
-    connect_source_table, ensure_shadow, merge_collector_event, register_salts, run_normalize_job,
-    source_present,
+    advance_lane_watermark, connect_source_table, ensure_shadow, lane_window, lane_window_predicate,
+    merge_collector_event, register_salts, run_normalize_job, source_present,
 )
 import _raw_normalize_ports as rn  # noqa: E402
 from _raw_normalize_ports import classify_terminal_class as _classify_shipment_status, normalize_status  # noqa: E402
@@ -108,6 +108,15 @@ def build(con):
     src = connect_source_table(LANE)
     r = RECORD_KEY
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
+    #   GRAIN = per_event: each raw shipment record → 0..1 shadow row via the idempotent MERGE on
+    #   (brand_id, event_id), so windowing the source read is safe. Raw lanes have no lifted ingested_at;
+    #   the physical arrival clock is kafka_timestamp. Default OFF → lo=None → predicate "" → full scan.
+    lo_ship, hi_ship = lane_window(con, "silver-shiprocket-normalize", LANE)
+    _pred_ship = lane_window_predicate(lo_ship, hi_ship)
+    # "" when lo is None (default OFF / first run / FULL_REFRESH) → SQL byte-identical to the full scan.
+    _ship_win = f"\n      {_pred_ship}" if _pred_ship else ""
+
     # data_source is envelope-level if present, else 'real'. Probe the source columns to stay schema-safe.
     has_data_source = con.execute(
         "SELECT count(*) FROM information_schema.columns WHERE table_name = ? AND column_name = 'data_source'",
@@ -127,7 +136,7 @@ def build(con):
         CAST("{r}".payment_method AS VARCHAR)            AS payment_method,
         CAST("{r}".pincode AS VARCHAR)                   AS pincode,
         CAST("{r}".courier AS VARCHAR)                   AS courier
-      FROM {src}
+      FROM {src}{_ship_win}
     """
 
     # Per-brand salt LEFT join for the AWB hash (bytes.fromhex(salt); a miss → NULL salt → NULL hash).
@@ -194,6 +203,7 @@ def build(con):
     """
 
     n = merge_collector_event(con, TARGET, good)
+    advance_lane_watermark(con, "silver-shiprocket-normalize", LANE, hi_ship)
     return TARGET, n
 
 

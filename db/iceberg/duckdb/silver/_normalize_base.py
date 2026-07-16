@@ -35,6 +35,14 @@ import time
 
 from _catalog import BRONZE_NAMESPACE, CATALOG, SILVER_NAMESPACE, connect
 
+# Reuse the incremental machinery from _base (flag/lookback/watermark) so normalize jobs share the exact
+# same SILVER_INCREMENTAL / FULL_REFRESH / WATERMARK_LOOKBACK_SECONDS semantics as the entity jobs.
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _base import INCREMENTAL as _INCREMENTAL, FULL_REFRESH as _FULL_REFRESH, LOOKBACK_SECONDS as _LOOKBACK  # noqa: E402
+from _base import read_watermark, write_watermark  # noqa: E402
+from datetime import timedelta as _timedelta  # noqa: E402
+
 # The 14-column silver_collector_event contract (identical to every Spark normalize job's COLUMNS_SQL).
 COLLECTOR_COLUMNS_SQL = """
   event_id          string    NOT NULL,
@@ -74,6 +82,63 @@ _DEV_SALT_QUERY = (
 def connect_source_table(lane_table: str) -> str:
     """FQTN of a lane's raw source: the ADR-0010 Connect-written `<lane>_connect` table."""
     return f"{CATALOG}.{BRONZE_NAMESPACE}.{lane_table}_connect"
+
+
+def lane_window(con, job_name: str, lane_table: str):
+    """Return (lo, hi) `kafka_timestamp` bounds for an INCREMENTAL read of a raw Connect lane, or
+    (None, hi) for a full scan — the normalize-tier analogue of _base.incremental_window.
+
+    Raw lanes have no lifted ingested_at; their physical arrival clock is `kafka_timestamp`. The watermark
+    is keyed PER (job, lane) — f"{job_name}:{lane_table}" — so a multi-lane normalize job (e.g. ad-spend =
+    meta + google) tracks each lane independently and a lagging lane is never skipped by the other's max.
+
+    Full scan (lo=None) when SILVER_INCREMENTAL is off, FULL_REFRESH is on, or the lane has no prior
+    watermark (first run). Otherwise lo = (watermark − LOOKBACK) as a half-open [lo, hi) window; the
+    idempotent merge_collector_event dedups the trailing overlap. `hi` is pinned here (computed once) so the
+    caller uses the SAME value for the read predicate AND advance_lane_watermark → a row landing mid-run is
+    caught by the next window, never skipped."""
+    # `hi` is pinned ONCE here (before the read) and used for BOTH the predicate and advance_lane_watermark,
+    # so a row landing mid-run is excluded now and re-read next run (race-safe). Unlike the gated path,
+    # normalize jobs have no independent run_job _CURRENT_HI advance — they MUST advance the watermark to
+    # this `hi` even on a full-scan/bootstrap run (else the lane never leaves full-scan). Safe to return a
+    # non-None hi in the full-scan case because lane_window_predicate() gates the hi bound on `lo` (a full
+    # scan emits NO predicate), so hi never leaks into the default read.
+    try:
+        hi = con.execute(
+            f"SELECT max(kafka_timestamp) FROM {connect_source_table(lane_table)}"
+        ).fetchone()[0]
+    except Exception:  # noqa: BLE001 — lane table absent → nothing to read
+        return None, None
+    if not _INCREMENTAL or _FULL_REFRESH:
+        return None, hi  # full scan (predicate empty via lo=None) but still advance the watermark to hi
+    key = f"{job_name}:{lane_table}"
+    lo = read_watermark(con, key)
+    if lo is None:
+        return None, hi  # first run for this lane → full-scan bootstrap; advance sets the initial watermark
+    if _LOOKBACK > 0:
+        lo = lo - _timedelta(seconds=_LOOKBACK)
+    return lo, hi
+
+
+def lane_window_predicate(lo, hi) -> str:
+    """The `WHERE kafka_timestamp ...` clause for a lane read, or '' for a full scan (lo=None). String
+    literals keep the predicate pushable to the Iceberg scan on the raw lane's kafka_timestamp column."""
+    parts = []
+    if lo is not None:
+        parts.append(f"kafka_timestamp >= '{lo}'")
+    if hi is not None and lo is not None:
+        parts.append(f"kafka_timestamp <= '{hi}'")
+    return f"WHERE {' AND '.join(parts)}" if parts else ""
+
+
+def advance_lane_watermark(con, job_name: str, lane_table: str, hi) -> None:
+    """Advance the per-(job, lane) watermark to the SAME `hi` the read used (best-effort, non-fatal)."""
+    if hi is None:
+        return
+    try:
+        write_watermark(con, f"{job_name}:{lane_table}", hi)
+    except Exception:  # noqa: BLE001 — watermark advance must never fail the job
+        pass
 
 
 def source_present(con, lane_table: str) -> bool:

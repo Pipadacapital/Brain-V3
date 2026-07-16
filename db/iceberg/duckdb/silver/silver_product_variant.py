@@ -44,7 +44,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, prop, read_gated_events_sql, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GATED_SOURCE,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    prop,
+    read_gated_events_sql,
+    run_job,
+)
 from _catalog import CATALOG, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write silver_product_variant_duckdb_test beside the
@@ -82,6 +90,32 @@ def _item(path: str) -> str:
 def build(con):
     ensure_table(con, TARGET, _COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD grain ────────────────────────────
+    #   The entity grain is (brand_id, product_id): MANY product.upsert.v1 rows fold (last-write-wins on
+    #   occurred_at) into ONE latest-state row per product, so windowing the fold INPUT would drop below-
+    #   watermark history and mis-elect the "latest" event. Instead we window the source only to discover
+    #   CHANGED (brand_id, product_id) keys, then re-fold each changed product's FULL history (semi-join).
+    #   The MERGE on (brand_id, product_id, variant_id) upserts exactly those products' variants.
+    #   Default OFF → lo=None → NO changed-set, NO semi-join → byte-identical full recompute.
+    lo, hi = incremental_window(con, "silver-product-variant", GATED_SOURCE, ts_col="ingested_at")
+
+    # CHANGED-KEY set: DISTINCT entity keys from the WINDOWED source read, using the SAME entity-key
+    # derivation (brand_id, properties.product_id) + not-null guard the fold uses. Empty when lo is None.
+    changed_predicate = ""
+    if lo is not None:
+        changed = f"""
+          SELECT DISTINCT brand_id, {prop('pj','product_id')} AS product_id
+          FROM ({read_gated_events_sql([PRODUCT_EVENT], lo=lo, hi=hi)})
+          WHERE {prop('pj','product_id')} IS NOT NULL
+        """
+        # Semi-join on the entity key so ONLY changed products re-fold over their FULL history. AND-appended
+        # to latest_product's existing WHERE (product_id IS NOT NULL). The leading "\n        " reproduces the
+        # exact indentation of a real next line, so when lo is None (empty) the fold SQL is BYTE-IDENTICAL.
+        changed_predicate = (
+            f"\n        AND (brand_id, {prop('pj','product_id')}) "
+            f"IN (SELECT brand_id, product_id FROM ({changed}))"
+        )
+
     # ── latest product.upsert.v1 event per (brand_id, product_id) — distinct catalogue states are distinct
     # Bronze rows (updated_at folded into the dedup id); keep the most-recent (occurred_at DESC, event_id DESC). ──
     latest_product = f"""
@@ -101,7 +135,7 @@ def build(con):
             ORDER BY occurred_at DESC, event_id DESC
           ) AS rn
         FROM ({read_gated_events_sql([PRODUCT_EVENT])})
-        WHERE {prop('pj','product_id')} IS NOT NULL
+        WHERE {prop('pj','product_id')} IS NOT NULL{changed_predicate}
       ) p
       WHERE p.rn = 1
     """

@@ -18,6 +18,12 @@ coordinator:
   # discovery service + HTTP endpoint. cpu request stays 1 (go-live trim).
   nodeSelector:
     karpenter.sh/nodepool: ondemand
+  # Guard the SOLE coordinator against Karpenter voluntarily draining its on-demand node for
+  # consolidation — a coordinator eviction loses the discovery service + HTTP endpoint (full serving
+  # outage), not just in-flight queries. On-demand → no Spot reclaim; this closes the voluntary-disruption
+  # gap.
+  podAnnotations:
+    karpenter.sh/do-not-disrupt: "true"
   tolerations:
     - key: brain.platform/pool
       operator: Equal
@@ -48,6 +54,14 @@ workers:
   # without this, pool weights preferred the streaming pool for worker pods.
   nodeSelector:
     karpenter.sh/nodepool: trino
+  # SERVING STABILITY (2026-07-16): stop Karpenter VOLUNTARILY draining a worker's node for
+  # consolidation — observed live as TaintManagerEviction + karpenter.sh/disrupted, which evicts the
+  # sole-per-node worker; during the reschedule+new-node gap every query that fans to that worker 500s
+  # (EofException). Mirrors the v4-transform pods' guard. (Spot RECLAIM churn is separate — inherent to
+  # the Spot trino pool; a worker off Spot / a warmer replica is the deeper, cost-bearing fix left to the
+  # owner.) do-not-disrupt only blocks Karpenter's voluntary disruption, never a real Spot interruption.
+  podAnnotations:
+    karpenter.sh/do-not-disrupt: "true"
   resources:
     requests:
       cpu: "2"

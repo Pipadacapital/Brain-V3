@@ -20,6 +20,9 @@ spec:
         app.kubernetes.io/component: worker
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmaps.yaml") . | sha256sum }}
+        {{- with .Values.workers.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "trino.fullname" . }}
       {{- with .Values.workers.nodeSelector }}

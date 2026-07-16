@@ -121,13 +121,32 @@ events) — marginal cost is extra short pod-runs on the existing streaming pool
 compute. Gold stays full-scan (incrementalizing Gold is a future Phase 1b, gated on Silver
 parity being proven).
 
-### Phase 2 — request-time detector serving (true per-request freshness)
-Even a 5-min Silver cadence has a floor. For the numbers/predictions that must be
-live-to-the-second, compute **on demand in the serving path** from fresh Silver via
-Trino, Redis-cached with a short TTL + event-driven invalidation
-(`gold.rewritten.v1` already exists as an invalidation signal). The detector logic
-moves off the cron into the BFF/metric-engine read path so a request reflects Silver as
-of *now*, not as of the last cron.
+### Phase 2 — request-time detector serving (DONE; flag-gated, default OFF)
+Even a 5-min Silver cadence has a floor. `GET /api/v1/recommendations` now computes the
+detector set **at request time** from the freshest Silver/Gold (Trino) when the per-brand
+flag `recommendations.request_time` is ON, so the Morning Brief reflects the medallion as
+of *now*, not the last cron tick. Default OFF → the stored (cron-fed) path, unchanged.
+
+Implementation (`apps/core/src/modules/recommendation`):
+- `getRecommendationsLive` — fronted by the `ServingCacheReader` (Redis): brand-leading key,
+  stampede-guarded `getOrSet`, fail-soft. So the expensive compute (4 detectors × Trino
+  reads) runs at most **once per brand per invalidation window**; concurrent requests share
+  the in-flight compute.
+- **Event-driven invalidation is free:** the cache key leads with `brand_id`, and the
+  existing `AnalyticsCacheInvalidateConsumer` busts `${brandId}:*` on `gold.rewritten.v1` —
+  so the moment a brand's Gold marts are rewritten (~5 min), the next request recomputes.
+  A 5-min `executive` TTL tier is the quiet-period backstop.
+- `compute()` reuses `generateRecommendations` (idempotent upsert + append-only
+  `decision_log`), so the persisted set + audit + outcome-measurement inputs stay intact —
+  a request-time *refresh*, not a parallel unpersisted computation.
+- The confidence gate is applied **after** the cache against CURRENT trust (only raw
+  detector findings are cached), so a trust change reflects immediately without a bust.
+- `get-recommendations.ts` split into `readOpenRecommendationsRaw` + `applyGateToRawRecs`
+  (shared by both paths). Response contract is UNCHANGED → no UI change.
+
+The `recommendation-detectors` cron stays (outcome measurement + the flag-OFF/no-traffic
+path). Tests: `get-recommendations-live.test.ts` (routing, gate-at-serve, no_data, safe-off
+compute).
 
 ## Invariants preserved
 - Bronze append-only; dedup lives in Silver. No event loss (windowing is `[lo, hi)`

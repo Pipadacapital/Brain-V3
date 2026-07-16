@@ -86,7 +86,17 @@ pnpm bootstrap
 # duckdb-refresh.sh header for the exact contract. ONESHOT is a no-op here (the DuckDB refresh always
 # runs a single pass); it is kept for call-site compatibility with the old loop.
 step "6/7 refresh — one-shot Silver→Gold (duckdb-serving picks up new snapshots on its next epoch)"
-ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh || \
+# The DuckDB jobs run on the HOST, so the compose-network endpoints/creds must be the
+# host-side ones: MinIO on localhost:9000 (brain/brainbrain — NOT LocalStack's test/test
+# from .env.local-prod) and the REST catalog on localhost:8181. Source $ENV_FILE first
+# (NEO4J_* etc.), then pin the lakehouse contract on top, all in a subshell so nothing
+# leaks into step 7's app env.
+( set -a; . "$ENV_FILE"; set +a; \
+  export S3_ENDPOINT="http://localhost:9000" \
+         ICEBERG_REST_URI="http://localhost:8181" \
+         ICEBERG_WAREHOUSE="s3://brain-bronze/" \
+         AWS_ACCESS_KEY_ID="brain" AWS_SECRET_ACCESS_KEY="brainbrain"; \
+  ONESHOT=1 APP_ENV=local-prod pnpm dev:v4-refresh ) || \
   echo "  ⚠ refresh reported issues (often just an empty cold DB) — continuing; re-run 'pnpm dev:v4-refresh' anytime."
 
 # ── 7. apps ─────────────────────────────────────────────────────────────────

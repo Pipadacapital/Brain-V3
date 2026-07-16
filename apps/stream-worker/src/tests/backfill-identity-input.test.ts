@@ -63,6 +63,7 @@ describe('backfillExitCode', () => {
   const base = {
     brandId: BRAND, linesRead: 10, unparseable: 0, otherBrandRejected: 0,
     attempted: 10, outcomeCounts: {}, errors: 0, dryRun: false,
+    mode: 'batch' as const, batchFallbacks: 0,
   };
   it('0 on a clean pass', () => {
     expect(backfillExitCode(base)).toBe(0);

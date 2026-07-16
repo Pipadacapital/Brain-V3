@@ -35,7 +35,12 @@ import type {
   IdentityPriorityClass,
 } from '../../domain/identity/IdentityResolver.js';
 import type { ConfidenceVerdict } from '@brain/contracts';
-import type { IdentityReadState, ReviewQueueItem } from '../../domain/identity/IdentityStore.js';
+import type {
+  IdentityReadState,
+  IdentityBatchReadState,
+  BatchOutcomeItem,
+  ReviewQueueItem,
+} from '../../domain/identity/IdentityStore.js';
 import { RULE_VERSION, DEFAULT_IDENTITY_PRIORITY } from '../../domain/identity/IdentityResolver.js';
 
 /** The identity-priority classes that may appear in a stored order (validated on read). */
@@ -297,6 +302,135 @@ export class Neo4jIdentityRepository {
   }
 
   /**
+   * BATCH BACKFILL (GAP-A batched path) — readState over the UNION of a whole batch's identifier
+   * hashes in ONE read session (one brandConfig PG txn + 5 graph queries per BATCH instead of per
+   * EVENT). Reproduces readState's five sub-reads with the SAME Cypher shapes:
+   *   1. existing links (alias-RESOLVED via the live ALIAS_OF chain) — the per-event query already
+   *      takes a $pairs list, so the union IS the same query;
+   *   2. strong-owned brains over the resolved-brain candidates;
+   *   3. shared-utility phone-guard rows for every phone hash;
+   *   4. the windowed distinct-brain phone counts — batched into ONE query (collect(DISTINCT ...)
+   *      per hash instead of one count query per hash), returning the raw brain SETS the batch
+   *      overlay needs (phoneBrainIdsInWindow; phoneCount[h] = set size by construction);
+   *   5. the live alias chain (brand-wide, identical query).
+   * Superset-safe by the resolver's (type, hash)-scoped matching — see IdentityStore contract.
+   */
+  async readStateBatch(
+    brandId: string,
+    identifierHashes: Array<{ type: string; hash: string }>,
+    now: Date = new Date(),
+  ): Promise<IdentityBatchReadState> {
+    const brandConfig = await this.readBrandConfig(brandId);
+
+    const session = this.driver.session({ defaultAccessMode: neo4j.session.READ });
+    try {
+      // ── 1. existing links (alias-resolved) — same Cypher as readState over the union pairs ──
+      const existingLinks: ExistingLink[] = [];
+      if (identifierHashes.length > 0) {
+        const pairs = identifierHashes.map((i) => [i.type, i.hash]);
+        const res = await session.run(
+          `MATCH (i:Identifier {brand_id:$brand})-[r:IDENTIFIES]->(c:Customer)
+           WHERE r.is_active = true AND [i.type, i.hash] IN $pairs${CANONICAL_OF_C}
+           RETURN ${CANONICAL_BRAIN_ID} AS brain_id, i.type AS identifier_type, i.hash AS identifier_value, r.is_active AS is_active`,
+          { brand: brandId, pairs },
+        );
+        for (const rec of res.records) {
+          existingLinks.push({
+            brain_id: rec.get('brain_id'),
+            identifier_type: rec.get('identifier_type'),
+            identifier_value: rec.get('identifier_value'),
+            is_active: rec.get('is_active'),
+          });
+        }
+      }
+
+      // ── 2. strong-owned brains (SPEC A.2.3.4) — same query over the union's resolved brains ──
+      const strongOwnedBrainIds = new Set<string>();
+      const candidateBrains = [...new Set(existingLinks.map((l) => l.brain_id))];
+      if (candidateBrains.length > 0) {
+        const ownRes = await session.run(
+          `MATCH (c:Customer {brand_id:$brand}) WHERE c.brain_id IN $brains
+           MATCH (si:Identifier {brand_id:$brand})-[sr:IDENTIFIES]->(c)
+           WHERE sr.is_active = true AND si.type IN $strongTypes
+           RETURN DISTINCT c.brain_id AS brain_id`,
+          { brand: brandId, brains: candidateBrains, strongTypes: STRONG_LINK_TYPES },
+        );
+        for (const rec of ownRes.records) strongOwnedBrainIds.add(rec.get('brain_id') as string);
+      }
+
+      const phoneHashes = identifierHashes.filter((i) => i.type === 'phone').map((i) => i.hash);
+      const sharedUtilityMap = new Map<string, SharedUtilityState>();
+      const phoneCount = new Map<string, number>();
+      const phoneBrainIdsInWindow = new Map<string, Set<string>>();
+
+      if (phoneHashes.length > 0) {
+        // ── 3. shared-utility phone-guard rows — same query, all phone hashes at once ──
+        const suiRes = await session.run(
+          `MATCH (s:SharedUtility {brand_id:$brand, identifier_type:'phone'})
+           WHERE s.identifier_value IN $hashes
+           RETURN s.identifier_type AS identifier_type, s.identifier_value AS identifier_value,
+                  s.profile_count AS profile_count, s.suppressed_until AS suppressed_until`,
+          { brand: brandId, hashes: phoneHashes },
+        );
+        for (const rec of suiRes.records) {
+          const su = rec.get('suppressed_until');
+          sharedUtilityMap.set(rec.get('identifier_value'), {
+            identifier_type: rec.get('identifier_type'),
+            identifier_value: rec.get('identifier_value'),
+            profile_count: toNum(rec.get('profile_count')),
+            suppressed_until: su == null ? null : new Date(toNum(su)),
+          });
+        }
+
+        // ── 4. windowed distinct-brain phone counts — ONE query for every hash; the raw brain SETS
+        // are returned so the overlay can advance the count exactly like a per-event re-read (the
+        // per-event count query is the same MATCH with count(DISTINCT c.brain_id) per single hash;
+        // NO alias resolution — raw edge targets, deliberately identical).
+        const cutoffMs = now.getTime() - brandConfig.suppression_window_days * 86_400_000;
+        const cntRes = await session.run(
+          `MATCH (i:Identifier {brand_id:$brand, type:'phone'})-[r:IDENTIFIES]->(c:Customer)
+           WHERE i.hash IN $hashes AND r.is_active = true AND r.created_at > $cutoff
+           RETURN i.hash AS hash, collect(DISTINCT c.brain_id) AS brains`,
+          { brand: brandId, hashes: phoneHashes, cutoff: cutoffMs },
+        );
+        for (const rec of cntRes.records) {
+          const brains = new Set((rec.get('brains') as string[]) ?? []);
+          phoneBrainIdsInWindow.set(rec.get('hash') as string, brains);
+          phoneCount.set(rec.get('hash') as string, brains.size);
+        }
+        // Hashes with no in-window edges: 0 / empty set (per-event readState also writes the 0).
+        for (const hash of phoneHashes) {
+          if (!phoneCount.has(hash)) {
+            phoneCount.set(hash, 0);
+            phoneBrainIdsInWindow.set(hash, new Set());
+          }
+        }
+      }
+
+      // ── 5. alias chain — identical brand-wide query ──
+      const aliasRes = await session.run(
+        `MATCH (o:Customer {brand_id:$brand})-[a:ALIAS_OF]->(:Customer)
+         WHERE a.valid_to IS NULL
+         RETURN DISTINCT o.brain_id AS observed`,
+        { brand: brandId },
+      );
+      const aliasChain = new Set(aliasRes.records.map((r) => r.get('observed') as string));
+
+      return {
+        existingLinks,
+        sharedUtilityMap,
+        phoneCount,
+        aliasChain,
+        brandConfig,
+        strongOwnedBrainIds,
+        phoneBrainIdsInWindow,
+      };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
    * Fetch candidate customers that share any of the event's WEAK-signal hashes — the active
    * tier='weak' IDENTIFIES edges (device_fingerprint / cookie_id / session_id / ip). These edges
    * carry NO merge authority (weak is never in STRONG_TIERS); they exist SOLELY to feed the
@@ -500,6 +634,208 @@ export class Neo4jIdentityRepository {
     }
   }
 
+  /**
+   * BATCH BACKFILL (GAP-A batched path) — apply a batch's resolve outcomes IN ORDER in ONE Neo4j
+   * write transaction (+ ONE PG txn for the audit/contact_pii records), observably equivalent to
+   * calling writeOutcome(item) sequentially (timestamps excepted: one batch clock).
+   *
+   * The per-event statements are UNWIND-bulked phase by phase, in the SAME statement order a
+   * per-event sequence produces (customers → links → first_identified_at → merges → phone-guard →
+   * reviews). Phase-grouping is safe because outcomes carry FULLY-RESOLVED brain_ids (no write
+   * re-reads state to decide targets) and the only state-conditional writes are timestamp-shaped:
+   *   • H6 first_identified_at is a set-once conditional on "has an active strong edge" — running it
+   *     once per brain AFTER all the batch's links yields the same final value (the batch clock)
+   *     that per-event interleaving yields, because every candidate timestamp in the batch IS the
+   *     batch clock.
+   *   • merge fia-inheritance compares fia values that, within the batch, all equal the batch clock
+   *     (pre-existing older values behave identically in both orders). Merges are executed as a
+   *     per-item loop (NOT one UNWIND) so a chained merge (A→B then B→C) inherits strictly in event
+   *     order without relying on intra-statement write visibility. Merges are rare; links dominate.
+   *   • SharedUtility folds are pre-folded in JS (max profile_count — associative; last
+   *     suppressed_until wins — item order), one row per node, avoiding same-node multi-row
+   *     visibility subtleties entirely.
+   * Link rows are deduped keep-FIRST per (brain, type, hash): a later duplicate per-event write
+   * would only ON MATCH SET is_active=true on an edge this batch just created active — a no-op.
+   *
+   * DETERMINISTIC outcomes only (same contract as writeOutcome). Idempotent: same MERGE keys.
+   */
+  async writeOutcomesBatch(brandId: string, items: BatchOutcomeItem[]): Promise<{ written: number }> {
+    if (items.length === 0) return { written: 0 };
+    const nowMs = Date.now(); // one batch clock (contract: timestamps excepted)
+
+    // ── Pre-shape the phase rows in EVENT ORDER ─────────────────────────────────────────────────
+    const customerRows: Array<{ brainId: string }> = [];
+    const customerSeen = new Set<string>();
+    const linkRows: Array<{
+      brainId: string; t: string; h: string; tier: string;
+      confScore: number; confBand: string; matcherId: string; ruleVersion: string;
+    }> = [];
+    const linkSeen = new Set<string>();
+    const h6Rows: Array<{ brainId: string }> = [];
+    const h6Seen = new Set<string>();
+    const mergeRows: Array<{ canonical: string; merged: string; mergeId: string }> = [];
+    const phoneGuardFold = new Map<string, { type: string; value: string; pc: number; suppressedUntil: number | null }>();
+    const reviewRows: Array<{ brainId: string; reason: string; evidence: string }> = [];
+
+    for (const item of items) {
+      const { outcome, verdict } = item;
+      // Same per-item verdict fallback as writeOutcome (backfill passes undefined → deterministic exact).
+      const confScore = verdict?.score ?? DETERMINISTIC_CONFIDENCE_SCORE;
+      const confBand = verdict?.band ?? DETERMINISTIC_CONFIDENCE_BAND;
+      const matcherId = verdict?.matcher_id ?? DETERMINISTIC_MATCHER_ID;
+      const ruleVersion = verdict?.rule_version ?? RULE_VERSION;
+
+      if (!customerSeen.has(outcome.brainId)) {
+        customerSeen.add(outcome.brainId);
+        customerRows.push({ brainId: outcome.brainId });
+      }
+      for (const id of outcome.newLinks) {
+        const key = `${outcome.brainId}|${id.type}:${id.hash}`;
+        if (linkSeen.has(key)) continue; // keep-FIRST: the dup's per-event write is a no-op re-activation
+        linkSeen.add(key);
+        linkRows.push({ brainId: outcome.brainId, t: id.type, h: id.hash, tier: id.tier, confScore, confBand, matcherId, ruleVersion });
+      }
+      if (!h6Seen.has(outcome.brainId)) {
+        h6Seen.add(outcome.brainId);
+        h6Rows.push({ brainId: outcome.brainId });
+      }
+      if (outcome.action === 'merged' && outcome.merge) {
+        mergeRows.push({
+          canonical: outcome.merge.canonicalBrainId,
+          merged: outcome.merge.mergedBrainId,
+          mergeId: outcome.merge.mergeId,
+        });
+      }
+      for (const u of outcome.phoneGuardUpdates) {
+        if (!u.suppress) continue;
+        const k = `${u.identifier_type}:${u.identifier_value}`;
+        const prev = phoneGuardFold.get(k);
+        phoneGuardFold.set(k, {
+          type: u.identifier_type,
+          value: u.identifier_value,
+          // max is associative → folding N sequential CASE-max SETs into one row is exact.
+          pc: prev ? Math.max(prev.pc, u.profile_count) : u.profile_count,
+          // last write wins (per-event SET is unconditional) → item order.
+          suppressedUntil: u.suppressed_until ? u.suppressed_until.getTime() : null,
+        });
+      }
+      if (outcome.routeToReview && outcome.reviewReason) {
+        reviewRows.push({
+          brainId: outcome.brainId,
+          reason: outcome.reviewReason,
+          evidence: JSON.stringify({ reason: outcome.reviewReason, rule_version: 'v1-deterministic' }),
+        });
+      }
+    }
+
+    const session = this.driver.session();
+    try {
+      await session.executeWrite(async (tx) => {
+        // ── customers (per-event statement, UNWIND-bulked) ──
+        await tx.run(
+          `UNWIND $rows AS row
+           MERGE (c:Customer {brand_id:$brand, brain_id:row.brainId})
+           ON CREATE SET c.lifecycle_state='active', c.created_at=$nowMs,
+                         c.ai_processing_consent=false, c.resolution_consent=false, c.anonymous_id=null`,
+          { brand: brandId, rows: customerRows, nowMs },
+        );
+
+        // ── identity_link edges (per-event statement, UNWIND-bulked; stamps per item's verdict) ──
+        if (linkRows.length > 0) {
+          await tx.run(
+            `UNWIND $rows AS row
+             MERGE (i:Identifier {brand_id:$brand, type:row.t, hash:row.h})
+             WITH i, row
+             MATCH (c:Customer {brand_id:$brand, brain_id:row.brainId})
+             MERGE (i)-[r:IDENTIFIES]->(c)
+             ON CREATE SET r.tier=row.tier, r.is_active=true, r.created_at=$nowMs,
+                           r.confidence_score=row.confScore, r.confidence_band=row.confBand,
+                           r.matcher_id=row.matcherId, r.rule_version=row.ruleVersion,
+                           r.schema_version=$schemaVersion
+             ON MATCH SET r.is_active=true`,
+            { brand: brandId, rows: linkRows, nowMs, schemaVersion: IDENTITY_SCHEMA_VERSION },
+          );
+        }
+
+        // ── H6: first_identified_at (per-event statement, UNWIND-bulked; set-once conditional) ──
+        await tx.run(
+          `UNWIND $rows AS row
+           MATCH (c:Customer {brand_id:$brand, brain_id:row.brainId})
+           WHERE c.first_identified_at IS NULL
+             AND EXISTS {
+               MATCH (:Identifier)-[r:IDENTIFIES]->(c)
+               WHERE r.is_active = true AND r.tier IN $strong
+             }
+           SET c.first_identified_at = $nowMs`,
+          { brand: brandId, rows: h6Rows, strong: STRONG_TIERS, nowMs },
+        );
+
+        // ── merges: per-item loop IN EVENT ORDER (rare; chained merges need strict sequencing) ──
+        for (const m of mergeRows) {
+          await tx.run(
+            `MERGE (m:Customer {brand_id:$brand, brain_id:$merged})
+             SET m.lifecycle_state='merged', m.merged_into=$canonical
+             MERGE (mev:MergeEvent {merge_id:$mergeId})
+               ON CREATE SET mev.brand_id=$brand, mev.canonical_brain_id=$canonical,
+                             mev.merged_brain_id=$merged, mev.rule_version=$ruleVersion, mev.committed_at=$nowMs,
+                             mev.confidence_score=$confScore, mev.confidence_band=$confBand,
+                             mev.matcher_id=$matcherId, mev.schema_version=$schemaVersion
+             WITH m
+             MATCH (can:Customer {brand_id:$brand, brain_id:$canonical})
+             MERGE (m)-[a:ALIAS_OF]->(can)
+               ON CREATE SET a.merge_id=$mergeId, a.rule_version=$ruleVersion, a.valid_from=$nowMs, a.valid_to=null,
+                             a.confidence_score=$confScore, a.confidence_band=$confBand,
+                             a.matcher_id=$matcherId, a.schema_version=$schemaVersion`,
+            {
+              brand: brandId, canonical: m.canonical, merged: m.merged, mergeId: m.mergeId, nowMs,
+              // Backfill outcomes carry no verdict → the deterministic exact stamp, same as writeOutcome.
+              confScore: DETERMINISTIC_CONFIDENCE_SCORE, confBand: DETERMINISTIC_CONFIDENCE_BAND,
+              matcherId: DETERMINISTIC_MATCHER_ID, ruleVersion: RULE_VERSION,
+              schemaVersion: IDENTITY_SCHEMA_VERSION,
+            },
+          );
+          await tx.run(
+            `MATCH (c:Customer {brand_id:$brand, brain_id:$canonical}), (m:Customer {brand_id:$brand, brain_id:$merged})
+             WHERE m.first_identified_at IS NOT NULL
+               AND (c.first_identified_at IS NULL OR m.first_identified_at < c.first_identified_at)
+             SET c.first_identified_at = m.first_identified_at`,
+            { brand: brandId, canonical: m.canonical, merged: m.merged },
+          );
+        }
+
+        // ── phone-guard SharedUtility (pre-folded in JS: one row per node; same CASE-max SET) ──
+        if (phoneGuardFold.size > 0) {
+          await tx.run(
+            `UNWIND $rows AS row
+             MERGE (s:SharedUtility {brand_id:$brand, identifier_type:row.type, identifier_value:row.value})
+             SET s.profile_count = CASE WHEN s.profile_count IS NULL OR row.pc > s.profile_count THEN row.pc ELSE s.profile_count END,
+                 s.suppressed_until = row.suppressedUntil, s.flagged_at = $nowMs,
+                 s.window_days = 30, s.reason = 'phone_guard_threshold_exceeded'`,
+            { brand: brandId, rows: [...phoneGuardFold.values()], nowMs },
+          );
+        }
+
+        // ── merge_review_queue (per-event statement, UNWIND-bulked; pure CREATEs) ──
+        if (reviewRows.length > 0) {
+          await tx.run(
+            `UNWIND $rows AS row
+             CREATE (:MergeReview {
+               brand_id:$brand, review_id:randomUUID(), brain_id_a:row.brainId, brain_id_b:row.brainId,
+               trigger_reason:row.reason, evidence:row.evidence, status:'pending', created_at:$nowMs })`,
+            { brand: brandId, rows: reviewRows, nowMs },
+          );
+        }
+      });
+
+      // ── identity_audit + contact_pii → PostgreSQL, ONE txn, item order preserved (ADR-0004) ──
+      await this.writePgAuditAndPiiBatch(brandId, items);
+
+      return { written: items.length };
+    } finally {
+      await session.close();
+    }
+  }
+
   /** Brand phone-guard config from PG (RLS-forced → set the brand GUC in-txn before the read). */
   private async readBrandConfig(brandId: string): Promise<BrandPhoneGuardConfig> {
     const client = await this.pgPool.connect();
@@ -605,6 +941,72 @@ export class Neo4jIdentityRepository {
                ON CONFLICT (brand_id, brain_id, pii_type) DO NOTHING`,
               [brandId, pii.brain_id, pii.pii_type, pii.identifier_hash, env.ciphertext, env.iv, env.authTag, key.keyVersion],
             );
+          }
+        }
+      }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * BATCH twin of writePgAuditAndPii — the SAME per-item INSERT statements, item order preserved,
+   * in ONE PG transaction (ON CONFLICT DO NOTHING on contact_pii keeps first-wins semantics under
+   * that order, exactly like sequential per-event txns). The per-brand DEK is fetched ONCE per
+   * batch instead of once per event (same key — the fetch is brand-keyed; same best-effort
+   * `.catch(() => null)` skip-on-failure behaviour).
+   */
+  private async writePgAuditAndPiiBatch(brandId: string, items: BatchOutcomeItem[]): Promise<void> {
+    const client = await this.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+      await setBrandRlsContext(client, brandId);
+
+      for (const { outcome, identifiers } of items) {
+        await client.query(
+          `INSERT INTO identity_audit (brand_id, brain_id, action, merge_id, detail)
+           VALUES ($1, $2, $3, $4, $5::jsonb)`,
+          [
+            brandId,
+            outcome.brainId,
+            outcome.action === 'minted' ? 'mint'
+              : outcome.action === 'linked' ? 'link'
+              : outcome.action === 'merged' ? 'merge'
+              : 'link',
+            outcome.merge?.mergeId ?? null,
+            JSON.stringify({
+              rule_version: 'v1-deterministic',
+              identifier_types: identifiers.map((i) => i.type),
+              action: outcome.action,
+              store: 'neo4j', // the graph is the SoR; this PG row is the immutable audit trail
+              priority_config_version: outcome.priorityConfigVersion ?? null,
+            }),
+          ],
+        );
+      }
+
+      const anyPii = items.some(({ outcome }) => outcome.contactPiiWrites.length > 0);
+      if (anyPii && this.keyProvider) {
+        const key = await this.keyProvider.getDek(brandId).catch(() => null);
+        if (key) {
+          await client.query("SELECT set_config('app.role', 'send_service', true)");
+          for (const { outcome } of items) {
+            for (const pii of outcome.contactPiiWrites) {
+              const env = encryptPii(key.dek, pii.raw_value);
+              await client.query(
+                `INSERT INTO contact_pii
+                   (brand_id, brain_id, pii_type, identifier_hash,
+                    pii_ciphertext, pii_iv, pii_auth_tag, key_version, pii_value)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)
+                 ON CONFLICT (brand_id, brain_id, pii_type) DO NOTHING`,
+                [brandId, pii.brain_id, pii.pii_type, pii.identifier_hash, env.ciphertext, env.iv, env.authTag, key.keyVersion],
+              );
+            }
           }
         }
       }

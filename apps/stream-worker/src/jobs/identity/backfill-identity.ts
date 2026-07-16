@@ -34,13 +34,21 @@
  *                       FULL_REFRESH of the downstream marts, which supersedes per-event invalidation.
  *   - DRY-RUN         — `--dry-run` parses + counts identifier-bearing events and exits WITHOUT
  *                       connecting to Neo4j (no write path is even constructed).
+ *   - BATCHED (default) — events run through BatchResolveIdentityUseCase: ONE bulk readStateBatch +
+ *                       ONE bulk writeOutcomesBatch per --batch-size events (default 500) instead of
+ *                       ~7 Neo4j round-trips per event, with per-event-sequential semantics preserved
+ *                       by the in-memory overlay (parity-tested: batch == per-event). If a batch
+ *                       FAILS, that batch transparently FALLS BACK to the per-event path (writes are
+ *                       idempotent — the bulk txn either fully committed or not at all), converging
+ *                       on the old per-event error accounting. `--per-event` forces the legacy path.
  *
  * INPUT SHAPE: each NDJSON line must carry top-level `brand_id` + `event_id`, and the event `payload`
  * either inline (full Bronze envelope) or as a JSON STRING (the natural shape of a Trino/serving export
  * of brain_silver.silver_collector_event, whose `payload` column is varchar) — string payloads are
  * parsed here before the resolve call, so the operator export needs no reshaping.
  *
- * Usage:  node dist/jobs/identity/backfill-identity.js <brand_id> <events.ndjson> [--dry-run]
+ * Usage:  node dist/jobs/identity/backfill-identity.js <brand_id> <events.ndjson>
+ *           [--dry-run] [--per-event] [--batch-size=N]
  */
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
@@ -54,7 +62,15 @@ import {
 } from '@brain/pii-vault';
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { Neo4jIdentityRepository } from '../../infrastructure/neo4j/Neo4jIdentityRepository.js';
-import { ResolveIdentityUseCase, type ResolveOutcomeType } from '../../application/ResolveIdentityUseCase.js';
+import {
+  ResolveIdentityUseCase,
+  type ResolveOutcomeType,
+  type ResolveResult,
+} from '../../application/ResolveIdentityUseCase.js';
+import {
+  BatchResolveIdentityUseCase,
+  DEFAULT_IDENTITY_BATCH_SIZE,
+} from '../../application/BatchResolveIdentityUseCase.js';
 import { log } from '../../log.js';
 
 /** Progress heartbeat cadence (events) — a 10^5-event backfill logs ~every few seconds. */
@@ -75,6 +91,10 @@ export interface BackfillIdentityReport {
   /** Events whose resolve THREW (salt/Neo4j failure) — logged and continued; non-zero exit if > 0. */
   errors: number;
   dryRun: boolean;
+  /** 'batch' (default; bulk read/write per batch) or 'per-event' (legacy path via --per-event). */
+  mode: 'batch' | 'per-event';
+  /** Batches that failed the bulk path and were re-run per-event (idempotent fallback). */
+  batchFallbacks: number;
 }
 
 /**
@@ -99,11 +119,13 @@ export function toResolveBuffer(row: Record<string, unknown>): Buffer | null {
 export async function runIdentityBackfill(
   brandId: string,
   filePath: string,
-  opts: { dryRun?: boolean } = {},
+  opts: { dryRun?: boolean; perEvent?: boolean; batchSize?: number } = {},
 ): Promise<BackfillIdentityReport> {
   const cfg = loadStreamWorkerConfig();
   const dbUrl = cfg.BRAIN_APP_DATABASE_URL;
   const dryRun = opts.dryRun === true;
+  const perEvent = opts.perEvent === true;
+  const batchSize = opts.batchSize ?? DEFAULT_IDENTITY_BATCH_SIZE;
 
   const report: BackfillIdentityReport = {
     brandId,
@@ -114,6 +136,8 @@ export async function runIdentityBackfill(
     outcomeCounts: {},
     errors: 0,
     dryRun,
+    mode: perEvent ? 'per-event' : 'batch',
+    batchFallbacks: 0,
   };
 
   // Live write path — constructed ONLY on a real run (dry-run never touches Neo4j/PG/KMS).
@@ -122,6 +146,7 @@ export async function runIdentityBackfill(
   // module docstring — deterministic-only, no domain-event flood).
   let identityRepo: Neo4jIdentityRepository | null = null;
   let useCase: ResolveIdentityUseCase | null = null;
+  let batchUseCase: BatchResolveIdentityUseCase | null = null;
   if (!dryRun) {
     const saltProvider = createSaltProvider(dbUrl);
     // intentional raw: NODE_ENV prod-gating selects the secret/KMS code path (same as main.ts).
@@ -137,12 +162,73 @@ export async function runIdentityBackfill(
       vaultKeyProvider,
     );
     await identityRepo.bootstrap();
+    // The per-event use case is ALWAYS constructed: it is the --per-event path AND the idempotent
+    // per-batch fallback when a bulk batch fails (the bulk txn is atomic — nothing partial to skip).
     useCase = new ResolveIdentityUseCase(saltProvider, identityRepo);
+    if (!perEvent) {
+      batchUseCase = new BatchResolveIdentityUseCase(saltProvider, identityRepo, brandId, { batchSize });
+    }
   }
 
   try {
     const rl = createInterface({ input: createReadStream(filePath, 'utf8'), crlfDelay: Infinity });
     const now = new Date().toISOString();
+
+    const logProgress = (): void => {
+      log.info('[backfill-identity] progress', {
+        attempted: report.attempted,
+        errors: report.errors,
+        batchFallbacks: report.batchFallbacks,
+        ...report.outcomeCounts,
+      });
+    };
+
+    /** Per-event resolve (the legacy path AND the per-batch fallback): count outcome or error. */
+    const resolveOneByOne = async (bufs: Array<{ buf: Buffer; eventId: unknown }>): Promise<void> => {
+      for (const { buf, eventId } of bufs) {
+        try {
+          const result = await useCase!.execute(buf, now);
+          report.outcomeCounts[result.outcome] = (report.outcomeCounts[result.outcome] ?? 0) + 1;
+        } catch (err) {
+          // Salt/Neo4j failure on ONE event: log + continue (the file is re-runnable; idempotent), but
+          // surface it in the exit code so the operator re-runs rather than trusting a partial pass.
+          report.errors += 1;
+          log.error('[backfill-identity] resolve failed — continuing', {
+            brand_id: brandId,
+            event_id: eventId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    };
+
+    // Batch accumulator (batch mode only) — flushed at batchSize and at EOF. Batches are strictly
+    // sequential (bulk write k completes before bulk read k+1) so cross-batch dependencies resolve
+    // through the store exactly like the per-event path.
+    let pending: Array<{ buf: Buffer; eventId: unknown }> = [];
+    const flushBatch = async (): Promise<void> => {
+      if (pending.length === 0) return;
+      const chunk = pending;
+      pending = [];
+      try {
+        const results: ResolveResult[] = await batchUseCase!.execute(chunk.map((c) => c.buf), now);
+        for (const result of results) {
+          report.outcomeCounts[result.outcome] = (report.outcomeCounts[result.outcome] ?? 0) + 1;
+        }
+      } catch (err) {
+        // The bulk txn is atomic (nothing partial committed on failure) and every write is
+        // idempotent — re-running the SAME events per-event is safe and converges on the legacy
+        // error accounting (one poison event costs itself, not the whole batch).
+        report.batchFallbacks += 1;
+        log.warn('[backfill-identity] batch failed — falling back to per-event for this batch', {
+          brand_id: brandId,
+          batch_events: chunk.length,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        await resolveOneByOne(chunk);
+      }
+      logProgress();
+    };
 
     for await (const line of rl) {
       const trimmed = line.trim();
@@ -170,28 +256,17 @@ export async function runIdentityBackfill(
       report.attempted += 1;
       if (dryRun) continue;
 
-      try {
-        const result = await useCase!.execute(buf, now);
-        report.outcomeCounts[result.outcome] = (report.outcomeCounts[result.outcome] ?? 0) + 1;
-      } catch (err) {
-        // Salt/Neo4j failure on ONE event: log + continue (the file is re-runnable; idempotent), but
-        // surface it in the exit code so the operator re-runs rather than trusting a partial pass.
-        report.errors += 1;
-        log.error('[backfill-identity] resolve failed — continuing', {
-          brand_id: brandId,
-          event_id: parsed['event_id'],
-          err: err instanceof Error ? err.message : String(err),
-        });
+      if (batchUseCase) {
+        pending.push({ buf, eventId: parsed['event_id'] });
+        if (pending.length >= batchSize) await flushBatch();
+        continue;
       }
 
-      if (report.attempted % PROGRESS_EVERY === 0) {
-        log.info('[backfill-identity] progress', {
-          attempted: report.attempted,
-          errors: report.errors,
-          ...report.outcomeCounts,
-        });
-      }
+      await resolveOneByOne([{ buf, eventId: parsed['event_id'] }]);
+      if (report.attempted % PROGRESS_EVERY === 0) logProgress();
     }
+
+    if (batchUseCase) await flushBatch();
 
     return report;
   } finally {
@@ -212,11 +287,16 @@ if (
   const brandId = process.argv[2];
   const filePath = process.argv[3];
   const dryRun = process.argv.includes('--dry-run');
-  if (!brandId || !filePath) {
-    log.error('[backfill-identity] usage: backfill-identity <brand_id> <events.ndjson> [--dry-run]');
+  const perEvent = process.argv.includes('--per-event');
+  const batchSizeArg = process.argv.find((a) => a.startsWith('--batch-size='));
+  const batchSize = batchSizeArg ? Number(batchSizeArg.slice('--batch-size='.length)) : undefined;
+  if (!brandId || !filePath || (batchSizeArg && (!Number.isInteger(batchSize) || batchSize! < 1))) {
+    log.error(
+      '[backfill-identity] usage: backfill-identity <brand_id> <events.ndjson> [--dry-run] [--per-event] [--batch-size=N]',
+    );
     process.exit(2);
   }
-  runIdentityBackfill(brandId, filePath, { dryRun })
+  runIdentityBackfill(brandId, filePath, { dryRun, perEvent, batchSize })
     .then((report) => {
       log.info('[backfill-identity] complete', { ...report });
       console.log(JSON.stringify(report, null, 2));

@@ -124,6 +124,14 @@ export const PLATFORM_FLAGS = {
     description:
       'GET /v1/recommendations over gold_recommendations (501 stub per AMD-21 until models ship).',
   },
+  'recommendations.request_time': {
+    wave: 'G',
+    spec: 'realtime-phase-2',
+    description:
+      'Realtime Phase 2: GET /v1/recommendations computes the detector set at REQUEST TIME against ' +
+      'the freshest Silver/Gold (Trino), Redis-cached + gold.rewritten.v1-invalidated, instead of ' +
+      'reading the batch-cron-persisted set. OFF (default) = the stored getRecommendations path.',
+  },
 
   // ── Wave F — AI platform infrastructure (SPEC:F; scaffold-only, OFF by construction) ──
   'ai.gateway.call_logging': {

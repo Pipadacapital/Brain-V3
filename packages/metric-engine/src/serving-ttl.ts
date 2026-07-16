@@ -52,6 +52,10 @@ export const METRIC_TTL_TIER: Readonly<Record<string, ServingTtlTier>> = {
   revenue_timeseries: 'executive',
   recognition_breakdown: 'executive',
   foundation_signals: 'executive',
+  // Realtime Phase 2: the request-time recommendation set. Primary freshness is the gold.rewritten.v1
+  // `${brandId}:*` invalidation; the 5-min executive TTL is the backstop for a quiet period (no Gold
+  // rewrite) so a stale brief can never outlive the Gold cadence.
+  recommendations_live: 'executive',
   orders_timeseries: 'executive',
   order_stats: 'executive',
   orders_list: 'executive',

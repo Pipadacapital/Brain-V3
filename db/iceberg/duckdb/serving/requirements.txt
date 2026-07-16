@@ -1,0 +1,6 @@
+# duckdb-serving — Python deps for the serving replicas (plan §A2).
+# Kept separate from ../requirements.txt (the transform tier): serving pods carry NO numpy/splink/neo4j.
+duckdb>=1.5.4          # READ_ONLY REST-catalog ATTACH verified on 1.5.4 (Phase-0 spike gate c)
+fastapi>=0.115         # the /v1/query HTTP facade
+uvicorn>=0.30          # 1 worker per replica — one DuckDB per process, scale = replicas
+pytz>=2024.1           # REQUIRED: fetching Iceberg TIMESTAMPTZ values into Python needs it (spike gate e)

@@ -311,6 +311,55 @@ resource "aws_ecr_lifecycle_policy" "iceberg_rest" {
   })
 }
 
+# duckdb-serving image (ADR-0014): the serving-tier HTTP service that replaced Trino
+# (db/iceberg/duckdb/serving/Dockerfile, built by deploy.yml build-data-images). Not a
+# pnpm app, so — like iceberg-rest above — it sits outside the eks module's
+# brain-<svc>-prod ECR set; same IMMUTABLE, KMS-encrypted, scanned posture.
+resource "aws_ecr_repository" "duckdb_serving" {
+  name                 = "brain-duckdb-serving-prod"
+  image_tag_mutability = "IMMUTABLE"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = module.kms.root_kms_key_arn
+  }
+}
+
+# Same lifecycle posture as iceberg_rest (AUD-INFRA-018): untagged expire after 7 days,
+# keep-last-10 tagged (IMMUTABLE tags mean every build is a new tag; N=10 keeps any
+# digest a running pod could still pull after a node reschedule).
+resource "aws_ecr_lifecycle_policy" "duckdb_serving" {
+  repository = aws_ecr_repository.duckdb_serving.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 7 days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 7
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only the last 10 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
 ###############################################################################
 # Secrets Manager + S3 Iceberg medallion WAREHOUSE + S3 Audit (WORM).
 # AUD-COST-016: ONE warehouse bucket, NO Object Lock. The local lakehouse runs

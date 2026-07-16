@@ -34,8 +34,15 @@ class _FakeCon:
         self.closed = True
 
     def create_function(self, name, *_a, **_k):
-        if name in self._fns:  # DuckDB raises this on a duplicate registration
-            raise RuntimeError(f"Catalog Error: Scalar Function with name {name} already exists")
+        if name in self._fns:
+            # DuckDB's REAL duplicate-UDF message (captured from prod 2026-07-16) — says "already
+            # CREATED", not "already exists". The first test used an invented "already exists" message,
+            # which let a wrong string-match ship and fail live on silver_touchpoint. Test the real text.
+            raise RuntimeError(
+                f"Not implemented Error: A function by the name of '{name}' is already created, "
+                "creating multiple functions with the same name is not supported yet, "
+                "please remove it first"
+            )
         self._fns.add(name)
 
 
@@ -54,10 +61,23 @@ def test_per_job_close_is_a_noop():
 def test_create_function_is_idempotent():
     fc = _FakeCon()
     s = run_all._SharedConn(fc)
-    s.create_function("murmur_udf")  # first registration
-    # Second registration (pass 2 / another job) must NOT raise on the shared connection.
-    s.create_function("murmur_udf")
-    assert "murmur_udf" in fc._fns
+    s.create_function("sr_murmur_hash3_32")  # first registration (job A, e.g. silver_sessions)
+    # Second registration (job B, e.g. silver_touchpoint / pass 2) must NOT raise — this is the exact
+    # prod failure of 2026-07-16. With the set pre-check this short-circuits before touching DuckDB.
+    s.create_function("sr_murmur_hash3_32")
+    assert "sr_murmur_hash3_32" in fc._fns
+
+
+def test_create_function_message_fallback_on_real_duckdb_text():
+    # Force the EXCEPTION path (bypass the set pre-check) by pre-populating the fake's registry —
+    # the proxy has never seen the name, DuckDB raises the real "is already created" message, and the
+    # proxy must swallow it (the exact string that slipped past the first "already exists" match).
+    fc = _FakeCon()
+    fc._fns.add("sce_event_category")
+    s = run_all._SharedConn(fc)
+    s.create_function("sce_event_category")  # must not raise
+    # And it must now be memoized so repeats short-circuit.
+    s.create_function("sce_event_category")
 
 
 def test_create_function_still_raises_non_duplicate_errors():
@@ -98,7 +118,8 @@ if __name__ == "__main__":
     test_proxy_forwards_methods()
     test_per_job_close_is_a_noop()
     test_create_function_is_idempotent()
+    test_create_function_message_fallback_on_real_duckdb_text()
     test_create_function_still_raises_non_duplicate_errors()
     test_real_close_closes()
     test_tier_config_files_exist()
-    print("PASS: run_all single-process runner hygiene (6/6)")
+    print("PASS: run_all single-process runner hygiene (7/7)")

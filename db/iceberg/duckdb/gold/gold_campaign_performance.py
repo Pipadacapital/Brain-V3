@@ -62,7 +62,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_campaign_performance_duckdb_test beside the
@@ -122,6 +122,57 @@ def build(con):
     # brand-first tenant partitioning (mirrors Spark bucket(64, brand_id)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────────
+    #   GRAIN = entity_fold: MANY silver_marketing_spend rows aggregate into ONE
+    #   (brand_id, platform, campaign_id, currency_code) campaign row whose lifetime spend/impressions/
+    #   clicks/platform-conv totals depend on the campaign's FULL spend history — including rows BELOW the
+    #   watermark. Windowing the fold input directly would silently drop history → wrong lifetime money.
+    #   So we window ONLY to DISCOVER which campaigns changed (a new spend row landed since the last run),
+    #   then re-fold each changed campaign over its FULL, UNWINDOWED spend history. The MERGE on the PK
+    #   upserts exactly those restated rollups.
+    #
+    #   CLOCK: the fold-driving source is the spend FACT silver_marketing_spend. That mart's final projection
+    #   DROPS ingested_at (used only for its own dedup) — its arrival/write clock is updated_at (NOW-stamped
+    #   at each write → exactly "which spend rows changed since last run"). So ts_col='updated_at'.
+    #
+    #   TIER GATE: pass enabled=GOLD_INCREMENTAL so Gold flips INDEPENDENTLY of Silver (which is already ON in
+    #   prod). Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below
+    #   is byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-campaign-performance", SILVER_SPEND,
+                                ts_col="updated_at", enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the spend FACT's write clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    spend_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: campaigns whose spend FACT changed within [lo, hi], using the EXACT same key
+    # derivation + guards the `spend` CTE fold uses (brand_id/campaign_id NOT NULL & non-empty; platform and
+    # currency_code COALESCE'd to 'unknown'/'INR'). Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT
+             brand_id,
+             COALESCE(platform, 'unknown')  AS platform,
+             campaign_id,
+             COALESCE(currency_code, 'INR') AS currency_code
+      FROM {SILVER_SPEND}
+      WHERE brand_id IS NOT NULL AND campaign_id IS NOT NULL AND campaign_id <> ''{spend_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history `spend` fold to only the changed
+    # campaigns so each re-folds over its ENTIRE spend history. The key expressions match the GROUP BY of the
+    # `spend` CTE exactly. EMPTY when lo is None → unwindowed full recompute (byte-identical).
+    refold_filter = (
+        "              AND (brand_id, COALESCE(platform, 'unknown'), campaign_id, "
+        f"COALESCE(currency_code, 'INR')) IN (SELECT brand_id, platform, campaign_id, currency_code "
+        f"FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     have_attr = _attr_credit_available(con)
     # Per-(brand, campaign_id, currency) attributed revenue — net of clawback (signed credited_revenue_minor),
     # exactly as computeCampaignRoas. When the credit mart is absent, an empty CTE keeps attributed_minor=0.
@@ -165,7 +216,7 @@ def build(con):
                 SUM(conv_value_minor)                      AS platform_conv_value_minor
             FROM {SILVER_SPEND}
             WHERE brand_id IS NOT NULL AND campaign_id IS NOT NULL AND campaign_id <> ''
-            GROUP BY brand_id, COALESCE(platform, 'unknown'), campaign_id, COALESCE(currency_code, 'INR')
+{refold_filter}            GROUP BY brand_id, COALESCE(platform, 'unknown'), campaign_id, COALESCE(currency_code, 'INR')
         ),
         dim AS (
             SELECT brand_id, platform, campaign_id, campaign_name AS dim_campaign_name
@@ -218,4 +269,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-campaign-performance", build, target_table=TABLE)
+    # The watermark tracks the spend FACT's write clock (silver_marketing_spend.updated_at) — this Gold
+    # mart is folded from that Silver spend FACT, not the gated keystone default.
+    run_job("gold-campaign-performance", build, target_table=TABLE,
+            source_table=SILVER_SPEND, ts_col="updated_at")

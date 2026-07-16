@@ -58,7 +58,7 @@ _DUCKDB_ROOT = os.path.dirname(_HERE)              # db/iceberg/duckdb
 sys.path.insert(0, _DUCKDB_ROOT)
 sys.path.insert(0, _HERE)  # duckdb/gold — for the vendored _segment_rules
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 from _segment_rules import (  # noqa: E402  — vendored pure module (duckdb/gold/_segment_rules.py)
     SEGMENT_TYPE_LIFECYCLE,
@@ -99,6 +99,45 @@ def build(con):
     value_tier_case = value_tier_case_sql("lifetime_value_minor")
     lifecycle_case = lifecycle_segment_case_sql("recency_days", "lifetime_orders", "lifetime_value_minor")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY silver_customer rows fold (per brand_id) into the per-(brand_id,
+    #   segment_type, segment) buckets — each bucket's customer_count / Σ segment_value_minor depends on the
+    #   brand's FULL customer population, including rows BELOW the watermark. Windowing the fold input
+    #   directly would drop customers → wrong counts + wrong money Σ. So we window ONLY to DISCOVER which
+    #   brands changed (a customer row was (re)written since the last run), then re-fold each changed brand
+    #   over its FULL, UNWINDOWED customer population. The MERGE on the PK (brand_id, segment_type, segment)
+    #   restates exactly those brands' buckets. The fold-driving source is silver_customer; it has no
+    #   ingested_at — its arrival/write clock is updated_at (NOW-stamped on every customer restatement), the
+    #   right "which rows changed since last run" signal. Default OFF / first run / FULL_REFRESH → lo=None →
+    #   NO changed-set, NO semi-join → the SQL below is byte-identical to the pre-incremental full recompute.
+    #   Gold tier flips INDEPENDENTLY of Silver: enabled=GOLD_INCREMENTAL.
+    lo, hi = incremental_window(con, "gold-customer-segments", SILVER_CUSTOMER,
+                                ts_col="updated_at", enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # silver_customer's write clock otherwise. Same entity-key guard as the fold (brand_id NOT NULL).
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    customer_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: brands whose customer spine changed within [lo, hi], using the SAME brand_id key +
+    # brand_id-NOT-NULL guard the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id
+      FROM {SILVER_CUSTOMER}
+      WHERE brand_id IS NOT NULL{customer_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-population fold to only the changed brands so each
+    # re-folds over its ENTIRE customer set. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"        AND brand_id IN (SELECT brand_id FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── The three base signals per customer (V4 runtime feature fold). ──
     # recency_days = datediff('day', last_seen_at::date, current_date); DuckDB datediff('day', a, b) =
     # b − a in days, matching Spark datediff(current_date, last_seen_at::date). NULL last_seen_at → the
@@ -115,7 +154,7 @@ def build(con):
         )                                                              AS recency_days
       FROM {SILVER_CUSTOMER}
       WHERE brand_id IS NOT NULL
-    """
+{refold_filter}    """
 
     labelled = f"""
       SELECT brand_id, lifetime_value_minor,
@@ -148,4 +187,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-customer-segments", build, target_table="gold_customer_segments")
+    # The watermark tracks silver_customer's write clock (updated_at) — this Gold mart folds the customer
+    # spine, which has no ingested_at; updated_at is its NOW-stamped arrival/write clock.
+    run_job("gold-customer-segments", build, target_table="gold_customer_segments",
+            source_table=SILVER_CUSTOMER, ts_col="updated_at")

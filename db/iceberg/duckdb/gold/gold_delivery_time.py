@@ -64,7 +64,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_delivery_time_duckdb_test beside the
@@ -98,6 +98,60 @@ def build(con):
     # brand-first tenant partitioning (mirrors Spark bucket(4, brand_id)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD (Phase 1b) ─────────────
+    #   GRAIN = entity_fold: MANY silver_shipment rows aggregate into the per-(brand_id, courier)
+    #   distribution (five bucket rows + per-courier scalars) whose values depend on the courier's FULL
+    #   set of delivered shipments — including rows BELOW the watermark. Windowing the fold input directly
+    #   would drop delivered shipments → wrong histogram / avg / count. So we window ONLY to DISCOVER which
+    #   (brand_id, courier) entities changed (a shipment row was (re-)written since the last run), then
+    #   re-fold each changed courier over its FULL, UNWINDOWED delivered-shipment history. The MERGE on the
+    #   (brand_id, courier, bucket) PK upserts exactly those restated distributions.
+    #
+    #   CLOCK: silver_shipment (an entity latest-state mart) has NO `ingested_at`; its physical
+    #   arrival/change clock is `updated_at` — a NOW() write-stamp refreshed on every (re-)landed shipment
+    #   row (verified in its COLUMNS_SQL: `updated_at timestamp NOT NULL`). So the changed-set windows on
+    #   updated_at with the framework's trailing lookback (a slightly-late write can never be skipped; the
+    #   idempotent MERGE dedups the re-scanned overlap). Gates on GOLD_INCREMENTAL so Gold flips
+    #   independently of Silver.
+    #
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the staged SQL
+    #   below is BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-delivery-time", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # silver_shipment's write clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    src_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: the (brand_id, courier) entities whose silver_shipment rows changed within [lo, hi].
+    # Uses the SAME courier derivation (COALESCE(NULLIF(courier,''),'unknown')) + the SAME delivered guards
+    # the fold applies, so the discovered key set exactly matches the fold's grain. Built ONLY when
+    # incremental (lo not None).
+    changed = f"""
+        SELECT DISTINCT brand_id, COALESCE(NULLIF(courier, ''), 'unknown') AS courier
+        FROM {SOURCE}
+        WHERE brand_id IS NOT NULL
+          AND is_delivered = TRUE
+          AND first_event_at IS NOT NULL
+          AND last_status_at IS NOT NULL
+          AND TRY_CAST(last_status_at AS TIMESTAMP) IS NOT NULL{src_window}
+    """
+
+    # Semi-join clause on the delivered CTE: when incremental, restrict the FULL-history fold to only the
+    # changed (brand_id, courier) entities so each re-folds over its ENTIRE delivered history. The semi-join
+    # matches on the DERIVED courier (same COALESCE(NULLIF(...)) expression). EMPTY when lo is None →
+    # unwindowed full recompute.
+    refold_filter = (
+        "              AND (brand_id, COALESCE(NULLIF(courier, ''), 'unknown')) IN "
+        f"(SELECT brand_id, courier FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     staged = f"""
         WITH delivered AS (
             -- DELIVERED terminal shipments with a parseable dispatched (first_event_at) + delivered
@@ -117,7 +171,7 @@ def build(con):
               AND first_event_at IS NOT NULL
               AND last_status_at IS NOT NULL
               AND TRY_CAST(last_status_at AS TIMESTAMP) IS NOT NULL
-        ),
+{refold_filter}        ),
         bucketed AS (
             SELECT
                 brand_id,
@@ -179,4 +233,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-delivery-time", build, target_table="gold_delivery_time")
+    # The watermark tracks silver_shipment's write clock (updated_at), NOT the gated keystone default —
+    # this Gold job re-folds a Silver mart, not silver_collector_event.
+    run_job("gold-delivery-time", build, target_table="gold_delivery_time",
+            source_table=SOURCE, ts_col="updated_at")

@@ -57,7 +57,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 TABLE = "gold_product_economics"
@@ -153,6 +153,56 @@ def build(con):
             WHERE FALSE;
         """)
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY apportioned order-lines aggregate into ONE
+    #   (brand_id, product_key, econ_date, currency_code) row whose money totals depend on ALL orders that
+    #   apportion onto that product×day — including orders BELOW the watermark. Windowing the fold input
+    #   directly would drop below-watermark orders → wrong (leaky) apportioned money. So we window ONLY to
+    #   DISCOVER which output entities changed (an order restated in the upstream Gold mart since the last
+    #   run), then re-fold each changed entity over its FULL, UNWINDOWED contributing orders. The
+    #   fold-driving source is the upstream Gold mart gold_order_economics; its NOW-stamped write clock is
+    #   `updated_at` (it has no ingested_at — a Gold entity mart). Default OFF / first run / FULL_REFRESH →
+    #   lo=None → NO changed-set, NO semi-join → the SQL below is byte-identical to the pre-incremental full
+    #   recompute.
+    lo, hi = incremental_window(con, "gold-product-economics", ECON_SOURCE,
+                                ts_col="updated_at", enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the upstream Gold mart's write clock (updated_at) otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    econ_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set (built ONLY when incremental, lo not None): the exact output entity keys touched by any
+    # order restated within [lo, hi]. Derives (brand_id, product_key, econ_date, currency_code) from the
+    # changed orders using the SAME product_key derivation the fold uses — join to _pe_lines with the SAME
+    # '__unknown__' fallback for line-less orders — so the discovered key-set matches the fold's grain
+    # EXACTLY. econ_date/currency_code come from the changed orders' economics; product_key from their lines.
+    changed = f"""
+      SELECT DISTINCT e.brand_id,
+             coalesce(l.product_key, '__unknown__') AS product_key,
+             CAST(e.order_recognized_at AS DATE)    AS econ_date,
+             e.currency_code
+      FROM (
+        SELECT brand_id, order_id, currency_code, order_recognized_at
+        FROM {ECON_SOURCE}
+        WHERE 1=1{econ_window}
+      ) e
+      LEFT JOIN _pe_lines l ON l.brand_id = e.brand_id AND l.order_id = e.order_id
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history rollup to only the changed entity keys so
+    # each re-folds over its ENTIRE set of contributing orders. EMPTY when lo is None → the GROUP BY line is
+    # byte-identical to before this edit (`... currency_code;`), a full unwindowed recompute.
+    refold_filter = (
+        f"\n        HAVING (brand_id, product_key, econ_date, currency_code) IN "
+        f"(SELECT brand_id, product_key, econ_date, currency_code FROM ({changed}))"
+        if lo is not None else ""
+    )
+
     # ── attach economics to each line; orders with NO lines → a single synthetic '__unknown__' line
     #    carrying the whole order (weight 0 → even-split path) so no revenue is dropped ──
     comp_e = ", ".join(_COMPONENTS)
@@ -223,7 +273,7 @@ def build(con):
             CAST(count(DISTINCT order_id) AS BIGINT) AS order_count,
             {sum_parts}
         FROM apportioned
-        GROUP BY brand_id, product_key, econ_date, currency_code;
+        GROUP BY brand_id, product_key, econ_date, currency_code{refold_filter};
     """)
 
     # ── recompute CM waterfall from the summed apportioned parts (linear → reconciles exactly) ──
@@ -251,4 +301,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-product-economics", build, target_table=TABLE)
+    # The watermark tracks the upstream Gold mart's write clock (gold_order_economics.updated_at), NOT the
+    # gated-keystone default — this Gold rollup folds the gold_order_economics mart, not silver_collector_event.
+    run_job("gold-product-economics", build, target_table=TABLE,
+            source_table=ECON_SOURCE, ts_col="updated_at")

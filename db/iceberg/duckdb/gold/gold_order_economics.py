@@ -67,7 +67,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 TABLE = "gold_order_economics"
@@ -142,6 +142,48 @@ def _gold_exists(con, fqtn: str) -> bool:
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────────
+    #   GRAIN = entity_fold: MANY gold_revenue_ledger recognition-event rows aggregate into ONE
+    #   (brand_id, order_id) economics row whose net_revenue/CM waterfall depend on the order's FULL set of
+    #   ledger events — including rows BELOW the watermark. Windowing the fold input directly would silently
+    #   drop recognition events → wrong money. So we window ONLY to DISCOVER which orders changed (a new
+    #   recognition event landed since the last run), then re-fold each changed order over its FULL,
+    #   UNWINDOWED ledger history. The MERGE on the PK (brand_id, order_id) upserts exactly those restated
+    #   rows. The fold-driving source is the revenue ledger (ts_col=ingested_at — the order-event arrival
+    #   clock carried onto each ledger row; a newly-landed order event produces ledger rows with a fresh
+    #   ingested_at, which is exactly "which orders had new recognition activity"). The GOLD_INCREMENTAL
+    #   gate flips Gold INDEPENDENTLY of the already-ON Silver tier.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the ledger fold
+    #   below is byte-identical to the pre-incremental full recompute. Only _econ_ledger (the fold-driving
+    #   source) is narrowed; is_new_customer / COGS / costs / fees / marketing are ALL still computed over
+    #   their full inputs and LEFT-JOINed, so a changed order's every component re-derives from full history.
+    lo, hi = incremental_window(con, "gold-order-economics", LEDGER, ts_col="ingested_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the ledger's arrival clock otherwise. Same entity-key guard as the fold (order_id NOT NULL).
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    ledger_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: orders whose ledger changed within [lo, hi], using the SAME (brand_id, order_id) key +
+    # order_id-NOT-NULL guard the _econ_ledger fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, order_id
+      FROM {LEDGER}
+      WHERE order_id IS NOT NULL{ledger_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history ledger fold to only the changed orders so
+    # each re-folds over its ENTIRE recognition history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"        AND (brand_id, order_id) IN (SELECT brand_id, order_id FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── Money SoR: the recognition ledger. net revenue = Σ non-provisional; event_types → state ──
     # brain_id + currency + occurred basis carried from the ledger. One group per (brand, order).
     con.execute(f"""
@@ -168,7 +210,7 @@ def build(con):
             min(ledger_event_id)       AS source_event_id
         FROM {LEDGER}
         WHERE order_id IS NOT NULL
-        GROUP BY brand_id, order_id
+{refold_filter}        GROUP BY brand_id, order_id
     """)
 
     # ── is_new_customer (C.5.5): first recognized order per brain_id (window over order_state) ──
@@ -345,4 +387,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-order-economics", build, target_table=TABLE)
+    # The watermark tracks the revenue ledger's arrival clock (gold_revenue_ledger.ingested_at) — the
+    # fold-driving source for the changed-order refold, NOT the gated keystone default.
+    run_job("gold-order-economics", build, target_table=TABLE,
+            source_table=LEDGER, ts_col="ingested_at")

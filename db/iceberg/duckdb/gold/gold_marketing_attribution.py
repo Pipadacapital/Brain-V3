@@ -34,7 +34,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_marketing_attribution_duckdb_test beside the
@@ -100,6 +100,28 @@ def build(con):
               flush=True)
         return 0
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — PER-ROW SOURCE WINDOW ─────────────────────────
+    #   GRAIN = per_row: this is a PURE PROJECTION of the credit ledger — exactly one output row per source
+    #   (brand_id, credit_id), no fold, no aggregate that depends on below-watermark rows. So we window the
+    #   SOURCE READ DIRECTLY on the ledger's WRITE clock and re-project only the credit rows that changed.
+    #   CLOCK: gold_attribution_credit has NO ingested_at; its arrival/write clock is `updated_at`
+    #   (NOW-stamped by that job's staged view on every write) — the correct "which rows changed since last
+    #   run" monotonic bound (NOT the business occurred_at). The MERGE on the PK (brand_id, credit_id) upserts
+    #   exactly those re-projected rows.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → EMPTY predicate → the source read (and thus the
+    #   generated SQL) is BYTE-IDENTICAL to the pre-incremental full scan.
+    lo, hi = incremental_window(con, "gold-marketing-attribution", SRC_TABLE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the credit ledger's write clock otherwise. Appended AFTER the existing `credit_id IS NOT NULL` guard.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    source_window = f"\n            AND {' AND '.join(win)}" if win else ""
+
     # The dbt VIEW projection (same columns, same casts, credit_id IS NOT NULL filter), byte-for-byte the
     # Spark .select(...). touch_seq→INT, credited/realized→BIGINT; attribution_confidence stays the string.
     staged = f"""
@@ -125,7 +147,7 @@ def build(con):
             billing_posted_period,
             now() AT TIME ZONE 'UTC'                AS updated_at
         FROM {SRC_TABLE}
-        WHERE credit_id IS NOT NULL
+        WHERE credit_id IS NOT NULL{source_window}
     """
 
     # Pure projection is already 1 row per credit_id, so merge_on_pk's in-batch dedup is a no-op;
@@ -134,4 +156,8 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-marketing-attribution", build, target_table=TABLE)
+    # The watermark tracks the credit ledger's WRITE clock (gold_attribution_credit.updated_at) — this job
+    # reads the sibling Gold credit mart, not the gated keystone; the ledger has no ingested_at, so updated_at
+    # (NOW-stamped on every write) is its arrival clock.
+    run_job("gold-marketing-attribution", build, target_table=TABLE,
+            source_table=SRC_TABLE, ts_col="updated_at")

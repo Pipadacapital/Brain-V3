@@ -90,7 +90,7 @@ _DUCKDB_ROOT = os.path.dirname(_HERE)              # db/iceberg/duckdb
 sys.path.insert(0, _DUCKDB_ROOT)
 sys.path.insert(0, _HERE)                          # duckdb/gold — for the vendored pure module
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 from _journey_events_pure import event_category  # noqa: E402 — vendored pure module (byte copy)
 
@@ -177,6 +177,47 @@ def build(con):
     else:
         composite_key_expr = "CASE WHEN tp.is_composite THEN tp.stitched_order_id END"
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — GRAIN = entity_fold (CHANGED-ENTITY REFOLD) ──────
+    #   MANY silver_touchpoint rows fold into ONE resolved journey entity whose per-row sequence_number is a
+    #   row_number() OVER (brand_id, brain_id) — so a row's value depends on the entity's FULL touchpoint
+    #   history, INCLUDING rows below the watermark. Windowing the fold input directly would drop history →
+    #   mis-numbered sequence_number → wrong ledger. So we window ONLY to DISCOVER which resolved entities
+    #   (brand_id, brain_id) had a touchpoint change since the last run, then re-fold each such entity over its
+    #   ENTIRE (unwindowed) touchpoint history via a semi-join. The MERGE on the PK (brand_id, touchpoint_id,
+    #   data_version) upserts exactly those restated rows. The fold-driving source is silver_touchpoint; it has
+    #   NO ingested_at (per its COLUMNS_SQL), so the arrival/write clock is updated_at (the NOW-stamped write
+    #   clock — exactly "which touchpoint rows changed since last run"). GOLD_INCREMENTAL flips the Gold tier
+    #   INDEPENDENTLY of Silver. Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO
+    #   semi-join → the staged SQL below is BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(
+        con, "gold-journey-events", SILVER_TOUCHPOINT, ts_col="updated_at", enabled=GOLD_INCREMENTAL,
+    )
+
+    # CHANGED-KEY set: resolved entities (brand_id, brain_id) whose silver_touchpoint changed within
+    # [lo, hi], using the SAME resolved-brain_id derivation (coalesce(stitched_brain_id, 'anonymous_'||anon))
+    # + the SAME structural PK guards the fold's `e` CTE applies. Built + semi-joined ONLY when incremental
+    # (lo not None); EMPTY strings otherwise so the fold reads the FULL unwindowed source (byte-identical).
+    changed_cte = ""
+    refold_semijoin = ""
+    if lo is not None:
+        changed_cte = f"""
+          changed AS (
+            SELECT DISTINCT
+              tp.brand_id,
+              coalesce(tp.stitched_brain_id, concat('anonymous_', tp.brain_anon_id)) AS brain_id
+            FROM {SILVER_TOUCHPOINT} tp
+            WHERE tp.brand_id IS NOT NULL AND tp.brain_anon_id IS NOT NULL AND tp.touch_seq IS NOT NULL
+              AND tp.updated_at >= TIMESTAMP '{lo}' AND tp.updated_at <= TIMESTAMP '{hi}'
+          ),
+        """
+        # Restrict the FULL-history fold to only the changed resolved entities so each re-folds over its
+        # ENTIRE touchpoint history (sequence_number stays complete). Carries its OWN leading newline+indent
+        # so the EMPTY case (lo is None) adds ZERO bytes → the staged SQL is byte-identical to the full scan.
+        refold_semijoin = (
+            "\n          AND (tp.brand_id, coalesce(tp.stitched_brain_id, "
+            "concat('anonymous_', tp.brain_anon_id))) IN (SELECT brand_id, brain_id FROM changed)"
+        )
+
     # identity_current confidence + matched_via_derived (flag-OFF provenance): max valid-now+known-now
     # confidence and the SORTED distinct identifier_type set backing the resolved brain_id. Absent map →
     # empty (LEFT JOIN degrades to NULL confidence / empty matched_via).
@@ -217,7 +258,7 @@ def build(con):
         )
 
     staged = f"""
-      WITH e AS (
+      WITH {changed_cte}e AS (
         SELECT
           tp.brand_id,
           tp.brain_anon_id,
@@ -237,7 +278,7 @@ def build(con):
           coalesce(tp.is_composite, false) AS is_composite,
           {composite_key_expr} AS composite_order_key
         FROM {SILVER_TOUCHPOINT} tp
-        WHERE tp.brand_id IS NOT NULL AND tp.brain_anon_id IS NOT NULL AND tp.touch_seq IS NOT NULL
+        WHERE tp.brand_id IS NOT NULL AND tp.brain_anon_id IS NOT NULL AND tp.touch_seq IS NOT NULL{refold_semijoin}
       ),
       existing AS (  -- highest version already materialized per touchpoint (reversion output; DuckDB → 1)
         SELECT brand_id, touchpoint_id, max(data_version) AS max_ver
@@ -340,4 +381,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-journey-events", build, target_table=TABLE_NAME)
+    # The watermark tracks the fold-driving source silver_touchpoint's write clock (updated_at) — it has no
+    # ingested_at column, so updated_at is the arrival/write clock ("which touchpoints changed since last run").
+    run_job("gold-journey-events", build, target_table=TABLE_NAME,
+            source_table=SILVER_TOUCHPOINT, ts_col="updated_at")

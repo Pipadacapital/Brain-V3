@@ -64,7 +64,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_journey_paths_duckdb_test
@@ -100,9 +100,14 @@ _SELECT_COLS = (
 )
 
 
-def _build_sql() -> str:
+def _build_sql(refold_filter: str = "") -> str:
     """The full path-aggregate transform as one DuckDB SQL string (over TOUCHPOINT), verbatim from the
-    Spark _build_sql with the Spark→DuckDB translations documented at the top of this file."""
+    Spark _build_sql with the Spark→DuckDB translations documented at the top of this file.
+
+    `refold_filter` is a CHANGED-ENTITY semi-join predicate injected into the base `touches` read — it is
+    the EMPTY string on a full scan (default OFF / first run / FULL_REFRESH), keeping the generated SQL
+    byte-identical to the pre-incremental version, and a `AND brand_id IN (...changed brands...)` clause
+    when GOLD_INCREMENTAL windows the run (see build())."""
     return f"""
         with touches as (
             select
@@ -113,7 +118,7 @@ def _build_sql() -> str:
                 coalesce(nullif(trim(channel), ''), 'unknown') as channel,
                 case when stitched_order_id is not null then 1 else 0 end as is_converted
             from {TOUCHPOINT}
-            where brand_id is not null and brain_anon_id is not null
+            where brand_id is not null and brain_anon_id is not null{refold_filter}
         ),
         ordered as (
             select
@@ -214,7 +219,46 @@ def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(8, brand_id)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
 
-    src = _build_sql()
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY (per-brand) REFOLD ─────────────
+    #   GRAIN = entity_fold: MANY silver_touchpoint rows fold, per (brand_id, brain_anon_id) journey, into a
+    #   per-BRAND TOP_N path ranking whose journey/converted COUNTS depend on the brand's FULL touch history
+    #   — including touches BELOW the watermark. Windowing the fold input directly would silently drop that
+    #   history → wrong counts / wrong top-N. So we window ONLY to DISCOVER which BRANDS changed (a touch
+    #   landed since the last run), then re-fold each changed brand over its FULL, UNWINDOWED touch history.
+    #   The DELETE-recomputed-brands + INSERT top-N write then replaces exactly those brands; untouched
+    #   brands keep their existing rows. The fold-driving source is silver_touchpoint; it has NO ingested_at
+    #   (entity Silver mart), so the arrival/write clock is its NOW-stamped updated_at (ts_col='updated_at').
+    #   GOLD_INCREMENTAL gates this INDEPENDENTLY of Silver. Default OFF / first run / FULL_REFRESH → lo=None
+    #   → NO changed-set, EMPTY refold_filter → the SQL is byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-journey-paths", TOUCHPOINT, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the touchpoint mart's write clock (updated_at) otherwise. Same brand_id NOT NULL guard as the fold.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    touch_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-BRAND set: brands whose touchpoints changed within [lo, hi], using the SAME brand_id key +
+    # brand_id-NOT-NULL guard the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id
+      FROM {TOUCHPOINT}
+      WHERE brand_id IS NOT NULL{touch_window}
+    """
+
+    # Semi-join clause injected into the base `touches` read: when incremental, restrict the FULL-history
+    # fold to only the changed brands so each re-folds over its ENTIRE touch history. EMPTY when lo is None
+    # → unwindowed full recompute (byte-identical to before this edit).
+    refold_filter = (
+        f"\n              and brand_id in (select brand_id from ({changed}))"
+        if lo is not None else ""
+    )
+
+    src = _build_sql(refold_filter)
     con.execute(f"CREATE OR REPLACE TEMP TABLE journey_paths_src AS {src}")
     n = con.execute("SELECT count(*) FROM journey_paths_src").fetchone()[0]
 
@@ -235,4 +279,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-journey-paths", build, target_table="gold_journey_paths")
+    # The watermark tracks the touchpoint mart's write clock (silver_touchpoint.updated_at), NOT the gated
+    # keystone default — this Gold job folds a sibling Silver mart which has no ingested_at (entity mart).
+    run_job("gold-journey-paths", build, target_table="gold_journey_paths",
+            source_table=TOUCHPOINT, ts_col="updated_at")

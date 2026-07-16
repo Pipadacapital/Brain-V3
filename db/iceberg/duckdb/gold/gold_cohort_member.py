@@ -61,7 +61,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_cohort_member_duckdb_test
@@ -116,6 +116,49 @@ def build(con):
         )
         print("[gold_cohort_member] gold_customer_360 absent → customer set from silver_order_state", flush=True)
 
+    # ── GOLD INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────
+    #   GRAIN = entity_fold: MANY silver_order_state rows aggregate into the per-(brand_id, customer_key)
+    #   cohort membership (period_index rows are DERIVED from that customer's FULL recognized-order history,
+    #   NEVER a changed-set key). A customer's periods depend on orders that may sit BELOW the watermark, so
+    #   we MUST NOT window the fold (recognized) input directly — that would drop history and mis-place the
+    #   cohort month / period rows. Instead we window ONLY to DISCOVER which customers changed (a new order
+    #   landed since the last run), then re-fold each changed customer over their FULL, UNWINDOWED order
+    #   history and MERGE the restated (brand_id, customer_key, period_index) rows.
+    #   Clock: the fold-driving source is silver_order_state (that's where the recognized orders being folded
+    #   live). It has NO `ingested_at` column — its arrival/write clock is `updated_at` (a NOW-stamped write
+    #   clock, timestamptz NOT NULL): exactly "which order rows changed since last run". Its changed-set key
+    #   is the SAME (brand_id, brain_id→customer_key) + brain_id-NOT-NULL guard the fold's JOIN uses.
+    #   Gold flips INDEPENDENTLY of Silver → enabled=GOLD_INCREMENTAL. Default OFF / first run / FULL_REFRESH
+    #   → lo=None → NO changed-set, NO semi-join → the staged SQL is byte-identical to the full recompute.
+    lo, hi = incremental_window(con, "gold-cohort-member", SILVER_ORDER_STATE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the order spine's write clock otherwise.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    order_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: customers whose order spine changed within [lo, hi], using the SAME (brand_id,
+    # customer_key) key derivation + brain_id-NOT-NULL guard the fold's JOIN uses. Built ONLY when
+    # incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, brain_id AS customer_key
+      FROM {SILVER_ORDER_STATE}
+      WHERE brain_id IS NOT NULL{order_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history recognized fold to only the changed
+    # customers so each re-folds over its ENTIRE recognized-order history. EMPTY when lo is None →
+    # unwindowed full recompute.
+    refold_filter = (
+        f"            AND (o.brand_id, o.brain_id) IN (SELECT brand_id, customer_key FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     staged = f"""
       WITH recognized AS (
           SELECT
@@ -129,7 +172,7 @@ def build(con):
             AND o.first_event_at IS NOT NULL
             AND o.lifecycle_state IS NOT NULL
             AND o.lifecycle_state <> 'placed'   -- recognized: advanced past initial placement
-      ),
+{refold_filter}      ),
       cohort AS (
           SELECT brand_id, customer_key, MIN(order_month) AS cohort_month
           FROM recognized
@@ -167,4 +210,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-cohort-member", build, target_table="gold_cohort_member")
+    # The watermark tracks the fold-driving order spine's write clock (silver_order_state.updated_at) — this
+    # Gold mart folds recognized orders from that mart, keyed to the gold_customer_360 customer set.
+    run_job("gold-cohort-member", build, target_table="gold_cohort_member",
+            source_table=SILVER_ORDER_STATE, ts_col="updated_at")

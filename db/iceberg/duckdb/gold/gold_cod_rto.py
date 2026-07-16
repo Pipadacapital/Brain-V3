@@ -63,7 +63,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_cod_rto_duckdb_test instead of
@@ -100,6 +100,47 @@ def build(con):
     # brand-first tenant partitioning (mirrors Spark bucket(64, brand_id)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — GOLD tier gate, CHANGED-ENTITY REFOLD ─────────
+    #   GRAIN=entity_fold: MANY silver_cod_rto rows aggregate into ONE (brand_id, currency_code) mart row
+    #   whose COD/RTO funnel counts + at-risk money depend on the entity's FULL history — including rows
+    #   BELOW the watermark. Windowing the aggregate input directly would silently drop history → wrong
+    #   counts and wrong money. So we window ONLY to DISCOVER which (brand_id, currency_code) entities
+    #   changed (a silver_cod_rto row landed since the last run), then re-fold each changed entity over its
+    #   FULL, UNWINDOWED history. The MERGE on the (brand_id, currency_code) PK upserts exactly those
+    #   restated rollups. The fold-driving source is silver_cod_rto; its arrival clock is `ingested_at`
+    #   (per-order write clock, present in silver_cod_rto's COLUMNS_SQL) — NOT the business occurred_at.
+    #   GOLD_INCREMENTAL gates this INDEPENDENTLY of Silver. Default OFF / first run / FULL_REFRESH →
+    #   lo=None → NO changed-set, NO semi-join → the SQL below is BYTE-IDENTICAL to the pre-incremental
+    #   full recompute.
+    lo, hi = incremental_window(con, "gold-cod-rto", SOURCE, ts_col="ingested_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # silver_cod_rto's arrival clock otherwise. Same guards the fold uses (brand_id NOT NULL, is_cod=true).
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    cod_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: (brand_id, currency_code) entities whose silver_cod_rto rows changed within [lo, hi],
+    # using the SAME key derivation (COALESCE(currency_code,'INR')) + guards (brand_id NOT NULL, is_cod=true)
+    # the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, COALESCE(currency_code, 'INR') AS currency_code
+      FROM {SOURCE}
+      WHERE brand_id IS NOT NULL AND is_cod = true{cod_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history aggregate to only the changed entities
+    # so each re-folds over its ENTIRE history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"        AND (brand_id, COALESCE(currency_code, 'INR')) IN "
+        f"(SELECT brand_id, currency_code FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── the Spark staged aggregation, reproduced verbatim (additive components + integer-bps rates) ──
     staged = f"""
       WITH agg AS (
@@ -115,7 +156,7 @@ def build(con):
           sum(CASE WHEN prediction_correct IS NOT NULL THEN 1 ELSE 0 END)          AS prediction_evaluated
         FROM {SOURCE}
         WHERE brand_id IS NOT NULL AND is_cod = true
-        GROUP BY brand_id, COALESCE(currency_code, 'INR')
+{refold_filter}        GROUP BY brand_id, COALESCE(currency_code, 'INR')
       )
       SELECT
         brand_id,
@@ -148,4 +189,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-cod-rto", build, target_table="gold_cod_rto")
+    # The watermark tracks the source mart's arrival clock (silver_cod_rto.ingested_at), NOT the gated
+    # keystone default — this Gold job reads a sibling Silver mart, not silver_collector_event.
+    run_job("gold-cod-rto", build, target_table="gold_cod_rto",
+            source_table=SOURCE, ts_col="ingested_at")

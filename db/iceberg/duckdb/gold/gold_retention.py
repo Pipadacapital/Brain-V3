@@ -62,7 +62,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GOLD_INCREMENTAL,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    run_job,
+)
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_retention_duckdb_test
@@ -95,6 +101,47 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1 — Gold tier, INDEPENDENT of SILVER_INCREMENTAL) ──
+    #   GRAIN = entity_fold: MANY silver_customer rows aggregate into ONE (brand_id, cohort_month) cohort
+    #   row whose counts/bps depend on the cohort's FULL customer membership — including customers whose
+    #   silver_customer row sits BELOW the watermark. Windowing the fold input directly would drop cohort
+    #   members → wrong cohort_customers / total_orders / rates. So we window ONLY to DISCOVER which cohorts
+    #   changed (a customer rollup was restated since the last run — a new order bumped its updated_at, or a
+    #   new customer was acquired), then re-fold each changed cohort over the FULL, UNWINDOWED customer set.
+    #   The changed-set key derivation (brand_id, cohort_month = strftime(first_seen_at,'%Y-%m')) + the
+    #   NOT-NULL guards are IDENTICAL to the fold below. The MERGE on the PK (brand_id, cohort_month) upserts
+    #   exactly those restated cohorts. The fold-driving source is the sibling Silver mart silver_customer;
+    #   it has no ingested_at, so the arrival/write clock is its entity `updated_at` (NOW-stamped on each
+    #   rollup restatement = "which customers changed since last run"). Default OFF / first run / FULL_REFRESH
+    #   → lo=None → NO changed-set, NO semi-join → the SQL below is byte-identical to the full recompute.
+    lo, hi = incremental_window(con, "gold-retention", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # silver_customer's write clock otherwise. Same NOT-NULL guards as the fold (brand_id / first_seen_at).
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    customer_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: cohorts whose customer rollups changed within [lo, hi], using the SAME
+    # (brand_id, cohort_month) key derivation + guards the fold uses. Built ONLY when incremental.
+    changed = f"""
+      SELECT DISTINCT brand_id, strftime(first_seen_at, '%Y-%m') AS cohort_month
+      FROM {SOURCE}
+      WHERE brand_id IS NOT NULL AND first_seen_at IS NOT NULL{customer_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-membership fold to only the changed cohorts so
+    # each re-folds over its ENTIRE customer set. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"        AND (brand_id, strftime(first_seen_at, '%Y-%m')) IN "
+        f"(SELECT brand_id, cohort_month FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── acquisition-cohort rollup over silver_customer (verbatim Spark WITH cohort AS (...)). ──
     # cohort_customers is a group COUNT (>= 1); repeat = lifetime_orders >= 2; total = Σ lifetime_orders.
     cohort = f"""
@@ -107,7 +154,7 @@ def build(con):
         CAST(sum(coalesce(lifetime_orders, 0)) AS BIGINT)           AS total_orders
       FROM {SOURCE}
       WHERE brand_id IS NOT NULL AND first_seen_at IS NOT NULL
-      GROUP BY brand_id, strftime(first_seen_at, '%Y-%m')
+{refold_filter}      GROUP BY brand_id, strftime(first_seen_at, '%Y-%m')
     """
 
     # ── derive the integer-bps rates (verbatim CAST(a * 10000 / b AS bigint) truncate-toward-zero). ──
@@ -140,4 +187,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-retention", build, target_table="gold_retention")
+    # The watermark tracks the fold-driving source's write clock (silver_customer.updated_at), NOT the gated
+    # keystone default — this Gold job reads a sibling Silver mart, not silver_collector_event.
+    run_job("gold-retention", build, target_table="gold_retention",
+            source_table=SOURCE, ts_col="updated_at")

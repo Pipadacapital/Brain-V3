@@ -50,7 +50,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parity harness write gold_settlement_summary_duckdb_test beside the
@@ -109,6 +109,47 @@ def build(con):
               flush=True)
         return 0
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY silver_settlement rows aggregate into ONE (brand_id, currency_code) row
+    #   whose gross/fee/tax/refund/dispute/net totals depend on that entity's FULL settlement history —
+    #   including rows BELOW the watermark. Windowing the fold input directly would silently drop history →
+    #   wrong settled money. So we window ONLY to DISCOVER which (brand_id, currency_code) entities changed
+    #   (a new settlement item landed since the last run), then re-fold each changed entity over its FULL,
+    #   UNWINDOWED settlement history. The MERGE on the PK upserts exactly those restated rollups. The
+    #   fold-driving source is silver_settlement; its arrival clock is ingested_at (per-event Silver mart).
+    #   Gold flips INDEPENDENTLY of Silver via enabled=GOLD_INCREMENTAL. Default OFF / first run /
+    #   FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is BYTE-IDENTICAL to the
+    #   pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-settlement-summary", SILVER_SETTLEMENT,
+                                ts_col="ingested_at", enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # silver_settlement's arrival clock otherwise. Same brand_id-NOT-NULL guard the fold uses.
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    settlement_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: entities whose settlement rows changed within [lo, hi], using the SAME entity-key
+    # derivation (brand_id, COALESCE(currency_code, 'INR')) + brand_id-NOT-NULL guard the fold uses. Built
+    # ONLY when incremental (lo not None).
+    changed = f"""
+        SELECT DISTINCT brand_id, COALESCE(currency_code, 'INR') AS currency_code
+        FROM {SILVER_SETTLEMENT}
+        WHERE brand_id IS NOT NULL{settlement_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed entities so
+    # each re-folds over its ENTIRE settlement history. EMPTY when lo is None → unwindowed full recompute.
+    # Applied on the SAME derived key (brand_id, COALESCE(currency_code, 'INR')) the GROUP BY uses.
+    refold_filter = (
+        f"              AND (brand_id, COALESCE(currency_code, 'INR')) IN "
+        f"(SELECT brand_id, currency_code FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # Faithful SQL port of the Spark staged CTE. Per-currency component sums over the silver_settlement
     # entity_type discriminant, then net = gross − fee − tax − refund − dispute (integer minor units;
     # per-currency; no float; NEVER blended across currencies).
@@ -130,7 +171,7 @@ def build(con):
                                   THEN COALESCE(amount_minor, 0) ELSE 0 END), 0)                     AS dispute_minor
             FROM {SILVER_SETTLEMENT}
             WHERE brand_id IS NOT NULL
-            GROUP BY brand_id, COALESCE(currency_code, 'INR')
+{refold_filter}            GROUP BY brand_id, COALESCE(currency_code, 'INR')
         )
         SELECT
             brand_id,
@@ -153,4 +194,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-settlement-summary", build, target_table=TABLE)
+    # The watermark tracks the settlement source's arrival clock (silver_settlement.ingested_at), NOT the
+    # gated keystone default — this Gold job folds a sibling Silver mart directly.
+    run_job("gold-settlement-summary", build, target_table=TABLE,
+            source_table=SILVER_SETTLEMENT, ts_col="ingested_at")

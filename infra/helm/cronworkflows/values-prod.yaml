@@ -15,7 +15,7 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:65693c02e1e467c9702111c051eb6ef3b2827ffe3f4ba0cdd984729d5c73be35"
+    digest: "sha256:6c67005c1f969751a0c7f538ad4e39feb7acb04f9b3facd2fcd127635f756938"
   # AUD-PROD-006: the maintenance/erasure cron pods run on the streaming Karpenter pool (the batch pool
   # was removed in the Spark→DuckDB cutover — the DuckDB crons are lightweight python, no JVM). A
   # Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry + idempotent maintenance.
@@ -27,7 +27,7 @@ sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:65693c02e1e467c9702111c051eb6ef3b2827ffe3f4ba0cdd984729d5c73be35"
+    digest: "sha256:6c67005c1f969751a0c7f538ad4e39feb7acb04f9b3facd2fcd127635f756938"
   # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the streaming pool (batch pool removed).
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:

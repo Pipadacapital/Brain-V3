@@ -52,7 +52,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_logistics_performance_duckdb_test
@@ -85,6 +85,49 @@ def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(64, brand_id) hidden partitioning).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD (Phase 1b) ────────────────
+    #   GRAIN = entity_fold: MANY silver_shipment rows aggregate into ONE (brand_id, courier) cohort row
+    #   whose counts + integer-bps rates depend on the cohort's FULL shipment set — including rows BELOW the
+    #   watermark. Windowing the aggregate input directly would silently drop shipments → wrong counts/rates.
+    #   So we window ONLY to DISCOVER which cohorts changed (a shipment row got a fresh write clock since the
+    #   last run), then re-fold each changed cohort over its FULL, UNWINDOWED shipment set. The MERGE on the
+    #   PK (brand_id, courier) upserts exactly those restated rollups.
+    #   CLOCK: silver_shipment has NO ingested_at (see its COLUMNS_SQL — only first_event_at + a now()-stamped
+    #   run-clock updated_at); its physical arrival/change key is `updated_at` (every re-landed/changed
+    #   shipment row gets a fresh now() on write) → ts_col='updated_at' tracks "which rows changed since last
+    #   run". This flips on GOLD_INCREMENTAL (Gold tier gate), INDEPENDENTLY of SILVER_INCREMENTAL.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-logistics-performance", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the shipment mart's write clock otherwise. Same entity-key guard as the fold (brand_id NOT NULL).
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    ship_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: cohorts whose shipment set changed within [lo, hi], using the SAME derived courier key
+    # (COALESCE(NULLIF(courier,''), 'unknown')) + brand_id-NOT-NULL guard the fold uses. Built ONLY when
+    # incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, COALESCE(NULLIF(courier, ''), 'unknown') AS courier
+      FROM {SOURCE}
+      WHERE brand_id IS NOT NULL{ship_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed cohorts so each
+    # re-folds over its ENTIRE shipment set. EMPTY when lo is None → unwindowed full recompute. Applied on the
+    # SAME derived courier key so it matches the GROUP BY grain exactly.
+    refold_filter = (
+        "              AND (brand_id, COALESCE(NULLIF(courier, ''), 'unknown')) IN "
+        f"(SELECT brand_id, courier FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     staged = f"""
         WITH agg AS (
             SELECT
@@ -100,7 +143,7 @@ def build(con):
                                OR terminal_class IN ('none', '') THEN 1 ELSE 0 END) AS BIGINT) AS in_transit
             FROM {SOURCE}
             WHERE brand_id IS NOT NULL
-            GROUP BY brand_id, COALESCE(NULLIF(courier, ''), 'unknown')
+{refold_filter}            GROUP BY brand_id, COALESCE(NULLIF(courier, ''), 'unknown')
         )
         SELECT
             brand_id,
@@ -129,4 +172,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-logistics-performance", build, target_table="gold_logistics_performance")
+    # The watermark tracks the shipment mart's write clock (silver_shipment.updated_at — it has no
+    # ingested_at), NOT the gated-keystone default: this Gold job re-folds a sibling Silver mart.
+    run_job("gold-logistics-performance", build, target_table="gold_logistics_performance",
+            source_table=SOURCE, ts_col="updated_at")

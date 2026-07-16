@@ -54,7 +54,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_revenue_analytics_duckdb_test
@@ -85,6 +85,48 @@ def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(256, brand_id) hidden partitioning).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY silver_order_state rows aggregate into the mart's (brand_id, period_month,
+    #   lifecycle_state, currency_code) rows. The Spark job's entity-incremental unit is the BRAND — every
+    #   changed brand's ENTIRE set of month × lifecycle × currency buckets is re-aggregated, because a bucket's
+    #   totals depend on order rows possibly BELOW the watermark. So we MUST NOT window the aggregate input
+    #   directly (that would drop below-watermark orders → wrong money). Instead we window ONLY to DISCOVER
+    #   which BRANDS changed (a silver_order_state row was (re)written since the last run), then re-aggregate
+    #   each changed brand over its FULL, UNWINDOWED order history and MERGE-upsert exactly those buckets.
+    #   The fold-driving source is silver_order_state; its ARRIVAL/WRITE clock is `updated_at` (a NOW-stamped
+    #   write clock — silver_order_state has no top-level `ingested_at` column, only the business rollup
+    #   `max_ingested_at`; `updated_at` is the "which rows changed since last run" clock). GOLD_INCREMENTAL
+    #   flips this tier INDEPENDENTLY of Silver, so enabled=GOLD_INCREMENTAL is passed explicitly.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the rollup SQL below
+    #   is byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-revenue-analytics", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over the
+    # order spine's write clock otherwise. Each bound carries its own leading ` AND ` so lo=None → "".
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    source_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-BRAND set: brands whose order spine changed within [lo, hi]. Same currency_code IS NOT NULL
+    # admission guard the fold uses (so a brand with only NULL-currency rows is not spuriously refolded).
+    # Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id
+      FROM {SOURCE}
+      WHERE currency_code IS NOT NULL{source_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history aggregate to only the changed brands so
+    # each re-aggregates over its ENTIRE order history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"\n        AND brand_id IN (SELECT brand_id FROM ({changed}))"
+        if lo is not None else ""
+    )
+
     # ── the dbt/Spark month × lifecycle × currency additive rollup, reproduced verbatim ──
     # date_format(state_effective_at, 'yyyy-MM')  →  strftime(state_effective_at, '%Y-%m'); UTC session
     # makes the month bucket derive from the UTC instant exactly as Spark's date_format does.
@@ -99,7 +141,7 @@ def build(con):
         CAST(sum(CASE WHEN is_terminal THEN 1 ELSE 0 END) AS BIGINT)                          AS terminal_order_count,
         now() AT TIME ZONE 'UTC'                                                              AS updated_at
       FROM {SOURCE}
-      WHERE currency_code IS NOT NULL
+      WHERE currency_code IS NOT NULL{refold_filter}
       GROUP BY
         brand_id,
         strftime(state_effective_at, '%Y-%m'),
@@ -116,4 +158,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-revenue-analytics", build, target_table="gold_revenue_analytics")
+    # The watermark tracks the order spine's write clock (silver_order_state.updated_at) — this Gold mart
+    # reads a sibling Silver mart, not the gated keystone default.
+    run_job("gold-revenue-analytics", build, target_table="gold_revenue_analytics",
+            source_table=SOURCE, ts_col="updated_at")

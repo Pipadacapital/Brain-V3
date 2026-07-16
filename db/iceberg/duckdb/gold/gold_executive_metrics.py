@@ -44,7 +44,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import (  # noqa: E402
+    GOLD_INCREMENTAL,
+    ensure_table,
+    incremental_window,
+    merge_on_pk,
+    run_job,
+)
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_executive_metrics_duckdb_test
@@ -80,6 +86,47 @@ def build(con):
     # brand-first tenant partitioning + per-currency bucketing (mirrors Spark bucket(4, brand_id)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY silver_order_state rows aggregate into ONE (brand_id, currency_code) mart
+    #   row whose totals (total_orders, realized_value_minor, distinct_customers, …) depend on the entity's
+    #   FULL order history — including source rows BELOW the watermark. Windowing the fold input directly
+    #   would silently drop history → wrong money/counts. So we window ONLY to DISCOVER which (brand,
+    #   currency) pairs changed (a source row was (re-)written since the last run), then re-fold each changed
+    #   pair over its FULL, UNWINDOWED history. The MERGE on the PK (brand_id, currency_code) upserts exactly
+    #   those restated rollups.
+    #   CLOCK: silver_order_state has NO top-level ingested_at column (its COLUMNS_SQL exposes only the
+    #   NOW-stamped write clock `updated_at` + business/rollup timestamps). It is an ENTITY mart, so the
+    #   arrival/write clock is `updated_at` — exactly "which order-state rows were rewritten since last run".
+    #   This job flips on GOLD_INCREMENTAL (Gold tier), INDEPENDENTLY of SILVER_INCREMENTAL.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-executive-metrics", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the source's write clock otherwise. Same entity guard as the fold (currency_code IS NOT NULL).
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    src_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: (brand_id, currency_code) pairs whose source rows changed within [lo, hi], using the
+    # SAME key + currency-NOT-NULL guard the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+      SELECT DISTINCT brand_id, currency_code
+      FROM {SOURCE}
+      WHERE currency_code IS NOT NULL{src_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed (brand, currency)
+    # pairs so each re-folds over its ENTIRE history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"        AND (brand_id, currency_code) IN (SELECT brand_id, currency_code FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # ── the dbt/Spark aggregation, reproduced verbatim (additive components only, per (brand, currency)) ──
     rollup = f"""
       SELECT
@@ -97,7 +144,7 @@ def build(con):
         now() AT TIME ZONE 'UTC'                                                             AS updated_at
       FROM {SOURCE}
       WHERE currency_code IS NOT NULL
-      GROUP BY brand_id, currency_code
+{refold_filter}      GROUP BY brand_id, currency_code
     """
 
     # Idempotent MERGE on the (brand_id, currency_code) PK — replay-safe restatement. The GROUP BY already
@@ -108,4 +155,8 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-executive-metrics", build, target_table="gold_executive_metrics")
+    # The watermark tracks the source's write clock (silver_order_state.updated_at) — this Gold mart folds a
+    # sibling Silver mart, and silver_order_state exposes no top-level ingested_at, so `updated_at` is its
+    # arrival/write clock.
+    run_job("gold-executive-metrics", build, target_table="gold_executive_metrics",
+            source_table=SOURCE, ts_col="updated_at")

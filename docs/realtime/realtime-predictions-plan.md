@@ -121,6 +121,35 @@ events) — marginal cost is extra short pod-runs on the existing streaming pool
 compute. Gold stays full-scan (incrementalizing Gold is a future Phase 1b, gated on Silver
 parity being proven).
 
+### Phase 1b — incremental Gold (this PR; flag-gated `GOLD_INCREMENTAL`, default OFF)
+Gold marts full-scan Silver/Gold every `*/5` run (Phase 1 kept them full-scan). Phase 1b
+makes the safe subset incremental. **Independent gate** `GOLD_INCREMENTAL` (an `enabled=`
+override on `incremental_window`) so Gold flips separately from Silver.
+
+**The Gold clock is heterogeneous** (the crux): the changed-set/window needs an
+ARRIVAL/WRITE clock on the *source* mart, not a business clock. Per-event Silver marts
+carry `ingested_at`; entity Silver marts + 43/45 Gold marts carry a NOW-stamped
+`updated_at`; a few carry only `occurred_at`. Each implementer derives the source's real
+clock (`ingested_at` → else `updated_at` → else leave full-scan) — verified by an
+adversarial pass that rejects a non-existent or business clock.
+
+Outcome (45 jobs, 84-agent implement+verify):
+- **29 incremental** — per-event window or changed-entity refold, keyed off the correct
+  clock (incl. gold→gold deps like `gold_order_economics` → `gold_revenue_ledger.ingested_at`).
+- **13 left full-scan** (money-safety, documented) — **multi-source folds** whose output
+  depends on TWO upstream sources (e.g. `gold_contribution_margin` = order_state ⊕
+  marketing_spend, `gold_revenue_ledger`, `gold_ai_features`, `gold_funnel_user`…): a
+  correct refold needs the UNION of changed keys from both sources, but `run_job`/
+  `incremental_window` track a SINGLE source clock — windowing the second source by the
+  first's `hi` would permanently skip newer rows → wrong money. Deferred to **Phase 1c**
+  (multi-source changed-set union).
+- **3 global** by design — `gold_attribution_credit` (Markov trains on the whole corpus),
+  `gold_journey_events_reversion` (self-mutation), `gold_product_costs` (PG dimension).
+
+Ships inert. **Promotion gate:** validate `gold_*` money parity (incremental vs
+`FULL_REFRESH=1`) per brand before flipping `GOLD_INCREMENTAL=1`; the 13 full-scan jobs
+keep running full every `*/5` (correct, just not yet cheap).
+
 ### Phase 2 — request-time detector serving (DONE; flag-gated, default OFF)
 Even a 5-min Silver cadence has a floor. `GET /api/v1/recommendations` now computes the
 detector set **at request time** from the freshest Silver/Gold (Trino) when the per-brand

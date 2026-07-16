@@ -53,7 +53,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 TABLE = "gold_measurement_settlements"
@@ -118,6 +118,24 @@ def build(con):
               f"wrote empty {TABLE}, exiting", flush=True)
         return 0
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1 — Gold tier gate, INDEPENDENT of Silver) ──────────
+    #   GRAIN = per_event: each silver_settlement row projects to exactly 0..1 output row (the MERGE dedup is
+    #   in-batch only). So — unlike an entity fold — we window the SOURCE READ DIRECTLY on its arrival clock:
+    #   the source silver_settlement is a per-event Silver mart carrying `ingested_at` NOT NULL (its own
+    #   watermark clock, verified in silver_settlement.COLUMNS_SQL), so ts_col='ingested_at' — the true
+    #   "which rows arrived since last run" clock (NOT the business occurred_at/settlement_at → late arrivals
+    #   would drop below the watermark). Default OFF / first run / FULL_REFRESH → lo=None → the window string
+    #   is EMPTY → the staged SQL is BYTE-IDENTICAL to the pre-incremental full scan. enabled=GOLD_INCREMENTAL
+    #   flips this Gold job independently of the already-ON SILVER_INCREMENTAL.
+    lo, hi = incremental_window(con, "gold-measurement-settlements", SILVER_SETTLEMENT,
+                                ts_col="ingested_at", enabled=GOLD_INCREMENTAL)
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    settlement_window = f" AND {' AND '.join(win)}" if win else ""
+
     # Faithful SQL port of the Spark staged projection. Per-row measurement-namespace projection of the
     # silver_settlement fact to gross/fees/net (integer minor units; per-currency; no float). settled_at ←
     # settlement_at; source_system ← coalesce(source,'razorpay'); source_event_id ← event_id.
@@ -141,7 +159,7 @@ def build(con):
             ingested_at,
             now() AT TIME ZONE 'UTC'                                                         AS updated_at
         FROM {SILVER_SETTLEMENT}
-        WHERE brand_id IS NOT NULL AND event_id IS NOT NULL
+        WHERE brand_id IS NOT NULL AND event_id IS NOT NULL{settlement_window}
     """
 
     # Full-recompute MERGE on (brand_id, order_id, event_id). In-batch dedup keeps latest-ingested-wins (a
@@ -152,4 +170,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-measurement-settlements", build, target_table=TABLE)
+    # The watermark tracks the source settlement fact's arrival clock (silver_settlement.ingested_at), NOT
+    # the gated keystone default — this Gold job reads a sibling Silver mart, not silver_collector_event.
+    run_job("gold-measurement-settlements", build, target_table=TABLE,
+            source_table=SILVER_SETTLEMENT, ts_col="ingested_at")

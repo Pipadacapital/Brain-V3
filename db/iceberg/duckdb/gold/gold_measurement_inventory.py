@@ -57,7 +57,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 TABLE = "gold_measurement_inventory"
@@ -238,6 +238,46 @@ def build(con):
 
     in_list = ", ".join("'" + b.replace("'", "''") + "'" for b in enabled)
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: the movement fact is a lag() over the FULL observation history of a
+    #   (brand_id, product_id, variant_id) variant — prev_quantity of any row references the PRIOR
+    #   observation (ordered by observed_at), so a newly-landed observation (even one whose observed_at
+    #   sorts BELOW existing rows) restates movement_qty for that variant's rows. Windowing the lag input
+    #   directly would drop below-watermark history → wrong movement deltas. So we window ONLY to DISCOVER
+    #   which VARIANTS changed (a new observation arrived since the last run, on the ARRIVAL clock
+    #   silver_inventory_level.ingested_at — a per-event Silver mart, so ingested_at is the monotonic write
+    #   clock), then re-fold each changed variant over its FULL, UNWINDOWED observation history via a
+    #   semi-join. The MERGE on the PK upserts exactly those restated rows.
+    #   Gate = GOLD_INCREMENTAL (independent of Silver). Default OFF / first run / FULL_REFRESH → lo=None →
+    #   NO changed-set, NO semi-join → the SQL below is BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-measurement-inventory", SILVER_INVENTORY_LEVEL,
+                                ts_col="ingested_at", enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the source's arrival clock otherwise. Same brand gate the fold uses (WHERE brand_id IN (in_list)).
+    win = []
+    if lo is not None:
+        win.append(f"ingested_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"ingested_at <= '{hi}'")
+    inv_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: variants whose observation history changed within [lo, hi], using the SAME entity
+    # keys + brand gate the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+        SELECT DISTINCT brand_id, product_id, variant_id
+        FROM {SILVER_INVENTORY_LEVEL}
+        WHERE brand_id IN ({in_list}){inv_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history lag fold to only the changed variants so
+    # each re-folds over its ENTIRE observation history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"              AND (brand_id, product_id, variant_id) IN "
+        f"(SELECT brand_id, product_id, variant_id FROM ({changed}))\n"
+        if lo is not None else ""
+    )
+
     # Faithful SQL port of the Spark staged CTE. lag() over (brand,product,variant ORDER BY observed_at) →
     # prev_quantity; movement_qty = quantity − prev_quantity (NULL on the first observation — honest, not
     # the full stock). event_id / source_event_id = sha256 over the NUL-joined natural key (deterministic).
@@ -250,7 +290,7 @@ def build(con):
                    ) AS prev_quantity
             FROM {SILVER_INVENTORY_LEVEL}
             WHERE brand_id IN ({in_list})
-        )
+{refold_filter}        )
         SELECT
             brand_id, product_id, variant_id,
             sha256(concat_ws(chr(0), brand_id, product_id, variant_id, CAST(observed_at AS VARCHAR)))  AS event_id,
@@ -268,4 +308,7 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-measurement-inventory", build, target_table=TABLE)
+    # The watermark tracks the source's arrival clock (silver_inventory_level.ingested_at) — a per-event
+    # Silver mart folded from the gated keystone, so ingested_at is its monotonic write clock.
+    run_job("gold-measurement-inventory", build, target_table=TABLE,
+            source_table=SILVER_INVENTORY_LEVEL, ts_col="ingested_at")

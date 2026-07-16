@@ -60,7 +60,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 TABLE = "gold_journey"
@@ -103,6 +103,50 @@ COLUMNS = [
 def build(con):
     # brand-first tenant bucketing + day() partition (mirrors Spark bucket(64, brand_id), days(first_touch_at)).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), day(first_touch_at)")
+
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ──────────────────────────
+    #   GRAIN = entity_fold: MANY silver_touchpoint / silver_sessions rows aggregate into ONE
+    #   (brand_id, brain_anon_id) journey row whose distinct_channels / distinct_sessions / converted_at
+    #   depend on that entity's FULL touch+session history — including rows BELOW the watermark. Windowing
+    #   the tp/ss fold inputs directly would silently drop history → wrong journey aggregates. So we window
+    #   ONLY to DISCOVER which journeys changed (a touch/spine row landed since the last run), then re-fold
+    #   each changed entity over its FULL, UNWINDOWED history. The MERGE on the PK (brand_id, brain_anon_id)
+    #   upserts exactly those restated rollups.
+    #
+    #   CLOCK: the changed-set is keyed off the journey SPINE silver_journey (the FROM-clause mart that
+    #   determines which (brand_id, brain_anon_id) rows EXIST). silver_journey is an ENTITY Silver mart —
+    #   it has NO ingested_at, but it HAS updated_at (a now()-stamped write clock), so ts_col='updated_at'
+    #   is exactly "which journey rows changed since last run" (verified against silver_journey COLUMNS_SQL).
+    #
+    #   Passes enabled=GOLD_INCREMENTAL so the Gold tier flips INDEPENDENTLY of SILVER_INCREMENTAL.
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   BYTE-IDENTICAL to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-journey", SILVER_JOURNEY, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); an [lo, hi] range over
+    # the spine's write clock otherwise. Same entity-key guard as the fold (brand_id/brain_anon_id NOT NULL).
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    spine_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-KEY set: journeys whose spine row changed within [lo, hi], using the SAME (brand_id,
+    # brain_anon_id) key + NOT-NULL guards the fold uses. Built ONLY when incremental (lo not None).
+    changed = f"""
+        SELECT DISTINCT brand_id, brain_anon_id
+        FROM {SILVER_JOURNEY}
+        WHERE brand_id IS NOT NULL AND brain_anon_id IS NOT NULL{spine_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed journeys so each
+    # re-folds over its ENTIRE touch/session history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"          AND (j.brand_id, j.brain_anon_id) IN (SELECT brand_id, brain_anon_id FROM ({changed}))\n"
+        if lo is not None else ""
+    )
 
     staged = f"""
         WITH tp AS (
@@ -151,10 +195,13 @@ def build(con):
         LEFT JOIN tp ON j.brand_id = tp.brand_id AND j.brain_anon_id = tp.brain_anon_id
         LEFT JOIN ss ON j.brand_id = ss.brand_id AND j.brain_anon_id = ss.brain_anon_id
         WHERE j.brand_id IS NOT NULL AND j.brain_anon_id IS NOT NULL
-    """
+{refold_filter}    """
 
     return merge_on_pk(con, TARGET, staged, COLUMNS, PK, order_by_desc=["updated_at"])
 
 
 if __name__ == "__main__":
-    run_job("gold-journey", build, target_table=TABLE)
+    # The watermark tracks the journey spine's write clock (silver_journey.updated_at) — this Gold rollup
+    # reads sibling Silver marts, and silver_journey (the entity spine) has no ingested_at.
+    run_job("gold-journey", build, target_table=TABLE,
+            source_table=SILVER_JOURNEY, ts_col="updated_at")

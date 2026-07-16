@@ -55,7 +55,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _base import ensure_table, merge_on_pk, run_job  # noqa: E402
+from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 
 # MIGRATION_TABLE_SUFFIX lets the parallel-run parity harness write to gold_repeat_latency_duckdb_test
@@ -88,6 +88,53 @@ COLUMNS = [
 def build(con):
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
 
+    # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
+    #   GRAIN = entity_fold: MANY silver_order_state rows aggregate into the SIX bucket rows of ONE brand,
+    #   whose latency distribution / median / customer counts depend on the brand's FULL order history —
+    #   including a customer's 1st/2nd order that may sit BELOW the watermark. Windowing the fold input
+    #   directly would silently drop history → wrong day-gaps / counts. So we window ONLY to DISCOVER which
+    #   BRANDS changed (a new order landed since the last run), then re-fold each changed brand over its
+    #   FULL, UNWINDOWED order history. The MERGE on the PK (brand_id, bucket_key) upserts exactly those
+    #   restated brand distributions.
+    #
+    #   CLOCK: the fold-driving source silver_order_state has NO plain `ingested_at` column; its persisted
+    #   arrival/WRITE clock is `updated_at` (timestamptz NOT NULL, now()-stamped on every MERGE — exactly
+    #   "which order rows changed since last run"). We window on that, NOT on the business time
+    #   first_event_at (a late-arriving backfilled order below the watermark would otherwise be dropped →
+    #   wrong latency). Tier gate is GOLD_INCREMENTAL (Gold flips independently of Silver).
+    #
+    #   Default OFF / first run / FULL_REFRESH → lo=None → NO changed-set, NO semi-join → the SQL below is
+    #   byte-identical to the pre-incremental full recompute.
+    lo, hi = incremental_window(con, "gold-repeat-latency", SOURCE, ts_col="updated_at",
+                                enabled=GOLD_INCREMENTAL)
+
+    # Window predicate as an EMPTY string when lo is None (byte-identical full scan); a [lo, hi] range over
+    # the order spine's write clock otherwise. Each bound carries its own leading " AND " so the lo=None
+    # case is the empty string and the surrounding SQL is byte-for-byte unchanged.
+    win = []
+    if lo is not None:
+        win.append(f"updated_at >= '{lo}'")
+    if hi is not None:
+        win.append(f"updated_at <= '{hi}'")
+    order_window = f" AND {' AND '.join(win)}" if win else ""
+
+    # CHANGED-BRAND set: brands whose order spine changed within [lo, hi], using the SAME entity key
+    # (brand_id) + the SAME row guards the fold's `orders` CTE uses. Built ONLY when incremental.
+    changed = f"""
+            SELECT DISTINCT brand_id
+            FROM {SOURCE}
+            WHERE brand_id IS NOT NULL
+              AND brain_id IS NOT NULL
+              AND first_event_at IS NOT NULL{order_window}
+    """
+
+    # Semi-join clause: when incremental, restrict the FULL-history fold to only the changed brands so each
+    # re-folds over its ENTIRE order history. EMPTY when lo is None → unwindowed full recompute.
+    refold_filter = (
+        f"\n              AND brand_id IN (SELECT brand_id FROM ({changed}))"
+        if lo is not None else ""
+    )
+
     staged = f"""
         WITH orders AS (
             SELECT brand_id, brain_id, order_id,
@@ -95,7 +142,7 @@ def build(con):
             FROM {SOURCE}
             WHERE brand_id IS NOT NULL
               AND brain_id IS NOT NULL
-              AND first_event_at IS NOT NULL
+              AND first_event_at IS NOT NULL{refold_filter}
         ),
         ranked AS (
             SELECT
@@ -192,4 +239,8 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("gold-repeat-latency", build, target_table="gold_repeat_latency")
+    # The watermark tracks the order spine's WRITE clock (silver_order_state.updated_at) — this Gold job
+    # reads a sibling Silver mart directly (not the gated keystone), and updated_at is the only monotonic
+    # arrival clock the source persists.
+    run_job("gold-repeat-latency", build, target_table="gold_repeat_latency",
+            source_table=SOURCE, ts_col="updated_at")

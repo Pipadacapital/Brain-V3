@@ -4,12 +4,12 @@
  * Prod evidence (2026-07-12): on a fresh deployment (no finalized orders, serving marts not yet
  * materialized) the job completed with `errors: 1` → exit 1. Empty is an HONEST state (Brain rule:
  * fail safely; no data yet ≠ failure) — these tests pin the classification:
- *   • TRINO_HOST unset OR EMPTY            → whole-job no-op (exit-0 result), never `http://:PORT`.
+ *   • DUCKDB_SERVING_HOST unset OR EMPTY   → whole-job no-op (exit-0 result), never `http://:PORT`.
  *   • serving tier not provisioned         → per-brand skipped_empty (info), errors stays 0.
  *   • anything else (IAM, connectivity, …) → per-brand REAL error, errors > 0 (exit-1 semantics).
  *
- * Runs against a FAKE pg pool + a FAKE Trino pool (mirrors audit-checkpoint.test.ts) — no DB, no
- * Trino. The live-path counterpart is jobs.live.test.ts.
+ * Runs against a FAKE pg pool + a FAKE serving pool (mirrors audit-checkpoint.test.ts) — no DB, no
+ * serving tier. The live-path counterpart is jobs.live.test.ts.
  */
 import { describe, it, expect } from 'vitest';
 import type pg from 'pg';
@@ -26,11 +26,11 @@ function fakePgPool(brandIds: string[]): pg.Pool {
 }
 
 const NOT_FOUND = new Error(
-  "[trino-adapter] Trino query error (code 46): line 1:18: Table 'iceberg.brain_serving.mv_gold_attribution_credit' does not exist",
+  "[duckdb-serving-adapter] query rejected (parse/binder error) — HTTP 400 status-400: Table with name mv_gold_attribution_credit does not exist!",
 );
 
 /**
- * Scripted Trino pool that reproduces the ONE serving-read path that escapes withSilverBrand's
+ * Scripted serving pool that reproduces the ONE serving-read path that escapes withSilverBrand's
  * honest-empty degradation: the @brain/attribution-writer DIRECT read-back (readSavedCredits).
  * The wrapped reads answer just enough (a credited order + a reversal on it) to reach the
  * clawback pass, whose direct read-back then throws `directErr`.
@@ -62,30 +62,30 @@ function fakeSrPoolReachingDirectReadback(directErr: Error): SilverPool {
   };
 }
 
-describe('runAttributionReconcile — TRINO_HOST gate', () => {
-  it('no-ops when TRINO_HOST is unset (no serving tier)', async () => {
-    const prev = process.env['TRINO_HOST'];
-    delete process.env['TRINO_HOST'];
+describe('runAttributionReconcile — DUCKDB_SERVING_HOST gate', () => {
+  it('no-ops when DUCKDB_SERVING_HOST is unset (no serving tier)', async () => {
+    const prev = process.env['DUCKDB_SERVING_HOST'];
+    delete process.env['DUCKDB_SERVING_HOST'];
     try {
       const res = await runAttributionReconcile();
       expect(res).toEqual({ brands: 0, credited: 0, clawed_back: 0, unattributed: 0, skipped_empty: 0, errors: 0 });
     } finally {
-      if (prev !== undefined) process.env['TRINO_HOST'] = prev;
+      if (prev !== undefined) process.env['DUCKDB_SERVING_HOST'] = prev;
     }
   });
 
-  it('no-ops when TRINO_HOST is set but EMPTY (blank secret key ≠ a serving tier)', async () => {
-    // Regression pin: an empty-string TRINO_HOST used to pass the `=== undefined` gate and build
+  it('no-ops when DUCKDB_SERVING_HOST is set but EMPTY (blank secret key ≠ a serving tier)', async () => {
+    // Regression pin: an empty-string DUCKDB_SERVING_HOST used to pass the `=== undefined` gate and build
     // baseUrl `http://:PORT` — every brand then failed its first fetch → errors:N → exit 1.
-    const prev = process.env['TRINO_HOST'];
-    process.env['TRINO_HOST'] = '';
+    const prev = process.env['DUCKDB_SERVING_HOST'];
+    process.env['DUCKDB_SERVING_HOST'] = '';
     try {
       const res = await runAttributionReconcile();
       expect(res.brands).toBe(0);
       expect(res.errors).toBe(0);
     } finally {
-      if (prev === undefined) delete process.env['TRINO_HOST'];
-      else process.env['TRINO_HOST'] = prev;
+      if (prev === undefined) delete process.env['DUCKDB_SERVING_HOST'];
+      else process.env['DUCKDB_SERVING_HOST'] = prev;
     }
   });
 });
@@ -118,7 +118,7 @@ describe('runAttributionReconcile — empty-state vs real-error classification',
 
   it('a REAL failure (e.g. IAM / connectivity) still counts as an error (exit-1 semantics)', async () => {
     const srPool = fakeSrPoolReachingDirectReadback(
-      new Error('[trino-adapter] Trino query error (code 65545): Access Denied (Service: Amazon S3)'),
+      new Error('[duckdb-serving-adapter] serving error — HTTP 500 status-500: Access Denied (Service: Amazon S3)'),
     );
     const res = await runAttributionReconcile({ pool: fakePgPool([BRAND]), srPool });
     expect(res.brands).toBe(1);

@@ -107,7 +107,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string; search?: string; page?: string };
@@ -234,7 +234,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { limit?: number };
@@ -291,7 +291,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { limit?: number; cursor?: string };
@@ -411,7 +411,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string };
@@ -608,7 +608,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.send({ request_id: requestId, data: { state: 'no_data', step, page, page_size: pageSize, total: '0' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const today = new Date().toISOString().split('T')[0] as string;
@@ -785,7 +785,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string };
@@ -842,7 +842,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { from?: string; to?: string };
@@ -1038,7 +1038,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { brainId: string; cursor?: string; limit?: number; as_of?: string };

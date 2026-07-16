@@ -12,7 +12,7 @@
 set -uo pipefail
 
 PROFILES=("$@")
-docker compose "${PROFILES[@]}" up -d
+docker compose "${PROFILES[@]}" up -d --remove-orphans
 
 deadline=$((SECONDS + 360))
 while :; do

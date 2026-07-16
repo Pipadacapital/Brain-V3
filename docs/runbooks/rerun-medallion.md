@@ -23,9 +23,10 @@ Notes:
 - `concurrencyPolicy: Forbid` serializes against the schedule (:05 Silver / :25 Gold) — a
   manual submit close to the top of the hour may just queue behind the scheduled run; that's
   fine.
-- **There is NO separate mv-refresh leg**: the `brain_serving.mv_*` Trino views are thin
-  projections — they resolve the new Iceberg snapshot the moment the Spark job commits.
-  (Local dev is the same sequence via `tools/dev/v4-refresh-loop.sh`.)
+- **There is NO separate mv-refresh leg**: the `brain_serving.mv_*` duckdb-serving views are
+  thin projections — they resolve the new Iceberg snapshot the moment the transform job
+  commits (live attaches see new commits on plain re-query — ADR-0014).
+  (Local dev is the same sequence via `tools/dev/duckdb-refresh.sh`.)
 - After a **connector backfill**, just re-run both: the backfill lands in Bronze
   (`<lane>_raw_connect` / `collector_events_connect`) with event timestamps that the
   incremental reads pick up normally. FULL_REFRESH is NOT needed for a backfill that lands
@@ -98,14 +99,14 @@ re-baselined Silver. Locally the same thing is
 
 ```bash
 # Freshness — every mart's snapshot age (also the Prometheus brain_data_freshness_seconds gauge):
-kubectl -n trino port-forward svc/<trino-coordinator> 8090:8080 &
-trino --server http://127.0.0.1:8090 --execute \
-  "SELECT committed_at FROM iceberg.brain_silver.\"silver_order_state\$snapshots\" ORDER BY committed_at DESC LIMIT 1"
+kubectl -n duckdb-serving port-forward svc/duckdb-serving 8091:8091 &
+curl -s http://127.0.0.1:8091/v1/query -H 'content-type: application/json' -d \
+  '{"sql":"SELECT timestamp_ms FROM iceberg_snapshots('"'"'iceberg.brain_silver.silver_order_state'"'"') ORDER BY timestamp_ms DESC LIMIT 1"}'
 
 # Completeness after a FULL_REFRESH (the failure this runbook exists for) — mart vs source count
 # for one brand; a large gap means the watermark trap, not a transform bug:
-trino --server http://127.0.0.1:8090 --execute \
-  "SELECT count(*) FROM iceberg.brain_serving.mv_silver_order_state WHERE brand_id = '<BRAND_UUID>'"
+curl -s http://127.0.0.1:8091/v1/query -H 'content-type: application/json' -d \
+  '{"sql":"SELECT count(*) FROM brain_serving.mv_silver_order_state WHERE brand_id = '"'"'<BRAND_UUID>'"'"'"}'
 ```
 
 Cross-check the count against the Data tab / source-of-truth surface for the same brand

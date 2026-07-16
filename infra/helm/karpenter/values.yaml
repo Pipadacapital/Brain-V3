@@ -30,7 +30,8 @@ amiAlias: al2023@latest
 
 ec2NodeClass:
   name: brain-default
-  # Root volume for launched nodes (encrypted gp3). Spark/Trino spill + container images need room.
+  # Root volume for launched nodes (encrypted gp3). DuckDB spill (serving temp_directory) +
+  # container images need room.
   rootVolume:
     deviceName: /dev/xvda
     sizeGi: 50
@@ -54,13 +55,15 @@ tags:
 # streaming just gets a much longer consolidateAfter so live consumers aren't thrashed.
 #
 # ── AUD-OPS-033: the INTENDED aggregate ceiling + spot instance diversity ──────────────────────
-# Aggregate pool limits = streaming 20 + trino 8 + ondemand 8 = 36 vCPU / 144Gi.
+# Aggregate pool limits = streaming 20 + ondemand 8 = 28 vCPU / 112Gi.
 # (The `batch` pool — 12 vCPU / 48Gi — was REMOVED in the Spark→DuckDB cutover: the Spark
 # transforms that needed a dedicated 4vCPU/16Gi batch node are gone; the lightweight DuckDB crons
-# run on the streaming pool.)
+# run on the streaming pool. The `trino` pool — 8 vCPU / 32Gi — was REMOVED in the Trino→
+# duckdb-serving cutover, ADR-0014: the stateless duckdb-serving replicas ride the streaming
+# pool via their chart's nodeSelector.)
 # That ceiling is DELIBERATE — it is LESS than the sum of every HPA's max×request under a
 # fully-correlated burst (traffic spike scaling collector/core/stream-worker WHILE hourly crons
-# run and Trino scales out): overflow pods queue Pending until a pool frees, and per-workload
+# run and duckdb-serving scales out): overflow pods queue Pending until a pool frees, and per-workload
 # honest maxima (e.g. stream-worker maxReplicas == partition count, AUD-OPS-030) keep the
 # capacity math truthful. Raise a pool's `limits` + its workloads' maxima TOGETHER, as one
 # deliberate change. Spot diversity: every pool lists m7g.* (Graviton3, same 1:4 vCPU:GiB
@@ -112,27 +115,10 @@ nodePools:
         duration: "9h"                  # through 18:00 IST
   # NOTE: the `batch` pool was REMOVED in the Spark→DuckDB cutover (feat/spark-to-duckdb-cutover). It
   # existed for the Spark Silver/Gold transforms (a dedicated 4vCPU/16Gi off-peak node); those are gone.
-  # The DuckDB transform + Trino-maintenance crons are lightweight python (no JVM) and run on the
-  # untainted `streaming` pool (cronworkflows values-prod nodeSelector brain.platform/pool: streaming).
-  trino:
-    # 4 vCPU / 16 GiB — Trino workers (CPU-bound scans). m7g = spot-drought fallback (AUD-OPS-033).
-    instanceTypes: ["t4g.xlarge", "m7g.xlarge"]
-    instanceType: t4g.xlarge         # fallback (unused when instanceTypes is set)
-    capacityType: ["spot", "on-demand"]   # Spot-first, on-demand fallback (see streaming)
-    consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 1m             # gentler than batch — avoid query thrash; KEDA scales workers
-    expireAfter: 720h
-    weight: 10
-    limits:                          # ~0-2 t4g.xlarge nodes (2 × 4 vCPU)
-      cpu: "8"
-      memory: 32Gi
-    taints: []
-    # ADR-0003: integer budget — cap voluntary disruption at 1 node so Trino serving
-    # workers keep a scan node during consolidation (the Trino coordinator is on the
-    # ondemand pool; KEDA scales these workers). No business-hours freeze: this pool
-    # already scales to ~0 off-peak and consolidateAfter is a gentle 1m. Revert: drop.
-    disruptionBudgets:
-      - nodes: "1"
+  # The `trino` pool (8 vCPU / 32Gi, KEDA-scaled Trino scan workers) was REMOVED in the Trino→
+  # duckdb-serving cutover (ADR-0014): the stateless duckdb-serving replicas + the DuckDB transform
+  # and PyIceberg-maintenance crons are all lightweight (no JVM) and run on the untainted
+  # `streaming` pool (nodeSelector brain.platform/pool / karpenter.sh/nodepool: streaming).
   # AUD-COST-018: ON-DEMAND home for single-instance stateful SoRs. Neo4j (the
   # identity SYSTEM OF RECORD, ADR-0004, Community = no HA) must not ride Spot —
   # a reclaim bounces the only replica. TAINTED so nothing lands on paid

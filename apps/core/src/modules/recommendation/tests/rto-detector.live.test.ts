@@ -15,17 +15,16 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { createPool, type DbPool } from '@brain/db';
-import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import { generateRecommendations, getRecommendations } from '../index.js';
 
 const SUPERUSER_URL = process.env['DATABASE_URL'] ?? 'postgres://brain:brain@localhost:5432/brain';
-// BRAIN V4: StarRocks is REMOVED. The detector revenue signals read the gold ledger over TRINO
-// (createTrinoPool) — the same Trino-over-Iceberg serving path the app uses in production. Seeds INSERT
+// BRAIN V4: StarRocks and Trino are REMOVED (ADR-0014). The detector revenue signals read the gold ledger over DUCKDB-SERVING
+// (createDuckDbServingPool) — the same duckdb-serving-over-Iceberg serving path the app uses in production. Seeds INSERT
 // the base Iceberg table; the detector reads through the brain_serving.mv_* view via the metric-engine seam.
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
 
 const BRAND_A = 'b444444a-0a1a-4a1a-8a1a-000000000001';
 const BRAND_B = 'b444444a-0a1a-4a1a-8a1a-000000000002';
@@ -105,7 +104,7 @@ beforeAll(async () => {
     superPool = new pg.Pool({ connectionString: SUPERUSER_URL, connectionTimeoutMillis: 4000 });
     await superPool.query('SELECT 1');
     dbPool = await createPool({ connectionString: SUPERUSER_URL });
-    srPool = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
+    srPool = createDuckDbServingPool({ baseUrl: SERVING_URL });
     await srPool.query('SELECT 1');
     await cleanup();
     await seedBrand();
@@ -142,7 +141,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (pgAvailable) await cleanup();
   if (dbPool) await dbPool.end();
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
   if (superPool) await superPool.end();
 });
 

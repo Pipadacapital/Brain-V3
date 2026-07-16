@@ -4,7 +4,7 @@
  *
  * Two read shapes over the Gold tier, ONE acquisition concept:
  *   • computeUtmSource — the matrix: the SOLE reader of the Gold mart `gold_utm_source`, served through
- *     the Trino serving view brain_serving.mv_gold_utm_source via withSilverBrand (I-ST01 — the engine
+ *     the serving view brain_serving.mv_gold_utm_source via withSilverBrand (I-ST01 — the engine
  *     is the only Gold reader; the UI never queries the lakehouse directly). One row per
  *     (source, medium): visitors, conversions, revenue_minor, avg_ltv_minor, repeat_rate_pct, currency.
  *   • getCustomerAcquisitionSourceMembers — the drilldown FILTER: the brain_ids whose
@@ -16,14 +16,14 @@
  * currency_code (the group's dominant currency, carried verbatim from the mart) — never a float, never
  * blended across currencies. repeat_rate_pct is a NON-money integer 0-100.
  *
- * @see db/iceberg/spark/gold/gold_utm_source.py + db/trino/views/mv_gold_utm_source.sql
+ * @see db/iceberg/duckdb/gold/gold_utm_source.py + db/iceberg/duckdb/views/mv_gold_utm_source.sql
  * @see packages/metric-engine/src/customer-scores-batch.ts — the sibling member-resolver pattern
  */
 
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 
-/** Coerce a Trino numeric (string|number) to bigint, dropping any fractional tail. */
+/** Coerce a serving numeric (string|number) to bigint, dropping any fractional tail. */
 function toBig(v: string | number | null | undefined): bigint {
   return BigInt(String(v ?? '0').split('.')[0] ?? '0');
 }

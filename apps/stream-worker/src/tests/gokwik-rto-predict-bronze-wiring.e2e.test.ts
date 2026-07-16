@@ -3,27 +3,27 @@
  *
  * ICEBERG-BRONZE (ADR-0010): Bronze is the Kafka Connect Iceberg sink (the compose kafka-connect
  * service — the SOLE Bronze writer, append-only, ungated) → `brain_bronze.collector_events_connect`,
- * read over Trino via the lift view (PG bronze_events dropped — migration 0070).
+ * read over duckdb-serving via the lift view (PG bronze_events dropped — migration 0070).
  * gokwik.rto_predict.v1 is a SERVER_TRUSTED lane event (no install_token; brand_id server-derived),
  * so the Silver admission gate passes it under the claimed brand without an R2/R3 gate. The risk
  * signal was historically lost (the pixel lane quarantined these for lack of a token, and nothing
  * else consumed them); the server-trusted lane is what lets them survive Silver admission.
  *
  * This produces three realistic RTO-Predict envelopes (the post-mapper shape) to the collector topic
- * and asserts all three land in Iceberg Bronze (read over Trino via the lift view), matched by
+ * and asserts all three land in Iceberg Bronze (read over duckdb-serving via the lift view), matched by
  * their exact event_ids so pre-existing rows of the same brand/type don't mask the assertion.
  *
  * The former RP2 case (computeRtoRiskDistribution) reads the serving silver_checkout_signal view
  * since the payments-Silver re-point (PR #211) and is covered by the metric-engine unit tests —
  * this e2e asserts only the bridge's job: the Bronze landing.
  *
- * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + Trino).
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + duckdb-serving).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
 import {
-  makeBronzeTrinoPool,
+  makeBronzeServingPool,
   icebergBronzeAvailable,
   produceCollectorEvent,
   pollIcebergBronzeCount,
@@ -66,7 +66,7 @@ function rtoEnvelope(orderId: string, riskFlag: string, riskRaw: string, occurre
 
 beforeAll(async () => {
   try {
-    sr = makeBronzeTrinoPool();
+    sr = makeBronzeServingPool();
     if (!(await icebergBronzeAvailable(sr))) {
       infraUp = false;
       return;

@@ -6,7 +6,7 @@
  *   schema.ts     — the exact shape of a `metrics/<name>.yaml` doc + the pure validator (fail-closed).
  *   entities.ts   — semantic ENTITY → physical Iceberg object + §1.4 basis metadata + ${BRAND_PREDICATE}.
  *   loader.ts     — load `metrics/*.yaml` → a validated, name-keyed registry (hexagonal ports).
- *   compiler.ts   — a validated metric → compiled Trino views (+ Spark pre-aggs for interactive).
+ *   compiler.ts   — a validated metric → compiled serving views (+ Iceberg pre-aggs for interactive).
  *   catalog.ts    — the JSON discovery catalog + one MCP-shaped tool per metric.
  *   infrastructure/ — the fs directory source + `yaml` parser adapters.
  *

@@ -6,9 +6,10 @@ This is a WorkflowTemplate, NOT a CronWorkflow: subject erasure is ON-DEMAND. Th
 erasure orchestrator (EraseSubjectUseCase STEP 4) submits a Workflow from this template via the
 Kubernetes API (workflowTemplateRef — the prod argo-workflows app runs controller-only,
 server.enabled=false) after the subject DEK is crypto-shredded. The wrapped job is
-db/iceberg/trino/erasure_raw_delete.py, run via the Trino client the brain-duckdb image carries
-(DuckDB can't DELETE-and-compact Iceberg; Trino runs the format-v2 delete + optimize + expire_snapshots).
-Its CLI contract is env-driven (UNCHANGED from the Spark job):
+db/iceberg/duckdb/maintenance/erasure_raw_delete.py, run via the PyIceberg + DuckDB maintenance
+client the brain-duckdb image carries (Trino removed per ADR-0014; the erasure is a PyIceberg
+copy-on-write DELETE — data files rewritten in the delete commit — followed by expire_snapshots(0)
+plus the physical file sweep). Its CLI contract is env-driven (UNCHANGED from the Spark/Trino jobs):
 
   BRAND_ID          (required)  UUID — tenant isolation key, ALWAYS the first DELETE predicate.
   IDENTIFIER_HASH   (required)  64-hex per-brand-salted SHA-256 of the subject's email/phone.
@@ -16,11 +17,12 @@ Its CLI contract is env-driven (UNCHANGED from the Spark job):
   DEVICE_IDS        (optional)  comma-separated RAW device_ids (payload-path predicates).
 
 The job hard-deletes the subject's rows across all `*_raw_connect` lanes (column-equality) and
-collector_events_connect (payload-path predicates). Idempotent: a re-submitted erasure affects 0 rows.
-Erasure is PHYSICALLY complete after the erase-mode compaction + expire_snapshots the job performs.
+collector_events_connect (payload-path predicates, resolved to Kafka coordinates and applied as COW
+deletes). Idempotent: a re-submitted erasure affects 0 rows.
+Erasure is PHYSICALLY complete after the erase-mode expire_snapshots + file sweep the job performs.
 
 Image/secret/placement mirror bronze-maintenance.yaml (same digest-pinned brain-duckdb image, same
-envSecretName for TRINO_HOST/ICEBERG_REST_URI/AWS_*, same streaming-pool nodeSelector via values-prod).
+envSecretName for ICEBERG_REST_URI/AWS_*, same streaming-pool nodeSelector via values-prod).
 
 The Role/RoleBinding grant the stream-worker ServiceAccount EXACTLY create+get on Workflows in this
 namespace (least privilege) so the orchestrator can submit from this template and read back the name.
@@ -90,7 +92,7 @@ spec:
         args:
           - |
             set -euo pipefail
-            exec python /opt/brain/trino/erasure_raw_delete.py
+            exec python /opt/brain/duckdb/maintenance/erasure_raw_delete.py
         env:
           # erasure_raw_delete.py env contract ← workflow parameters (validated in-job:
           # BRAND_ID must be a UUID, IDENTIFIER_HASH a 64-hex digest — the job exits 1 otherwise).

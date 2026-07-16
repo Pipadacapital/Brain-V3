@@ -53,7 +53,7 @@ function fakePool(opts: {
   const client = { query, release: () => undefined };
   const pool = { connect: async () => client } as unknown as EngineDeps['pool'];
 
-  // Fake Trino srPool (TrinoPool shape: query() returns the row array directly) serving the
+  // Fake Trino srPool (ServingPool shape: query() returns the row array directly) serving the
   // mv_gold_attribution_credit confidence grades. runScoped injects `brand_id = ?` then calls query().
   const srPool = {
     async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {

@@ -1,0 +1,59 @@
+environment: prod
+
+image:
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-serving-prod
+  tag: ""
+  # PLACEHOLDER — the first master build of brain-duckdb-serving-prod (deploy.yml
+  # build-data-images) promotes the real digest here; until then the template fails-closed on the
+  # unpullable all-zeros digest (same posture as the cronworkflows brain-duckdb-prod bootstrap).
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# Replicas ride the untainted `streaming` Spot pool (infra/helm/karpenter) — no dedicated pool:
+# the `trino` Karpenter pool is retired with the trino chart (ADR-0014), and at ≥2 replicas a Spot
+# reclaim only drops capacity to the surviving replica (each pod is a COMPLETE engine, unlike the
+# coordinator/worker split where one loss was a full serving outage). 1cpu/3.5Gi requests bin-pack
+# two replicas onto one t4g.xlarge alongside daemonsets.
+nodeSelector:
+  karpenter.sh/nodepool: streaming
+
+resources:
+  requests:
+    cpu: "1"
+    memory: 3.5Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# HPA ON: min 2 (a Spot reclaim or rollout never leaves zero serving replicas), CPU target 60%
+# (scale out BEFORE queries queue on the per-replica admission semaphore). maxReplicas 4 keeps the
+# tier inside the streaming pool's capacity math (AUD-OPS-033) — raise together with pool limits.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 60
+
+# Real AWS S3 + REST catalog reached via the pod IRSA role — no static keys, no MinIO endpoint.
+iceberg:
+  catalog: iceberg
+  # The Iceberg REST catalog is the chart-fullname service in ns `iceberg-rest`
+  # (NOT a plain `iceberg-rest` in ns `iceberg`). Wrong DNS = the serving engine can't read any
+  # Iceberg mart → every BFF analytics read 500s at go-live.
+  restUri: "http://brain-prod-iceberg-rest.iceberg-rest.svc.cluster.local:8181"
+  # The SINGLE medallion warehouse root (terraform output warehouse_bucket_name — matches
+  # iceberg-rest values-prod); _catalog.py derives the REST warehouse NAME from it.
+  warehouse: "s3://brain-bronze-prod-380254378136/"
+  restAuth: none
+  s3Endpoint: ""
+  # AUD-COST-008: MUST be ap-south-1 — every bucket/VPC/endpoint lives there; a SigV4 region
+  # mismatch 400s (AuthorizationHeaderMalformed) every S3 read through the sole serving engine.
+  region: ap-south-1
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-duckdb-serving
+
+# Scrape the sole serving engine (native /metrics + PodMonitor, job "duckdb-serving") — lights up
+# DuckDBServingDown / DuckDBServingQueryFailureRateHigh in kube-prometheus-stack values-prod.
+metrics:
+  enabled: true

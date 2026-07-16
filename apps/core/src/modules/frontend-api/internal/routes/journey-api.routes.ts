@@ -80,7 +80,7 @@ export function registerJourneyApiRoutes(fastify: FastifyInstance, deps: BffDeps
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const { brainId } = request.params as { brainId: string };
@@ -134,7 +134,7 @@ export function registerJourneyApiRoutes(fastify: FastifyInstance, deps: BffDeps
         return reply.send({ request_id: requestId, data: { state: 'no_data' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const query = request.query as { order_id: string; lookback_days?: number };

@@ -6,7 +6,7 @@ The transform tier is DuckDB-on-Iceberg now (NOT spark-submit): the brain-duckdb
 db/iceberg/duckdb/** at /opt/brain/duckdb, and each job self-imports its _base/_catalog via
 sys.path.insert — so we invoke `python /opt/brain/duckdb/<layer>/<job>.py` directly (no --master,
 no --py-files/iceberg_base, no JVM). Iceberg (brain_bronze/silver/gold via the REST catalog) is the
-system of record; the brain_serving.mv_* Trino views are thin projections straight over the Gold/Silver
+system of record; the brain_serving.mv_* duckdb-serving views are thin projections straight over the Gold/Silver
 marts. dbt is GONE; StarRocks is GONE; Spark is GONE.
 
 DEPENDENCY ORDER is enforced by STAGGERED SCHEDULES (this chart's one-container-per-CronWorkflow

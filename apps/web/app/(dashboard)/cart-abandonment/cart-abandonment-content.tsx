@@ -5,7 +5,7 @@
  *
  * Reads ONLY via the BFF GET /api/v1/analytics/abandoned-cart (the metric-engine
  * storefront-abandoned-cart seam) — which now resolves to the Gold mart
- * gold_abandoned_cart through the Trino serving view brain_serving.mv_gold_abandoned_cart.
+ * gold_abandoned_cart through the serving view brain_serving.mv_gold_abandoned_cart (duckdb-serving).
  * Never StarRocks / raw SQL. brand_id is taken from the session by the BFF, never the client.
  *
  * Of the storefront sessions that added to cart, this shows how many recovered (stitched to an
@@ -190,7 +190,7 @@ export function CartAbandonmentContent() {
         meta={
           <span
             className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title="Read from the Gold mart (gold_abandoned_cart) via the Trino serving view mv_gold_abandoned_cart."
+            title="Read from the Gold mart (gold_abandoned_cart) via the serving view mv_gold_abandoned_cart."
           >
             <ShoppingCart className="h-3 w-3" aria-hidden="true" />
             Powered by the Gold tier

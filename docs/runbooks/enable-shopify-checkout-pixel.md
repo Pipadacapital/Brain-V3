@@ -64,28 +64,26 @@ checkout.liquid). On legacy `checkout.liquid` the sandbox doesn't run on checkou
 
 ## Verify (after enabling)
 
-> Updated 2026-07-12 (AUD-OPS-025): the old verify blocks used the RETIRED StarRocks container
-> (`mysql -P 9030`) — StarRocks is REMOVED; serving is Trino-over-Iceberg. Local Trino is the
-> compose `trino` service (host port **8090**); in prod, port-forward the coordinator
-> (`kubectl -n trino port-forward svc/<trino-coordinator> 8090:8080`) and use the `trino` CLI
-> against `http://127.0.0.1:8090`.
+> Updated 2026-07-16 (AUD-OPS-025 / ADR-0014): the old verify blocks used the RETIRED StarRocks
+> container (`mysql -P 9030`), then Trino — both REMOVED; serving is duckdb-serving. Local
+> duckdb-serving is the compose `duckdb-serving` service (host port **8091**); in prod,
+> port-forward the Service (`kubectl -n duckdb-serving port-forward svc/duckdb-serving 8091:8091`)
+> and POST to `http://127.0.0.1:8091/v1/query`.
 
 ```bash
 B=<BRAND_UUID>
+q() { curl -s http://localhost:8091/v1/query -H 'content-type: application/json' -d "{\"sql\":\"$1\"}"; }
 # checkout.started now arriving in Bronze (Connect landing table, via the operational lift view)
-docker exec brainv3-trino-1 trino --execute \
- "SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect_lifted WHERE brand_id='$B' AND event_type='checkout.started'"
-ONESHOT=1 pnpm dev:v4-refresh   # rebuild funnel (Spark Silver/Gold → brain_serving mv_*; dbt removed in V4)
+q "SELECT count(*) FROM brain_bronze.collector_events_connect_lifted WHERE brand_id='$B' AND event_type='checkout.started'"
+ONESHOT=1 pnpm dev:v4-refresh   # rebuild funnel (DuckDB Silver/Gold → brain_serving mv_*; dbt removed in V4)
 # funnel now has a non-zero checkout stage; the journey→order stitch (clientId) populates:
 tools/backfill/backfill-journey-stitch-map.sh $B   # once checkout_completed carries order_id + clientId
-docker exec brainv3-trino-1 trino --execute \
- "SELECT count(*) FROM iceberg.brain_serving.mv_gold_attribution_paths WHERE brand_id='$B'"
+q "SELECT count(*) FROM brain_serving.mv_gold_attribution_paths WHERE brand_id='$B'"
 ```
 
-Prod equivalents (after the port-forward above): replace the `docker exec brainv3-trino-1 trino`
-prefix with `trino --server http://127.0.0.1:8090`; the queries are identical. In prod there is no
-refresh loop — wait for the next `v4-silver` (:05) + `v4-gold` (:25) CronWorkflow cycle or submit
-one-offs per `rerun-medallion.md`.
+Prod equivalents (after the port-forward above): the same `q()` curls; the queries are identical.
+In prod there is no refresh loop — wait for the next `v4-silver` (:05) + `v4-gold` (:25)
+CronWorkflow cycle or submit one-offs per `rerun-medallion.md`.
 
 ## What it unlocks
 - **Funnel checkout + purchase stages** (real conversion, not 0%).

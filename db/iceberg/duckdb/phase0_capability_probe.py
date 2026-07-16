@@ -151,7 +151,8 @@ def probe(con) -> None:
         remaining = con.execute(f"SELECT count(*) FROM {tbl} WHERE brand_id='brand_b'").fetchone()[0]
         record("6. DELETE (RTBF row removal)", "PASS" if remaining == 0 else "FAIL",
                 f"brand_b rows after delete = {remaining} "
-                f"(NOTE: physical file rewrite needs a Trino/pyiceberg compaction — see plan §Phase5)")
+                f"(NOTE: physical file rewrite is the pyiceberg maintenance tier's job — "
+                f"maintenance/maintenance_capability_probe.py gates it)")
     except Exception as e:  # noqa: BLE001
         record("6. DELETE (RTBF row removal)", "FAIL", repr(e))
 
@@ -173,7 +174,7 @@ def probe(con) -> None:
         record("7. partition transforms bucket()/day()", "PASS" if n == 2 else "FAIL", f"{n} rows")
     except Exception as e:  # noqa: BLE001
         record("7. partition transforms bucket()/day()", "FAIL",
-               f"{e!r} — if unsupported, create tables via pyiceberg/Trino DDL and INSERT from DuckDB")
+               f"{e!r} — if unsupported, create tables via pyiceberg DDL and INSERT from DuckDB")
 
     # ── 8. time-travel / snapshot history ───────────────────────────────────────
     # The table above took several commits (INSERT + 2× MERGE + INSERT + DELETE), so its

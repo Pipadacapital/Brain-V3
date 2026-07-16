@@ -3,12 +3,12 @@
  *
  * The stored path (getRecommendations) reads whatever the batch `recommendation-detectors` cron last
  * persisted — so a rec is only as fresh as the last cron tick. This path computes the detector set at
- * REQUEST time against the freshest Silver/Gold (Trino), Redis-caches it, and lets a Gold rewrite bust
+ * REQUEST time against the freshest Silver/Gold (duckdb-serving), Redis-caches it, and lets a Gold rewrite bust
  * the cache — so a request reflects the medallion as of ~now, not the last cron.
  *
  * HOW IT STAYS CHEAP AND CORRECT:
  *   - Fronted by the ServingCacheReader (structural dep): brand-leading key, TTL, stampede-guarded
- *     getOrSet, fail-soft. So the expensive compute (4 detectors × Trino reads) runs at most ONCE per
+ *     getOrSet, fail-soft. So the expensive compute (4 detectors × serving reads) runs at most ONCE per
  *     brand per invalidation window; concurrent requests share the in-flight compute.
  *   - Event-driven invalidation is FREE: the cache key leads with brand_id, and the existing
  *     AnalyticsCacheInvalidateConsumer busts `${brandId}:*` on gold.rewritten.v1 — so the moment a

@@ -33,7 +33,7 @@ describe('B3 CustomerJourneyTimeline (1) /api/v1/customers/:brainId/journey', ()
     expect(parsed.state).toBe('has_data');
   });
 
-  it('accepts the Trino source with an ISO ts + a numeric journey_version + populated matched_via (AUD-JE-34)', () => {
+  it('accepts the serving source with an ISO ts + a numeric journey_version + populated matched_via (AUD-JE-34)', () => {
     const parsed = CustomerJourneyTimelineSchema.parse({
       state: 'has_data',
       brain_id: 'b1',
@@ -43,10 +43,10 @@ describe('B3 CustomerJourneyTimeline (1) /api/v1/customers/:brainId/journey', ()
       ],
       next_cursor: 'abc',
       journey_version: 2,
-      source: 'trino',
+      source: 'serving',
       data_source: 'live',
     });
-    expect(parsed.state === 'has_data' && parsed.source).toBe('trino');
+    expect(parsed.state === 'has_data' && parsed.source).toBe('serving');
     expect(parsed.state === 'has_data' && parsed.items[0]?.matched_via).toBe('order');
   });
 

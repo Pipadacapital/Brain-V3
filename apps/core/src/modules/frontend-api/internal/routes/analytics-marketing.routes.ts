@@ -429,7 +429,7 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
         return reply.code(403).send({ request_id: requestId, error: { code: 'NO_BRAND', message: 'No brand in session.' } });
       }
       if (!srPool) {
-        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (Trino) not available' } });
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Serving tier (duckdb-serving) not available' } });
       }
 
       const { metric } = request.params as { metric: string };

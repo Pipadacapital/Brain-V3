@@ -1,6 +1,6 @@
 /**
  * /cart-abandonment — cart-recovery surface (P2).
- * Reuses the useAbandonedCart hook (now backed by the Gold mart via the Trino
+ * Reuses the useAbandonedCart hook (now backed by the Gold mart via the
  * mv_gold_abandoned_cart serving view) — recovery-rate KPI, outcome table, and a
  * disabled honest "Send reminder" stub.
  */

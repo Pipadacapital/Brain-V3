@@ -1,10 +1,10 @@
 """
 _catalog.py — the shared DuckDB ⇄ Iceberg-REST-catalog seam (Spark→DuckDB migration).
 
-This is the DuckDB analogue of db/iceberg/spark/iceberg_base.py: the ONE place that
-wires a DuckDB connection to the SAME Iceberg REST catalog every Spark job uses, so a
-DuckDB job writes tables that Trino reads and Kafka Connect's Bronze lands into — one
-catalog, one warehouse, identical {catalog}.{namespace}.{table} identifiers.
+This began as the DuckDB analogue of the (now-deleted) db/iceberg/spark/iceberg_base.py:
+the ONE place that wires a DuckDB connection to the shared Iceberg REST catalog, so a
+DuckDB job writes tables that duckdb-serving reads and Kafka Connect's Bronze lands into
+— one catalog, one warehouse, identical {catalog}.{namespace}.{table} identifiers.
 
 Env parity with iceberg_base.py (intentionally the same variables):
   ICEBERG_CATALOG    catalog handle                      (default "rest")
@@ -54,13 +54,18 @@ def _strip_scheme(endpoint: str) -> tuple[str, bool]:
     return host, use_ssl
 
 
-def connect():
+def connect(read_only: bool = False):
     """
     Return a DuckDB connection attached to the Brain Iceberg REST catalog as `CATALOG`.
 
     The attached catalog exposes brain_bronze / brain_silver / brain_gold / brain_serving
     as schemas, so a job reads `rest.brain_bronze.<table>` and writes
     `rest.brain_silver.<table>` — the SAME identifiers Spark uses.
+
+    `read_only=True` (additive; duckdb-serving) appends READ_ONLY to the ATTACH options so
+    the catalog attach itself rejects writes (InvalidInputException on INSERT/DDL) — the
+    serving tier's defense-in-depth beneath its SELECT/WITH statement guard. Verified on
+    duckdb 1.5.4 (Phase-0 spike gate c). Transform jobs keep the default (read-write).
     """
     import duckdb  # imported lazily so the module imports even where duckdb isn't installed
 
@@ -109,7 +114,7 @@ def connect():
         )
 
     # REST-catalog attach. All writes commit as new Iceberg snapshots through this endpoint,
-    # so Trino + Kafka Connect see the same metadata.
+    # so duckdb-serving + Kafka Connect see the same metadata.
     #   ICEBERG_REST_AUTH: 'none'   → local iceberg-rest-fixture (no auth)   [default]
     #                      'sigv4'  → AWS-signed (e.g. S3 Tables / Glue REST in prod)
     #                      'oauth2' → token server (set ICEBERG_REST_TOKEN or client id/secret)
@@ -121,6 +126,8 @@ def connect():
         token = os.environ.get("ICEBERG_REST_TOKEN", "")
         if token:
             opts.append(f"TOKEN '{token}'")
+    if read_only:
+        opts.append("READ_ONLY")
     con.execute(f"ATTACH IF NOT EXISTS '{WAREHOUSE_NAME}' AS {CATALOG} ({', '.join(opts)});")
     return con
 

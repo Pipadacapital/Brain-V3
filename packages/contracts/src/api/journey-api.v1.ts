@@ -16,7 +16,7 @@
  *  - Schemas are NOT `.strict()` (§7): core may ADD a benign field without breaking a web read.
  *  - matched_via / journey_version are NULLABLE: matched_via (AUD-JE-34/35) is the B.4 coarse
  *    stitch-provenance basis ('order' | 'deterministic' | 'anonymous') — always populated on the
- *    Trino ledger/trace paths, honestly null ONLY on the A.4 timeline cache hot path (the cache
+ *    serving ledger/trace paths, honestly null ONLY on the A.4 timeline cache hot path (the cache
  *    member carries no provenance); journey_version is the DERIVED journey-level version
  *    (AMD-11 — max data_version), null on the pre-ledger cache path.
  */
@@ -25,10 +25,10 @@ import { DataSourceSchema } from './_money.js';
 
 // ── (1) GET /v1/customers/{brain_id}/journey — paginated newest-first timeline ──────────────
 // items {ts,type,channel,campaign?,url_path?,session_id,matched_via,journey_version}. Served from
-// the A.4 touchpoint cache (hot) with Trino ledger fallback (cold); `source` says which path served.
+// the A.4 touchpoint cache (hot) with serving-tier ledger fallback (cold); `source` says which path served.
 
 export const CustomerJourneyItemSchema = z.object({
-  /** Event timestamp — ISO-8601 string (Trino ledger) or epoch-ms number (cache). */
+  /** Event timestamp — ISO-8601 string (serving ledger) or epoch-ms number (cache). */
   ts: z.union([z.string(), z.number()]),
   type: z.string(),
   channel: z.string().nullable(),
@@ -37,7 +37,7 @@ export const CustomerJourneyItemSchema = z.object({
   session_id: z.string().nullable(),
   /**
    * Stitch provenance (AUD-JE-34) — the B.4 coarse basis ('order' | 'deterministic' | 'anonymous')
-   * on the Trino ledger path; NULL only on the A.4 cache hot path (no provenance in the cache member).
+   * on the serving ledger path; NULL only on the A.4 cache hot path (no provenance in the cache member).
    */
   matched_via: z.string().nullable(),
   /** Derived journey-level version (AMD-11 — max data_version); null on the cache path. */
@@ -55,8 +55,8 @@ export const CustomerJourneyTimelineSchema = z.discriminatedUnion('state', [
     next_cursor: z.string().nullable(),
     /** Derived journey-level version echoed for the X-Journey-Version header; null on cache path. */
     journey_version: z.number().nullable(),
-    /** Which serving path answered: the hot A.4 cache or the durable Trino ledger. */
-    source: z.enum(['cache', 'trino']),
+    /** Which serving path answered: the hot A.4 cache or the durable serving-tier ledger. */
+    source: z.enum(['cache', 'serving']),
     data_source: DataSourceSchema,
   }),
 ]);

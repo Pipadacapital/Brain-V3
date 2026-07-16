@@ -46,7 +46,7 @@ SILVER_DIR="$DUCK_DIR/silver"
 GOLD_DIR="$DUCK_DIR/gold"
 
 # The DuckDB interpreter. The migration venv (/tmp/duckvenv) carries duckdb 1.5.4 + splink + neo4j
-# + trino; a caller can override with PYTHON=… (e.g. a container python).
+# + pyiceberg; a caller can override with PYTHON=… (e.g. a container python).
 PYTHON="${PYTHON:-/tmp/duckvenv/bin/python}"
 command -v "$PYTHON" >/dev/null 2>&1 || PYTHON="python3"
 

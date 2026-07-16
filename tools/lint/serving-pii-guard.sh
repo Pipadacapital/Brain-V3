@@ -3,8 +3,8 @@
 # serving-pii-guard.sh — Brain serving-layer PII-projection lint (BLOCKING CI gate).
 #
 # ADR-0007 invariant D6: PII never reaches serving. The app/BFF/metric-engine read ONLY
-# the Trino serving views brain_serving.mv_* (db/trino/views/*.sql — thin projections over
-# the Iceberg Gold/Silver marts). This guard is defense-in-depth for that invariant: it
+# the duckdb-serving views brain_serving.mv_* (db/iceberg/duckdb/views/*.sql — thin projections
+# over the Iceberg Gold/Silver marts). This guard is defense-in-depth for that invariant: it
 # FAILS (exit 1) if any serving view PROJECTS an output column whose NAME matches a raw
 # PII pattern — email / phone / first_name / last_name / full_name / address — as an
 # underscore-delimited segment (so customer_email, billing_address, email … all flag).
@@ -22,14 +22,14 @@
 #   • Only PROJECTED output column names/aliases — the SELECT list. A raw-PII word in a
 #     WHERE/GROUP BY, a table name, or a source-column reference inside an aliased
 #     expression does NOT flag (it never reaches the serving output schema).
-#   • `--` comments are stripped before matching (same technique run-trino-views.sh uses
-#     to prep statements), so prose in view headers never flags.
+#   • `--` comments are stripped before matching (same technique the duckdb-serving view
+#     applier uses to prep statements), so prose in view headers never flags.
 #   • The parser is line-oriented, tuned to the thin-projection style of these views
 #     (SELECT, one column per line, FROM). That is CI-checkable here because serving
 #     views are REQUIRED to be thin projections (no compute, no inline subqueries).
 #
 # Usage:
-#   tools/lint/serving-pii-guard.sh          # scan db/trino/views/*.sql; exit 1 on any violation
+#   tools/lint/serving-pii-guard.sh          # scan db/iceberg/duckdb/views/*.sql; exit 1 on any violation
 #   VIEWS_DIR=path tools/lint/serving-pii-guard.sh   # scan a different views dir (self-test uses this)
 #
 # Self-test: tools/lint/serving-pii-guard-test.sh (fixture corpus; run by CI first).
@@ -39,7 +39,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-VIEWS_DIR="${VIEWS_DIR:-db/trino/views}"
+VIEWS_DIR="${VIEWS_DIR:-db/iceberg/duckdb/views}"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; RST=$'\033[0m'
 violations=0
@@ -71,7 +71,7 @@ flag() { # $1 rule  $2 file:line  $3 message
 # Strips `--` comments first (whole-line AND trailing), tracks SELECT…FROM ranges across lines
 # (handles WITH CTEs and multiple SELECTs), then resolves each SELECT-list item to its OUTPUT
 # name: the `AS alias` if present, else the last dotted component of a bare column reference.
-# Expressions without an alias have no projected name here and are skipped (Trino auto-names them).
+# Expressions without an alias have no projected name here and are skipped (the engine auto-names them).
 scan_view() { # $1 = file; writes violations via stdout
   awk '
     BEGIN {
@@ -121,7 +121,7 @@ scan_view() { # $1 = file; writes violations via stdout
     }
     {
       line = tolower($0)
-      sub(/--.*$/, "", line)          # strip -- comments (run-trino-views.sh technique + inline)
+      sub(/--.*$/, "", line)          # strip -- comments (view-applier technique + inline)
       # Walk the line: alternate between "in a SELECT list" and "past FROM" states.
       while (line != "") {
         if (!insel) {
@@ -172,7 +172,7 @@ done
 if [ "$violations" -gt 0 ]; then
   echo ""
   echo "${RED}serving-pii-guard FAILED: ${violations} raw-PII projection(s) in ${scanned} view file(s).${RST}"
-  echo "ADR-0007 D6: PII never reaches serving. The Trino serving views (brain_serving.mv_*) are the"
+  echo "ADR-0007 D6: PII never reaches serving. The duckdb-serving views (brain_serving.mv_*) are the"
   echo "ONLY surface the app/BFF/metric-engine read — they must project hashed/derived forms only"
   echo "(email_sha256, phone_sha256, *_hash, *_hashed, hashed_*, has_*, email_domain). Do NOT weaken"
   echo "the pattern; a reviewed exception goes in EXPLICIT_ALLOW with a WHY comment + TODO."

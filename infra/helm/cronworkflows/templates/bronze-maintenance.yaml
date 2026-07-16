@@ -1,10 +1,11 @@
 {{- /*
-Bronze MAINTENANCE CronWorkflows (was spark-bronze.yaml — Spark→DuckDB cutover).
+Bronze MAINTENANCE CronWorkflows (was spark-bronze.yaml — Spark→DuckDB cutover; Trino removed per
+ADR-0014).
 
-Iceberg is the SOLE Bronze system-of-record. Maintenance is now the Trino client that the brain-duckdb
-image carries: DuckDB can't run the Iceberg maintenance stored procedures, so these invoke
-`python /opt/brain/trino/<script>.py`, which runs `ALTER TABLE … EXECUTE optimize / expire_snapshots`
-against the SAME REST catalog + object store (trino_base.py). No spark-submit, no JVM.
+Iceberg is the SOLE Bronze system-of-record. Maintenance is the PyIceberg + DuckDB client that the
+brain-duckdb image carries: these invoke `python /opt/brain/duckdb/maintenance/<script>.py`, which
+runs the compaction (COW rewrite) + expire_snapshots (with the physical file sweep) against the
+SAME REST catalog + object store (_maintenance_base.py). No spark-submit, no JVM, no Trino.
 
 ADR-0010: Bronze LANDING is the Kafka Connect Iceberg sink (infra/helm/kafka-connect) — the sole
 landing writer. The former Spark-SS bronze-landing CronWorkflow was removed 2026-07-05; Connect keeps
@@ -23,8 +24,9 @@ Gated by .Values.sparkBronze.enabled (defaults true — both must run regardless
 Image MUST be pinned by digest (B3) — same fail-closed rule as the transform/maintenance templates.
 
 NOTE: the value block is still named `sparkBronze` (chart values compatibility — one image, minimal
-diff); it now carries the brain-duckdb image (Trino client) + the Trino-relevant knobs only (no
-executionMode / k8s / driverMemory — those were spark-submit-only and were removed in the cutover).
+diff); it now carries the brain-duckdb image (PyIceberg maintenance client) + the maintenance-relevant
+knobs only (no executionMode / k8s / driverMemory — those were spark-submit-only and were removed in
+the cutover).
 */ -}}
 {{- if .Values.sparkBronze.enabled }}
 {{- $img := .Values.sparkBronze.image -}}
@@ -84,7 +86,7 @@ spec:
           args:
             - |
               set -euo pipefail
-              exec python /opt/brain/trino/bronze_maintenance.py
+              exec python /opt/brain/duckdb/maintenance/bronze_maintenance.py
           env:
             - { name: MODE, value: "maintain" }
             {{- with .Values.sparkBronze.env }}
@@ -93,7 +95,7 @@ spec:
           {{- if $envFrom }}
           envFrom:
             - secretRef:
-                name: {{ $envFrom }}    # TRINO_HOST/PORT + ICEBERG_REST_URI + AWS_*
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* (REST catalog + S3 seams)
           {{- end }}
           resources:
             {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
@@ -143,7 +145,7 @@ spec:
           args:
             - |
               set -euo pipefail
-              exec python /opt/brain/trino/bronze_raw_retention.py
+              exec python /opt/brain/duckdb/maintenance/bronze_raw_retention.py
           env:
             {{- with .Values.sparkBronze.rawRetention.env }}
             {{- toYaml . | nindent 12 }}

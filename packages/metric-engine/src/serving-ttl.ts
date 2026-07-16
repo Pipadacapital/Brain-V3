@@ -1,7 +1,7 @@
 /**
  * @brain/metric-engine — per-dataset serving-cache TTL resolver.
  *
- * Previously EVERY cached serving read shared ONE global TTL (TRINO_SERVING_CACHE_TTL_MS, default 5 min).
+ * Previously EVERY cached serving read shared ONE global TTL (SERVING_CACHE_TTL_MS, default 5 min).
  * That is wrong for slow-moving datasets (cohorts/retention/monthly rollups barely change hour-to-hour)
  * and slightly risky for fast ones. This resolver maps each cached serving DATASET to a freshness TIER so
  * hot dashboards stay fresh while expensive-but-stable marts cache longer — the tiered-TTL model from the
@@ -61,7 +61,7 @@ export const METRIC_TTL_TIER: Readonly<Record<string, ServingTtlTier>> = {
   orders_list: 'executive',
   // AUD-IMPL-026: the Bronze operational health endpoints (data-health / tracking-health /
   // recent-events) full-scan the unprunable collector_events_connect lift view per request —
-  // brand_id/ingested_at/occurred_at are json_extract_scalar computed columns, so Trino gets no
+  // brand_id/ingested_at/occurred_at are json_extract_string computed columns, so the engine gets no
   // predicate pushdown and the scan cost grows with the forever-retained history. The 5-minute
   // executive tier bounds that to at most one scan per (brand, params) per 5 min; AUD-IMPL-025's
   // partition spec on the Bronze table is the longer-term pruning fix.

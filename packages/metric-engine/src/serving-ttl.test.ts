@@ -4,7 +4,7 @@
  * Contract under test:
  *   • a dataset id mapped in METRIC_TTL_TIER resolves to its tier's TTL;
  *   • an UNMAPPED id falls back to the caller's defaultMs (backward-compat with the
- *     historical single global TRINO_SERVING_CACHE_TTL_MS behavior);
+ *     historical single global SERVING_CACHE_TTL_MS behavior);
  *   • tierOverrides beat the built-in tier ms, but only when finite and > 0;
  *   • every METRIC_TTL_TIER value is a real tier (map integrity);
  *   • the map keys are the LIVE cache-key ids (adversarial-verify finding: a map keyed on

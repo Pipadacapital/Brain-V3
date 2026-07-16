@@ -23,13 +23,13 @@ import { Kafka } from 'kafkajs';
 
 import { createPool } from '@brain/db';
 import pg from 'pg';
-// Brain V4: serving runs over TRINO (Iceberg), not StarRocks — the srPool below is a Trino
-// adapter (createTrinoPool). mysql2 is no longer used in this composition root (the StarRocks
-// pool is gone); the background-job entrypoints that still read StarRocks keep their own mysql2
-// (Wave B repoints those to PG). The serving reads are fronted by the Redis analytics cache.
+// Brain V4: serving runs over duckdb-serving (DuckDB views over Iceberg; Trino removed,
+// ADR-0014) — the srPool below is the duckdb-serving HTTP adapter (createDuckDbServingPool).
+// mysql2 is no longer used in this composition root (the StarRocks pool is gone).
+// The serving reads are fronted by the Redis analytics cache.
 import {
-  createTrinoPool,
-  createPerBrandTrinoGate,
+  createDuckDbServingPool,
+  createPerBrandServingGate,
   createSemanticServingRouter,
   IoredisCacheAdapter,
   createServingCacheReader,
@@ -239,8 +239,9 @@ export async function main(): Promise<void> {
     kafkaEnv: process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev',
     // Webhook registration callback base URL (B2 / ADR-LV-5 — public URL in prod)
     webhookCallbackBaseUrl: getEnv('WEBHOOK_CALLBACK_BASE_URL', 'http://localhost:3001'),
-    // Brain V4: the Silver/Gold SERVING pool is the Trino HTTP adapter (createTrinoPool) built below
-    // from cfg.TRINO_HOST/TRINO_PORT — StarRocks is removed. No starrocks* fields here.
+    // Brain V4: the Silver/Gold SERVING pool is the duckdb-serving HTTP adapter
+    // (createDuckDbServingPool) built below from cfg.DUCKDB_SERVING_HOST/PORT — Trino and
+    // StarRocks are both removed. No starrocks*/trino* fields here.
   };
 
   // Typed config single-source-of-record (parsed once, frozen). Loaded AFTER the META/GOOGLE
@@ -443,59 +444,57 @@ export async function main(): Promise<void> {
     }
   });
 
-  // Silver/Gold SERVING pool — Brain V4 removes StarRocks; serving runs over TRINO (Iceberg).
-  // createTrinoPool is the stateless HTTP adapter over /v1/statement; catalog='iceberg' makes the
-  // metric SQL's two-part `brain_serving.mv_*` names resolve to the Trino serving views over Iceberg
-  // Gold/Silver. The ${BRAND_PREDICATE} injection at the withSilverBrand seam is the load-bearing
-  // per-brand isolation (Trino has no native row policy — proven non-inert by the isolation-fuzz test).
-  // The adapter satisfies @brain/metric-engine SilverPool (now an alias of the Trino query PORT).
-  const trinoPool: SilverPool = createTrinoPool({
-    baseUrl: `http://${cfg.TRINO_HOST}:${cfg.TRINO_PORT}`,
-    catalog: 'iceberg',
-    schema: 'brain_serving',
-    user: 'brain_core',
+  // Silver/Gold SERVING pool — Brain V4 removes Trino (ADR-0014); serving runs over the
+  // duckdb-serving tier (DuckDB attached read-only to the Iceberg REST catalog, local
+  // brain_serving views over the Gold/Silver marts). createDuckDbServingPool is the stateless
+  // HTTP adapter over POST /v1/query; the metric SQL's two-part `brain_serving.mv_*` names
+  // resolve to the replica-local serving views. The ${BRAND_PREDICATE} injection at the
+  // withSilverBrand seam is the load-bearing per-brand isolation (proven non-inert by the
+  // isolation-fuzz test). The adapter satisfies @brain/metric-engine SilverPool (the query PORT).
+  const servingPool: SilverPool = createDuckDbServingPool({
+    baseUrl: `http://${cfg.DUCKDB_SERVING_HOST}:${cfg.DUCKDB_SERVING_PORT}`,
   });
 
-  // ── SPEC: §1.11.3 / D.3 — per-brand Trino admission gate at the single serving chokepoint ──
+  // ── SPEC: §1.11.3 / D.3 — per-brand serving admission gate at the single serving chokepoint ──
   // Wrap the pool with a per-brand concurrency gate (max-concurrent + FIFO queue + acquire-timeout,
   // brand_id read from the LAST query param — the ${BRAND_PREDICATE} seam invariant). ADDITIVE +
   // DEFAULT-PERMISSIVE: normal load is untouched; a single brand's fan-out can no longer starve the
-  // shared coordinator (a full queue / timeout REJECTS fail-loud). This is a LIVENESS control, NOT
-  // the isolation mechanism — isolation stays the ${BRAND_PREDICATE} injection (isolation-fuzz test).
+  // shared serving replicas (a full queue / timeout REJECTS fail-loud). This is a LIVENESS control,
+  // NOT the isolation mechanism — isolation stays the ${BRAND_PREDICATE} injection (isolation-fuzz test).
   const srPool: SilverPool =
-    cfg.TRINO_BRAND_GATE_ENABLED === 'true'
-      ? createPerBrandTrinoGate(trinoPool, {
-          maxConcurrentPerBrand: cfg.TRINO_BRAND_GATE_MAX_CONCURRENT,
-          maxQueuePerBrand: cfg.TRINO_BRAND_GATE_MAX_QUEUE,
-          acquireTimeoutMs: cfg.TRINO_BRAND_GATE_ACQUIRE_TIMEOUT_MS,
+    cfg.SERVING_BRAND_GATE_ENABLED === 'true'
+      ? createPerBrandServingGate(servingPool, {
+          maxConcurrentPerBrand: cfg.SERVING_BRAND_GATE_MAX_CONCURRENT,
+          maxQueuePerBrand: cfg.SERVING_BRAND_GATE_MAX_QUEUE,
+          acquireTimeoutMs: cfg.SERVING_BRAND_GATE_ACQUIRE_TIMEOUT_MS,
         })
-      : trinoPool;
+      : servingPool;
   log.info(
-    `[core] per-brand Trino gate ${cfg.TRINO_BRAND_GATE_ENABLED === 'true' ? 'ENABLED' : 'disabled'} ` +
-      `(maxConcurrent=${cfg.TRINO_BRAND_GATE_MAX_CONCURRENT}, maxQueue=${cfg.TRINO_BRAND_GATE_MAX_QUEUE}, ` +
-      `acquireTimeoutMs=${cfg.TRINO_BRAND_GATE_ACQUIRE_TIMEOUT_MS})`,
+    `[core] per-brand serving gate ${cfg.SERVING_BRAND_GATE_ENABLED === 'true' ? 'ENABLED' : 'disabled'} ` +
+      `(maxConcurrent=${cfg.SERVING_BRAND_GATE_MAX_CONCURRENT}, maxQueue=${cfg.SERVING_BRAND_GATE_MAX_QUEUE}, ` +
+      `acquireTimeoutMs=${cfg.SERVING_BRAND_GATE_ACQUIRE_TIMEOUT_MS})`,
   );
 
   // ── Brain V4 serving cache (Redis-fronted hot serving reads) ─────────────────
   // Front the KNOWN-metric serving reads with the analytics cache (brand_id-leading keys,
   // stampede-guarded). Reuses the SINGLE shared ioredis client above — no second connection.
-  // Flag-gated: TRINO_SERVING_CACHE_ENABLED ('true'/'false') wins; UNSET defaults ON in prod,
-  // OFF in dev. Safe-OFF fallback = read Trino directly. Per-brand invalidation is handled by
-  // the stream-worker AnalyticsCacheInvalidateConsumer (cache.invalidate.v1) on each recompute.
+  // Flag-gated: SERVING_CACHE_ENABLED ('true'/'false') wins; UNSET defaults ON in prod,
+  // OFF in dev. Safe-OFF fallback = read the serving tier directly. Per-brand invalidation is
+  // handled by the stream-worker AnalyticsCacheInvalidateConsumer (cache.invalidate.v1) on each recompute.
   const servingCacheEnabled =
-    cfg.TRINO_SERVING_CACHE_ENABLED !== undefined
-      ? cfg.TRINO_SERVING_CACHE_ENABLED === 'true'
+    cfg.SERVING_CACHE_ENABLED !== undefined
+      ? cfg.SERVING_CACHE_ENABLED === 'true'
       : isProduction;
   const servingCache: ServingCacheReader = createServingCacheReader({
     // ioredis.Redis satisfies the RedisCacheClient structural port at runtime (get/set 'PX'/del),
     // but its overloaded `set` signature doesn't structurally unify with the minimal port — cast.
     cache: new IoredisCacheAdapter(redis as unknown as ConstructorParameters<typeof IoredisCacheAdapter>[0]),
     servingVersion: cfg.SERVING_VERSION,
-    ttlMs: cfg.TRINO_SERVING_CACHE_TTL_MS,
+    ttlMs: cfg.SERVING_CACHE_TTL_MS,
     enabled: servingCacheEnabled,
   });
   log.info(
-    `[core] serving cache ${servingCacheEnabled ? 'ENABLED' : 'disabled'} (Trino serving reads, ttl=${cfg.TRINO_SERVING_CACHE_TTL_MS}ms, version=${cfg.SERVING_VERSION})`,
+    `[core] serving cache ${servingCacheEnabled ? 'ENABLED' : 'disabled'} (duckdb-serving reads, ttl=${cfg.SERVING_CACHE_TTL_MS}ms, version=${cfg.SERVING_VERSION})`,
   );
 
   // ── SPEC: 0.5 — per-brand platform flags (Redis-backed, DEFAULT OFF, fail-closed) ──
@@ -891,7 +890,7 @@ export async function main(): Promise<void> {
     srPool,
     servingCache,
     // SPEC: B.3 / A.4 — the B.3 journey timeline reads the A.4 touchpoint zset from the SAME shared
-    // ioredis client (structural TouchpointZsetClient: zrevrange/zcard). Cold cache → Trino fallback.
+    // ioredis client (structural TouchpointZsetClient: zrevrange/zcard). Cold cache → serving fallback.
     touchpointCacheReader: redis as unknown as TouchpointZsetClient,
     rateLimiter,
     auditWriter,
@@ -958,8 +957,8 @@ export async function main(): Promise<void> {
     await webhookProducer.disconnect().catch(() => { /* ignore */ });
     await pool.end();
     await rawPgPool.end().catch(() => { /* ignore */ });
-    // srPool is the Trino HTTP adapter (createTrinoPool) — stateless REST, no persistent
-    // sockets, so there is nothing to .end() (unlike the former mysql2 StarRocks pool).
+    // srPool is the duckdb-serving HTTP adapter (createDuckDbServingPool) — stateless REST, no
+    // persistent sockets, so there is nothing to .end() (unlike the former mysql2 StarRocks pool).
     await redis.quit().catch(() => { /* ignore */ });
     // Flush buffered telemetry LAST so shutdown logs/spans are exported (C1).
     await shutdownObservability().catch(() => { /* ignore */ });

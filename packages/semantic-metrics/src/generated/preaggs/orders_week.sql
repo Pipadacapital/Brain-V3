@@ -17,6 +17,6 @@ SELECT
     date_trunc('week', conversion_at) AS period,
     channel,
     COUNT(DISTINCT order_id) AS order_count
-FROM iceberg.brain_serving.semantic_order
+FROM brain_serving.semantic_order
   WHERE conversion_at IS NOT NULL
 GROUP BY 1, 2, 3;

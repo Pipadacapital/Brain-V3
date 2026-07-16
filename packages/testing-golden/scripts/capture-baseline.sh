@@ -10,7 +10,7 @@
 #   (b) wait for the Kafka-Connect Iceberg Bronze landing (ADR-0010)  [poll brain_bronze.collector_events_connect]
 #       + wait for the stream-worker identity consumer to settle      [poll Neo4j golden Customer count]
 #   (c) run the refresh loop ONCE                                     [ONESHOT=1 pnpm dev:v4-refresh]
-#   (d) export snapshot CSVs of the key outputs per brand via Trino
+#   (d) export snapshot CSVs of the key outputs per brand via duckdb-serving
 #   (e) write sha256 checksums to snapshots/baseline/
 #
 # Determinism notes:
@@ -27,7 +27,7 @@
 #   ... --include-raw-lanes                                             # also produce shopify raw lane
 #   ... --events-dir <dir>                                              # reuse pre-generated JSONL
 #
-# Env: GOLDEN_TOPIC_PREFIX (default prod) · KAFKA_CONTAINER · TRINO_CONTAINER ·
+# Env: GOLDEN_TOPIC_PREFIX (default prod) · KAFKA_CONTAINER · DUCKDB_SERVING_URL ·
 #      PG_CONTAINER · NEO4J_CONTAINER · LANDING_TIMEOUT_S (900) · SKIP_IDENTITY_WAIT=1
 set -euo pipefail
 
@@ -37,7 +37,7 @@ REPO_ROOT="$(cd "$PKG_DIR/../.." && pwd)"
 
 TOPIC_PREFIX="${GOLDEN_TOPIC_PREFIX:-prod}"
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-brainv3-kafka-1}"
-TRINO_CONTAINER="${TRINO_CONTAINER:-brainv3-trino-1}"
+DUCKDB_SERVING_URL="${DUCKDB_SERVING_URL:-http://localhost:8091}"
 NEO4J_CONTAINER="${NEO4J_CONTAINER:-brainv3-neo4j-1}"
 LANDING_TIMEOUT_S="${LANDING_TIMEOUT_S:-900}"
 
@@ -70,13 +70,42 @@ mkdir -p "$OUT_DIR"
 ts() { date +%H:%M:%S; }
 log() { echo "[$(ts)] [capture-baseline] $*"; }
 
-trino_exec() { # $1 = sql → stdout rows
-  docker exec "$TRINO_CONTAINER" trino --server localhost:8080 --user brain \
-    --execute "$1" --output-format TSV 2>/dev/null
+# duckdb-serving HTTP client (POST /v1/query → {columns,data}), formatted as TSV rows or
+# CSV-with-header via python3 stdlib (urllib + csv — no curl quoting, no extra deps).
+serving_query() { # $1 = format (tsv|csv), $2 = sql → stdout
+  python3 - "$1" "$2" "$DUCKDB_SERVING_URL" <<'PY'
+import csv, json, sys, urllib.error, urllib.request
+fmt, sql, url = sys.argv[1], sys.argv[2], sys.argv[3]
+req = urllib.request.Request(
+    url + "/v1/query",
+    data=json.dumps({"sql": sql}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+try:
+    with urllib.request.urlopen(req) as resp:
+        body = json.load(resp)
+except urllib.error.HTTPError as e:  # surface the DuckDB message, not just the status
+    detail = e.read().decode(errors="replace")[:500]
+    sys.stderr.write(f"[serving-query] HTTP {e.code}: {detail}\n")
+    sys.exit(1)
+cols = [c["name"] for c in body.get("columns") or []]
+rows = body.get("data") or []
+cell = lambda v: "" if v is None else str(v)
+if fmt == "csv":
+    w = csv.writer(sys.stdout, lineterminator="\n")
+    w.writerow(cols)
+    for r in rows:
+        w.writerow([cell(v) for v in r])
+else:
+    for r in rows:
+        sys.stdout.write("\t".join(cell(v) for v in r) + "\n")
+PY
 }
-trino_csv() { # $1 = sql, $2 = out file
-  docker exec "$TRINO_CONTAINER" trino --server localhost:8080 --user brain \
-    --execute "$1" --output-format CSV_HEADER 2>/dev/null > "$2"
+serving_exec() { # $1 = sql → stdout TSV rows (no header)
+  serving_query tsv "$1"
+}
+serving_csv() { # $1 = sql, $2 = out file
+  serving_query csv "$1" > "$2"
 }
 
 # ── (0) seed golden brands ─────────────────────────────────────────────────────
@@ -120,7 +149,7 @@ if [ "$SKIP_PRODUCE" = "0" ]; then
   log "waiting for Bronze landing: >= $EXPECTED_COLLECTOR golden rows in brain_bronze.collector_events_connect (timeout ${LANDING_TIMEOUT_S}s)"
   DEADLINE=$(( $(date +%s) + LANDING_TIMEOUT_S ))
   while :; do
-    LANDED="$(trino_exec "SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect WHERE json_extract_scalar(payload, '\$.brand_id') IN (${BRANDS_SQL})" | tail -1 | tr -d '\"' || echo 0)"
+    LANDED="$(serving_exec "SELECT count(*) FROM iceberg.brain_bronze.collector_events_connect WHERE json_extract_string(payload, '\$.brand_id') IN (${BRANDS_SQL})" | tail -1 | tr -d '\"' || echo 0)"
     log "  landed=${LANDED:-0}/${EXPECTED_COLLECTOR}"
     if [ "${LANDED:-0}" -ge "$EXPECTED_COLLECTOR" ]; then break; fi
     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
@@ -165,7 +194,7 @@ log "running refresh loop ONESHOT (identity-export → Silver → stitch → Gol
 # `ingested_at >= wm` — so on a stack whose Silver target is already NON-empty (live brands), an
 # incremental run SKIPS every golden row and the exports below would snapshot an empty baseline.
 # Fail loudly with the remediation instead of writing a hollow snapshot.
-SILVER_GOLDEN="$(trino_exec "SELECT count(*) FROM iceberg.brain_silver.silver_collector_event WHERE brand_id IN (${BRANDS_SQL})" | tail -1 | tr -d '\"' || echo 0)"
+SILVER_GOLDEN="$(serving_exec "SELECT count(*) FROM iceberg.brain_silver.silver_collector_event WHERE brand_id IN (${BRANDS_SQL})" | tail -1 | tr -d '\"' || echo 0)"
 if [ "${SILVER_GOLDEN:-0}" -eq 0 ]; then
   cat >&2 <<'EOF'
 [capture-baseline] FATAL: refresh completed but silver_collector_event holds ZERO golden-brand rows.
@@ -190,7 +219,7 @@ declare -a EXPORT_NAMES=()
 export_table() { # $1=name $2=sql
   local out="$OUT_DIR/$1.csv"
   log "exporting $1"
-  if trino_csv "$2" "$out"; then
+  if serving_csv "$2" "$out"; then
     EXPORT_NAMES+=("$1")
   else
     echo "[capture-baseline] WARN: export $1 FAILED (table missing or query error)" >&2
@@ -199,7 +228,7 @@ export_table() { # $1=name $2=sql
 }
 
 export_table silver_collector_event "
-SELECT event_id, brand_id, to_iso8601(occurred_at) AS occurred_at, schema_name, schema_version,
+SELECT event_id, brand_id, strftime(occurred_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS occurred_at, schema_name, schema_version,
        event_type, correlation_id, partition_key, event_category, anonymous_id, device_id, payload
 FROM iceberg.brain_silver.silver_collector_event
 WHERE brand_id IN (${BRANDS_SQL})
@@ -208,7 +237,7 @@ ORDER BY brand_id, occurred_at, event_id"
 export_table silver_touchpoint "
 ${REF_CTE}
 SELECT t.brand_id, t.brain_anon_id, t.touch_seq, t.session_key, t.session_seq, t.is_first_touch,
-       t.is_last_touch, to_iso8601(t.occurred_at) AS occurred_at, t.event_type, t.channel,
+       t.is_last_touch, strftime(t.occurred_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS occurred_at, t.event_type, t.channel,
        t.utm_source, t.utm_medium, t.utm_campaign, t.utm_term, t.utm_content,
        t.fbclid, t.gclid, t.ttclid, t.msclkid, t.gbraid, t.wbraid, t.dclid,
        t.referrer_host, t.landing_path, t.page_type, t.product_handle, t.collection_handle,
@@ -224,8 +253,8 @@ export_table gold_revenue_ledger "
 ${REF_CTE}
 SELECT l.brand_id, l.ledger_event_id, l.order_id, coalesce(r.stable_ref, l.brain_id) AS brain_ref,
        l.event_type, l.amount_minor, l.currency_code, l.fee_minor,
-       to_iso8601(l.occurred_at) AS occurred_at,
-       to_iso8601(l.economic_effective_at) AS economic_effective_at,
+       strftime(l.occurred_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS occurred_at,
+       strftime(l.economic_effective_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS economic_effective_at,
        l.recognition_label, l.billing_posted_period, l.data_source
 FROM iceberg.brain_gold.gold_revenue_ledger l
 LEFT JOIN ref r ON r.brain_id = l.brain_id
@@ -236,8 +265,8 @@ export_table gold_attribution_credit "
 SELECT brand_id, credit_id, order_id, brain_anon_id, touch_seq, channel, campaign_id, model_id,
        row_kind, weight_fraction, credited_revenue_minor, currency_code, reversed_of_credit_id,
        reversal_reason, realized_revenue_minor, confidence_grade, attribution_confidence,
-       model_version, to_iso8601(occurred_at) AS occurred_at,
-       to_iso8601(economic_effective_at) AS economic_effective_at, billing_posted_period
+       model_version, strftime(occurred_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS occurred_at,
+       strftime(economic_effective_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS economic_effective_at, billing_posted_period
 FROM iceberg.brain_gold.gold_attribution_credit
 WHERE brand_id IN (${BRANDS_SQL})
 ORDER BY brand_id, order_id, model_id, touch_seq, credit_id"
@@ -246,10 +275,10 @@ export_table journey_events "
 ${REF_CTE}
 SELECT j.brand_id, coalesce(r.stable_ref, j.brain_id) AS brain_ref, j.touchpoint_id,
        j.source_event_ref, j.data_version, j.is_current, j.sequence_number,
-       to_iso8601(j.occurred_at) AS occurred_at, j.session_key, j.event_category, j.event_type,
+       strftime(j.occurred_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS occurred_at, j.session_key, j.event_category, j.event_type,
        j.channel, j.campaign, j.revenue_minor, j.currency_code,
-       json_format(cast(j.product_handles AS json)) AS product_handles,
-       json_format(cast(j.attribution_signals AS json)) AS attribution_signals,
+       CAST(to_json(j.product_handles) AS VARCHAR) AS product_handles,
+       CAST(to_json(j.attribution_signals) AS VARCHAR) AS attribution_signals,
        j.identity_confidence, j.is_composite, j.composite_order_key,
        coalesce(r2.stable_ref, j.brain_id_asof) AS brain_ref_asof, j.identity_confidence_asof
 FROM iceberg.brain_gold.journey_events j
@@ -262,10 +291,10 @@ export_table gold_customer_360 "
 ${REF_CTE}
 SELECT c.brand_id, coalesce(r.stable_ref, c.brain_id) AS brain_ref, c.lifetime_orders,
        c.lifetime_value_minor, c.aov_minor, c.currency_code,
-       to_iso8601(c.first_seen_at) AS first_seen_at,
-       to_iso8601(c.first_identified_at) AS first_identified_at,
-       to_iso8601(c.last_seen_at) AS last_seen_at,
-       to_iso8601(c.last_activity_at) AS last_activity_at,
+       strftime(c.first_seen_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS first_seen_at,
+       strftime(c.first_identified_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS first_identified_at,
+       strftime(c.last_seen_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS last_seen_at,
+       strftime(c.last_activity_at, '%Y-%m-%dT%H:%M:%S.%fZ') AS last_activity_at,
        c.delivered_orders, c.rto_orders, c.cancelled_orders, c.refunded_orders,
        c.preferred_channel, c.preferred_device, c.top_category, c.acquisition_source,
        c.health_band, c.churn_score, c.lifecycle_stage, c.journey_summary

@@ -8,20 +8,23 @@ Prometheus can alert when a dashboard goes stale (15m for executive marts, 1h fo
 customer-segment marts — thresholds enforced by infra/observe/alerts/freshness.rules.yml).
 
 WHY snapshot metadata (not a scheduler heartbeat): Iceberg is the system of record
-(CLAUDE.md). Every successful Spark Gold batch commits a new snapshot; its `committed_at`
-is the authoritative "last successful write" timestamp. We read it through Trino — the
-SOLE serving engine — exactly the way the app does, via the same `iceberg` catalog:
+(CLAUDE.md). Every successful Gold batch commits a new snapshot; its commit timestamp
+is the authoritative "last successful write" timestamp. We read it through duckdb-serving
+— the SOLE serving engine (ADR-0014) — exactly the way the app does, via the same
+`iceberg` catalog attach:
 
-    SELECT to_unixtime(max(committed_at))
-    FROM iceberg.brain_gold."gold_executive_metrics$snapshots"
+    SELECT epoch(max(timestamp_ms))
+    FROM iceberg_snapshots(iceberg.brain_gold."gold_executive_metrics")
 
-`to_unixtime` is done server-side so we never parse Trino's tz-literal strings. The
-metadata `$snapshots` table is part of every Iceberg table identifier in Trino.
+`epoch()` is done server-side (the serving session is pinned to UTC) so we never parse
+timestamp strings. `iceberg_snapshots()` is the DuckDB-Iceberg metadata table function —
+the analogue of Trino's `"<table>$snapshots"` — and accepts the attached-catalog
+identifier directly (verified against the live REST catalog).
 
 STACK: stdlib-only (urllib + http.server + threading). No pip install, no Dockerfile
 required — it runs as a plain `python3 freshness_exporter.py`. This mirrors the medallion's
-Python tooling (db/iceberg/spark/**) and the Trino HTTP REST flow already implemented in
-packages/metric-engine/src/trino-adapter.ts (POST /v1/statement → follow nextUri).
+Python tooling (db/iceberg/duckdb/**) and the single-POST /v1/query flow implemented in
+packages/metric-engine/src/duckdb-serving-adapter.ts (no /v1/statement polling, no nextUri).
 
 ANTI-FANTASY (matches the C2 doctrine in brain-slo.rules.yml): a metric that silently
 never fires is worse than no metric. So when a mart's snapshot query FAILS or returns NULL
@@ -30,15 +33,14 @@ never fires is worse than no metric. So when a mart's snapshot query FAILS or re
 too. The exporter's own liveness is `up` (Prometheus scrape) + `brain_data_freshness_up`.
 
 Env config (all optional, dev defaults shown):
-  FRESHNESS_TRINO_URL    Trino coordinator base URL          (default http://trino:8080)
-  FRESHNESS_TRINO_USER   X-Trino-User                        (default brain)
-  FRESHNESS_TRINO_CATALOG Trino catalog                      (default iceberg)
-  FRESHNESS_GOLD_SCHEMA  Iceberg Gold schema                 (default brain_gold)
-  FRESHNESS_LISTEN_ADDR  /metrics bind host                  (default 0.0.0.0)
-  FRESHNESS_LISTEN_PORT  /metrics bind port                  (default 9095)
-  FRESHNESS_REFRESH_SEC  background refresh interval seconds  (default 60)
-  FRESHNESS_QUERY_TIMEOUT_SEC  per-HTTP-hop timeout          (default 20)
-  FRESHNESS_MARTS_FILE   path to a JSON registry override    (default: built-in DEFAULT_MARTS)
+  FRESHNESS_SERVING_URL     duckdb-serving base URL             (default http://duckdb-serving:8091)
+  FRESHNESS_ICEBERG_CATALOG attached Iceberg catalog name       (default iceberg)
+  FRESHNESS_GOLD_SCHEMA     Iceberg Gold schema                 (default brain_gold)
+  FRESHNESS_LISTEN_ADDR     /metrics bind host                  (default 0.0.0.0)
+  FRESHNESS_LISTEN_PORT     /metrics bind port                  (default 9095)
+  FRESHNESS_REFRESH_SEC     background refresh interval seconds  (default 60)
+  FRESHNESS_QUERY_TIMEOUT_SEC  per-HTTP-request timeout          (default 20)
+  FRESHNESS_MARTS_FILE      path to a JSON registry override    (default: built-in DEFAULT_MARTS)
 
 JSON registry override format (FRESHNESS_MARTS_FILE):
   [ {"mart": "gold_executive_metrics", "sla_class": "executive"},
@@ -61,7 +63,7 @@ from typing import Any, Optional
 # ── Mart registry ───────────────────────────────────────────────────────────────
 # sla_class drives the alert threshold in freshness.rules.yml:
 #   executive → 900s (15m)   |   segment → 3600s (1h)
-# Grounded in the Spark Gold marts (db/iceberg/spark/gold/*.py) that back the
+# Grounded in the DuckDB Gold marts (db/iceberg/duckdb/gold/*.py) that back the
 # executive dashboard and the customer-segment surfaces.
 DEFAULT_MARTS: list[dict[str, str]] = [
     # ── Executive dashboard marts (15-minute SLA) ──
@@ -87,15 +89,13 @@ def _env(name: str, default: str) -> str:
     return v if v is not None and v != "" else default
 
 
-TRINO_URL = _env("FRESHNESS_TRINO_URL", "http://trino:8080").rstrip("/")
-TRINO_USER = _env("FRESHNESS_TRINO_USER", "brain")
-TRINO_CATALOG = _env("FRESHNESS_TRINO_CATALOG", "iceberg")
+SERVING_URL = _env("FRESHNESS_SERVING_URL", "http://duckdb-serving:8091").rstrip("/")
+ICEBERG_CATALOG = _env("FRESHNESS_ICEBERG_CATALOG", "iceberg")
 GOLD_SCHEMA = _env("FRESHNESS_GOLD_SCHEMA", "brain_gold")
 LISTEN_ADDR = _env("FRESHNESS_LISTEN_ADDR", "0.0.0.0")
 LISTEN_PORT = int(_env("FRESHNESS_LISTEN_PORT", "9095"))
 REFRESH_SEC = int(_env("FRESHNESS_REFRESH_SEC", "60"))
 QUERY_TIMEOUT_SEC = int(_env("FRESHNESS_QUERY_TIMEOUT_SEC", "20"))
-MAX_POLLS = 600  # mirrors trino-adapter.ts default
 
 
 def _load_marts() -> list[dict[str, str]]:
@@ -120,37 +120,30 @@ def _load_marts() -> list[dict[str, str]]:
     return out
 
 
-# ── Trino HTTP REST client (stdlib) ───────────────────────────────────────────────
-# Mirrors packages/metric-engine/src/trino-adapter.ts: POST /v1/statement, then follow
-# nextUri (GET) until it is absent, accumulating data pages.
-def _trino_request(url: str, method: str, body: Optional[bytes]) -> dict[str, Any]:
-    headers = {
-        "X-Trino-User": TRINO_USER,
-        "X-Trino-Catalog": TRINO_CATALOG,
-        "X-Trino-Schema": GOLD_SCHEMA,
-    }
-    if method == "POST":
-        headers["Content-Type"] = "text/plain"
-    req = urllib.request.Request(url, data=body, method=method, headers=headers)
-    with urllib.request.urlopen(req, timeout=QUERY_TIMEOUT_SEC) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def trino_query_scalar(sql: str) -> Optional[float]:
+# ── duckdb-serving HTTP client (stdlib) ───────────────────────────────────────────
+# Mirrors packages/metric-engine/src/duckdb-serving-adapter.ts: a SINGLE
+# POST /v1/query {"sql": ...} → {"columns": [...], "data": [[...]]} round-trip
+# (no polling). Errors arrive as non-200 with {"error": {"message": ...}}.
+def serving_query_scalar(sql: str) -> Optional[float]:
     """Run a single-column/single-row query, returning the scalar as float or None."""
-    resp = _trino_request(f"{TRINO_URL}/v1/statement", "POST", sql.encode("utf-8"))
-    rows: list[list[Any]] = list(resp.get("data") or [])
-    polls = 0
-    while resp.get("nextUri") and polls < MAX_POLLS:
-        resp = _trino_request(resp["nextUri"], "GET", None)
-        if resp.get("data"):
-            rows.extend(resp["data"])
-        polls += 1
-    err = resp.get("error")
-    if err:
-        raise RuntimeError(
-            f"trino error (code {err.get('errorCode')}): {err.get('message')}"
-        )
+    req = urllib.request.Request(
+        f"{SERVING_URL}/v1/query",
+        data=json.dumps({"sql": sql}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=QUERY_TIMEOUT_SEC) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # Surface the engine's honest error message (400/503/504/500 all carry one).
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        try:
+            detail = json.loads(detail).get("error", {}).get("message", detail)
+        except (ValueError, AttributeError):
+            pass
+        raise RuntimeError(f"duckdb-serving error (HTTP {exc.code}): {detail}") from exc
+    rows: list[list[Any]] = list(body.get("data") or [])
     if not rows or rows[0] is None or rows[0][0] is None:
         return None
     return float(rows[0][0])
@@ -158,13 +151,14 @@ def trino_query_scalar(sql: str) -> Optional[float]:
 
 def fetch_latest_snapshot_epoch(schema: str, mart: str) -> Optional[float]:
     """Latest successful Iceberg snapshot commit time (epoch seconds) for a Gold mart."""
-    # mart/schema come from a trusted registry, never user input (see trino-adapter.ts
-    # INVARIANT). Quote the table identifier so the `$snapshots` metadata suffix parses.
+    # mart/schema come from a trusted registry, never user input (see the
+    # duckdb-serving-adapter.ts INVARIANT). Quote the table identifier so reserved
+    # words / dashes in mart names parse; epoch() is UTC-safe (serving session is UTC).
     sql = (
-        f'SELECT to_unixtime(max(committed_at)) '
-        f'FROM {TRINO_CATALOG}.{schema}."{mart}$snapshots"'
+        f'SELECT epoch(max(timestamp_ms)) '
+        f'FROM iceberg_snapshots({ICEBERG_CATALOG}.{schema}."{mart}")'
     )
-    return trino_query_scalar(sql)
+    return serving_query_scalar(sql)
 
 
 # ── Metric state ──────────────────────────────────────────────────────────────────
@@ -216,7 +210,7 @@ def refresh_once(marts: list[dict[str, str]]) -> None:
         STATE.last_scrape_duration = time.time() - start
         STATE.last_scrape_unixtime = time.time()
         STATE.scrape_total += 1
-        # exporter_up reflects Trino reachability: at least one mart query succeeded.
+        # exporter_up reflects duckdb-serving reachability: at least one mart query succeeded.
         STATE.exporter_up = 1 if any_ok else 0
 
 
@@ -299,8 +293,8 @@ def render_metrics() -> str:
     lines.append(f"brain_data_freshness_scrape_total {scrape_total}")
 
     lines.append(
-        "# HELP brain_data_freshness_up 1 if the exporter reached Trino on the last scrape "
-        "(>=1 mart query succeeded), else 0."
+        "# HELP brain_data_freshness_up 1 if the exporter reached duckdb-serving on the last "
+        "scrape (>=1 mart query succeeded), else 0."
     )
     lines.append("# TYPE brain_data_freshness_up gauge")
     lines.append(f"brain_data_freshness_up {exporter_up}")
@@ -344,7 +338,7 @@ def main() -> int:
         return 0
 
     sys.stderr.write(
-        f"[freshness-exporter] trino={TRINO_URL} catalog={TRINO_CATALOG} "
+        f"[freshness-exporter] serving={SERVING_URL} catalog={ICEBERG_CATALOG} "
         f"schema={GOLD_SCHEMA} marts={len(marts)} listen={LISTEN_ADDR}:{LISTEN_PORT} "
         f"refresh={REFRESH_SEC}s\n"
     )

@@ -12,7 +12,7 @@
  *   (a) OFFSET-level — the Connect sink's commit coordination over the `control-iceberg` topic makes
  *       a re-delivery of the exact same (topic, partition, offset) after a connector restart land
  *       zero extra rows. Not drivable from a test (we cannot replay a committed offset from here).
- *   (b) BUSINESS-level — the Silver admission gate (db/iceberg/spark/silver/silver_collector_event.py)
+ *   (b) BUSINESS-level — the Silver admission gate (db/iceberg/duckdb/silver/silver_collector_event.py)
  *       collapses all Bronze copies of a (brand_id, event_id) via its window (row_number over
  *       brand_id,event_id) + MERGE: exactly ONE row per (brand_id, event_id) in
  *       iceberg.brain_silver.silver_collector_event. THAT is the dedup SoR every downstream
@@ -24,7 +24,7 @@
  *   (count >= 2 per event_id — append-only, no Bronze dedup) → then assert Silver holds EXACTLY ONE
  *   row per event_id.
  *
- * SILVER CAVEAT: silver_collector_event only advances when the Silver Spark job runs (the
+ * SILVER CAVEAT: silver_collector_event only advances when the Silver DuckDB job runs (the
  * v4-refresh loop / ONESHOT), which this test cannot invoke. So the Silver assertion is
  * CONDITIONAL: by default it makes one bounded opportunistic poll — if NO Silver rows for these
  * event_ids are visible (the job hasn't run since the produce), it logs a warning and skips the
@@ -36,32 +36,33 @@
  * R2/R3 gate (that gate is covered by ingest-hardening.e2e.test.ts — and under ADR-0010 it lives in
  * the Silver admission, not in front of Bronze).
  *
- * Bronze is read over Trino through the ADR-0010 lift view
- * `iceberg.brain_bronze.collector_events_connect_lifted` (the raw connect table is payload + kafka
+ * Bronze is read over the serving tier through the ADR-0010 lift view
+ * `brain_bronze.collector_events_connect_lifted` (the raw connect table is payload + kafka
  * coords only; the view lifts event_id/brand_id). The Connect sink commits on a ~30s interval, so
  * Bronze polls tolerate 30-60s+ latency.
  *
  * REQUIRES the `lakehouse` docker profile (Kafka KRaft + kafka-connect + Iceberg REST + MinIO +
- * Trino on :8090). The suite self-skips (SKIP_IF_NO_LAKEHOUSE) when the stack is not up — the
+ * duckdb-serving on :8091). The suite self-skips (SKIP_IF_NO_LAKEHOUSE) when the stack is not up — the
  * operator runs it live; CI does not.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
-import { createTrinoPool, type SilverPool } from '@brain/metric-engine';
+import { createDuckDbServingPool, type SilverPool } from '@brain/metric-engine';
 import { produceCollectorEvent, KAFKA_BROKERS, type CollectorEnvelope } from './helpers/iceberg-bronze.js';
 
 const EVENT_NAME = 'order.live.v1'; // SERVER_TRUSTED lane — no pixel R2/R3 gate at Silver admission
 const BRAND_A = '33333333-3333-4333-8333-333333333333'; // dedup-suite-specific brand (avoids cross-suite collisions)
 const N = 5; // number of distinct known event_ids to round-trip
 
-const TRINO_URL =
-  process.env['TRINO_URL'] ??
-  `http://${process.env['TRINO_HOST'] ?? '127.0.0.1'}:${process.env['TRINO_PORT'] ?? '8090'}`;
-const TRINO_USER = process.env['TRINO_USER'] ?? 'brain';
-// ADR-0010 Bronze read target: the Trino lift view over the Kafka Connect collector table (the raw
+const SERVING_URL =
+  process.env['DUCKDB_SERVING_URL'] ??
+  `http://${process.env['DUCKDB_SERVING_HOST'] ?? '127.0.0.1'}:${process.env['DUCKDB_SERVING_PORT'] ?? '8091'}`;
+// ADR-0010 Bronze read target: the lift view over the Kafka Connect collector table (the raw
 // table is payload + kafka coords only; the view lifts the event_id/brand_id these polls filter on).
-const BRONZE_TABLE = 'iceberg.brain_bronze.collector_events_connect_lifted';
+// TWO-PART name — resolves to the replica-LOCAL lift view on duckdb-serving
+// (a 3-part iceberg.* name would bypass the local view and hit the raw catalog table).
+const BRONZE_TABLE = 'brain_bronze.collector_events_connect_lifted';
 // The business-level dedup SoR: one row per (brand_id, event_id) after the Silver admission MERGE.
 const SILVER_TABLE = 'iceberg.brain_silver.silver_collector_event';
 // The running Connect sink consumes the env-PREFIXED topic; the local-prod stack uses `prod.`
@@ -73,7 +74,7 @@ const COLLECTOR_TOPIC = process.env['COLLECTOR_TOPIC'] ?? 'prod.collector.event.
 const SILVER_ASSERT_BLOCKING = process.env['DEDUP_SILVER_ASSERT'] === '1';
 
 let producer: Producer;
-let trino: SilverPool;
+let serving: SilverPool;
 let infraUp = false;
 
 function makeEnvelope(eventId: string, brandId: string): CollectorEnvelope {
@@ -97,8 +98,9 @@ function makeEnvelope(eventId: string, brandId: string): CollectorEnvelope {
 }
 
 /**
- * Poll a table over Trino until EVERY given event_id has at least `minPerId` rows, then return the
- * per-event_id row count map (last-seen counts at timeout). Trino reads Iceberg snapshots directly —
+ * Poll a table over duckdb-serving until EVERY given event_id has at least `minPerId` rows, then return
+ * the per-event_id row count map (last-seen counts at timeout). The replica reads Iceberg snapshots
+ * fresh on plain re-query —
  * no cache-bust needed; rows become visible on the first snapshot after the Connect sink's ~30s
  * commit, so Bronze polls use generous timeouts.
  */
@@ -119,7 +121,7 @@ async function pollCountsByEventId(
 
   let counts = new Map<string, number>();
   for (;;) {
-    const rows = await trino.query<{ event_id: string; c: number | string }>(sql, params);
+    const rows = await serving.query<{ event_id: string; c: number | string }>(sql, params);
     counts = new Map(rows.map((r) => [String(r.event_id), Number(r.c)]));
     const satisfied =
       counts.size >= eventIds.length && eventIds.every((id) => (counts.get(id) ?? 0) >= minPerId);
@@ -131,9 +133,9 @@ async function pollCountsByEventId(
 
 beforeAll(async () => {
   try {
-    trino = createTrinoPool({ baseUrl: TRINO_URL, user: TRINO_USER, catalog: 'iceberg' });
-    // Probe the exact read path the assertions use — if Bronze isn't reachable over Trino, skip.
-    await trino.query(`SELECT 1 FROM ${BRONZE_TABLE} LIMIT 1`);
+    serving = createDuckDbServingPool({ baseUrl: SERVING_URL });
+    // Probe the exact read path the assertions use — if Bronze isn't reachable over serving, skip.
+    await serving.query(`SELECT 1 FROM ${BRONZE_TABLE} LIMIT 1`);
     const kafka = new Kafka({ clientId: 'bronze-dedup-e2e-producer', brokers: KAFKA_BROKERS, retry: { retries: 3 } });
     producer = kafka.producer();
     await producer.connect();
@@ -145,12 +147,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await producer?.disconnect?.().catch(() => {});
-  // The Trino pool is a stateless HTTP adapter — no connection to close.
+  // The serving pool is a stateless HTTP adapter — no connection to close.
 });
 
 describe('Effectively-once (ADR-0010): append-only Bronze + Silver (brand_id,event_id) MERGE', () => {
   it('SKIP_IF_NO_LAKEHOUSE', () => {
-    if (!infraUp) console.warn('[bronze-dedup.e2e] lakehouse/Trino unavailable — PENDING.');
+    if (!infraUp) console.warn('[bronze-dedup.e2e] lakehouse/duckdb-serving unavailable — PENDING.');
     expect(true).toBe(true);
   });
 

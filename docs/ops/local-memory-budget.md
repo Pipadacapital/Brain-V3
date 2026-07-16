@@ -1,13 +1,14 @@
 # Local memory budget — the OOM-prevention contract
 
-Recurring OOMs (Trino killed, Spark `silver-collector-event` killed) had **two distinct
-root causes**. This doc is the single source of truth for both so we stop playing whack-a-mole.
+Recurring OOMs (the then-serving Trino killed, Spark `silver-collector-event` killed — both
+engines since removed, but the failure classes outlive them) had **two distinct root causes**.
+This doc is the single source of truth for both so we stop playing whack-a-mole.
 
 ## The two OOM types (they need different fixes)
 
 | Symptom | Type | Cause | Fix |
 |---|---|---|---|
-| `OutOfMemoryError: Java heap space` (process keeps running / job aborts) | **JVM heap OOM** | the process's own `-Xmx` is too small for the data | raise that process's heap (`--driver-memory`, Trino `MaxRAMPercentage`, etc.) |
+| `OutOfMemoryError: Java heap space` / DuckDB "Out of Memory" error (process keeps running / job aborts) | **in-process memory ceiling** | the process's own heap/`memory_limit` is too small for the data | raise that process's ceiling (`KAFKA_HEAP_OPTS`, `DUCKDB_SERVING_MEMORY_LIMIT`, etc.) |
 | container `exit 137`, `OOMKilled=true` | **container OOM-kill** | total Docker-VM memory pressure → kernel kills the biggest container | bound every container + give the VM headroom |
 
 Raising the Docker VM does **nothing** for a JVM heap OOM. Raising a process's `-Xmx`
@@ -17,7 +18,8 @@ does **nothing** for VM pressure. You must keep both levers tuned.
 
 The Mac has **48 GB** physical; the Docker VM must be **≥ 32 GB** (Docker Desktop →
 Settings → Resources → Memory). At the old 23.4 GB the steady stack (~20 GB) + one
-transform job (~5 GB) = ~25 GB overflowed the VM and the kernel OOM-killed Trino.
+transform job (~5 GB) = ~25 GB overflowed the VM and the kernel OOM-killed the
+(then-)serving engine.
 
 ## Lever 2 — per-container caps (defense-in-depth; stop any one runaway)
 
@@ -28,7 +30,7 @@ running container is bounded** — nothing is left unbounded anymore.
 
 | Service | Cap | Internal heap |
 |---|---|---|
-| trino | 7g | jvm.config `MaxRAMPercentage=70` → ~4.9g |
+| duckdb-serving (replaced trino 7g — ADR-0014, no JVM) | 4g | `DUCKDB_SERVING_MEMORY_LIMIT=3GB` DuckDB in-process cap + spill `temp_directory`; `oom_score_adj: -700` — serving-critical, a pathological query 504s instead of OOMing |
 | kafka-connect (compose service — the sole Bronze landing writer, ADR-0010; the old 7g host Spark sink `bronze_landing.py` / `dev-bronze-streaming.sh` is REMOVED, cutover 2026-07-05) | 2g (`mem_limit`) | `KAFKA_HEAP_OPTS -Xms256M -Xmx1G`; `oom_score_adj: -600` — ingest-critical, protected (AUD-LOCAL-003) |
 | Spark transform jobs (ephemeral `docker run` via `db/iceberg/spark/run-*.sh`) | 7g (`SPARK_CONTAINER_MEMORY`) | `--driver-memory 4g`; `--oom-score-adj +100` (`SPARK_CONTAINER_OOM_SCORE_ADJ`) — retried by the loop, deliberately die FIRST (AUD-LOCAL-003) |
 | minio | 5g | `GOMEMLIMIT=4500MiB` (soft GC ceiling) |
@@ -70,14 +72,15 @@ OOM→restart→re-drain amplification loop cannot occur.
 
 ## Peak-load math (32 GB VM)
 
-Steady (no refresh), realistic usage: trino ~5g + kafka-connect ~1.2g + minio ~4.4g +
-kafka ~1.1g + neo4j ~1g + small services ~1.5g ≈ **~14 GB**. During a refresh the
-loop runs its transforms strictly sequentially, so ONE transform job adds ~5 GB →
-**~19 GB**, leaving ~13 GB headroom on a 32 GB VM. Sum of all hard caps (compose
-~20.7g incl. kafka-connect 2g + one transform 7g ≈ 27.7g) intentionally exceeds
-realistic usage — caps exist to kill a single runaway before it creates VM-wide
-pressure, not to add up to the VM size. (Net swing of the ADR-0010 cutover: −7g
-host Spark sink, +2g kafka-connect.)
+Steady (no refresh), realistic usage: duckdb-serving ~2g + kafka-connect ~1.2g +
+minio ~4.4g + kafka ~1.1g + neo4j ~1g + small services ~1.5g ≈ **~11 GB**. During a
+refresh the loop runs its transforms strictly sequentially, so ONE transform job adds
+~5 GB → **~16 GB**, leaving ~16 GB headroom on a 32 GB VM. Sum of all hard caps
+(compose ~17.7g incl. kafka-connect 2g + one transform 7g ≈ 24.7g) intentionally
+exceeds realistic usage — caps exist to kill a single runaway before it creates
+VM-wide pressure, not to add up to the VM size. (Net swing of the ADR-0010 cutover:
+−7g host Spark sink, +2g kafka-connect; of the ADR-0014 cutover: trino 7g →
+duckdb-serving 4g.)
 
 ## Incremental processing — the grain-safety rule (correctness, not just memory)
 
@@ -107,5 +110,5 @@ reprocess each entity's FULL history. That's a separate, careful enhancement —
    with no 137 = JVM heap OOM (Lever 3).
 2. Container-kill → check `docker stats` for the VM total vs sum of usage; raise the
    VM or the offending cap.
-3. Heap OOM → raise that process's heap (`SPARK_DRIVER_MEMORY`, the kafka-connect
-   `KAFKA_HEAP_OPTS`, or trino `db/trino/jvm.config`).
+3. In-process ceiling → raise that process's cap (`SPARK_DRIVER_MEMORY`, the kafka-connect
+   `KAFKA_HEAP_OPTS`, or the serving `DUCKDB_SERVING_MEMORY_LIMIT` in docker-compose.yml).

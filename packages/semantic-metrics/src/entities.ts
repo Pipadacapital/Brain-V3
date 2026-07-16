@@ -5,8 +5,11 @@
  * Maps each Wave-D.1 semantic ENTITY to its physical Iceberg serving object and records the two
  * facts the compiler needs to compile a metric onto it SAFELY:
  *
- *  1. `table` — the physical Trino object the metric×grain view reads FROM (the D.1 semantic_* views
- *     under iceberg.brain_serving; see db/trino/views/semantic_*.sql).
+ *  1. `table` — the physical serving object the metric×grain view reads FROM (the D.1 semantic_*
+ *     views, applied into duckdb-serving's LOCAL brain_serving schema; see
+ *     db/iceberg/duckdb/views/semantic_*.sql). TWO-PART names: local views shadow the attached
+ *     `iceberg` catalog's namespace, so `brain_serving.semantic_*` resolves to the local view on
+ *     every serving replica AND in the transform-tier pre-agg refresh job.
  *
  *  2. How this entity satisfies the §1.4 attribution-truth invariant for a `deterministic_only`
  *     metric — the compiler must be able to PROVE probabilistic-identity rows are excluded:
@@ -19,10 +22,10 @@
  *     A `deterministic_only` metric on an entity that is NEITHER → the compiler FAILS CLOSED
  *     (it cannot prove the exclusion, so it refuses to emit SQL).
  *
- * Tenancy (AMD-07 D3): Trino REST has NO row policy. Every compiled view embeds the literal
- * `${BRAND_PREDICATE}` sentinel (BRAND_PREDICATE below) in its WHERE — the serving seam
- * (withTrinoBrand) replaces it with `brand_id = ?`. The predicate is BAKED IN by the compiler
- * (compile-time), never added ad-hoc by a caller.
+ * Tenancy (AMD-07 D3): the serving engine has NO row policy. Every compiled view embeds the
+ * literal `${BRAND_PREDICATE}` sentinel (BRAND_PREDICATE below) in its WHERE — the serving seam
+ * replaces it with `brand_id = ?`. The predicate is BAKED IN by the compiler (compile-time),
+ * never added ad-hoc by a caller.
  *
  * @see knowledge-base/PLAN-OF-RECORD.md §D.1 (entities) · §D.2 (registry) · §1.4 (attribution truth)
  * @see knowledge-base/amendments/AMD-07-identity-map-bitemporality.md (D3 tenancy = ${BRAND_PREDICATE})
@@ -40,7 +43,7 @@ export const BRAND_PREDICATE = '${BRAND_PREDICATE}';
 
 /** The physical resolution + §1.4 basis metadata for one semantic entity. */
 export interface EntityBinding {
-  /** The physical Trino serving object the compiled view reads FROM. */
+  /** The physical serving object the compiled view reads FROM (two-part local-view name). */
   readonly table: string;
   /** A PHYSICAL identity_basis column, or null when basis is guaranteed by construction. */
   readonly identityBasisColumn: 'identity_basis' | null;
@@ -54,35 +57,35 @@ export interface EntityBinding {
 
 export const ENTITY_BINDINGS: Record<SemanticEntity, EntityBinding> = {
   semantic_customer: {
-    table: 'iceberg.brain_serving.semantic_customer',
+    table: 'brain_serving.semantic_customer',
     identityBasisColumn: 'identity_basis',
     deterministicByConstruction: true,
     hasCurrency: true,
     note: 'gold_customer_360 spine (deterministic) + identity_current_v summary + RFM scores.',
   },
   semantic_order: {
-    table: 'iceberg.brain_serving.semantic_order',
+    table: 'brain_serving.semantic_order',
     identityBasisColumn: null,
     deterministicByConstruction: true,
     hasCurrency: true,
     note: 'silver_order_state ⋈ gold_order_economics — deterministic order spine (§1.4); no probabilistic rows reach it.',
   },
   semantic_product: {
-    table: 'iceberg.brain_serving.semantic_product',
+    table: 'brain_serving.semantic_product',
     identityBasisColumn: null,
     deterministicByConstruction: true,
     hasCurrency: true,
     note: 'gold_product_detail + gold_product_economics — catalog/performance facts (no identity axis).',
   },
   semantic_campaign: {
-    table: 'iceberg.brain_serving.semantic_campaign',
+    table: 'brain_serving.semantic_campaign',
     identityBasisColumn: null,
     deterministicByConstruction: true,
     hasCurrency: true,
     note: 'gold_campaign_performance ⋈ gold_campaign_attribution — deterministic attribution ledger only (§1.4). No time axis (AMD-25).',
   },
   semantic_journey: {
-    table: 'iceberg.brain_serving.semantic_journey',
+    table: 'brain_serving.semantic_journey',
     identityBasisColumn: 'identity_basis',
     deterministicByConstruction: true,
     hasCurrency: true,

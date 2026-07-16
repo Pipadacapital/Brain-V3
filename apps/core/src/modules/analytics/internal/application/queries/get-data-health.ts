@@ -89,13 +89,13 @@ async function readBronzeIceberg(
           `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
         ),
       ),
-      // Per-day volume over the bounded window. Trino date_trunc + interval math; the brand predicate
+      // Per-day volume over the bounded window. date_trunc + interval math; the brand predicate
       // is appended by the seam. VOLUME_WINDOW_DAYS is a constant, never user-interpolated.
       withSilverBrand(srPool, brandId, (scope) =>
         scope.runScoped<{ bucket: Date | string; count: number | string }>(
           `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count
              FROM ${ICEBERG_BRONZE}
-            WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
+            WHERE occurred_at >= (now() - INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
             GROUP BY 1 ORDER BY 1 ASC`,
         ),
       ),

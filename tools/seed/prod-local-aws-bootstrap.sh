@@ -94,7 +94,7 @@ seed_json_secret brain/prod/k8s/core-env "$(mkjson \
   DATABASE_URL_DIRECT "$DB_URL" \
   REDIS_URL "$(getv REDIS_URL)" \
   KAFKA_BROKERS "$(getv KAFKA_BROKERS)" \
-  TRINO_HOST "$(getv TRINO_HOST)" \
+  DUCKDB_SERVING_HOST "$(getv DUCKDB_SERVING_HOST)" \
   ICEBERG_REST_URI "http://localhost:8181" \
   AWS_REGION "$(getv AWS_REGION)" \
   ICEBERG_WAREHOUSE "s3://brain-bronze/" \
@@ -116,7 +116,7 @@ seed_json_secret brain/prod/k8s/collector-env "$(mkjson \
 seed_json_secret brain/prod/k8s/stream-worker-env "$(mkjson \
   DATABASE_URL "$DB_URL" \
   KAFKA_BROKERS "$(getv KAFKA_BROKERS)" \
-  TRINO_HOST "$(getv TRINO_HOST)" \
+  DUCKDB_SERVING_HOST "$(getv DUCKDB_SERVING_HOST)" \
   NEO4J_URI "$(getv NEO4J_URI)" \
   NEO4J_USER "$(getv NEO4J_USER)" \
   NEO4J_PASSWORD "$(getv NEO4J_PASSWORD)" \

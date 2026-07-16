@@ -80,7 +80,7 @@ export async function getTrackingHealth(
       if (Number(existsRows[0]?.n ?? 0) === 0) return { state: 'no_data' };
       const volumeRows = await scope.runScoped<{ bucket: Date | string; count: number | string }>(
         `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count FROM ${ICEBERG_BRONZE}
-          WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})
+          WHERE occurred_at >= (now() - INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})
           GROUP BY 1 ORDER BY 1 ASC`,
       );
       const lastRows = await scope.runScoped<{ last_event_at: Date | string | null }>(
@@ -90,19 +90,19 @@ export async function getTrackingHealth(
       const aggRows = await scope.runScoped<{ total: number | string; consent_total: number | string; consent_granted: number | string }>(
         `SELECT COUNT(*) AS total,
                 COUNT(CASE WHEN json_extract(payload, '$.consent_flags') IS NOT NULL THEN 1 END) AS consent_total,
-                COUNT(CASE WHEN json_extract_scalar(payload, '$.consent_flags.analytics') = 'true' THEN 1 END) AS consent_granted
+                COUNT(CASE WHEN json_extract_string(payload, '$.consent_flags.analytics') = 'true' THEN 1 END) AS consent_granted
            FROM ${ICEBERG_BRONZE}
-          WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})`,
+          WHERE occurred_at >= (now() - INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE} AND event_type IN (${PIXEL_EVENT_IN})`,
       );
       const agg = aggRows[0];
       // Client-side loss signal: sum the dropped_count carried by `pixel.dropped` events (emitted by the
       // pixel when keep-critical queue eviction has to drop non-critical events under overflow). Queried
       // separately because pixel.dropped is a meta event outside PIXEL_EVENT_IN (must not inflate totals).
       const dropRows = await scope.runScoped<{ dropped: number | string }>(
-        `SELECT COALESCE(SUM(CAST(json_extract_scalar(payload, '$.properties.dropped_count') AS BIGINT)), 0) AS dropped
+        `SELECT COALESCE(SUM(CAST(json_extract_string(payload, '$.properties.dropped_count') AS BIGINT)), 0) AS dropped
            FROM ${ICEBERG_BRONZE}
-          WHERE occurred_at >= (now() - INTERVAL '${VOLUME_WINDOW_DAYS}' DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
-            AND json_extract_scalar(payload, '$.event_name') = 'pixel.dropped'`,
+          WHERE occurred_at >= (now() - INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
+            AND json_extract_string(payload, '$.event_name') = 'pixel.dropped'`,
       );
       return {
         state: 'has_data',

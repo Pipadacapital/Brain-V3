@@ -1,23 +1,21 @@
 # identity-view-guard allowlist (SPEC: A.2.2 / AMD-07) — files PERMITTED to reference
-# brain_silver.silver_identity_map directly. Every OTHER file under db/iceberg/spark, db/trino/views,
+# brain_silver.silver_identity_map directly. Every OTHER file under db/iceberg/duckdb,
 # apps, packages must read the map ONLY through the sanctioned accessors:
-#   - Spark: _identity_views.identity_current / identity_asof / identity_raw
-#   - Trino: iceberg.brain_serving.identity_current_v / identity_asof
+#   - Serving: brain_serving.identity_current_v / identity_asof
+#     (duckdb-serving views — db/iceberg/duckdb/views/identity_{current_v,asof}.sql)
 # One repo-relative path per line. Adding a path here requires a WHY (the trailing comment).
 #
 # ── The map WRITER (produces the table) ──
-db/iceberg/spark/silver/silver_identity_map.py            # WRITER — projects the bi-temporal map from Neo4j (append-per-mutation)
+db/iceberg/duckdb/silver/silver_identity_map.py           # WRITER — projects the bi-temporal map from Neo4j (append-per-mutation)
 #
 # ── The two SANCTIONED accessors (they ARE the governed read surface) ──
-db/iceberg/spark/_identity_views.py                       # Spark accessor — the single physical spark.table read
-db/trino/views/identity_current_v.sql                     # Trino accessor — valid-now + known-now view
-db/trino/views/identity_asof.sql                          # Trino accessor — bi-temporal as-of view
+db/iceberg/duckdb/views/identity_current_v.sql            # serving accessor — valid-now + known-now view
+db/iceberg/duckdb/views/identity_asof.sql                 # serving accessor — bi-temporal as-of view
 #
 # ── The raw serving projection the accessors + metric-engine build upon ──
-db/trino/views/mv_silver_identity_map.sql                 # thin bitemporal serving mirror (brain_serving.mv_silver_identity_map)
+db/iceberg/duckdb/views/mv_silver_identity_map.sql        # thin bitemporal serving mirror (brain_serving.mv_silver_identity_map)
 #
 # ── Dependency MANIFESTS (metadata lists, not queries) ──
-db/iceberg/spark/gold/_gold_registry.py                   # reads_from=[...] dependency graph declaration, not a read
 packages/contracts/src/api/intelligence.api.v1.ts         # reads_from job-contract manifest, not a read
 #
 # ── Golden baseline capture (must snapshot the raw table's current state) ──

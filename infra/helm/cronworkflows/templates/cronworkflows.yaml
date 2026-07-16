@@ -8,9 +8,13 @@ mean a missed or retried run never double-applies and never piles up.
 {{- /* Per-job opt-out: a job with `enabled: false` (e.g. one needing an image not yet published)
        is skipped entirely — so its fail-closed digest check never trips. Default true. */ -}}
 {{- if ne (default true .enabled) false }}
-{{- /* Image selection: stream-worker > core (default). */ -}}
+{{- /* Image selection: duckdb > stream-worker > core (default). useDuckdbImage runs the job in the
+       data-plane brain-duckdb image (.Values.sparkV4.image — the SAME digest-pinned image the
+       v4-silver/v4-gold crons run) for python entrypoints that ship in db/iceberg/duckdb, e.g.
+       semantic-preagg-refresh. */ -}}
 {{- $image := $root.Values.image -}}
 {{- if .useStreamWorkerImage }}{{- $image = $root.Values.streamWorkerImage -}}{{- end }}
+{{- if .useDuckdbImage }}{{- $image = $root.Values.sparkV4.image -}}{{- end }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -51,7 +55,9 @@ spec:
           env:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- /* Per-job resources override (e.g. the in-pod DuckDB aggregation of semantic-preagg-
+                 refresh needs transform-tier headroom, not the node-job default). */}}
           resources:
-            {{- toYaml $root.Values.defaults.resources | nindent 12 }}
+            {{- toYaml (default $root.Values.defaults.resources .resources) | nindent 12 }}
 {{- end }}
 {{- end }}

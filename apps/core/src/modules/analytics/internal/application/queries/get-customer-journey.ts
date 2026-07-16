@@ -6,10 +6,10 @@
  * customer's touchpoints. §1.11 serving: the HOT path reads the A.4 Redis touchpoint cache
  * (`{brand_id}:tp:{brain_id}` zset — the last ≤200 touchpoints); when the cache is COLD (no key,
  * TTL-expired, the A.4 lane flag-OFF for the brand, or no cache client wired) the read falls back
- * to the durable Trino ledger (mv_journey_events_current over iceberg.brain_gold.journey_events).
+ * to the durable serving ledger (mv_journey_events_current over iceberg.brain_gold.journey_events).
  *
  * ONE opaque cursor spans both paths: it records which source is paginating (`c` = cache offset,
- * `t` = Trino keyset sequence) so a continuation stays on the source the FIRST page chose — the
+ * `t` = serving-ledger keyset sequence) so a continuation stays on the source the FIRST page chose — the
  * cache is the hot recent window, the ledger is the durable full history. An invalid/foreign
  * cursor decodes to null → first page (a read projection never hard-fails on a cursor).
  *
@@ -22,7 +22,7 @@
  * brand.
  *
  * @see packages/metric-engine/src/journey-touchpoint-cache.ts (cache read)
- * @see packages/metric-engine/src/journey-events.ts (Trino ledger fallback)
+ * @see packages/metric-engine/src/journey-events.ts (serving ledger fallback)
  */
 
 import type { SilverPool, TouchpointZsetClient } from '@brain/metric-engine';
@@ -44,7 +44,7 @@ export interface CustomerJourneyParams {
 }
 
 // ── Opaque cross-source cursor ────────────────────────────────────────────────
-// base64url JSON. src 'c' = cache offset (off), src 't' = Trino keyset (sn digits string).
+// base64url JSON. src 'c' = cache offset (off), src 't' = serving-ledger keyset (sn digits string).
 interface CustomerJourneyCursor {
   v: 1;
   src: 'c' | 't';
@@ -70,10 +70,10 @@ function decodeCursor(cursor: string): CustomerJourneyCursor | null {
 }
 
 /**
- * getCustomerJourney — the resolved-customer timeline page (cache-first, Trino fallback).
+ * getCustomerJourney — the resolved-customer timeline page (cache-first, serving fallback).
  *
  * @param brandId - Brand UUID (from session — D-1; NEVER request body/path).
- * @param deps    - the Trino serving pool (srPool) + optional A.4 touchpoint-cache client (tpCache).
+ * @param deps    - the duckdb-serving pool (srPool) + optional A.4 touchpoint-cache client (tpCache).
  * @param params  - brainId + optional cursor + page size + data_source flag.
  */
 export async function getCustomerJourney(
@@ -95,7 +95,7 @@ export async function getCustomerJourney(
       const key = touchpointCacheKey({ brandId, brainId: params.brainId });
       const page = await readTouchpointCachePage(deps.tpCache, key, { offset, limit });
       if (page.total > 0) {
-        // Warm cache → serve entirely from the hot window (deeper history is a Trino read).
+        // Warm cache → serve entirely from the hot window (deeper history is a serving-ledger read).
         const items: CustomerJourneyItem[] = page.items.map((t) => ({
           ts: t.ts,
           type: t.type,
@@ -116,13 +116,13 @@ export async function getCustomerJourney(
           data_source: params.dataSource,
         };
       }
-      // Cold cache (total=0) → fall through to Trino below.
+      // Cold cache (total=0) → fall through to the serving ledger below.
     } catch {
-      // Redis error → treat as cold cache and fall back to Trino (§1.11 fail-soft).
+      // Redis error → treat as cold cache and fall back to the serving ledger (§1.11 fail-soft).
     }
   }
 
-  // ── Trino ledger path: cold/absent cache, or an explicit Trino cursor ──────────────────
+  // ── Serving-ledger path: cold/absent cache, or an explicit ledger cursor ──────────────────
   const afterSequence = decoded?.src === 't' ? (decoded.sn ?? null) : null;
   const ledger = await computeJourneyEventsCurrent(brandId, deps, {
     brainId: params.brainId,
@@ -157,7 +157,7 @@ export async function getCustomerJourney(
     next_cursor:
       ledger.nextAfterSequence === null ? null : encodeCursor({ src: 't', sn: ledger.nextAfterSequence }),
     journey_version: maxVersion,
-    source: 'trino',
+    source: 'serving',
     data_source: params.dataSource,
   };
 }

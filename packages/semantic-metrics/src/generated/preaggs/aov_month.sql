@@ -21,6 +21,6 @@ SELECT
     channel,
     SUM(order_value_minor) AS gross_revenue_minor,
     COUNT(DISTINCT order_id) AS order_count
-FROM iceberg.brain_serving.semantic_order
+FROM brain_serving.semantic_order
   WHERE conversion_at IS NOT NULL
 GROUP BY 1, 2, 3, 4;

@@ -22,7 +22,7 @@
         "Total ad spend by platform in INR."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_ad_spend_all"
+        "all": "brain_serving.mv_metric_ad_spend_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "not_applicable",
@@ -87,7 +87,7 @@
         "aMER in INR — new-customer revenue efficiency of spend."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_amer_all"
+        "all": "brain_serving.mv_metric_amer_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -155,10 +155,10 @@
         "AOV in INR at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_aov_day",
-        "week": "iceberg.brain_serving.mv_metric_aov_week",
-        "month": "iceberg.brain_serving.mv_metric_aov_month",
-        "all": "iceberg.brain_serving.mv_metric_aov_all"
+        "day": "brain_serving.mv_metric_aov_day",
+        "week": "brain_serving.mv_metric_aov_week",
+        "month": "brain_serving.mv_metric_aov_month",
+        "all": "brain_serving.mv_metric_aov_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_aov_day",
@@ -230,7 +230,7 @@
         "Blended CAC in INR."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_cac_all"
+        "all": "brain_serving.mv_metric_cac_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -295,7 +295,7 @@
         "CAC(new) by platform in INR."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_cac_new_all"
+        "all": "brain_serving.mv_metric_cac_new_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -365,10 +365,10 @@
         "CM1 in INR at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_cm1_day",
-        "week": "iceberg.brain_serving.mv_metric_cm1_week",
-        "month": "iceberg.brain_serving.mv_metric_cm1_month",
-        "all": "iceberg.brain_serving.mv_metric_cm1_all"
+        "day": "brain_serving.mv_metric_cm1_day",
+        "week": "brain_serving.mv_metric_cm1_week",
+        "month": "brain_serving.mv_metric_cm1_month",
+        "all": "brain_serving.mv_metric_cm1_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_cm1_day",
@@ -445,10 +445,10 @@
         "CM1 % of net revenue in INR at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_cm1_pct_day",
-        "week": "iceberg.brain_serving.mv_metric_cm1_pct_week",
-        "month": "iceberg.brain_serving.mv_metric_cm1_pct_month",
-        "all": "iceberg.brain_serving.mv_metric_cm1_pct_all"
+        "day": "brain_serving.mv_metric_cm1_pct_day",
+        "week": "brain_serving.mv_metric_cm1_pct_week",
+        "month": "brain_serving.mv_metric_cm1_pct_month",
+        "all": "brain_serving.mv_metric_cm1_pct_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -521,10 +521,10 @@
         "CM2 in INR at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_cm2_day",
-        "week": "iceberg.brain_serving.mv_metric_cm2_week",
-        "month": "iceberg.brain_serving.mv_metric_cm2_month",
-        "all": "iceberg.brain_serving.mv_metric_cm2_all"
+        "day": "brain_serving.mv_metric_cm2_day",
+        "week": "brain_serving.mv_metric_cm2_week",
+        "month": "brain_serving.mv_metric_cm2_month",
+        "all": "brain_serving.mv_metric_cm2_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_cm2_day",
@@ -601,10 +601,10 @@
         "CM2 % of net revenue in INR at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_cm2_pct_day",
-        "week": "iceberg.brain_serving.mv_metric_cm2_pct_week",
-        "month": "iceberg.brain_serving.mv_metric_cm2_pct_month",
-        "all": "iceberg.brain_serving.mv_metric_cm2_pct_all"
+        "day": "brain_serving.mv_metric_cm2_pct_day",
+        "week": "brain_serving.mv_metric_cm2_pct_week",
+        "month": "brain_serving.mv_metric_cm2_pct_month",
+        "all": "brain_serving.mv_metric_cm2_pct_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -677,10 +677,10 @@
         "CM3 in INR at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_cm3_day",
-        "week": "iceberg.brain_serving.mv_metric_cm3_week",
-        "month": "iceberg.brain_serving.mv_metric_cm3_month",
-        "all": "iceberg.brain_serving.mv_metric_cm3_all"
+        "day": "brain_serving.mv_metric_cm3_day",
+        "week": "brain_serving.mv_metric_cm3_week",
+        "month": "brain_serving.mv_metric_cm3_month",
+        "all": "brain_serving.mv_metric_cm3_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_cm3_day",
@@ -757,10 +757,10 @@
         "CM3 % of net revenue in INR at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_cm3_pct_day",
-        "week": "iceberg.brain_serving.mv_metric_cm3_pct_week",
-        "month": "iceberg.brain_serving.mv_metric_cm3_pct_month",
-        "all": "iceberg.brain_serving.mv_metric_cm3_pct_all"
+        "day": "brain_serving.mv_metric_cm3_pct_day",
+        "week": "brain_serving.mv_metric_cm3_pct_week",
+        "month": "brain_serving.mv_metric_cm3_pct_month",
+        "all": "brain_serving.mv_metric_cm3_pct_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -833,10 +833,10 @@
         "Gross revenue in AED for last week at grain=week."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_gross_revenue_day",
-        "week": "iceberg.brain_serving.mv_metric_gross_revenue_week",
-        "month": "iceberg.brain_serving.mv_metric_gross_revenue_month",
-        "all": "iceberg.brain_serving.mv_metric_gross_revenue_all"
+        "day": "brain_serving.mv_metric_gross_revenue_day",
+        "week": "brain_serving.mv_metric_gross_revenue_week",
+        "month": "brain_serving.mv_metric_gross_revenue_month",
+        "all": "brain_serving.mv_metric_gross_revenue_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_gross_revenue_day",
@@ -913,10 +913,10 @@
         "Identified purchase rate at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_identified_purchase_rate_day",
-        "week": "iceberg.brain_serving.mv_metric_identified_purchase_rate_week",
-        "month": "iceberg.brain_serving.mv_metric_identified_purchase_rate_month",
-        "all": "iceberg.brain_serving.mv_metric_identified_purchase_rate_all"
+        "day": "brain_serving.mv_metric_identified_purchase_rate_day",
+        "week": "brain_serving.mv_metric_identified_purchase_rate_week",
+        "month": "brain_serving.mv_metric_identified_purchase_rate_month",
+        "all": "brain_serving.mv_metric_identified_purchase_rate_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -984,7 +984,7 @@
         "Realized LTV per customer in INR."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_ltv_realized_all"
+        "all": "brain_serving.mv_metric_ltv_realized_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "injected_predicate",
@@ -1047,7 +1047,7 @@
         "Blended MER in INR (total revenue / total spend)."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_mer_all"
+        "all": "brain_serving.mv_metric_mer_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -1116,10 +1116,10 @@
         "Daily net revenue broken down by attributed channel."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_net_revenue_day",
-        "week": "iceberg.brain_serving.mv_metric_net_revenue_week",
-        "month": "iceberg.brain_serving.mv_metric_net_revenue_month",
-        "all": "iceberg.brain_serving.mv_metric_net_revenue_all"
+        "day": "brain_serving.mv_metric_net_revenue_day",
+        "week": "brain_serving.mv_metric_net_revenue_week",
+        "month": "brain_serving.mv_metric_net_revenue_month",
+        "all": "brain_serving.mv_metric_net_revenue_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_net_revenue_day",
@@ -1197,10 +1197,10 @@
         "Orders per channel at grain=week."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_orders_day",
-        "week": "iceberg.brain_serving.mv_metric_orders_week",
-        "month": "iceberg.brain_serving.mv_metric_orders_month",
-        "all": "iceberg.brain_serving.mv_metric_orders_all"
+        "day": "brain_serving.mv_metric_orders_day",
+        "week": "brain_serving.mv_metric_orders_week",
+        "month": "brain_serving.mv_metric_orders_month",
+        "all": "brain_serving.mv_metric_orders_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_orders_day",
@@ -1277,10 +1277,10 @@
         "Total refund amount in INR for June at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_refund_amount_day",
-        "week": "iceberg.brain_serving.mv_metric_refund_amount_week",
-        "month": "iceberg.brain_serving.mv_metric_refund_amount_month",
-        "all": "iceberg.brain_serving.mv_metric_refund_amount_all"
+        "day": "brain_serving.mv_metric_refund_amount_day",
+        "week": "brain_serving.mv_metric_refund_amount_week",
+        "month": "brain_serving.mv_metric_refund_amount_month",
+        "all": "brain_serving.mv_metric_refund_amount_all"
       },
       "preaggs": [
         "iceberg.brain_serving.preagg_refund_amount_day",
@@ -1352,7 +1352,7 @@
         "Repeat rate across all customers."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_repeat_rate_all"
+        "all": "brain_serving.mv_metric_repeat_rate_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "injected_predicate",
@@ -1420,10 +1420,10 @@
         "Return rate at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_return_rate_day",
-        "week": "iceberg.brain_serving.mv_metric_return_rate_week",
-        "month": "iceberg.brain_serving.mv_metric_return_rate_month",
-        "all": "iceberg.brain_serving.mv_metric_return_rate_all"
+        "day": "brain_serving.mv_metric_return_rate_day",
+        "week": "brain_serving.mv_metric_return_rate_week",
+        "month": "brain_serving.mv_metric_return_rate_month",
+        "all": "brain_serving.mv_metric_return_rate_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -1493,7 +1493,7 @@
         "ROAS by platform in INR."
       ],
       "views": {
-        "all": "iceberg.brain_serving.mv_metric_roas_all"
+        "all": "brain_serving.mv_metric_roas_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",
@@ -1563,10 +1563,10 @@
         "RTO rate at grain=month."
       ],
       "views": {
-        "day": "iceberg.brain_serving.mv_metric_rto_rate_day",
-        "week": "iceberg.brain_serving.mv_metric_rto_rate_week",
-        "month": "iceberg.brain_serving.mv_metric_rto_rate_month",
-        "all": "iceberg.brain_serving.mv_metric_rto_rate_all"
+        "day": "brain_serving.mv_metric_rto_rate_day",
+        "week": "brain_serving.mv_metric_rto_rate_week",
+        "month": "brain_serving.mv_metric_rto_rate_month",
+        "all": "brain_serving.mv_metric_rto_rate_all"
       },
       "preaggs": [],
       "deterministic_exclusion": "by_construction",

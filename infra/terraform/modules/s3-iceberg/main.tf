@@ -23,7 +23,8 @@
 # brand_id is HIDDEN partitioning (bucket(256, brand_id)), so objects do not
 # carry brand prefixes. IAM scopes to the medallion NAMESPACE prefixes (never
 # the bucket root); per-brand isolation is enforced at the query seam
-# (${BRAND_PREDICATE} on every Trino serving read) and row-level in Spark.
+# (${BRAND_PREDICATE} on every duckdb-serving read) and row-level in the
+# DuckDB transform jobs.
 ################################################################################
 
 terraform {
@@ -65,11 +66,11 @@ data "aws_caller_identity" "current" {}
 locals {
   # The Iceberg medallion namespaces — each is a top-level prefix under the
   # warehouse root (JdbcCatalog layout: <warehouse>/<namespace>/<table>/...).
-  # brain_serving: the Trino serving VIEWS store their metadata under this
-  # prefix via the REST catalog. Without it, CREATE VIEW in brain_serving
-  # failed with s3:PutObject AccessDenied on the first prod views run
-  # (2026-07-11) — only the brain_bronze lift view (whose metadata lands
-  # under brain_bronze/) applied.
+  # brain_serving: the preagg_* materializations (serving_preagg_refresh.py)
+  # commit under this prefix via the REST catalog, as did the Trino-era serving
+  # views' metadata before ADR-0014 (duckdb-serving now applies the mv_* views
+  # into a LOCAL schema — no catalog metadata). Without it, the first prod
+  # brain_serving write failed with s3:PutObject AccessDenied (2026-07-11).
   medallion_namespaces = ["brain_bronze", "brain_silver", "brain_gold", "brain_serving"]
 
   # Spark Structured Streaming checkpoint root (CHECKPOINT_LOCATION =
@@ -317,7 +318,8 @@ resource "aws_iam_policy" "spark_medallion_rw" {
 
 ###############################################################################
 # Analytics reader — GetObject ONLY on the medallion namespace prefixes.
-# Attached to core (direct Iceberg reads) and the Trino serving engine.
+# Attached to core (direct Iceberg reads) and the duckdb-serving read
+# replicas (ADR-0014).
 ###############################################################################
 data "aws_iam_policy_document" "analytics_s3" {
   statement {
@@ -330,12 +332,15 @@ data "aws_iam_policy_document" "analytics_s3" {
     resources = local.namespace_object_arns
   }
 
-  # AUD-SL-10 pre-agg materialization: the hourly semantic-preagg-refresh cron
-  # has TRINO CTAS the compiled pre-aggs into brain_serving.preagg_* — a
-  # deliberate serving-layer materialization (not a transform; Spark stays the
-  # sole TRANSFORM compute). Write is scoped to brain_serving/ ONLY: the
-  # read-only posture on bronze/silver/gold is unchanged. Without this every
-  # refresh failed "Error committing write parquet" (24/24, 2026-07-12).
+  # AUD-SL-10 pre-agg materialization: the hourly serving_preagg_refresh.py
+  # cron materializes the compiled pre-aggs into brain_serving.preagg_* — a
+  # deliberate serving-layer materialization (not a transform; DuckDB stays
+  # the sole TRANSFORM compute). It originated as a Trino CTAS grant (the
+  # 24/24 "Error committing write parquet" failures, 2026-07-12); post
+  # ADR-0014 the refresh runs as the jobs IRSA, but the grant stays so a
+  # serving-role holder can still rebuild pre-aggs. Write is scoped to
+  # brain_serving/ ONLY: the read-only posture on bronze/silver/gold below
+  # is a separate, maintenance-specific grant.
   statement {
     sid    = "AllowServingPreaggWrite"
     effect = "Allow"
@@ -348,14 +353,15 @@ data "aws_iam_policy_document" "analytics_s3" {
     resources = ["${aws_s3_bucket.bronze.arn}/brain_serving/*"]
   }
 
-  # Iceberg MAINTENANCE writes on bronze/silver/gold (2026-07-15 incident). After the
-  # Spark→DuckDB cutover, DuckDB cannot run the Iceberg maintenance procedures, so
-  # bronze-maintenance / v4-maintenance execute `ALTER TABLE … EXECUTE
-  # optimize / expire_snapshots / remove_orphan_files` THROUGH Trino — the writes/deletes
-  # of the compacted + superseded data files happen as the Trino IRSA (this role).
-  # The original read-only posture predates that: it broke maintenance with 403
-  # DeleteObject → "Error committing write parquet to Hive" (HIVE_WRITER_CLOSE_ERROR),
-  # exactly like the 2026-07-12 preagg case above. Symptom: compaction never consolidates,
+  # Iceberg MAINTENANCE writes on bronze/silver/gold (2026-07-15 incident). This grant
+  # was added when bronze-maintenance / v4-maintenance ran `ALTER TABLE … EXECUTE
+  # optimize / expire_snapshots / remove_orphan_files` THROUGH Trino as this role's IRSA.
+  # Post ADR-0014 the maintenance tier is PyIceberg + DuckDB (db/iceberg/duckdb/
+  # maintenance/**) running as the jobs IRSA, which carries its own medallion RW —
+  # dropping this statement is the flagged E2 follow-up, kept until the owner takes it.
+  # The original read-only posture broke maintenance with 403 DeleteObject → "Error
+  # committing write parquet to Hive" (HIVE_WRITER_CLOSE_ERROR), exactly like the
+  # 2026-07-12 preagg case above. Symptom: compaction never consolidates,
   # expire/remove-orphan never delete → the hot MERGE-written silver_collector_event
   # fragmented to ~14k tiny files → every DuckDB silver scan paid thousands of S3 GETs
   # (~390s/job) → the v4-silver/gold transform blew its deadline. Grant Put+Delete on the
@@ -423,7 +429,7 @@ data "aws_iam_policy_document" "analytics_s3" {
 
 resource "aws_iam_policy" "analytics_s3" {
   name        = "${var.project}-${var.environment}-analytics-s3-read"
-  description = "Analytics/Trino medallion read: namespace prefixes only (NN-5)"
+  description = "Analytics/duckdb-serving medallion read: namespace prefixes only (NN-5)"
   policy      = data.aws_iam_policy_document.analytics_s3.json
 }
 

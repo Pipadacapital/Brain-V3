@@ -1,0 +1,8 @@
+apiVersion: v2
+name: duckdb-serving
+description: Brain serving tier — duckdb-serving over Iceberg (SOLE serving engine; BFF/metric-engine POST /v1/query against the local brain_serving.mv_* views)
+type: application
+version: 0.1.0
+# appVersion tracks the serving service (db/iceberg/duckdb/serving) — the image is built from that
+# tree (deploy.yml build-data-images), so the pinned digest in values-prod is the real version pin.
+appVersion: "1.0.0"

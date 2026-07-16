@@ -186,9 +186,10 @@ additionalPrometheusRulesMap:
         rules:
           - alert: BrainTargetDown
             # AUD-INFRA-028/-030: regex extended with kafka-connect-jmx (Bronze landing writer's
-            # exporter) + trino (sole serving engine). `up` only exists for CONFIGURED targets —
-            # absence coverage lives in TrinoServingDown / BrainFreshnessExporterDown (absent()).
-            expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter|kafka-connect-jmx|trino"} == 0
+            # exporter) + duckdb-serving (sole serving engine). `up` only exists for CONFIGURED
+            # targets — absence coverage lives in DuckDBServingDown / BrainFreshnessExporterDown
+            # (absent()).
+            expr: up{job=~"brain-.*|kafka-jmx-exporter|kafka-exporter|kafka-connect-jmx|duckdb-serving"} == 0
             for: 2m
             labels:
               severity: critical
@@ -426,14 +427,14 @@ additionalPrometheusRulesMap:
           # retired in Brain V4. Spark→DuckDB cutover: the transform tier is DuckDB now, not Spark.)
           - alert: BrainSilverLag
             # brain_dq_silver_lag_breach_total: stream-worker DQ counter. Sustained increase ⇒ Silver is
-            # lagging Bronze (or Trino, the reconciliation's read engine, is down) — analytics reads are stale.
+            # lagging Bronze (or duckdb-serving, the reconciliation's read engine, is down) — analytics reads are stale.
             expr: sum by (reason) (increase(brain_dq_silver_lag_breach_total[1h])) > 0
             for: 30m
             labels:
               severity: warning
             annotations:
               summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
-              description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the DuckDB Silver CronWorkflows (v4-silver, db/iceberg/duckdb/silver) and Trino health. Analytics reads over Silver are behind."
+              description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the DuckDB Silver CronWorkflows (v4-silver, db/iceberg/duckdb/silver) and duckdb-serving health. Analytics reads over Silver are behind."
 
       # ── Revenue truth integrity ─────────────────────────────────────────────────
       - name: brain-revenue-integrity
@@ -517,7 +518,7 @@ additionalPrometheusRulesMap:
               description: "iceberg.{{ $labels.schema }}.{{ $labels.mart }} has not committed a successful Gold snapshot for {{ $value | humanizeDuration }} (SLA 1h). Segment/audience surfaces are stale — check the Gold customer-segment Spark jobs and their CronWorkflows."
 
           - alert: BrainMartSnapshotMissing
-            # The exporter reached Trino but a registered mart returned NO snapshot (table missing or never
+            # The exporter reached duckdb-serving but a registered mart returned NO snapshot (table missing or never
             # written). Without this, a never-built mart would emit no freshness series and silently dodge
             # the staleness alerts above — the exact false-safety the C2 doctrine forbids.
             expr: brain_data_freshness_query_success == 0
@@ -529,8 +530,8 @@ additionalPrometheusRulesMap:
               description: "The freshness exporter could not read a snapshot for iceberg.{{ $labels.schema }}.{{ $labels.mart }} for 30m (table missing or never written). It cannot be evaluated against its SLA — verify the Spark Gold job for this mart has ever run."
 
           - alert: BrainFreshnessExporterDown
-            # The exporter cannot reach Trino at all (or is not scraped). If this fires, the staleness
-            # alerts above are blind — treat the freshness SLO as unverified until it recovers.
+            # The exporter cannot reach duckdb-serving at all (or is not scraped). If this fires, the
+            # staleness alerts above are blind — treat the freshness SLO as unverified until it recovers.
             expr: |
               (brain_data_freshness_up == 0)
               or
@@ -539,57 +540,60 @@ additionalPrometheusRulesMap:
             labels:
               severity: warning
             annotations:
-              summary: "Data-freshness exporter cannot reach Trino"
-              description: "brain_data_freshness_up is 0 or absent for 10m — the freshness exporter is down or cannot query Trino (the sole serving engine). All freshness SLAs are unverified until it recovers; check the trino service and the brain-freshness-exporter target."
+              summary: "Data-freshness exporter cannot reach duckdb-serving"
+              description: "brain_data_freshness_up is 0 or absent for 10m — the freshness exporter is down or cannot query duckdb-serving (the sole serving engine). All freshness SLAs are unverified until it recovers; check the duckdb-serving service and the brain-freshness-exporter target."
 
   ##############################################################################
   # Brain runtime-health rules — PROD-ONLY BY DESIGN (AUD-INFRA-030/-031): these
-  # read cAdvisor/kube-state-metrics series and the prod-only trino scrape job,
-  # none of which exist in the local compose Prometheus. A canonical
+  # read cAdvisor/kube-state-metrics series and the prod-only duckdb-serving
+  # scrape job, none of which exist in the local compose Prometheus. A canonical
   # infra/observe/alerts copy would either fire falsely forever locally
-  # (absent(up{job="trino"})) or be vacuously loaded — so there is deliberately
-  # no local twin (tools/lint/slo-rules-parity.sh reports prod-only keys as a
-  # WARN, which is this map's documented, intended state).
+  # (absent(up{job="duckdb-serving"})) or be vacuously loaded — so there is
+  # deliberately no local twin (tools/lint/slo-rules-parity.sh reports prod-only
+  # keys as a WARN, which is this map's documented, intended state).
   ##############################################################################
   brain-runtime:
     groups:
       # ── Serving engine liveness (AUD-INFRA-030) ─────────────────────────────
-      - name: brain-trino-serving
+      - name: brain-duckdb-serving
         rules:
-          - alert: TrinoServingDown
-            # Trino is the SOLE serving engine — every BFF/app analytics read 500s without it
-            # (the exact recurring local outage class: OOM-killed coordinator). The absent() arm
-            # covers the never-scraped case BrainTargetDown structurally cannot see (no target ⇒
-            # no `up` series) — e.g. the PodMonitor deleted or the trino chart's metrics disabled.
+          - alert: DuckDBServingDown
+            # duckdb-serving is the SOLE serving engine (ADR-0014) — every BFF/app analytics read
+            # 500s without it (the exact recurring outage class Trino had: OOM-killed serving pod).
+            # The absent() arm covers the never-scraped case BrainTargetDown structurally cannot
+            # see (no target ⇒ no `up` series) — e.g. the PodMonitor deleted or the duckdb-serving
+            # chart's metrics disabled. Fires only when EVERY replica is down/unscraped (max ==
+            # 0/absent) — a single lost Spot replica is the HPA's problem, not a page.
             expr: |
-              (up{job="trino"} == 0)
+              (max(up{job="duckdb-serving"}) == 0)
               or
-              (absent(up{job="trino"}) == 1)
+              (absent(up{job="duckdb-serving"}) == 1)
             for: 2m
             labels:
               severity: critical
             annotations:
-              summary: "Trino (sole serving engine) is down or unscraped"
-              description: "The trino coordinator's JMX-exporter target is down or absent for 2m — all serving reads (brain_serving.mv_*) are failing or serving health is unverifiable. Check the coordinator pod in ns trino (kubectl -n trino get pods), its jvm.config heap bounds (infra/helm/trino), and the trino PodMonitor."
+              summary: "duckdb-serving (sole serving engine) is down or unscraped"
+              description: "Every duckdb-serving replica's /metrics target is down or absent for 2m — all serving reads (brain_serving.mv_*) are failing or serving health is unverifiable. Check the pods in ns duckdb-serving (kubectl -n duckdb-serving get pods), their memory_limit posture (infra/helm/duckdb-serving), and the duckdb-serving PodMonitor."
 
-          - alert: TrinoQueryFailureRateHigh
-            # Serving degradation BEFORE total outage: sustained internal query failures on the
-            # coordinator (trino.execution QueryManager JMX, mapped by the trino chart's
-            # jmx-exporter config). User-error failures are excluded by using the internal counter.
+          - alert: DuckDBServingQueryFailureRateHigh
+            # Serving degradation BEFORE total outage: sustained engine-side (5xx) query failures.
+            # duckdb_serving_query_failures_total counts ONLY engine errors (db/iceberg/duckdb/
+            # serving/server.py) — guard rejections (400) and semaphore refusals (503 saturated)
+            # have their own counters and are excluded, matching the old rule's internal-only intent.
             expr: |
-              sum(trino_execution_querymanager_internalfailures_oneminute_count)
-                / clamp_min(sum(trino_execution_querymanager_completedqueries_oneminute_count), 1) > 0.1
+              sum(rate(duckdb_serving_query_failures_total[5m]))
+                / clamp_min(sum(rate(duckdb_serving_queries_total[5m])), 0.001) > 0.1
             for: 10m
             labels:
               severity: warning
             annotations:
-              summary: "Trino internal query failures > 10% for 10m"
-              description: "More than 10% of Trino queries are failing with internal errors — serving reads over brain_serving.mv_* are degrading (memory pressure, Iceberg REST/S3 trouble, or a bad view). Check coordinator logs in ns trino and iceberg-rest health."
+              summary: "duckdb-serving query failures > 10% for 10m"
+              description: "More than 10% of duckdb-serving queries are failing with engine errors — serving reads over brain_serving.mv_* are degrading (memory pressure, Iceberg REST/S3 trouble, or a bad view — check /readyz views_skipped). Check pod logs in ns duckdb-serving and iceberg-rest health."
 
       # ── OOM kills (AUD-INFRA-031) ───────────────────────────────────────────
-      # OOM is the platform's dominant historical failure mode (Trino coordinator, connect
-      # worker, stream-worker under batch), and a single OOM that restarts cleanly never trips
-      # KubePodCrashLooping. Sources are both live in prod: container_oom_events_total
+      # OOM is the platform's dominant historical failure mode (the retired Trino coordinator,
+      # connect worker, stream-worker under batch), and a single OOM that restarts cleanly never
+      # trips KubePodCrashLooping. Sources are both live in prod: container_oom_events_total
       # (cAdvisor) and kube_pod_container_status_last_terminated_reason (kube-state-metrics).
       - name: brain-oom
         rules:
@@ -610,26 +614,26 @@ additionalPrometheusRulesMap:
               severity: warning
             annotations:
               summary: "OOM kill: {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}"
-              description: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} was OOM-killed in the last 15m. Even a clean restart loses in-flight work — check its memory limit vs working set and the tier's heap bounds (Trino jvm.config / connect KAFKA_HEAP_OPTS / node heap)."
+              description: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} was OOM-killed in the last 15m. Even a clean restart loses in-flight work — check its memory limit vs working set and the tier's heap bounds (duckdb-serving memory_limit / connect KAFKA_HEAP_OPTS / node heap)."
 
           - alert: BrainDataSpineOomKilled
             # CRITICAL escalation for the tiers where one OOM means event risk or serving outage:
-            # kafka (broker + the SOLE Bronze landing writer), trino (sole serving engine),
+            # kafka (broker + the SOLE Bronze landing writer), duckdb-serving (sole serving engine),
             # collector (ingest edge, 99.95% SLA), stream-worker (projections/DQ).
             expr: |
-              (sum by (namespace, pod, container) (increase(container_oom_events_total{container!="", namespace=~"kafka|trino|collector|stream-worker"}[15m])) > 0)
+              (sum by (namespace, pod, container) (increase(container_oom_events_total{container!="", namespace=~"kafka|duckdb-serving|collector|stream-worker"}[15m])) > 0)
               or
               (
-                (max by (namespace, pod, container) (kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace=~"kafka|trino|collector|stream-worker"}) == 1)
+                (max by (namespace, pod, container) (kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace=~"kafka|duckdb-serving|collector|stream-worker"}) == 1)
                 and
-                (sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace=~"kafka|trino|collector|stream-worker"}[15m])) > 0)
+                (sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace=~"kafka|duckdb-serving|collector|stream-worker"}[15m])) > 0)
               )
             for: 1m
             labels:
               severity: critical
             annotations:
               summary: "Data-spine OOM kill: {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}"
-              description: "A data-spine container ({{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}) was OOM-killed in the last 15m — Bronze landing, ingest, or serving took an availability hit (no-event-loss budget). Check memory sizing (kafka-connect values-prod heapOpts per AUD-IMPL-024; trino jvm.config MaxRAMPercentage) before it recurs."
+              description: "A data-spine container ({{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}) was OOM-killed in the last 15m — Bronze landing, ingest, or serving took an availability hit (no-event-loss budget). Check memory sizing (kafka-connect values-prod heapOpts per AUD-IMPL-024; duckdb-serving DUCKDB_SERVING_MEMORY_LIMIT vs its container limit) before it recurs."
 
   ##############################################################################
   # Brain scale-posture tripwires (Wave-3: AUD-IMPL-027 / AUD-OPS-029 /

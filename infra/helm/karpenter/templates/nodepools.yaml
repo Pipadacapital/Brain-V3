@@ -1,4 +1,4 @@
-# NodePools — one per blueprint node group (streaming / batch / trino). Cluster-scoped.
+# NodePools — one per blueprint node group (streaming / ondemand). Cluster-scoped.
 # Karpenter v1 API: karpenter.sh/v1. All pools are arm64 + Spot, bounded above by `limits`
 # (no fixed minimum). See values.yaml for the per-pool rationale.
 {{- range $name, $pool := .Values.nodePools }}

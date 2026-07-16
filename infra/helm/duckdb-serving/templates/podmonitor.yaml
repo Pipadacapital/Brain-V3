@@ -1,0 +1,32 @@
+{{- /*
+PodMonitor for the serving replicas' native Prometheus /metrics (served by the FastAPI app on the
+HTTP port — no JMX agent/initContainer, unlike the retired trino chart). A PodMonitor (not a
+ServiceMonitor) so EVERY replica is scraped individually — the Service load-balances, which would
+otherwise sample one random pod per scrape. The job relabel pins job="duckdb-serving" — the exact
+name DuckDBServingDown / DuckDBServingQueryFailureRateHigh and the BrainTargetDown regex
+(kube-prometheus-stack values-prod) match on; without it the job label defaults to
+"<namespace>/<name>" and serving stays detection-dark.
+
+Selected by the monitoring Prometheus via podMonitorSelector {} + namespaceSelector {}
+(kube-prometheus-stack values-prod sets podMonitorSelectorNilUsesHelmValues: false).
+*/ -}}
+{{- if .Values.metrics.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "duckdb-serving.fullname" . }}
+  labels:
+    {{- include "duckdb-serving.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "duckdb-serving.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.podMonitor.interval }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: {{ .Values.metrics.podMonitor.jobLabel }}
+{{- end }}

@@ -2,8 +2,8 @@
 #
 # The audit measured a FLAT pod network: zero NetworkPolicies outside the
 # Strimzi-managed ones (ns kafka) — a compromised pod (e.g. the internet-facing
-# collector) had unrestricted lateral reach to pgbouncer→Aurora, Trino,
-# iceberg-rest and Neo4j. This chart ships default-deny-ingress per Brain
+# collector) had unrestricted lateral reach to pgbouncer→Aurora, the serving
+# engine, iceberg-rest and Neo4j. This chart ships default-deny-ingress per Brain
 # namespace + explicit allows for the REAL flows (inventoried from the live
 # env-secret wiring in tools/deploy/seed-prod-secrets.sh / seed-core-env.sh and
 # the chart values).
@@ -48,8 +48,10 @@ podSecurity:
   # Data-tier charts are NOT audited for restricted compliance (images may run
   # as root) — audit+warn only: surfaces violators in the API audit log without
   # blocking admission. Promote to enforce per-namespace once clean.
+  # (duckdb-serving replaced trino, ADR-0014 — its chart renders a restricted-
+  # compliant pod spec; promote to enforceRestricted after a prod soak.)
   auditRestricted:
-    - trino
+    - duckdb-serving
     - iceberg-rest
     - pgbouncer
     - neo4j
@@ -61,10 +63,11 @@ podSecurity:
 #   core|collector|stream-worker|argo → pgbouncer:6432   (DATABASE_URL /
 #         BRAIN_APP_DATABASE_URL host; argo = spark jobs w/ core-env + the
 #         db-migrate Job which runs in ns stream-worker)
-#   core|stream-worker|argo → trino:8080   (TRINO_HOST serving reads,
-#         journey-stitch, cron mv-refresh) + trino intra-ns (workers↔coordinator)
-#   core|trino|kafka|argo → iceberg-rest:8181   (ICEBERG_REST_URI; the Kafka
-#         Connect Iceberg sink lives in ns kafka; spark jobs in ns argo)
+#   core|stream-worker|argo → duckdb-serving:8091   (DUCKDB_SERVING_HOST serving
+#         reads, journey-stitch, DQ silver reads; no intra-ns flow — every
+#         replica is a complete engine, no workers↔coordinator traffic)
+#   core|duckdb-serving|kafka|argo → iceberg-rest:8181   (ICEBERG_REST_URI; the
+#         Kafka Connect Iceberg sink lives in ns kafka; transform jobs in ns argo)
 #   core|stream-worker|argo → neo4j:7687 (+7474 http)   (NEO4J_URI identity
 #         graph) + neo4j intra-ns (neo4j-backup Job, same namespace)
 #   monitoring → every covered ns (blanket, see monitoringNamespace)
@@ -97,17 +100,16 @@ namespaces:
       - name: app-db-clients
         ports: [6432]
         fromNamespaces: [core, collector, stream-worker, argo]
-  - name: trino
-    intraNamespace: true   # coordinator ↔ workers
+  - name: duckdb-serving
     allows:
       - name: serving-readers
-        ports: [8080]
+        ports: [8091]
         fromNamespaces: [core, stream-worker, argo]
   - name: iceberg-rest
     allows:
       - name: catalog-clients
         ports: [8181]
-        fromNamespaces: [core, trino, kafka, argo]
+        fromNamespaces: [core, duckdb-serving, kafka, argo]
   - name: neo4j
     intraNamespace: true   # neo4j-backup Job runs in this namespace
     allows:

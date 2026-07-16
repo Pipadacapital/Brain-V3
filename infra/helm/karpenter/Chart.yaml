@@ -1,6 +1,6 @@
 apiVersion: v2
 name: karpenter-nodepools
-description: Brain node autoscaling intent — Karpenter NodePools + EC2NodeClass for the brain-<env> EKS cluster (streaming/batch/trino spot pools). The Karpenter CONTROLLER + CRDs are installed from the upstream chart (see infra/argocd/envs/prod/karpenter.yaml); this chart only declares the desired node pools.
+description: Brain node autoscaling intent — Karpenter NodePools + EC2NodeClass for the brain-<env> EKS cluster (streaming spot + ondemand pools). The Karpenter CONTROLLER + CRDs are installed from the upstream chart (see infra/argocd/envs/prod/karpenter.yaml); this chart only declares the desired node pools.
 type: application
 version: 0.1.0
 appVersion: "1.0.8"

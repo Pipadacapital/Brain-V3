@@ -6,18 +6,17 @@
 # python image with the script mounted from a ConfigMap — NO image build, mirroring the script's
 # own "no Dockerfile required" contract. The chart's files/freshness_exporter.py is a VERBATIM
 # copy of the tools/ source of truth; KEEP THE TWO IN LOCKSTEP (byte-compare at commit time).
-# It queries Trino (the sole serving engine) for each Gold mart's latest Iceberg snapshot and
-# emits brain_data_freshness_seconds{mart,schema,sla_class} — lighting up the four
-# freshness rules already loaded in kube-prometheus-stack values-prod (BrainExecutiveMartStale /
+# It queries duckdb-serving (the sole serving engine, ADR-0014) for each Gold mart's latest
+# Iceberg snapshot and emits brain_data_freshness_seconds{mart,schema,sla_class} — lighting up the
+# four freshness rules already loaded in kube-prometheus-stack values-prod (BrainExecutiveMartStale /
 # BrainSegmentMartStale / BrainMartSnapshotMissing / BrainFreshnessExporterDown).
 freshnessExporter:
   enabled: true
   # Multi-arch official image (arm64 Graviton system nodes) — pinned minor, no :latest.
   image: python:3.13-slim
-  # Trino coordinator base URL — per-env (values-prod points at brain-prod-trino).
-  trinoUrl: "http://trino:8080"
-  trinoUser: brain
-  trinoCatalog: iceberg
+  # duckdb-serving base URL — per-env (values-prod points at brain-prod-duckdb-serving).
+  servingUrl: "http://duckdb-serving:8091"
+  icebergCatalog: iceberg
   goldSchema: brain_gold
   listenPort: 9095
   refreshSeconds: 60

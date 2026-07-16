@@ -19,7 +19,7 @@ streamWorkerImage:
   pullPolicy: IfNotPresent
 
 # Secret (External Secrets ← AWS Secrets Manager): DATABASE_URL, BRAIN_APP_DATABASE_URL,
-# ICEBERG/Trino credentials, etc. Empty in defaults (set per env).
+# ICEBERG/lakehouse credentials, etc. Empty in defaults (set per env).
 envSecretName: ""
 
 # IST — schedules below are written in Asia/Kolkata (the brands' operating timezone).
@@ -61,7 +61,7 @@ sparkBronze:
   # (ADR-0010). Maintenance must run regardless of who lands Bronze, so it defaults ON.
   enabled: true
   image:
-    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb   # built from db/iceberg/duckdb/Dockerfile (carries the Trino maintenance client)
+    repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb   # built from db/iceberg/duckdb/Dockerfile (carries the PyIceberg maintenance client)
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
@@ -81,7 +81,7 @@ sparkBronze:
     env:
       - { name: RAW_RETENTION_HOURS, value: "168" }   # 7 days (D4); tighten per region/regime
   # Non-secret extra env for the maintenance run. Secrets (envSecretName)
-  # MUST include TRINO_HOST/TRINO_PORT + ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
+  # MUST include ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
   # anymore — those belonged to the removed Spark-SS landing; Kafka Connect keeps its offsets in the
   # Iceberg snapshots + its own topics.
   # AUD-OPS-015: the durable collector lane (collector_events_connect — append-only SoR, rows never
@@ -99,9 +99,10 @@ sparkBronze:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
   # ── On-demand subject erasure (AUD-OPS-037; templates/bronze-erasure.yaml) ─────────────────────
-  # WorkflowTemplate `bronze-raw-erasure` wrapping db/iceberg/trino/erasure_raw_delete.py (RTBF
-  # hard-delete of one subject's rows across the raw Bronze tables + the payload-path sweep of
-  # collector_events_connect, run via the Trino client the brain-duckdb image carries). NOT a cron:
+  # WorkflowTemplate `bronze-raw-erasure` wrapping db/iceberg/duckdb/maintenance/erasure_raw_delete.py
+  # (RTBF hard-delete of one subject's rows across the raw Bronze tables + the payload-path sweep of
+  # collector_events_connect, run via the PyIceberg+DuckDB maintenance client the brain-duckdb image
+  # carries). NOT a cron:
   # the stream-worker erasure orchestrator submits a Workflow from this template (workflowTemplateRef
   # via the Kubernetes API — the prod argo-workflows app is controller-only, no REST server) after the
   # subject DEK crypto-shred. Same image/secret/placement as the maintenance cron above.
@@ -123,8 +124,8 @@ sparkBronze:
 # now (Spark removed — Spark→DuckDB cutover); dbt/StarRocks were already gone. Two staggered
 # CronWorkflows — v4-silver (:05) → v4-gold (:25) — that `python /opt/brain/duckdb/<layer>/<job>.py` the mart
 # jobs the brain-duckdb image CARRIES (db/iceberg/duckdb/{silver,gold}/*.py via the Dockerfile). The serving
-# mv_* Trino views resolve straight over the Iceberg Gold/Silver marts (thin projections) — there is no
-# separate REFRESH leg (StarRocks is removed). The identity-export + journey-stitch node jobs (.Values.jobs)
+# brain_serving.mv_* views (duckdb-serving) resolve straight over the Iceberg Gold/Silver marts (thin
+# projections) — there is no separate REFRESH leg. The identity-export + journey-stitch node jobs (.Values.jobs)
 # sequence around them by schedule to complete the attribution chain (identity → order-state → silver →
 # stitch → gold). ENABLED: the V4 crons run the medallion refresh. Requires the CI-built+digest-pinned
 # brain-duckdb image (B3 fail-closed) + a cluster.
@@ -175,7 +176,7 @@ sparkV4:
     requests: { cpu: "1", memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
   # ── Silver/Gold Iceberg maintenance (AUD-COST-013; templates/v4-maintenance.yaml) ──────────────
-  # Weekly db/iceberg/trino/medallion_maintenance.py (via the Trino client): optimize + expire_snapshots
+  # db/iceberg/duckdb/maintenance/medallion_maintenance.py (PyIceberg + DuckDB): optimize + expire_snapshots
   # (7d) + a GUARDED remove_orphan_files pass — the hourly-rewritten marts otherwise grow S3 unbounded,
   # and no tier swept orphans from failed/aborted writes. ORPHAN_OLDER_THAN_DAYS=7 (job clamps >=3):
   # orphans that old can never belong to an in-flight commit, so overlapping the hourly refresh is safe.
@@ -185,8 +186,8 @@ sparkV4:
     # DAILY, not weekly (2026-07-15 incident). silver_collector_event is MERGE-rewritten HOURLY;
     # weekly compaction let it fragment to ~14k tiny files by mid-week → every DuckDB silver scan
     # paid thousands of S3 GETs (~390s/job) → v4-silver/gold blew their deadline. Daily compaction
-    # keeps the hot keystone consolidated so per-job read cost stays flat. (Requires the Trino IRSA
-    # medallion write/delete grant — s3-iceberg AllowMedallionMaintenanceWrite — or optimize 403s.)
+    # keeps the hot keystone consolidated so per-job read cost stays flat. (Requires the medallion
+    # write/delete grant — s3-iceberg AllowMedallionMaintenanceWrite — or optimize 403s.)
     enabled: true
     # REALTIME PHASE 1: daily → every 2h. At */5 Silver+Gold cadence the marts commit ~12× more often,
     # so daily compaction would let the hot keystone re-fragment mid-day (the 2026-07-15 incident). Every
@@ -244,8 +245,8 @@ jobs:
   # MEDALLION REALIGNMENT (Brain V4): recognition (Bronze → silver_order_state → gold_revenue_ledger,
   # incl. prepaid finalization after horizon + COD delivery/RTO) is now the Spark v4-silver/v4-gold
   # CronWorkflows (templates/spark-v4.yaml) at :05/:25 — there is no dbt `recognition-refresh` cron and
-  # no PG `revenue-finalization` writer. The Spark Gold ledger is what billing + attribution + dashboards
-  # read, served by the brain_serving mv_* Trino views over Iceberg.
+  # no PG `revenue-finalization` writer. The Gold ledger is what billing + attribution + dashboards
+  # read, served by the brain_serving.mv_* duckdb-serving views over Iceberg.
   - name: journey-stitch-from-identity
     schedule: "15 * * * *"         # hourly at :15 — ATTRIBUTION CHAIN step 2: derive the stitch map
     command: ["pnpm", "exec", "tsx", "src/jobs/journey-stitch-from-identity.ts"]
@@ -313,18 +314,30 @@ jobs:
     # a missed/retried run safe. ALERT: if any *_pdefault has rows, partition creation has been
     # lagging — page on a non-zero row count (see infra/helm/cronworkflows/README.md → C4 alert).
   - name: semantic-preagg-refresh
-    schedule: "40 * * * *"         # hourly at :40 — AFTER v4-gold (:25) commits the marts the entity views read
-    command: ["pnpm", "exec", "tsx", "src/jobs/semantic-preagg-refresh.ts"]
-    # AUD-SL-10: MATERIALIZES the semantic-layer pre-aggs. The @brain/semantic-metrics compiler has
-    # always emitted pre-agg DDL for every interactive metric×grain (§1.11.1) and the compiled FAST
-    # views read iceberg.brain_serving.preagg_* — but no job ever built those tables, so interactive
-    # grains silently fell back to base-entity scans (a latency/cost cliff at scale). This cron runs
-    # each pre-agg's ATOMIC Trino rebuild (CREATE OR REPLACE TABLE AS — one Iceberg replace
-    # transaction; readers see old rows until the new snapshot commits). Cross-brand batch build:
-    # brand_id is a GROUPING KEY here; serving reads only ever go through the compiled
-    # ${BRAND_PREDICATE}-guarded mv_metric_* views. Idempotent (re-run = replace again); exits
-    # non-zero if ANY table failed so a partial failure surfaces. Needs TRINO_HOST/TRINO_PORT in the
-    # pod env (core-env secret) — absent → every table errors and the run fails loudly (honest).
+    schedule: "40 * * * *"         # hourly at :40 — the entity views read Gold marts the */5 v4-gold keeps fresh
+    useDuckdbImage: true           # ships in the brain-duckdb image (db/iceberg/duckdb/serving_preagg_refresh.py)
+    command: ["python", "/opt/brain/duckdb/serving_preagg_refresh.py"]
+    env:
+      # The compiler-emitted pre-agg SQL + the ported serving views hardcode the `iceberg` catalog
+      # handle (the one duckdb-serving attaches as). The job also pins this internally — set here so
+      # the posture is auditable from values (the v4 transform crons attach as `rest`).
+      - { name: ICEBERG_CATALOG, value: "iceberg" }
+    # The aggregation runs IN-POD now (the retired TS job pushed the CTAS compute to the serving
+    # engine) — give it the transform tier's headroom, not the 1Gi node-job default.
+    resources:
+      requests: { cpu: "1", memory: 2Gi }
+      limits: { cpu: "2", memory: 4Gi }
+    # AUD-SL-10: MATERIALIZES the semantic-layer pre-aggs. The @brain/semantic-metrics compiler
+    # emits an atomic DuckDB rebuild per interactive metric×grain (§1.11.1) into
+    # db/iceberg/duckdb/serving_preaggs/*.duckdb.sql (snapshot-pinned, carried by this image); the
+    # compiled FAST views read iceberg.brain_serving.preagg_*. Each rebuild is CREATE TABLE IF NOT
+    # EXISTS + ONE DELETE+INSERT TRANSACTION — a single Iceberg replace commit, so readers see old
+    # rows until it commits (DuckDB-Iceberg has no CREATE OR REPLACE TABLE over a REST catalog).
+    # The job first applies the semantic entity views (db/iceberg/duckdb/views/semantic_*.sql) into
+    # a local brain_serving schema, continue-on-error. Cross-brand batch build: brand_id is a
+    # GROUPING KEY here; serving reads only ever go through the compiled ${BRAND_PREDICATE}-guarded
+    # mv_metric_* views. Idempotent (re-run = replace again); exits non-zero if ANY table failed so
+    # a partial failure surfaces. Needs ICEBERG_REST_URI + AWS_* in the pod env (core-env secret).
   - name: ingest-dedup-prune
     schedule: "20 4 * * 0"         # weekly Sun 04:20 IST — bound the ADR-0012 global dedup index
     command: ["pnpm", "exec", "tsx", "src/jobs/ingest-dedup-prune.ts"]

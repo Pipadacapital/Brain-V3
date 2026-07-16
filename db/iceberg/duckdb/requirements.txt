@@ -3,7 +3,12 @@
 duckdb>=1.5.3          # MERGE INTO + REST-catalog Iceberg writes (2026-05); the migration floor
 numpy>=1.26            # Markov attribution solve (Phase 2) — same algorithm as the Spark job
 splink>=4.0            # probabilistic stitch via the DuckDB backend (Phase 4c), NOT PySpark
-pyiceberg>=0.7         # table maintenance (snapshot expiry / orphan cleanup) where Trino isn't used (Phase 5)
+pyiceberg[pyiceberg-core]>=0.11  # the maintenance tier (maintenance/*.py, ADR-0014): expire_snapshots builder +
+                       # COW delete/overwrite landed in 0.11; the pyiceberg-core extra provides the
+                       # bucket-transform write path some marts partition by. NB: 0.11.1 needs the
+                       # ManifestEntry snapshot_id-setter shim in maintenance/_maintenance_base.py
+                       # (upstream setter writes the status slot) — keep it until a fixed release is pinned.
+pyarrow>=17            # the arrow seam of the COW rewrites (DuckDB read → pyiceberg overwrite)
 neo4j>=5.0             # identity-tier reads (silver_customer_identity / _identity_map / _identity_alias /
                        # _session_identity) — the bolt driver. Its ABSENCE broke every v4-silver run at
                        # silver_customer_identity (ModuleNotFoundError, prod 2026-07-14).

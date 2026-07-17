@@ -756,14 +756,15 @@ export async function main(): Promise<void> {
     error: (obj, msg) => app.log.error(obj, msg),
   });
 
-  // AUD-OPS-036: the RTBF erasure-trigger bridge — the ONE producer of the canonical
-  // privacy.erasure.requested event on {env}.collector.event.v1, reused by all three RTBF
-  // entry points (consent/withdraw reason=erasure, identity erase route, Shopify
-  // customers/redact). Without it the stream-worker erasure orchestrator is live but
-  // unreachable. Reuses the same connected webhook producer (ONE per process).
+  // AUD-OPS-036 → ADR-0015 WS4: the RTBF erasure-trigger bridge — the ONE producer of the
+  // canonical privacy.erasure.requested trigger, reused by all three RTBF entry points
+  // (consent/withdraw reason=erasure, identity erase route, Shopify customers/redact).
+  // PG REQUEST-DRIVEN: durably INSERTs the trigger envelope into ops.erasure_request_queue
+  // (0140) — the stream-worker erasure poll lane drains it (the Kafka publish + the last
+  // stream-worker consumer group are retired). Uses rawPgPool: the queue is a cross-brand
+  // trusted-ETL table (no brand GUC), same posture as the unmerge dirty queues above.
   const erasureEventPublisher = createErasureEventPublisher({
-    producer: webhookProducer,
-    env: config.kafkaEnv,
+    pool: rawPgPool,
     log: {
       info: (obj, msg) => app.log.info(obj, msg),
       warn: (obj, msg) => app.log.warn(obj, msg),

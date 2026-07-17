@@ -27,6 +27,17 @@ export interface ProduceMessage {
   correlationId: string;
 }
 
+/** Thrown when a produce exceeds the per-request deadline — the caller routes to the WAL. */
+export class ProduceDeadlineError extends Error {
+  constructor(deadlineMs: number) {
+    super(`[kafka] produce deadline exceeded (${deadlineMs}ms) — routing to WAL fallback`);
+    this.name = 'ProduceDeadlineError';
+  }
+}
+
+/** Consecutive produce failures that flip isHealthy() false (auto-clears on next success). */
+const PRODUCE_FAILURE_UNHEALTHY_THRESHOLD = 3;
+
 export interface KafkaProducerConfig {
   brokers: string[];
   clientId: string;
@@ -36,6 +47,17 @@ export interface KafkaProducerConfig {
     username: string;
     password: string;
   };
+  /**
+   * kafkajs client requestTimeout (INGEST_PRODUCE_REQUEST_TIMEOUT_MS). Default 4000ms — the
+   * kafkajs default (30s) turns a slow broker into unbounded request pileup on the hot path.
+   */
+  requestTimeoutMs?: number;
+  /**
+   * Per-produce hard deadline (INGEST_PRODUCE_DEADLINE_MS). Default 6000ms — above one full
+   * requestTimeout attempt, below client-facing fetch timeouts. Expiry throws
+   * ProduceDeadlineError so the caller anchors the batch to the WAL like any produce failure.
+   */
+  produceDeadlineMs?: number;
   /**
    * Hot-brand composite partition keying (ADR-0015 §5.3): brands in this list get key
    * `${brand_id}:${bucket}` instead of plain brand_id. DEFAULT EMPTY — plain brand_id
@@ -102,14 +124,35 @@ export class CollectorKafkaProducer {
   private producer: Producer | null = null;
   /** Single-flight connect guard: the accept path + fallback flusher must never race two connects. */
   private connecting: Promise<void> | null = null;
+  /** Per-produce hard deadline (ms) — expiry routes the batch to the WAL (H3). */
+  private readonly produceDeadlineMs: number;
+  /**
+   * Honest post-boot health (H3). isConnected() alone LIES after boot: this.producer stays
+   * non-null through a broker outage (it is nulled only by explicit disconnect()), so a
+   * post-boot outage was invisible to the back-pressure gate and /readyz. Two signals fix it:
+   *   • consecutiveProduceFailures — the PRIMARY signal: ≥ threshold flips isHealthy() false;
+   *     the next successful produce auto-clears it.
+   *   • eventDisconnected — secondary fast-path from kafkajs instrumentation events. NOTE:
+   *     kafkajs reliably emits producer.disconnect only on explicit disconnect(); a broker
+   *     socket breaking mid-flight does NOT dependably fire it — which is exactly why the
+   *     failure counter, not the event, is the primary signal.
+   */
+  private consecutiveProduceFailures = 0;
+  private eventDisconnected = false;
 
   constructor(config: KafkaProducerConfig) {
     const kafkaConfig: KafkaConfig = {
       clientId: config.clientId,
       brokers: config.brokers,
+      // Bounded per-request timeout (H3): the kafkajs default (30s) lets a slow/hung broker
+      // pile up 30s-per-attempt requests behind maxInFlightRequests=1. enforceRequestTimeout
+      // defaults to true in kafkajs 2.x, so setting the value is sufficient.
+      requestTimeout: config.requestTimeoutMs ?? 4_000,
       // Bounded client-level retry: the accept path must FAIL within a small window when the
       // log is down so it can fall back to the disk WAL — never hang the HTTP request. The
       // no-event-loss invariant is held by produce-ack OR fallback-append, not infinite retry.
+      // retries>=1 also keeps the idempotent-producer requirement satisfied (kafkajs retries
+      // within send(); broker-side idempotence dedups those retries).
       retry: {
         retries: 3,
         initialRetryTime: 100,
@@ -129,6 +172,7 @@ export class CollectorKafkaProducer {
     this.topic = config.topic;
     this.hotBrandIds = new Set(config.hotBrandIds ?? []);
     this.hotBrandBuckets = Math.max(1, config.hotBrandBuckets ?? 4);
+    this.produceDeadlineMs = config.produceDeadlineMs ?? 6_000;
   }
 
   /**
@@ -173,6 +217,15 @@ export class CollectorKafkaProducer {
         idempotent: true,
         maxInFlightRequests: 1,
       });
+      // H3 secondary health signal: kafkajs instrumentation events, subscribed for the cases
+      // they DO fire (explicit disconnect, reconnect CONNECT after a broken socket heals).
+      // They are NOT the primary signal — see the eventDisconnected field comment.
+      producer.on(producer.events.CONNECT, () => {
+        this.eventDisconnected = false;
+      });
+      producer.on(producer.events.DISCONNECT, () => {
+        this.eventDisconnected = true;
+      });
       try {
         await producer.connect();
       } catch (err) {
@@ -181,6 +234,9 @@ export class CollectorKafkaProducer {
         throw err;
       }
       this.producer = producer;
+      // Fresh connection = fresh health slate (a stale unhealthy bit must not shed traffic).
+      this.consecutiveProduceFailures = 0;
+      this.eventDisconnected = false;
     })();
 
     try {
@@ -251,15 +307,62 @@ export class CollectorKafkaProducer {
       };
     });
 
-    await this.producer.send({
-      topic: this.topic,
-      acks: -1, // produce-ack from ALL in-sync replicas IS the durability anchor (ADR-0015 D1)
-      compression: CompressionTypes.GZIP,
-      messages,
+    // Per-request produce deadline (H3): bound the send in a race so a slow/hung broker can
+    // never hold an accept past INGEST_PRODUCE_DEADLINE_MS (above one requestTimeout attempt,
+    // below client fetch timeouts). On expiry ProduceDeadlineError propagates and the caller
+    // routes the batch to the WAL exactly like a produce failure — that path is idempotent-safe
+    // downstream: if the in-flight send later succeeds on the broker, the WAL replay is a late
+    // duplicate that Bronze-compaction + Silver MERGE dedup absorb (ADR-0015 D2).
+    try {
+      await this.withDeadline(
+        this.producer.send({
+          topic: this.topic,
+          acks: -1, // produce-ack from ALL in-sync replicas IS the durability anchor (ADR-0015 D1)
+          compression: CompressionTypes.GZIP,
+          messages,
+        }),
+      );
+      // Success auto-clears the health bit (H3) — one good produce proves the pipe works.
+      this.consecutiveProduceFailures = 0;
+      this.eventDisconnected = false;
+    } catch (err) {
+      this.consecutiveProduceFailures += 1;
+      throw err;
+    }
+  }
+
+  /** Race a produce against the hard deadline; the late loser's rejection is swallowed. */
+  private async withDeadline<T>(send: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new ProduceDeadlineError(this.produceDeadlineMs)), this.produceDeadlineMs);
+      timer.unref?.();
     });
+    try {
+      return await Promise.race([send, deadline]);
+    } finally {
+      clearTimeout(timer);
+      // If the deadline won, the in-flight send may still reject later — absorb it so a late
+      // broker failure never surfaces as an unhandledRejection crash.
+      send.catch(() => undefined);
+    }
   }
 
   isConnected(): boolean {
     return this.producer !== null;
+  }
+
+  /**
+   * Honest post-boot health (H3): connected AND no event-signaled disconnect AND fewer than
+   * PRODUCE_FAILURE_UNHEALTHY_THRESHOLD consecutive produce failures. The back-pressure
+   * admission gate and /readyz read THIS (not isConnected(), which stays true through any
+   * post-boot broker outage). Auto-clears on the next successful produce — no manual reset.
+   */
+  isHealthy(): boolean {
+    return (
+      this.producer !== null &&
+      !this.eventDisconnected &&
+      this.consecutiveProduceFailures < PRODUCE_FAILURE_UNHEALTHY_THRESHOLD
+    );
   }
 }

@@ -27,6 +27,8 @@ export interface ProducerBackpressureConfig {
 
 export interface ProducerBackpressureSnapshot {
   producerConnected: boolean;
+  /** Honest post-boot producer health (H3) — the bit admit() and readiness actually gate on. */
+  producerHealthy: boolean;
   fallbackSaturated: boolean;
   fallbackPendingBytes: number;
   tripped: boolean;
@@ -34,18 +36,20 @@ export interface ProducerBackpressureSnapshot {
 
 export class ProducerBackpressure {
   constructor(
-    private readonly producer: Pick<CollectorKafkaProducer, 'isConnected'>,
+    private readonly producer: Pick<CollectorKafkaProducer, 'isConnected' | 'isHealthy'>,
     private readonly fallback: Pick<LocalDiskFallback, 'isSaturated' | 'pendingBytes'>,
     private readonly cfg: ProducerBackpressureConfig,
   ) {}
 
   /**
    * Admission decision — true = admit. The collector must accept whenever EITHER durable
-   * anchor is available: the log (producer connected) OR headroom in the disk WAL. Only
-   * "log down AND WAL full" sheds — that is the whole point of the fallback (ADR-0015 D1).
+   * anchor is available: the log (producer HEALTHY — isConnected() lies through a post-boot
+   * broker outage, H3) OR headroom in the disk WAL. Only "log unhealthy AND WAL full" sheds —
+   * that is the whole point of the fallback (ADR-0015 D1): the collector stays accepting
+   * while the WAL absorbs, and the gate can now actually trip when the outage outlives the cap.
    */
   admit(): boolean {
-    return this.producer.isConnected() || !this.fallback.isSaturated();
+    return this.producer.isHealthy() || !this.fallback.isSaturated();
   }
 
   get retryAfterSeconds(): number {
@@ -54,12 +58,15 @@ export class ProducerBackpressure {
 
   snapshot(): ProducerBackpressureSnapshot {
     const producerConnected = this.producer.isConnected();
+    const producerHealthy = this.producer.isHealthy();
     const fallbackSaturated = this.fallback.isSaturated();
     return {
       producerConnected,
+      producerHealthy,
       fallbackSaturated,
       fallbackPendingBytes: this.fallback.pendingBytes(),
-      tripped: !producerConnected && fallbackSaturated,
+      // Same substitution as admit() (H3): tripped must be able to become true after boot.
+      tripped: !producerHealthy && fallbackSaturated,
     };
   }
 }

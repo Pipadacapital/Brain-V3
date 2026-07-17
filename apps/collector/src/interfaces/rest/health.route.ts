@@ -9,10 +9,20 @@
  *   GET /health  — compatibility alias for /readyz
  */
 import type { FastifyInstance } from 'fastify';
-import type { ProducerBackpressure } from './producer-backpressure.js';
+import type { ProducerBackpressure, ProducerBackpressureSnapshot } from './producer-backpressure.js';
 
 // intentional: npm_package_version is an npm-injected runtime var (not app config) — leave raw.
 const VERSION = process.env['npm_package_version'] ?? '0.0.0';
+
+/**
+ * Producer dep label (H3): 'unhealthy' = connected-but-failing (post-boot outage — the state
+ * the old isConnected()-only snapshot could never surface); 'disconnected' = never/explicitly
+ * disconnected; 'connected' = healthy.
+ */
+function logProducerState(snap: ProducerBackpressureSnapshot): 'connected' | 'unhealthy' | 'disconnected' {
+  if (snap.producerHealthy) return 'connected';
+  return snap.producerConnected ? 'unhealthy' : 'disconnected';
+}
 
 export function registerHealthRoutes(
   app: FastifyInstance,
@@ -26,9 +36,11 @@ export function registerHealthRoutes(
   });
 
   // Readiness — ready iff a durable anchor is available for new events: the log (producer
-  // connected) OR headroom in the bounded disk WAL. Only "log down AND WAL saturated" is
-  // not_ready (the same condition the admission gate sheds 503 on). Surfaces the gauge so
-  // ops see producer/fallback state without a separate metrics scrape.
+  // HEALTHY — H3: isConnected() lies through a post-boot broker outage) OR headroom in the
+  // bounded disk WAL. Only "log unhealthy AND WAL saturated" is not_ready (the same condition
+  // the admission gate sheds 503 on) — the collector deliberately stays READY while the WAL
+  // absorbs an outage. Surfaces the gauges so ops see producer/fallback state without a
+  // separate metrics scrape.
   app.get('/readyz', async (_req, reply) => {
     // Shutdown drain (ADR-0015 WAL durability posture): SIGTERM flips this BEFORE the final
     // WAL flush so the k8s endpoints stop routing new accepts to a pod about to exit.
@@ -43,7 +55,7 @@ export function registerHealthRoutes(
       service: 'collector',
       version: VERSION,
       deps: {
-        log_producer: snap.producerConnected ? 'connected' : 'disconnected',
+        log_producer: logProducerState(snap),
         disk_fallback: snap.fallbackSaturated ? 'saturated' : 'ok',
       },
       backpressure: snap,
@@ -63,7 +75,7 @@ export function registerHealthRoutes(
       service: 'collector',
       version: VERSION,
       deps: {
-        log_producer: snap.producerConnected ? 'connected' : 'disconnected',
+        log_producer: logProducerState(snap),
         disk_fallback: snap.fallbackSaturated ? 'saturated' : 'ok',
       },
     });

@@ -23,37 +23,86 @@ vi.mock('@brain/observability', () => ({
 }));
 
 import { ProducerBackpressure, registerProducerBackpressure } from './producer-backpressure.js';
+import { registerHealthRoutes } from './health.route.js';
 import { FallbackSaturatedError } from '../../infrastructure/local-disk-fallback.js';
 
-function gate(producerConnected: boolean, saturated: boolean): ProducerBackpressure {
+function gate(
+  producerHealthy: boolean,
+  saturated: boolean,
+  /** Post-boot outage shape (H3): connected can stay true while healthy is false. */
+  producerConnected: boolean = producerHealthy,
+): ProducerBackpressure {
   return new ProducerBackpressure(
-    { isConnected: () => producerConnected },
+    { isConnected: () => producerConnected, isHealthy: () => producerHealthy },
     { isSaturated: () => saturated, pendingBytes: () => (saturated ? 100 : 0) },
     { retryAfterSeconds: 7 },
   );
 }
 
 describe('ProducerBackpressure.admit', () => {
-  it('admits when the producer is connected (WAL state irrelevant)', () => {
+  it('admits when the producer is healthy (WAL state irrelevant)', () => {
     expect(gate(true, false).admit()).toBe(true);
     expect(gate(true, true).admit()).toBe(true);
   });
 
-  it('admits when the producer is down but the WAL has headroom (the point of the fallback)', () => {
+  it('admits when the producer is unhealthy but the WAL has headroom (the point of the fallback)', () => {
     expect(gate(false, false).admit()).toBe(true);
   });
 
-  it('sheds ONLY when the producer is down AND the WAL is saturated (no anchor left)', () => {
+  it('sheds ONLY when the producer is unhealthy AND the WAL is saturated (no anchor left)', () => {
     expect(gate(false, true).admit()).toBe(false);
+  });
+
+  it('trips on the POST-BOOT outage shape: still connected, no longer healthy, WAL full (H3)', () => {
+    // The pre-H3 gate read isConnected() — non-null producer through a broker outage — so this
+    // exact state could NEVER shed. isHealthy() makes the trip reachable.
+    const g = gate(false, true, true);
+    expect(g.admit()).toBe(false);
+    expect(g.snapshot()).toEqual({
+      producerConnected: true,
+      producerHealthy: false,
+      fallbackSaturated: true,
+      fallbackPendingBytes: 100,
+      tripped: true,
+    });
   });
 
   it('snapshot() surfaces both gauges + the tripped state', () => {
     expect(gate(false, true).snapshot()).toEqual({
       producerConnected: false,
+      producerHealthy: false,
       fallbackSaturated: true,
       fallbackPendingBytes: 100,
       tripped: true,
     });
+  });
+});
+
+describe('GET /readyz reflects producer HEALTH (H3), not mere connectedness', () => {
+  function healthApp(g: ProducerBackpressure): ReturnType<typeof Fastify> {
+    const app = Fastify();
+    registerHealthRoutes(app, g);
+    return app;
+  }
+
+  it('503 not_ready when connected-but-unhealthy AND saturated (post-boot outage, WAL full)', async () => {
+    const res = await healthApp(gate(false, true, true)).inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as { status: string; deps: { log_producer: string } };
+    expect(body.status).toBe('not_ready');
+    expect(body.deps.log_producer).toBe('unhealthy'); // connected but failing — now visible
+  });
+
+  it('200 ready while unhealthy but the WAL still has headroom (collector stays READY, WAL absorbs)', async () => {
+    const res = await healthApp(gate(false, false, true)).inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { status: string }).status).toBe('ready');
+  });
+
+  it('200 ready + log_producer=connected when healthy', async () => {
+    const res = await healthApp(gate(true, false)).inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { deps: { log_producer: string } }).deps.log_producer).toBe('connected');
   });
 });
 

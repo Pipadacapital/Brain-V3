@@ -1,20 +1,22 @@
 /**
- * Collector (Deployable 1) — accept-before-validate ingest. ADR-003.
+ * Collector (Deployable 1) — accept-before-validate ingest. ADR-003 + ADR-0015.
  *
- * D-1 ORDERING (immutable invariant):
- *   HTTP body → INSERT collector_spool → HTTP 200 ACK
- *   ← async, separate loop → drainer → Kafka.produce()
+ * D-1 ORDERING (immutable invariant, re-anchored by ADR-0015 direct-to-log ingest):
+ *   HTTP body → PRODUCE to the log (idempotent, acks=-1) → HTTP 200 ACK
+ *   └─ on produce failure → fsync'd append to the bounded local-disk WAL → HTTP 200 ACK
+ *      (background flusher re-produces the WAL on reconnect)
  *
- * The 99.95% durability guarantee lives in collector_spool, NOT in the Kafka client.
- * Even with Kafka completely down, every event is ACK'd and spooled.
+ * The durability guarantee lives in the produce-ack (or the WAL append), NOT in Postgres.
+ * The PG spool + drainer + reaper are DELETED (ADR-0015 D1). Even with Kafka completely
+ * down, every event is ACK'd into the WAL until the cap — then 503 backpressure.
  *
  * Startup sequence (D-10):
- *   1. Parse + validate config (exit 1 on invalid env).
- *   2. Connect spool DB (PgSpoolRepository).
- *   3. Register Avro schema with Apicurio — exponential backoff, max 30s.
- *      On timeout: log warning, degrade to spool-only mode (do NOT crash-loop).
- *   4. Open HTTP listener.
- *   5. Start drainer loop (separate async interval — NOT in request handler).
+ *   1. Parse + validate config (exit 1 on invalid env; INGEST_DIRECT_TO_LOG=false refuses boot).
+ *   2. Init the local-disk fallback WAL (adopts crash-leftover bytes).
+ *   3. Connect the Kafka producer — bounded boot retry; failure is NON-fatal (WAL covers).
+ *   4. Register Avro schema with Apicurio — exponential backoff, max 30s (degrade, don't crash).
+ *   5. Open HTTP listener.
+ *   6. Start the fallback flusher loop (separate async interval — NOT in request handler).
  */
 
 import Fastify from 'fastify';
@@ -27,19 +29,16 @@ import {
   createPixelIdentityConfigService,
   PgBrandConsentConfigReader,
 } from './interfaces/rest/pixel-identity-config.js';
-import { PgSpoolRepository } from './infrastructure/pg-spool.repository.js';
 import { CollectorKafkaProducer } from './infrastructure/kafka-producer.js';
+import { LocalDiskFallback } from './infrastructure/local-disk-fallback.js';
 import { AcceptEventUseCase } from './application/accept-event.usecase.js';
-import { DrainEventsUseCase } from './application/drain-events.usecase.js';
-import { filterUnseenEventIds, markEventsSeen } from './infrastructure/ingest-dedup.repository.js';
-import { Drainer } from './interfaces/jobs/drainer.js';
 import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
 import { registerMetricsRoute } from './interfaces/rest/metrics.route.js';
 import { registerPixelAssetRoute } from './interfaces/rest/pixel-asset.route.js';
 import { EdgeRateLimiter, registerEdgeGuard, edgePostureWarnings } from './interfaces/rest/edge-guard.js';
 import { TokenBrandBinding } from './interfaces/rest/token-brand-binding.js';
-import { SpoolBackpressure, registerSpoolBackpressure } from './interfaces/rest/spool-backpressure.js';
+import { ProducerBackpressure, registerProducerBackpressure } from './interfaces/rest/producer-backpressure.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -174,16 +173,29 @@ async function registerSchemaWithBackoff(): Promise<void> {
     }
   }
 
-  // D-10: after backoff budget exhausted, degrade to spool-only (do NOT crash).
+  // D-10: after backoff budget exhausted, degrade (do NOT crash) — the accept path keeps
+  // ACKing via direct produce / disk fallback; schema registers on the next restart.
   log.warn(
-    'Apicurio registration failed after 30s — degrading to spool-only mode. ' +
-      'Schema will be registered on next restart. Events continue to spool and drain normally.',
+    'Apicurio registration failed after 30s — degrading. ' +
+      'Schema will be registered on next restart. Events continue to produce/fallback normally.',
   );
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 export async function main(): Promise<void> {
+  // ADR-0015 kill-switch guard: the PG spool path is DELETED, so INGEST_DIRECT_TO_LOG=false has
+  // no path to fall back to. Refusing to boot is the only honest behavior — a silently-ignored
+  // flag would look like a rollback while events kept flowing to the log (or worse, nowhere).
+  // Rollback of this architecture is a git revert, not a flag flip.
+  if (!cfg.INGEST_DIRECT_TO_LOG) {
+    throw new Error(
+      '[config] INGEST_DIRECT_TO_LOG=false but the spool path is deleted (ADR-0015 WS1). ' +
+        'The flag is a kill switch that refuses boot rather than silently losing events — ' +
+        'unset it (default true) or revert the direct-to-log commit to restore the spool.',
+    );
+  }
+
   // Real OpenTelemetry export (ADR-009) — gated by OTEL_EXPORTER_OTLP_ENDPOINT (no-op in dev).
   // Keep the flush fns so graceful shutdown can export the final telemetry batch before exit (C1).
   const shutdownObservability = await initObservability({ serviceName: 'collector', otlpEndpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT });
@@ -193,14 +205,12 @@ export async function main(): Promise<void> {
   registerProcessFailureHandlers({ log, serviceName: 'collector', flush: closeSentry });
 
   // ── 1. Infrastructure wiring ─────────────────────────────────────────────────
-  const spoolRepo = new PgSpoolRepository(cfg.DATABASE_URL);
-
   const brokers = cfg.KAFKA_BROKERS.split(',').map((b) => b.trim());
   const topic = `${cfg.NODE_ENV === 'production' ? 'prod' : 'dev'}.collector.event.v1`;
 
   const kafkaProducer = new CollectorKafkaProducer({
     brokers,
-    clientId: 'collector-drainer',
+    clientId: 'collector',
     topic,
     ...(cfg.KAFKA_SASL_USERNAME && cfg.KAFKA_SASL_PASSWORD
       ? {
@@ -213,26 +223,37 @@ export async function main(): Promise<void> {
       : {}),
   });
 
+  // Bounded local-disk fallback WAL (ADR-0015 D1) — the durability anchor when the log is down.
+  const fallback = new LocalDiskFallback(
+    {
+      dir: cfg.INGEST_FALLBACK_DIR,
+      maxBytes: cfg.INGEST_FALLBACK_MAX_BYTES,
+      flushIntervalMs: cfg.INGEST_FALLBACK_FLUSH_INTERVAL_MS,
+    },
+    kafkaProducer,
+  );
+  await fallback.init();
+
   // ── 2. Use-cases ─────────────────────────────────────────────────────────────
-  const acceptUseCase = new AcceptEventUseCase(spoolRepo);
-  const DRAIN_BATCH_SIZE = cfg.DRAIN_BATCH_SIZE;
-  // ADR-0012 ingest dedup gate (cross-brand SECURITY DEFINER helpers, 0130) — the drainer runs
-  // filter/mark on the claim's own client so mark-seen commits atomically with mark-drained.
-  const drainUseCase = new DrainEventsUseCase(spoolRepo, kafkaProducer, DRAIN_BATCH_SIZE, {
-    filterUnseenEventIds,
-    markEventsSeen,
-  });
-  const DRAIN_POLL_MS = cfg.DRAIN_POLL_INTERVAL_MS;
+  const acceptUseCase = new AcceptEventUseCase(kafkaProducer, fallback);
 
-  const drainer = new Drainer(drainUseCase, kafkaProducer, {
-    pollIntervalMs: DRAIN_POLL_MS,
-    batchSize: DRAIN_BATCH_SIZE,
-  });
+  // ── 3. Kafka producer boot connect — bounded retry, NON-fatal ────────────────
+  // The accept path must 200 via the WAL even when Kafka is down at boot; the fallback
+  // flusher (and the hot path's lazy connect) keep re-attempting after these attempts.
+  for (let attempt = 1; attempt <= 3 && !kafkaProducer.isConnected(); attempt += 1) {
+    try {
+      await kafkaProducer.connect();
+      log.info('Kafka producer connected', { attempt });
+    } catch (err) {
+      log.warn('Kafka producer boot connect failed — WAL fallback covers accepts', { attempt, err });
+      if (attempt < 3) await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
 
-  // ── 3. Apicurio schema registration (D-10) — with backoff, degrade-don't-crash ──
+  // ── 4. Apicurio schema registration (D-10) — with backoff, degrade-don't-crash ──
   await registerSchemaWithBackoff();
 
-  // ── 4. Fastify HTTP server ───────────────────────────────────────────────────
+  // ── 5. Fastify HTTP server ───────────────────────────────────────────────────
   const app = Fastify({
     logger: false,
     bodyLimit: 1024 * 1024, // 1 MiB
@@ -241,21 +262,21 @@ export async function main(): Promise<void> {
 
   // Parse text/plain bodies as JSON. The pixel SDK posts events as text/plain (a CORS-"simple"
   // content-type) so cross-origin POSTs need no preflight — but the payload is still JSON. Accept-
-  // before-validate (D-1): an unparseable body becomes {} and is spooled anyway (never lose an event).
+  // before-validate (D-1): an unparseable body becomes {} and is accepted anyway (never lose an event).
   app.addContentTypeParser('text/plain', { parseAs: 'string' }, (_req, body, done) => {
     try {
       done(null, body && typeof body === 'string' ? JSON.parse(body) : {});
     } catch (err) {
-      // intentional: accept-before-validate — an unparseable beacon body becomes {} and is spooled
-      // anyway (never lose an event); the drainer/DQ quarantines malformed payloads downstream. Logged
+      // intentional: accept-before-validate — an unparseable beacon body becomes {} and is accepted
+      // anyway (never lose an event); Silver quarantines malformed payloads downstream. Logged
       // at debug only (hot path: a misbehaving client could fire this per-request).
-      log.debug('unparseable text/plain body — spooling empty envelope (accept-before-validate)', { err });
+      log.debug('unparseable text/plain body — accepting empty envelope (accept-before-validate)', { err });
       done(null, {});
     }
   });
 
   // ── Edge abuse protection (REC-9): per-install_token rate-limit + origin allowlist ──
-  // reject-before-spool preHandler (NOT a D-1 violation — admission gate, not validation).
+  // reject-before-accept preHandler (NOT a D-1 violation — admission gate, not validation).
   // VETO Set-Cookie on /collect (REC-4): the limiter is stateless, anon-id is client-side.
   const edgeLimiter = new EdgeRateLimiter({
     maxPerWindow: cfg.EDGE_RATE_MAX_PER_WINDOW,
@@ -266,8 +287,8 @@ export async function main(): Promise<void> {
   // ── install_token→brand_id binding (AUD-INFRA-025): tenant-isolation admission gate ──
   // The 0121 SECURITY DEFINER reader (constructed here; ALSO the WA-07 pixel-identity source
   // below) is the binding oracle: a fully-presented (token, brand_id) pair the oracle disproves
-  // is rejected 403 TOKEN_BRAND_MISMATCH before the spool — a LEAKED install_token can no longer
-  // write another brand's lane. Fail-open on PG outage / unprovable pairs (no event loss).
+  // is rejected 403 TOKEN_BRAND_MISMATCH before the accept path — a LEAKED install_token can no
+  // longer write another brand's lane. Fail-open on PG outage / unprovable pairs (no event loss).
   const consentConfigReader = new PgBrandConsentConfigReader(cfg.DATABASE_URL);
   const tokenBrandBinding = new TokenBrandBinding({
     reader: consentConfigReader,
@@ -281,21 +302,14 @@ export async function main(): Promise<void> {
     log.warn(warning);
   }
 
-  // ── Spool back-pressure (C4 / R-09): bound the pending backlog ───────────────
-  // Sheds load with 503 SPOOL_FULL + Retry-After when the drainer falls behind, so the
-  // durable spool cannot grow unbounded and fill the Postgres volume (which would fail the
-  // ACK path for ALL tenants). Reject-before-spool admission gate (not validation → D-1 holds).
-  const backpressure = new SpoolBackpressure(
-    spoolRepo,
-    {
-      maxPending: cfg.SPOOL_MAX_PENDING,
-      resumePending: cfg.SPOOL_RESUME_PENDING,
-      sampleIntervalMs: cfg.SPOOL_SAMPLE_INTERVAL_MS,
-      retryAfterSeconds: cfg.SPOOL_RETRY_AFTER_SECONDS,
-    },
-    (err) => log.warn('spool back-pressure sample failed — holding last known state', { err }),
-  );
-  registerSpoolBackpressure(app, backpressure);
+  // ── Producer/fallback back-pressure (ADR-0015): bound the WAL, shed at cap ──
+  // Sheds load with 503 INGEST_BACKPRESSURE + Retry-After ONLY when the log is unreachable
+  // AND the disk WAL is saturated — the point where no durable anchor remains. Reject-before-
+  // accept admission gate (not validation → D-1 holds).
+  const backpressure = new ProducerBackpressure(kafkaProducer, fallback, {
+    retryAfterSeconds: cfg.INGEST_FALLBACK_RETRY_AFTER_SECONDS,
+  });
+  registerProducerBackpressure(app, backpressure);
 
   // ── SPEC A.1.1 + A.1.2 (WA-07/WA-08): per-brand pixel identity bootstrap wiring ──────────────
   // Redis (per-brand platform flags, DEFAULT OFF fail-closed) + PG (tenancy.brand consent config
@@ -322,12 +336,12 @@ export async function main(): Promise<void> {
   });
 
   // Register routes
-  registerHealthRoutes(app, spoolRepo, backpressure);
+  registerHealthRoutes(app, backpressure);
   registerMetricsRoute(app); // GET /metrics — Prometheus exposition (AUD-LOCAL-016); ungated (guards match POST ingest routes only)
   registerPixelAssetRoute(app, pixelIdentityConfig); // GET /pixel.js — the served brain.js asset (Track B + WA-07 identity bootstrap)
   registerCollectRoute(app, acceptUseCase, { firstPartyCookie: cfg.PIXEL_FIRST_PARTY_COOKIE });
 
-  // ── 5. Start HTTP listener ───────────────────────────────────────────────────
+  // ── 6. Start HTTP listener ───────────────────────────────────────────────────
   try {
     await app.listen({ port: cfg.PORT, host: '0.0.0.0' });
     log.info('HTTP listener open', { port: cfg.PORT });
@@ -336,35 +350,20 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // ── 6. Start drainer loop (AFTER HTTP listener — separate async loop, D-1) ──
-  await drainer.start();
+  // ── 7. Start the fallback flusher loop (AFTER HTTP listener — separate async loop, D-1) ──
+  // The flusher re-produces WAL entries on reconnect and is the producer's reconnect driver
+  // while Kafka is down (each tick attempts connect before flushing).
+  fallback.start();
 
-  // Prime + start the back-pressure gauge sampler (background interval; gate already wired).
-  await backpressure.start();
-
-  // ── 6b. Spool retention reaper (DB-AUDIT M6) — bound collector_spool growth ──────────────────
-  // The drainer marks rows 'drained' but never deletes them; without a reaper the raw pre-tenant
-  // buffer grows unbounded. Periodically purge drained rows past a short trail window. Best-effort:
-  // a reap failure is logged, never fatal (the spool/ACK path is unaffected). unref so it never
-  // holds the process open.
-  const SPOOL_RETENTION_SECONDS = cfg.SPOOL_RETENTION_SECONDS; // 24h trail
-  const SPOOL_REAP_INTERVAL_MS = cfg.SPOOL_REAP_INTERVAL_MS; // every 5 min
-  const reaperTimer = setInterval(() => {
-    void spoolRepo
-      .reapDrained(SPOOL_RETENTION_SECONDS)
-      .then((n) => { if (n > 0) log.info('spool reaper purged drained rows', { purged: n }); })
-      .catch((err) => log.warn('spool reaper failed (non-fatal)', { err }));
-  }, SPOOL_REAP_INTERVAL_MS);
-  reaperTimer.unref?.();
-
-  // ── 7. Graceful shutdown ─────────────────────────────────────────────────────
+  // ── 8. Graceful shutdown ─────────────────────────────────────────────────────
   const shutdown = async (signal: string): Promise<void> => {
     log.info('signal received — graceful shutdown', { signal });
-    clearInterval(reaperTimer);
-    backpressure.stop();
-    await drainer.stop();
     await app.close();
-    await (spoolRepo as PgSpoolRepository & { end(): Promise<void> }).end();
+    // Best-effort final WAL flush, then stop the flusher + close the append handle. Anything
+    // unflushed survives on disk and is adopted by init() on the next boot (crash-safe WAL).
+    await fallback.flushOnce().catch((err) => log.debug('final WAL flush failed on shutdown', { err }));
+    await fallback.stop().catch((err) => log.debug('fallback stop failed on shutdown', { err }));
+    await kafkaProducer.disconnect().catch((err) => log.debug('producer disconnect failed on shutdown', { err }));
     // WA-07/WA-08 identity-bootstrap resources — best-effort teardown (both are fail-closed paths).
     await consentConfigReader.end().catch((err) => log.debug('consent-config pool end failed on shutdown', { err }));
     try { flagRedis.disconnect(); } catch (err) { log.debug('flag redis disconnect failed on shutdown', { err }); }

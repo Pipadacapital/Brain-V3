@@ -17,13 +17,18 @@
  *   • Flush is rotate-then-produce: the active WAL is renamed to a .flushing file (appends
  *     continue on a fresh active file), its lines are produced in batches, and the .flushing
  *     file is unlinked ONLY after every line produced. A crash/produce-failure mid-flush keeps
- *     the file → next flush re-produces from the top. That is deliberate at-least-once:
- *     Bronze-compaction + Silver dedup absorb the replay (ADR-0015 D2); no event is lost.
+ *     the file → next flush RESUMES from the produced-line high-water offset (M4, sidecar
+ *     .offset file, fsync'd after each produced batch) instead of replaying from the top.
+ *     Replaying whole files was safe for KEYED events (Bronze-compaction + Silver dedup) but
+ *     made PERMANENT physical duplicates of keyless events (no brand_id/event_id → excluded
+ *     from Bronze dedup and un-MERGE-able in Silver). Residual at-least-once: a crash BETWEEN
+ *     a batch produce and its offset fsync re-produces at most that ONE batch on resume —
+ *     bounded, and keyed events in it are absorbed downstream (ADR-0015 D2).
  *   • A torn final line from a mid-write crash fails JSON.parse and is skipped with a warn
  *     (the client never got its ACK for that request, so the retry contract re-sends it).
  */
 import { createReadStream } from 'node:fs';
-import { mkdir, open, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { incrementCounter } from '@brain/observability';
@@ -45,6 +50,11 @@ export interface LocalDiskFallbackConfig {
   maxBytes: number;
   /** Background flusher cadence (INGEST_FALLBACK_FLUSH_INTERVAL_MS). */
   flushIntervalMs: number;
+  /**
+   * Lines produced per broker round-trip during a flush (bounds flush memory AND the M4
+   * crash-window re-produce). Internal knob — default FLUSH_PRODUCE_BATCH; tests shrink it.
+   */
+  flushProduceBatchLines?: number;
 }
 
 /** The producer surface the flusher needs — kept minimal so tests stub it trivially. */
@@ -71,12 +81,26 @@ export interface WalStats {
 
 const ACTIVE_FILE = 'collector-fallback.wal';
 const FLUSHING_FILE = 'collector-fallback.flushing.wal';
+/**
+ * Produced-line high-water sidecar for the .flushing file (M4): holds the count of raw lines
+ * from the top of the .flushing file that are already produce-ack'd, fsync'd after each
+ * produced batch. A flush retry (in-process or next-boot) resumes AFTER this line instead of
+ * replaying the whole file — the replay was minting permanent physical duplicates for
+ * KEYLESS events. Lifecycle: created/advanced during a flush; on completion the .flushing
+ * file is unlinked FIRST, then the sidecar — and the rotate step defensively unlinks any
+ * stale sidecar BEFORE renaming active→flushing, so a stale offset can never pair with a
+ * newly-rotated file (which would skip unproduced lines = event loss; dupes are acceptable,
+ * loss never is). A fileless sidecar left by a crash between the unlinks is cleaned at init().
+ */
+const FLUSHING_OFFSET_FILE = 'collector-fallback.flushing.wal.offset';
 /** Lines produced per broker round-trip during a flush (bounds flush memory). */
 const FLUSH_PRODUCE_BATCH = 200;
 
 export class LocalDiskFallback {
   private readonly activePath: string;
   private readonly flushingPath: string;
+  private readonly flushingOffsetPath: string;
+  private readonly flushBatchLines: number;
   private fh: FileHandle | null = null;
   private activeBytes = 0;
   private flushingBytes = 0;
@@ -97,6 +121,8 @@ export class LocalDiskFallback {
   ) {
     this.activePath = join(cfg.dir, ACTIVE_FILE);
     this.flushingPath = join(cfg.dir, FLUSHING_FILE);
+    this.flushingOffsetPath = join(cfg.dir, FLUSHING_OFFSET_FILE);
+    this.flushBatchLines = cfg.flushProduceBatchLines ?? FLUSH_PRODUCE_BATCH;
   }
 
   /** Create the dir and adopt any WAL bytes left by a previous process (crash recovery). */
@@ -108,7 +134,17 @@ export class LocalDiskFallback {
     // scan (boot only, bounded by the WAL cap), oldest-entry age approximated by the file's
     // creation time (= its first append; mtime fallback where birthtime is unsupported).
     this.activeEvents = this.activeBytes > 0 ? await countLines(this.activePath) : 0;
-    this.flushingEvents = this.flushingBytes > 0 ? await countLines(this.flushingPath) : 0;
+    if (this.flushingBytes > 0) {
+      // M4: pending = total lines minus the produced-line high-water (a crash mid-flush left
+      // a sidecar; those lines are already on the log and will be SKIPPED, not replayed).
+      const producedLines = await readOffsetSidecar(this.flushingOffsetPath);
+      this.flushingEvents = Math.max(0, (await countLines(this.flushingPath)) - producedLines);
+    } else {
+      this.flushingEvents = 0;
+      // A sidecar without its .flushing file (crash between the completion unlinks) is stale —
+      // it must NOT survive to pair with a future rotation (that would skip unproduced lines).
+      await unlink(this.flushingOffsetPath).catch(() => undefined);
+    }
     this.activeOldestMs = this.activeBytes > 0 ? await fileBirthMs(this.activePath) : null;
     this.flushingOldestMs = this.flushingBytes > 0 ? await fileBirthMs(this.flushingPath) : null;
     if (this.activeBytes + this.flushingBytes > 0) {
@@ -190,6 +226,9 @@ export class LocalDiskFallback {
             await this.fh.close();
             this.fh = null;
           }
+          // M4 defensive: a freshly-rotated file must always start at offset 0 — a stale
+          // sidecar pairing with it would SKIP unproduced lines (event loss, never acceptable).
+          await unlink(this.flushingOffsetPath).catch(() => undefined);
           await rename(this.activePath, this.flushingPath);
           this.flushingBytes = this.activeBytes;
           this.activeBytes = 0;
@@ -213,19 +252,22 @@ export class LocalDiskFallback {
       const producedCount = await this.produceFile(this.flushingPath);
 
       // Every line produced (produce-ack'd) — the WAL entries are now durable in the log.
+      // File FIRST, sidecar second (see FLUSHING_OFFSET_FILE comment): a crash between the two
+      // leaves a fileless sidecar that init()/rotate clean up — never a loss window.
       await unlink(this.flushingPath);
+      await unlink(this.flushingOffsetPath).catch(() => undefined);
       const drained = this.flushingBytes;
       this.flushingBytes = 0;
       this.flushingEvents = 0;
       this.flushingOldestMs = null;
-      // WAL observability: entries that made it from the WAL onto the log (durability window closed).
-      incrementCounter('collector_wal_flushed_total', {}, producedCount);
       log.info('fallback WAL flushed to the log', { bytes: drained, events: producedCount });
     } catch (err) {
-      // Produce failed mid-file: keep the .flushing file; next tick re-produces from the top
-      // (at-least-once — Bronze-compaction + Silver dedup absorb the replay, ADR-0015 D2).
+      // Produce failed mid-file: keep the .flushing file; the next tick RESUMES from the
+      // produced-line high-water sidecar (M4) — only unproduced lines are retried, so keyless
+      // events are not physically duplicated. Residual at-least-once is bounded to one batch
+      // (crash between a batch produce and its offset fsync — ADR-0015 D2 absorbs keyed events).
       incrementCounter('collector_wal_flush_failures_total');
-      log.warn('fallback WAL flush failed — will retry', { err });
+      log.warn('fallback WAL flush failed — will retry from the produced-line offset', { err });
     } finally {
       this.flushing = false;
     }
@@ -250,13 +292,25 @@ export class LocalDiskFallback {
     }
   }
 
-  /** Stream the file's JSONL lines and produce them in bounded batches. Throws on produce failure. */
+  /**
+   * Stream the file's JSONL lines and produce them in bounded batches, resuming AFTER the
+   * produced-line high-water offset (M4) and advancing the fsync'd sidecar after each produced
+   * batch. Throws on produce failure — produced lines up to the last sidecar write are never
+   * replayed by the retry. The offset counts RAW lines consumed (produced + skipped torn/empty),
+   * which is deterministic because the rotated file is immutable.
+   */
   private async produceFile(path: string): Promise<number> {
+    // Read the sidecar every pass: covers in-process retries AND next-boot adoption alike.
+    const resumeAfterLine = await readOffsetSidecar(this.flushingOffsetPath);
     const rl = createInterface({ input: createReadStream(path, 'utf8'), crlfDelay: Infinity });
     let batch: ProduceMessage[] = [];
     let produced = 0;
+    let linesConsumed = 0;
     try {
       for await (const line of rl) {
+        linesConsumed += 1;
+        // Already produce-ack'd in a previous pass — skip, never re-produce (the M4 fix).
+        if (linesConsumed <= resumeAfterLine) continue;
         if (line.length === 0) continue;
         let msg: ProduceMessage;
         try {
@@ -267,20 +321,43 @@ export class LocalDiskFallback {
           continue;
         }
         batch.push(msg);
-        if (batch.length >= FLUSH_PRODUCE_BATCH) {
-          await this.producer.produceBatch(batch);
-          produced += batch.length;
+        if (batch.length >= this.flushBatchLines) {
+          produced += await this.produceBatchAndAdvance(batch, linesConsumed);
           batch = [];
         }
       }
       if (batch.length > 0) {
+        // No sidecar write after the FINAL batch — completion unlinks file + sidecar next; a
+        // crash in between re-produces at most this one batch (same bounded window as below).
         await this.producer.produceBatch(batch);
-        produced += batch.length;
+        produced += this.countFlushed(batch.length);
       }
       return produced;
     } finally {
       rl.close();
     }
+  }
+
+  /**
+   * Produce one bounded batch, then fsync the produced-line high-water sidecar. A crash
+   * BETWEEN the produce and the sidecar write re-produces at most this ONE batch on resume —
+   * accepted: bounded, keyed events are absorbed by Bronze-compaction + Silver dedup, and the
+   * alternative (offset before produce) would risk LOSS, which is never acceptable.
+   */
+  private async produceBatchAndAdvance(batch: ProduceMessage[], linesConsumed: number): Promise<number> {
+    await this.producer.produceBatch(batch);
+    await writeOffsetSidecar(this.flushingOffsetPath, linesConsumed);
+    return this.countFlushed(batch.length);
+  }
+
+  /** Per-batch flushed accounting: exact under partial-file resume (counter + pending gauge). */
+  private countFlushed(count: number): number {
+    // WAL observability: entries that made it from the WAL onto the log (durability window
+    // closed). Counted per produced batch — a later mid-file failure must not zero out what
+    // this pass already drained.
+    incrementCounter('collector_wal_flushed_total', {}, count);
+    this.flushingEvents = Math.max(0, this.flushingEvents - count);
+    return count;
   }
 
   /** Start the background flusher. unref'd — never holds the process open. */
@@ -311,6 +388,30 @@ export class LocalDiskFallback {
       () => undefined,
     );
     return run;
+  }
+}
+
+/**
+ * Read the produced-line high-water sidecar (M4). Absent/unreadable/garbage ⇒ 0 — the flush
+ * replays from the top, which is the safe direction (bounded dupes, never loss).
+ */
+async function readOffsetSidecar(path: string): Promise<number> {
+  try {
+    const n = Number.parseInt(await readFile(path, 'utf8'), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Write + fsync the produced-line high-water sidecar (M4) — durable before the next batch. */
+async function writeOffsetSidecar(path: string, lines: number): Promise<void> {
+  const fh = await open(path, 'w');
+  try {
+    await fh.write(String(lines));
+    await fh.datasync();
+  } finally {
+    await fh.close();
   }
 }
 

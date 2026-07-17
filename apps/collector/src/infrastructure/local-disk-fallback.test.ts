@@ -8,7 +8,7 @@
  * Real filesystem (tmp dir per test), stubbed producer — no broker.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -63,8 +63,20 @@ function stubProducer(overrides: Partial<FlushProducer> = {}): FlushProducer & {
   };
 }
 
-function newFallback(producer: FlushProducer, maxBytes = 1024 * 1024): LocalDiskFallback {
-  return new LocalDiskFallback({ dir, maxBytes, flushIntervalMs: 60_000 }, producer);
+function newFallback(
+  producer: FlushProducer,
+  maxBytes = 1024 * 1024,
+  flushProduceBatchLines?: number,
+): LocalDiskFallback {
+  return new LocalDiskFallback(
+    {
+      dir,
+      maxBytes,
+      flushIntervalMs: 60_000,
+      ...(flushProduceBatchLines !== undefined ? { flushProduceBatchLines } : {}),
+    },
+    producer,
+  );
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -299,6 +311,111 @@ describe('LocalDiskFallback.drain (SIGTERM bounded final flush)', () => {
     await wal.append([msg(1)]);
     await expect(wal.drain(50)).resolves.toBe('timeout');
     expect(wal.pendingBytes()).toBeGreaterThan(0); // rotated, retained for next-boot adoption
+  });
+});
+
+describe('LocalDiskFallback produced-line high-water offset (M4 — no whole-file replay)', () => {
+  const OFFSET_FILE = 'collector-fallback.flushing.wal.offset';
+
+  /** A producer that fails on the Nth produceBatch call (1-based), succeeds otherwise. */
+  function failOnCall(n: number): FlushProducer & { produced: ProduceMessage[] } {
+    const produced: ProduceMessage[] = [];
+    let calls = 0;
+    return {
+      produced,
+      isConnected: () => true,
+      connect: async () => undefined,
+      produceBatch: async (batch: ProduceMessage[]) => {
+        calls += 1;
+        if (calls === n) throw new Error('broker down mid-file');
+        produced.push(...batch);
+      },
+    };
+  }
+
+  it('a flush retry RESUMES from the offset — produced lines are never replayed', async () => {
+    // Batch = 2 lines: 5 entries → batches [1,2] [3,4] [5]; the 2nd batch produce fails.
+    const producer = failOnCall(2);
+    const wal = newFallback(producer, 1024 * 1024, 2);
+    await wal.init();
+    await wal.append([msg(1), msg(2), msg(3), msg(4), msg(5)]);
+
+    await wal.flushOnce(); // batch [1,2] produced + offset fsync'd; batch [3,4] fails
+    expect(producer.produced.map((m) => m.eventId)).toEqual(['evt-1', 'evt-2']);
+    expect(await readFile(join(dir, OFFSET_FILE), 'utf8')).toBe('2'); // high-water = 2 lines
+    expect(wal.walStats().pendingEvents).toBe(3); // only the unproduced tail is pending
+
+    await wal.flushOnce(); // retry: resumes AFTER line 2 — evt-1/evt-2 must NOT re-produce
+    expect(producer.produced.map((m) => m.eventId)).toEqual(['evt-1', 'evt-2', 'evt-3', 'evt-4', 'evt-5']);
+    expect(wal.pendingBytes()).toBe(0);
+    await wal.stop();
+  });
+
+  it('crash between produce and offset-write re-produces AT MOST one batch (bounded, accepted)', async () => {
+    const producer = failOnCall(2);
+    const wal = newFallback(producer, 1024 * 1024, 2);
+    await wal.init();
+    await wal.append([msg(1), msg(2), msg(3), msg(4), msg(5)]);
+    await wal.flushOnce(); // [1,2] produced, offset=2 written, [3,4] failed
+
+    // Simulate the crash window: the batch produce landed but the offset fsync never did.
+    await rm(join(dir, OFFSET_FILE));
+
+    const retryProducer = stubProducer();
+    const wal2 = newFallback(retryProducer, 1024 * 1024, 2);
+    await wal2.init();
+    await wal2.flushOnce();
+    // ONE batch ([1,2]) re-produced — bounded to the lost offset write; keyed events are
+    // absorbed by Bronze-compaction + Silver dedup downstream (ADR-0015 D2).
+    expect(retryProducer.produced.map((m) => m.eventId)).toEqual(['evt-1', 'evt-2', 'evt-3', 'evt-4', 'evt-5']);
+    await wal2.stop();
+    await wal.stop();
+  });
+
+  it('next-boot adoption resumes from the crash-leftover offset (no replay across restarts)', async () => {
+    const producer1 = failOnCall(2);
+    const wal1 = newFallback(producer1, 1024 * 1024, 2);
+    await wal1.init();
+    await wal1.append([msg(1), msg(2), msg(3), msg(4), msg(5)]);
+    await wal1.flushOnce(); // [1,2] produced + offset=2; then "crash"
+    await wal1.stop();
+
+    const producer2 = stubProducer();
+    const wal2 = newFallback(producer2, 1024 * 1024, 2);
+    await wal2.init();
+    expect(wal2.walStats().pendingEvents).toBe(3); // adoption subtracts the produced high-water
+    await wal2.flushOnce();
+    expect(producer2.produced.map((m) => m.eventId)).toEqual(['evt-3', 'evt-4', 'evt-5']);
+    expect(wal2.pendingBytes()).toBe(0);
+    await wal2.stop();
+  });
+
+  it('deletes the sidecar with the .flushing file on completion', async () => {
+    const producer = failOnCall(2);
+    const wal = newFallback(producer, 1024 * 1024, 2);
+    await wal.init();
+    await wal.append([msg(1), msg(2), msg(3)]);
+    await wal.flushOnce(); // [1,2] ok + sidecar written; [3] fails
+    expect(await exists(join(dir, OFFSET_FILE))).toBe(true);
+
+    await wal.flushOnce(); // completes
+    expect(await exists(join(dir, OFFSET_FILE))).toBe(false);
+    expect(await exists(join(dir, 'collector-fallback.flushing.wal'))).toBe(false);
+    await wal.stop();
+  });
+
+  it('a stale fileless sidecar is cleaned at init and NEVER pairs with a fresh rotation (no loss)', async () => {
+    // Crash-window artifact: sidecar survived but its .flushing file is gone.
+    await writeFile(join(dir, OFFSET_FILE), '2');
+
+    const producer = stubProducer();
+    const wal = newFallback(producer, 1024 * 1024, 2);
+    await wal.init();
+    await wal.append([msg(1), msg(2), msg(3)]);
+    await wal.flushOnce();
+    // All three produced — a stale offset=2 skipping unproduced lines would have LOST 1+2.
+    expect(producer.produced.map((m) => m.eventId)).toEqual(['evt-1', 'evt-2', 'evt-3']);
+    await wal.stop();
   });
 });
 

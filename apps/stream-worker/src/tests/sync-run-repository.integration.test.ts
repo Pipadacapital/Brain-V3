@@ -41,9 +41,9 @@ let repo: SyncRunRepository;
 
 // ── Test fixtures ──────────────────────────────────────────────────────────────
 // Private UUIDs — hex-only, valid UUIDv4 format, never used by any other suite.
-const SR_BRAND_A = 'sr000001-0a00-4a00-8a00-000000000001';
-const SR_BRAND_B = 'sr000002-0b00-4b00-8b00-000000000002';
-const SR_CI_A    = 'sr000003-0c00-4c00-8c00-000000000003';
+const SR_BRAND_A = '5a000001-0a00-4a00-8a00-000000000001';
+const SR_BRAND_B = '5a000002-0b00-4b00-8b00-000000000002';
+const SR_CI_A    = '5a000003-0c00-4c00-8c00-000000000003';
 
 // ── Setup / teardown ──────────────────────────────────────────────────────────
 
@@ -125,7 +125,8 @@ describe('SyncRunRepository — start→succeed lifecycle', () => {
 
     // The terminal row carries rows_ingested.
     const succeededRow = allRows.rows.find((r) => r.status === 'succeeded');
-    expect(succeededRow?.rows_ingested).toBe(42);
+    // rows_ingested is a bigint column → node-postgres returns it as a string; coerce for the compare.
+    expect(Number(succeededRow?.rows_ingested)).toBe(42);
   });
 });
 
@@ -157,9 +158,12 @@ describe('SyncRunRepository — start→fail lifecycle', () => {
       error_class: string | null;
       error_detail: string | null;
     }>(
+      // The terminal row is a NEW ledger row with its OWN run_id: the PK is composite
+      // (run_id, started_at) and closeRun copies started_at, so it assigns a fresh run_id to avoid a
+      // PK collision. started↔terminal therefore correlate by (brand_id, started_at), NOT run_id.
       `SELECT status, error_class, error_detail FROM connector_sync_run
-       WHERE run_id = $1 AND brand_id = $2 AND status = 'failed'`,
-      [runId, SR_BRAND_A],
+       WHERE brand_id = $1 AND started_at = $2 AND status = 'failed'`,
+      [SR_BRAND_A, startedAt],
     );
 
     expect(rows.rows.length).toBe(1);
@@ -188,9 +192,10 @@ describe('SyncRunRepository — start→fail lifecycle', () => {
     });
 
     const rows = await superPool.query<{ error_detail: string | null }>(
+      // Correlate the terminal row by (brand_id, started_at) — see the note above; run_id differs.
       `SELECT error_detail FROM connector_sync_run
-       WHERE run_id = $1 AND brand_id = $2 AND status = 'failed'`,
-      [runId, SR_BRAND_A],
+       WHERE brand_id = $1 AND started_at = $2 AND status = 'failed'`,
+      [SR_BRAND_A, startedAt],
     );
 
     expect(rows.rows.length).toBe(1);

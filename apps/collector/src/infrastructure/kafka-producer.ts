@@ -80,11 +80,24 @@ export class CollectorKafkaProducer {
     // back-pressure (fail fast → re-drain next tick). The no-event-loss invariant is held by
     // the durable spool, and the idempotency guard is spool-level dedup at the application
     // layer, so broker-level exactly-once is neither needed nor compatible with fail-fast.
-    this.producer = this.kafka.producer({
+    //
+    // this.producer is assigned ONLY after producer.connect() succeeds, so isConnected() is
+    // truthful. The old code assigned first: a startup connect() loss (Kafka restarting while
+    // the collector boots — seen live 2026-07-17) left a never-connected non-null producer, so
+    // isConnected() lied true, the drainer never re-attempted connect, and every produceBatch
+    // failed until a process restart ("permanent back-pressure").
+    const producer = this.kafka.producer({
       allowAutoTopicCreation: false,
       idempotent: false,
     });
-    await this.producer.connect();
+    try {
+      await producer.connect();
+    } catch (err) {
+      // Best-effort teardown of the half-open client; this.producer stays null (not connected).
+      await producer.disconnect().catch(() => undefined);
+      throw err;
+    }
+    this.producer = producer;
   }
 
   async disconnect(): Promise<void> {

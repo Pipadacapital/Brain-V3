@@ -325,7 +325,7 @@ export async function main(): Promise<void> {
   registerHealthRoutes(app, spoolRepo, backpressure);
   registerMetricsRoute(app); // GET /metrics — Prometheus exposition (AUD-LOCAL-016); ungated (guards match POST ingest routes only)
   registerPixelAssetRoute(app, pixelIdentityConfig); // GET /pixel.js — the served brain.js asset (Track B + WA-07 identity bootstrap)
-  registerCollectRoute(app, acceptUseCase);
+  registerCollectRoute(app, acceptUseCase, { firstPartyCookie: cfg.PIXEL_FIRST_PARTY_COOKIE });
 
   // ── 5. Start HTTP listener ───────────────────────────────────────────────────
   try {

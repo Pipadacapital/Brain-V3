@@ -229,8 +229,13 @@ let icelandAvailable = false; // 'lift view + test table available'
 // iceberg.brain_bronze.collector_events_connect) — two-part per the local-views-
 // shadow-catalog serving design.
 const LIVE_TABLE = 'brain_bronze.collector_events_connect_lifted';
-const SEED_ROW_A = `'iso-fuzz-serving-brand-a-1'`;
-const SEED_ROW_B = `'iso-fuzz-serving-brand-b-1'`;
+// SQL literals for the two FIXTURE BRAND ids — the live queries below narrow their probe to
+// exactly these two brands (`brand_id IN (…)`), so pre-existing real-brand rows never affect
+// the assertions. (The old constants here were event-id-looking strings compared against
+// brand_id — the IN-list could NEVER match the fixture brands, so the positive test was
+// unsatisfiable even WITH seed data. Found live 2026-07-17.)
+const BRAND_A_LIT = `'${BRAND_A}'`;
+const BRAND_B_LIT = `'${BRAND_B}'`;
 
 beforeAll(async () => {
   livePool = await tryCreateLiveServingPool();
@@ -243,21 +248,37 @@ beforeAll(async () => {
   }
   servingAvailable = true;
 
-  // Check the table + seed rows exist. We cannot INSERT via duckdb-serving (read-only,
-  // SELECT/WITH guard), so live tests require the table to be pre-populated by the Kafka
-  // Connect Bronze sink (ADR-0010 — the compose kafka-connect service, the ONLY Bronze writer).
+  // Check the table is queryable AND the fixture-brand seed rows are PRESENT — the positive
+  // test asserts rows.length > 0, so probing only "table exists" (the old behavior) let the
+  // suite run straight into a guaranteed failure on a data-empty environment. We cannot INSERT
+  // via duckdb-serving (read-only, SELECT/WITH guard): live tests require ≥1 Bronze row per
+  // fixture brand, landed through the Kafka Connect sink (ADR-0010, the ONLY Bronze writer).
+  // Seed with the stream-worker helper (produceCollectorEvent in
+  // apps/stream-worker/src/tests/helpers/iceberg-bronze.ts) — one collector envelope per
+  // fixture brand to the prod.collector.event.v1 topic, then wait ~30-60s for the sink commit.
   try {
-    // Just verify the table is queryable — we don't need seed rows for the seam proof
-    // (the seam proof only needs the table to exist and have at least one row per brand).
-    await livePool.query(
-      `SELECT count(*) as n FROM ${LIVE_TABLE} WHERE brand_id = ${SEED_ROW_A} LIMIT 1`,
+    const counts = await livePool.query<{ brand_id: string; n: number | string }>(
+      `SELECT brand_id, count(*) AS n FROM ${LIVE_TABLE}
+        WHERE brand_id IN (${BRAND_A_LIT}, ${BRAND_B_LIT}) GROUP BY brand_id`,
       [],
     );
-    icelandAvailable = true;
+    const byBrand = new Map(counts.map((r) => [r.brand_id, Number(r.n)]));
+    const nA = byBrand.get(BRAND_A) ?? 0;
+    const nB = byBrand.get(BRAND_B) ?? 0;
+    if (nA > 0 && nB > 0) {
+      icelandAvailable = true;
+    } else {
+      console.warn(
+        `[isolation-fuzz/serving] ${LIVE_TABLE} reachable but fixture seed rows are absent ` +
+        `(brand A rows=${nA}, brand B rows=${nB}) — live isolation assertions PENDING. ` +
+        'Seed one collector event per fixture brand via the stream-worker produceCollectorEvent ' +
+        'helper (Kafka Connect sink must be running), then re-run.',
+      );
+    }
   } catch {
     console.warn(
-      `[isolation-fuzz/serving] ${LIVE_TABLE} not found or empty for test brands — ` +
-      'live tests PENDING. Produce collector events with the kafka-connect sink running to populate data.',
+      `[isolation-fuzz/serving] ${LIVE_TABLE} not found — live tests PENDING. ` +
+      'Start the lakehouse profile (kafka-connect + iceberg-rest + minio + duckdb-serving).',
     );
   }
 });
@@ -280,7 +301,7 @@ describe('[live] serving seam — per-brand isolation (NN-2 / I-TR01, withServin
 
     const rows = await withServingBrand(livePool, BRAND_A, async (scope) =>
       scope.runScoped<{ brand_id: string }>(
-        `SELECT brand_id FROM ${LIVE_TABLE} WHERE ${BRAND_PREDICATE} AND brand_id IN (${SEED_ROW_A}, ${SEED_ROW_B})`,
+        `SELECT brand_id FROM ${LIVE_TABLE} WHERE ${BRAND_PREDICATE} AND brand_id IN (${BRAND_A_LIT}, ${BRAND_B_LIT})`,
       ),
     );
 
@@ -303,7 +324,7 @@ describe('[live] serving seam — per-brand isolation (NN-2 / I-TR01, withServin
       BRAND_A,
       async (scope) =>
         scope.runScoped<{ brand_id: string }>(
-          `SELECT brand_id FROM ${LIVE_TABLE} WHERE ${BRAND_PREDICATE} AND brand_id IN (${SEED_ROW_A}, ${SEED_ROW_B})`,
+          `SELECT brand_id FROM ${LIVE_TABLE} WHERE ${BRAND_PREDICATE} AND brand_id IN (${BRAND_A_LIT}, ${BRAND_B_LIT})`,
         ),
       { __unsafeDisableBrandPredicate: true },
     );

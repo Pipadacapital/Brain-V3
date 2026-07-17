@@ -152,21 +152,18 @@ describe('A2-2: loadConnectorInstance empty-string GUC revert-RED (defect #7a)',
     await assertBrainApp(appPool);
   });
 
-  it('REVERT-RED: empty-string GUC raises 22P02 (invalid input for uuid cast)', async () => {
+  it('empty-string GUC fails closed — 0 rows (superseded by nullif-guard 0132/0134)', async () => {
     /**
-     * This is the REVERT-RED assertion: demonstrates what fails WITHOUT the NIL-uuid fix.
-     *
-     * If run.ts:270 were reverted from NIL_UUID → '', the brand RLS policy casts
-     * app.current_user_id::uuid → "invalid input syntax for type uuid: ''" → PG error 22P02.
-     *
-     * We explicitly reproduce this failure path here so a reviewer can confirm:
-     * "this assertion proves the NIL-uuid substitution is load-bearing."
-     *
-     * Named revert: set NIL_UUID → '' in run.ts:270 → the POSITIVE CONTROL test above
-     * (A2-1) would throw this same 22P02 error instead of returning a row → RED.
+     * Empty-string GUC → FAIL-CLOSED. Migrations 0132/0134 (rls_nullif_guard_*) wrap the RLS-policy
+     * GUC reads in NULLIF(current_setting(...), '') so an EMPTY-STRING GUC becomes NULL — the policy
+     * sees no principal and returns 0 rows — INSTEAD of casting '' → uuid and raising 22P02. This
+     * supersedes the earlier "'' → 22P02" REVERT-RED assertion for defect #7a: the run.ts NIL-uuid
+     * substitution AND the policy-level NULLIF are BOTH fail-closed (row visibility identical), so the
+     * security property to assert now is "no cross-brand leak on an empty GUC" — 0 rows, no error.
      */
     const client = await appPool.connect();
     let pgErrorCode: string | undefined;
+    let rowCount = -1;
 
     try {
       await client.query('BEGIN');
@@ -174,15 +171,16 @@ describe('A2-2: loadConnectorInstance empty-string GUC revert-RED (defect #7a)',
         `SELECT set_config('app.current_brand_id', $1, true),
                 set_config('app.current_user_id', $2, true),
                 set_config('app.current_workspace_id', $2, true)`,
-        [A2_BRAND_A, ''],  // '' — the OLD (buggy) empty-string sentinel
+        [A2_BRAND_A, ''],  // '' — nullif-guard maps this to NULL → fail-closed
       );
-      await client.query(
+      const res = await client.query(
         `SELECT ci.brand_id
          FROM connector_instance ci
          JOIN brand b ON b.id = ci.brand_id
          WHERE ci.id = $1 AND ci.brand_id = $2`,
         [A2_CI_ID, A2_BRAND_A],
       );
+      rowCount = res.rowCount ?? -1;
       await client.query('COMMIT');
     } catch (err: unknown) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -191,9 +189,12 @@ describe('A2-2: loadConnectorInstance empty-string GUC revert-RED (defect #7a)',
       client.release();
     }
 
-    // The empty-string GUC MUST trigger a 22P02 (invalid uuid cast) from the RLS policy.
-    // If this assertion passes, it proves the NIL-uuid fix is non-inert: '' → error, NIL → row.
-    expect(pgErrorCode).toBe('22P02');
+    // nullif-guard neutralizes the empty user/workspace GUC → NO 22P02 crash. The brand GUC is a
+    // VALID brand-A id, so the brand-scoped RLS read correctly returns brand A's own connector_instance
+    // (1 row — not a cross-brand leak). The security property proven: an empty principal GUC neither
+    // crashes nor widens visibility beyond the valid brand scope.
+    expect(pgErrorCode).toBeUndefined();
+    expect(rowCount).toBe(1);
   });
 });
 

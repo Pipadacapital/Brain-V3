@@ -26,8 +26,10 @@ function fakePool(t: FakeTables): SilverPool {
       if (sql.includes('gold_executive_metrics')) return (t.exec ?? []) as T[];
       if (sql.includes("churn_risk = 'high'")) return (t.churn ?? []) as T[];
       if (sql.includes('monetary_score = 5')) return (t.vip ?? []) as T[];
-      if (sql.includes('gold_cac')) return (t.cac ?? []) as T[];
+      // GAP-C: the spend query's level-pin comment references gold_cac.py, so route on the
+      // spend VIEW name FIRST (the mv_gold_cac query never mentions silver_marketing_spend).
       if (sql.includes('silver_marketing_spend')) return (t.spend ?? []) as T[];
+      if (sql.includes('gold_cac')) return (t.cac ?? []) as T[];
       if (sql.includes('silver_order_line')) return (t.orderline ?? []) as T[];
       if (sql.includes('silver_touchpoint')) return (t.funnel ?? []) as T[]; // computeStorefrontFunnel
       return [] as T[];

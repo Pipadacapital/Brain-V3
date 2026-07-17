@@ -118,9 +118,11 @@ const TabsTrigger = React.forwardRef<HTMLButtonElement, TabsTriggerProps>(
           'inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           'disabled:pointer-events-none disabled:opacity-50',
+          // Inactive: text-foreground/70 (≈6.3:1 on bg-muted) — text-muted-foreground was 4.39:1
+          // on the TabsList bg-muted pill, just under the WCAG AA 4.5:1 axe gate (e2e a11y scan).
           selected
             ? 'bg-surface text-foreground shadow-xs'
-            : 'text-muted-foreground hover:text-foreground',
+            : 'text-foreground/70 hover:text-foreground',
           className,
         )}
         {...props}

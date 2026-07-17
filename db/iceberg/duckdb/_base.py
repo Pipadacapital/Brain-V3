@@ -129,13 +129,27 @@ def ensure_table(con, fq: str, columns_sql: str, *, partitioned_by: str | None =
 
 
 def merge_on_pk(con, target: str, staged_sql: str, columns: list[str], pk: list[str],
-                *, order_by_desc: list[str]) -> int:
+                *, order_by_desc: list[str], delete_orphans: bool = False) -> int:
     """
     Idempotent MERGE of `staged_sql` (a SELECT producing exactly `columns`) into `target` on `pk`.
 
     Dedups within the batch (row_number over PK by order_by_desc, keep #1 — a re-pull can emit the
     same PK twice), then MERGE: WHEN MATCHED UPDATE the non-PK columns, WHEN NOT MATCHED INSERT —
     the Spark merge_on_pk discipline, replay-safe (latest-ingested-wins). Returns the upserted count.
+
+    delete_orphans (opt-in, DEFAULT False — the Spark merge_on_pk delete_orphans / overwritePartitions
+    orphan-shedding analogue): after the MERGE, DELETE every target row whose PK is NOT in the staged
+    batch, making the mart converge to EXACTLY the current fold. This closes the documented
+    UPDATE/INSERT-only gap where a stale PK (a recognition key whose economic_effective_at shifted, a
+    seed/fixture row written directly to the mart, a brand wiped from source) lingers forever and
+    inflates whole-table money sums (seen live on gold_revenue_ledger 2026-07-17: 1,285 orphan rows,
+    +Σ57M INR fixtures + 23 MERGE orphans).
+    SAFETY RULES for callers:
+      • pass delete_orphans=True ONLY on a FULL-recompute fold — a windowed/incremental staged batch is
+        a SUBSET of truth and the anti-join would wipe everything outside the window (an entity-
+        incremental job must pass `delete_orphans=(lo is None)`).
+      • an EMPTY staged batch never sheds (guarded below): a transiently-empty/unreadable source must
+        back-pressure, not truncate the mart.
     """
     part = ", ".join(pk)
     order = ", ".join(f"{c} DESC" for c in order_by_desc)
@@ -158,6 +172,16 @@ def merge_on_pk(con, target: str, staged_sql: str, columns: list[str], pk: list[
         WHEN NOT MATCHED THEN INSERT ({collist}) VALUES ({ins_vals});
         """
     )
+    if delete_orphans and n > 0:
+        # PK columns are NOT NULL by mart contract, so the row-value NOT IN anti-join is null-safe.
+        shed = con.execute(
+            f"SELECT count(*) FROM {target} WHERE ({part}) NOT IN (SELECT {part} FROM ({deduped}))"
+        ).fetchone()[0]
+        if shed > 0:
+            con.execute(
+                f"DELETE FROM {target} WHERE ({part}) NOT IN (SELECT {part} FROM ({deduped}))"
+            )
+            print(f'{{"merge_on_pk":"{target}","orphans_shed":{shed}}}', flush=True)
     return n
 
 

@@ -3144,6 +3144,34 @@ CREATE TABLE public.gold_product_costs (
 );
 
 ALTER TABLE ONLY public.gold_product_costs FORCE ROW LEVEL SECURITY;
+
+--
+-- Name: _rls_demo; Type: TABLE; Schema: public; Owner: -
+--
+-- RLS CANARY FIXTURE (restored — dropped by the 0001–0128→baseline consolidation).
+-- Purpose-built table from the historical 0001_init that the tools/isolation-fuzz suites
+-- (pg.createpool.test.ts, brain-app-runtime.test.ts) depend on to prove tenant isolation
+-- end-to-end: ENABLE+FORCE RLS, a brand_id policy TO brain_app, and DML grants. The policy
+-- carries the 0132/0134 NULLIF empty-GUC guard (matches the live-DB shape). The whole block
+-- is idempotent so it no-ops cleanly on databases where the table already exists.
+--
+
+CREATE TABLE IF NOT EXISTS public._rls_demo (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    brand_id uuid NOT NULL,
+    payload text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT _rls_demo_pkey PRIMARY KEY (brand_id, id)
+);
+
+ALTER TABLE public._rls_demo ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ONLY public._rls_demo FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_isolation ON public._rls_demo;
+CREATE POLICY tenant_isolation ON public._rls_demo TO brain_app USING ((brand_id = (NULLIF(current_setting('app.current_brand_id'::text, true), ''))::uuid));
+
+GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public._rls_demo TO brain_app;
+
 --
 -- Name: brand; Type: TABLE; Schema: tenancy; Owner: -
 --

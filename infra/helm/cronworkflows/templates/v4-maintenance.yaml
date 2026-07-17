@@ -37,11 +37,21 @@ LANE SPLIT (2026-07-17 fragmentation incident): the maintenance sweep is rendere
 other. Previously a single cron swept both namespaces table-by-table (Silver first, alphabetically);
 when Silver's heavy tables (silver_job_watermark ~7.3k tiny files) burned the whole activeDeadlineSeconds,
 Gold never got compacted → the serving marts (gold_customer_360) fragmented to ~50 files → 8s cold scans.
-Default values ship ONE lane (name:"" → the full Gold-first sweep, unchanged behavior). Prod overrides
-`lanes` to run a frequent Gold-only lane + a daily Silver-only lane. Each lane sets MAINT_NAMESPACES so
-the job scopes to that namespace (empty → both, Gold-first per medallion_maintenance.py).
+Default values ship an EMPTY `lanes` list → the template falls back to ONE lane (name:"" → full Gold-first
+sweep, unchanged behavior). Prod overrides `lanes` with a frequent Gold-only lane + a daily Silver-only lane.
+Each lane sets MAINT_NAMESPACES so the job scopes to that namespace (empty → both, Gold-first per
+medallion_maintenance.py).
+
+MERGE SAFETY (2026-07-17): `lanes` default MUST be empty. Argo CD / Helm merge overlapping list indices
+element-wise (base-wins), so a non-empty default list here silently swallowed prod's Gold lane at index 0
+(prod deployed the default lane + Silver, no Gold). An empty base list can't collide → prod's [gold,silver]
+survives verbatim. The fallback below reconstructs the single default lane when `lanes` is empty.
 */ -}}
-{{- range $lane := $m.lanes }}
+{{- $lanes := $m.lanes | default (list) -}}
+{{- if not $lanes -}}
+{{- $lanes = list (dict "name" "" "orphanFiles" "1") -}}
+{{- end -}}
+{{- range $lane := $lanes }}
 {{- $laneName := $lane.name | default "" -}}
 {{- $cronName := ternary "v4-maintenance" (printf "v4-maintenance-%s" $laneName) (eq $laneName "") -}}
 ---

@@ -57,9 +57,16 @@ MODE = os.environ.get("MODE", "maintain")
 # Namespaces this maintenance run covers (comma-separated; defaults = Silver + Gold). `or` (not a
 # get() default): an empty MAINT_NAMESPACES must fall back too — an empty list made the whole job a
 # silent no-op (AUD-PERF-004).
+# GOLD-FIRST ORDERING (2026-07-17 fragmentation incident): the full sweep processes Gold BEFORE
+# Silver so the serving-facing marts (gold_customer_360, gold_customer_list, …) are always compacted
+# first — even if the run later hits activeDeadlineSeconds inside Silver's heavy tables
+# (silver_job_watermark alone accreted ~7.3k tiny files). Previously Silver-first: a deadline in
+# Silver left Gold un-compacted for days → 8s serving cold-scans. Prod also splits Gold/Silver into
+# separate cron lanes (MAINT_NAMESPACES) so neither can starve the other; this default is the
+# single-lane safety net.
 NAMESPACES = [
     ns.strip()
-    for ns in (os.environ.get("MAINT_NAMESPACES") or f"{mb.SILVER_NAMESPACE},{mb.GOLD_NAMESPACE}").split(",")
+    for ns in (os.environ.get("MAINT_NAMESPACES") or f"{mb.GOLD_NAMESPACE},{mb.SILVER_NAMESPACE}").split(",")
     if ns.strip()
 ]
 # SNAPSHOT TTL ≠ DATA RETENTION (AUD-PERF-013). expire_snapshots only drops HISTORY. 7-day bounded

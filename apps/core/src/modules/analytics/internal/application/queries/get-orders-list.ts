@@ -104,7 +104,7 @@ export async function getOrdersList(
       if (total === '0') return { total: '0', rows: [] as ListRow[] };
       const rows = await scope.runScoped<ListRow>(
         `SELECT os.order_id AS order_id,
-                to_iso8601(os.first_event_at) AS occurred_at,
+                os.first_event_at AS occurred_at,
                 ${GROSS} AS amount_minor,
                 os.currency_code AS currency_code,
                 os.lifecycle_state AS lifecycle_state,
@@ -122,8 +122,15 @@ export async function getOrdersList(
       state: 'has_data', page, page_size: pageSize, total: result.total,
       orders: result.rows.map((r) => ({
         order_id: r.order_id,
-        // occurred_at is already an ISO-8601 string from to_iso8601 (no brittle ' UTC'-suffix Date parse).
-        occurred_at: strOrNull(r.occurred_at) ?? new Date(0).toISOString(),
+        // first_event_at comes back as a raw timestamp (duckdb-serving JSON) — normalize to ISO-8601 in JS,
+        // matching the sibling queries (get-recent-events / get-recent-activity). `to_iso8601()` was a Trino
+        // scalar that does not exist in DuckDB (ADR-0014 cutover miss) → it 500'd the whole orders-list query.
+        occurred_at: (() => {
+          const raw = strOrNull(r.occurred_at);
+          if (raw === null) return new Date(0).toISOString();
+          const d = new Date(raw);
+          return Number.isNaN(d.getTime()) ? new Date(0).toISOString() : d.toISOString();
+        })(),
         amount_minor: minorOrNull(r.amount_minor) ?? '0',
         currency_code: strOrNull(r.currency_code) ?? 'INR',
         // Silver collapses the raw Bronze financial/payment fields into the canonical lifecycle_state; that

@@ -85,8 +85,10 @@ export async function resolveMergeReview(
 /**
  * SPEC: A.2.4 (WA-19) — split a previously-merged customer back out (reverses a merge).
  * Delegates the bi-temporal reversal + audit to the reader; `onUnmerged` (optional) is the
- * identity.unmerged.v1 emission seam (AMD-08) the route wires — kept as a callback so the identity
- * application stays free of a Kafka dependency (DIP). Fires ONLY on a real reversal (unmerged=true).
+ * downstream dirty-enqueue seam the route wires (ADR-0015 WS3: a direct PG write into
+ * ops.restitch_pending + ops.journey_reversion_pending — formerly the identity.unmerged.v1 Kafka
+ * publish) — kept as a callback so the identity application stays free of an infrastructure
+ * dependency (DIP). Fires ONLY on a real reversal (unmerged=true).
  */
 export async function unmergeCustomer(
   brandId: string,

@@ -38,7 +38,7 @@ import {
 import type { BffDeps } from './_shared.js';
 
 export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, identityReader, vaultService, identityEventPublisher, erasureEventPublisher } = deps;
+  const { bffProtectedPreHandler, identityReader, vaultService, identityUnmergeDirty, erasureEventPublisher } = deps;
 
   // ── GET /api/v1/identity/customers — customer BROWSE (discover front-door) ────
   /**
@@ -536,14 +536,15 @@ export function registerIdentityRoutes(fastify: FastifyInstance, deps: BffDeps):
       }
       let result: ContractUnmergeResult;
       try {
-        // SPEC: A.2.4 (WA-19) — actor = the auth principal (audited); onUnmerged emits
-        // identity.unmerged.v1 (AMD-08) for downstream re-versioning/re-stitch, fail-open.
+        // SPEC: A.2.4 (WA-19) / ADR-0015 WS3 — actor = the auth principal (audited); onUnmerged
+        // enqueues the restitch + journey-reversion dirty rows DIRECTLY into the PG queues the
+        // Silver identity stage drains (replaces the retired identity.unmerged.v1 publish), fail-open.
         result = await unmergeCustomer(auth.brandId, brain_id, identityReader, {
           actor: auth.userId,
           reason,
-          onUnmerged: identityEventPublisher
+          onUnmerged: identityUnmergeDirty
             ? (evt) =>
-                identityEventPublisher.emitUnmerged({
+                identityUnmergeDirty.markUnmerged({
                   brandId: evt.brandId,
                   restoredBrainId: evt.restoredBrainId,
                   survivorBrainId: evt.survivorBrainId,

@@ -33,7 +33,7 @@ import { registerBffRoutes } from '../modules/frontend-api/index.js';
 import { registerDevRoutes, registerConsentRoutes } from '../modules/notification/index.js';
 import type { ContactPiiVaultService } from '../modules/identity/index.js';
 import type { Neo4jIdentityReader } from '../modules/identity/internal/infrastructure/neo4j-identity-reader.js';
-import type { IdentityEventPublisher } from '../infrastructure/events/IdentityEventPublisher.js';
+import type { IdentityUnmergeDirtyWriter } from '../infrastructure/pg/IdentityUnmergeDirtyRepository.js';
 import type { ErasureEventPublisher } from '../infrastructure/events/ErasureEventPublisher.js';
 
 export interface RegisterWorkspaceAccessDeps {
@@ -59,8 +59,8 @@ export interface RegisterWorkspaceAccessDeps {
   getCoreSaltHex: (brandId: string) => Promise<string>;
   /** SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed). */
   flagService?: FlagService;
-  /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge (identity.unmerged.v1). */
-  identityEventPublisher?: IdentityEventPublisher;
+  /** SPEC: A.2.4 (WA-19) / ADR-0015 WS3 — direct PG dirty-queue writer for the admin unmerge. */
+  identityUnmergeDirty?: IdentityUnmergeDirtyWriter;
   /**
    * AUD-OPS-036 — the RTBF erasure-trigger bridge (privacy.erasure.requested on the collector
    * lane). Optional: absent → the consent-withdraw + identity-erase entry points still perform
@@ -91,7 +91,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     identityReader,
     getCoreSaltHex,
     flagService,
-    identityEventPublisher,
+    identityUnmergeDirty,
     erasureEventPublisher,
     semanticRouter,
   } = deps;
@@ -101,7 +101,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityEventPublisher, touchpointCacheReader, semanticRouter, erasureEventPublisher);
+  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityUnmergeDirty, touchpointCacheReader, semanticRouter, erasureEventPublisher);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   registerConsentRoutes(app, {

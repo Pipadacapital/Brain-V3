@@ -1,32 +1,33 @@
 /**
  * SPEC: A.2.4 (WA-19) — merge → journey re-version → unmerge → restoration round-trip (A.5.7).
  *
- * Spark-free unit round-trip over a FAKE identity graph + identity-map + the REAL application/publisher
- * wiring. Asserts, end-to-end at the control-plane layer:
+ * Spark-free unit round-trip over a FAKE identity graph + identity-map + the REAL application/dirty-
+ * writer wiring. Asserts, end-to-end at the control-plane layer:
  *   1. GRAPH reversal — the merge interval is bi-temporally CLOSED (ALIAS_OF.valid_to set, never
  *      deleted), the absorbed node restored to independent existence, an UnmergeEvent audit node kept.
  *   2. MAP intervals — the absorbed identifier flips from SUPERSEDED (replaced_by=survivor) back to a
  *      CURRENT interval at the restored brain_id (the projection the real silver_identity_map re-reads).
  *   3. DECISION-LOG — an identity_audit action='unmerge' row is written with actor + reason (AMD-09).
- *   4. EVENT — identity.unmerged.v1 (AMD-08) is produced on {env}.identity.unmerged.v1, keyed brand_id,
- *      carrying {merge_id, canonical=survivor, restored=absorbed, actor}.
- *   5. JOURNEY RE-VERSION FIRES — the emitted (survivor, absorbed) pair drives the Spark reversion job's
+ *   4. DIRTY QUEUES (ADR-0015 WS3 — replaces the retired identity.unmerged.v1 Kafka publish) — the
+ *      unmerge writes {survivor, restored} DIRECTLY into ops.restitch_pending (dirty_kind='brain_id')
+ *      and ops.journey_reversion_pending (cause='unmerge'), the queues the Silver identity stage drains.
+ *   5. JOURNEY RE-VERSION FIRES — the enqueued (survivor, restored) pair drives the reversion job's
  *      pure derive_unmerge_pairs → the exact transfer pair the un-reversion pass moves BACK (cross-layer).
  *
- * The real Neo4j Cypher + Spark journey mutation are covered by the live suite / the reversion pytest;
- * this proves the orchestration, audit and event contract that connect them.
+ * The real Neo4j Cypher + the batch journey mutation are covered by the live suite / the reversion
+ * pytest; this proves the orchestration, audit and dirty-queue contract that connect them.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { unmergeCustomer } from '../internal/application/merge-admin.js';
 import type { IdentityReader } from '../internal/infrastructure/neo4j-identity-reader.js';
-import { createIdentityEventPublisher } from '../../../infrastructure/events/IdentityEventPublisher.js';
+import { PgIdentityUnmergeDirtyRepository } from '../../../infrastructure/pg/IdentityUnmergeDirtyRepository.js';
+import type pg from 'pg';
 
 /**
- * TS mirror of the Spark reversion job's pure `derive_unmerge_pairs` row→pair contract
- * (db/iceberg/spark/gold/_journey_reversion_pure.py — exhaustively unit-tested in
- * gold_journey_events_reversion_unmerge_test.py). Kept intentionally tiny: it asserts the identity
- * event this module emits carries exactly the (brand, survivor→FROM, absorbed→TO) triple the Spark
- * un-reversion pass consumes to move journeys back — the cross-layer handoff.
+ * TS mirror of the batch reversion job's pure `derive_unmerge_pairs` row→pair contract
+ * (gold journey reversion — exhaustively unit-tested in gold_journey_events_reversion_unmerge_test.py).
+ * Kept intentionally tiny: it asserts the dirty rows this module enqueues carry exactly the
+ * (brand, survivor→FROM, restored→TO) triple the un-reversion pass consumes to move journeys back.
  */
 function derive_unmerge_pairs(
   rows: Array<{ brand_id?: string | null; survivor_brain_id?: string | null; absorbed_brain_id?: string | null }>,
@@ -52,6 +53,20 @@ const ABSORBED = 'bbbbbbbb-0000-0000-0000-000000000002';
 const MERGE_ID = 'cccccccc-0000-0000-0000-000000000003';
 const IDENTIFIER_HASH = 'f'.repeat(64);
 const ACTOR = 'operator-user-1';
+
+/** A fake raw pg.Pool capturing every query (text + values) the dirty writer issues. */
+function makeFakePool() {
+  const queries: Array<{ text: string; values: unknown[] }> = [];
+  const pool = {
+    query: vi.fn(async (text: string, values: unknown[]) => {
+      queries.push({ text, values });
+      return { rows: [], rowCount: 0 };
+    }),
+  };
+  return { queries, pool: pool as unknown as pg.Pool };
+}
+
+const fakeLog = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() });
 
 /**
  * A minimal in-memory identity graph + bi-temporal map modeling exactly the post-merge state, whose
@@ -120,7 +135,7 @@ function makeFakeGraph() {
 }
 
 describe('A2.4 merge→unmerge round-trip (A.5.7)', () => {
-  it('reverses the graph, restores the map interval, audits, emits, and fires journey re-version', async () => {
+  it('reverses the graph, restores the map interval, audits, enqueues dirty rows, and fires journey re-version', async () => {
     const { graph, reader } = makeFakeGraph();
 
     // Pre-state sanity: the merge is live.
@@ -128,18 +143,16 @@ describe('A2.4 merge→unmerge round-trip (A.5.7)', () => {
     expect(graph.aliasOf.valid_to).toBeNull();
     expect(graph.mapRows.find((r) => r.brain_id === ABSORBED)!.is_current).toBe(false);
 
-    // REAL identity-lane publisher over a fake kafka producer capturing the send.
-    const sends: Array<{ topic: string; messages: Array<{ key?: string; value: Buffer }> }> = [];
-    const producer = { send: vi.fn(async (rec: { topic: string; messages: Array<{ key?: string; value: Buffer }> }) => { sends.push(rec); }) };
-    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const publisher = createIdentityEventPublisher({ producer: producer as never, env: 'dev', log });
+    // REAL dirty-queue writer over a fake pg pool capturing the inserts (ADR-0015 WS3).
+    const { queries, pool } = makeFakePool();
+    const dirtyWriter = new PgIdentityUnmergeDirtyRepository(pool, fakeLog());
 
-    // ── ACT: the REAL application unmerge (threads actor/reason + the onUnmerged emit seam) ──
+    // ── ACT: the REAL application unmerge (threads actor/reason + the onUnmerged dirty seam) ──
     const result = await unmergeCustomer(BRAND, ABSORBED, reader, {
       actor: ACTOR,
       reason: 'operator confirmed two distinct people',
       onUnmerged: (evt) =>
-        publisher.emitUnmerged({
+        dirtyWriter.markUnmerged({
           brandId: evt.brandId,
           restoredBrainId: evt.restoredBrainId,
           survivorBrainId: evt.survivorBrainId,
@@ -173,43 +186,53 @@ describe('A2.4 merge→unmerge round-trip (A.5.7)', () => {
     expect(graph.auditRows[0]).toMatchObject({ action: 'unmerge', merge_id: MERGE_ID });
     expect((graph.auditRows[0] as { detail: { actor: string } }).detail.actor).toBe(ACTOR);
 
-    // 5. EVENT: identity.unmerged.v1 on the env-prefixed topic, keyed brand_id, correct payload.
-    expect(sends).toHaveLength(1);
-    expect(sends[0]!.topic).toBe('dev.identity.unmerged.v1');
-    expect(sends[0]!.messages[0]!.key).toBe(BRAND);
-    const envelope = JSON.parse(sends[0]!.messages[0]!.value.toString('utf-8')) as {
-      event_name: string; brand_id: string; partition_key: string;
-      payload: { merge_id: string; canonical_brain_id: string; restored_brain_id: string; actor: string; rule_version: string };
-    };
-    expect(envelope.event_name).toBe('identity.unmerged');
-    expect(envelope.partition_key).toBe(BRAND);
-    expect(envelope.payload).toMatchObject({
-      merge_id: MERGE_ID, canonical_brain_id: SURVIVOR, restored_brain_id: ABSORBED, actor: ACTOR, rule_version: 'v1-admin-unmerge',
-    });
+    // 5. DIRTY QUEUES (ADR-0015 WS3): exactly two upserts — ops.restitch_pending (brain_id grain,
+    //    the unmerge event carries no identifier hashes) + ops.journey_reversion_pending
+    //    (cause='unmerge'), each covering {survivor, restored}, provenance = the reversed merge id.
+    expect(queries).toHaveLength(2);
+    const [restitch, reversion] = queries as [typeof queries[0], typeof queries[0]];
+    expect(restitch.text).toContain('INSERT INTO ops.restitch_pending');
+    expect(restitch.text).toContain('ON CONFLICT (brand_id, dirty_kind, dirty_key) DO UPDATE');
+    expect(restitch.values).toEqual([
+      [BRAND, BRAND],
+      ['brain_id', 'brain_id'],
+      [SURVIVOR, ABSORBED],
+      ['identity.unmerged', 'identity.unmerged'],
+      [MERGE_ID, MERGE_ID],
+    ]);
+    expect(reversion.text).toContain('INSERT INTO ops.journey_reversion_pending');
+    expect(reversion.text).toContain('ON CONFLICT (brand_id, brain_id) DO UPDATE');
+    expect(reversion.values).toEqual([
+      [BRAND, BRAND],
+      [SURVIVOR, ABSORBED],
+      ['unmerge', 'unmerge'],
+      ['identity.unmerged', 'identity.unmerged'],
+      [MERGE_ID, MERGE_ID],
+    ]);
 
-    // 6. JOURNEY RE-VERSION FIRES: the emitted (survivor, absorbed) pair is exactly what the Spark
-    //    reversion job's pure derivation turns into a transfer-back pair (old=survivor → new=absorbed).
+    // 6. JOURNEY RE-VERSION FIRES: the enqueued (survivor, restored) pair is exactly what the batch
+    //    reversion job's pure derivation turns into a transfer-back pair (old=survivor → new=restored).
+    const [reversionBrands, reversionBrains] = reversion.values as [string[], string[]];
     const journeyPairs = derive_unmerge_pairs([
-      { brand_id: envelope.brand_id, survivor_brain_id: envelope.payload.canonical_brain_id, absorbed_brain_id: envelope.payload.restored_brain_id },
+      { brand_id: reversionBrands[0], survivor_brain_id: reversionBrains[0], absorbed_brain_id: reversionBrains[1] },
     ]);
     expect(journeyPairs).toEqual([[BRAND, SURVIVOR, ABSORBED]]);
   });
 
-  it('is a no-op on a brain_id that was never merged (nothing to reverse, no event)', async () => {
+  it('is a no-op on a brain_id that was never merged (nothing to reverse, no dirty rows)', async () => {
     const { reader } = makeFakeGraph();
-    const sends: unknown[] = [];
-    const producer = { send: vi.fn(async (rec: unknown) => { sends.push(rec); }) };
-    const publisher = createIdentityEventPublisher({ producer: producer as never, env: 'dev', log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } });
+    const { queries, pool } = makeFakePool();
+    const dirtyWriter = new PgIdentityUnmergeDirtyRepository(pool, fakeLog());
 
     const NEVER_MERGED = 'dddddddd-0000-0000-0000-000000000004';
     const result = await unmergeCustomer(BRAND, NEVER_MERGED, reader, {
       actor: ACTOR,
-      onUnmerged: (evt) => publisher.emitUnmerged({ brandId: evt.brandId, restoredBrainId: evt.restoredBrainId, survivorBrainId: evt.survivorBrainId, mergeEventId: evt.mergeEventId, actor: evt.actor }),
+      onUnmerged: (evt) => dirtyWriter.markUnmerged({ brandId: evt.brandId, restoredBrainId: evt.restoredBrainId, survivorBrainId: evt.survivorBrainId, mergeEventId: evt.mergeEventId, actor: evt.actor }),
     });
 
     expect(result.unmerged).toBe(false);
     expect(result.reason).toBe('not_found');
-    expect(sends).toHaveLength(0); // onUnmerged only fires on a real reversal
+    expect(queries).toHaveLength(0); // onUnmerged only fires on a real reversal
   });
 
   it('rejects a malformed brain_id before touching the graph', async () => {

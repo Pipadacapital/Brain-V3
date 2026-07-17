@@ -100,17 +100,32 @@ jobs:
           "
           pnpm migrate:up
 
+      # Provision the DuckDB transform venv (duckdb + numpy + splink + pyiceberg + neo4j) — the SAME
+      # deps the brain-duckdb cron image carries (db/iceberg/duckdb/requirements.txt). Shared by the
+      # Bronze seed below AND the V4 refresh, so it is created ONCE here.
+      - name: Set up DuckDB transform venv
+        run: |
+          python3 -m venv /tmp/duckvenv
+          /tmp/duckvenv/bin/pip install --quiet --upgrade pip
+          /tmp/duckvenv/bin/pip install --quiet -r db/iceberg/duckdb/requirements.txt
+
       # Seed a minimal Bronze fixture BEFORE the refresh. On a cold catalog the DuckDB transform tier
       # has no brain_bronze.collector_events_connect to read → the keystone never creates brain_silver
-      # → every Silver/Gold job fails with "Namespace brain_silver does not exist". Producing a handful
-      # of order.live.v1 collector events (→ Kafka Connect lands Bronze) breaks that cascade so the
-      # refresh builds the full medallion. The script POLLS the serving tier until the events land
-      # (~30-60s commit).
-      - name: Seed Bronze fixture (Kafka → Kafka Connect → Iceberg)
+      # → every Silver/Gold job fails with "Namespace brain_silver does not exist". This writes the
+      # fixture STRAIGHT to the Iceberg Bronze table via DuckDB (deterministic) rather than producing to
+      # Kafka and waiting on the iceberg-sink Connect worker — whose single-broker cold-start commit
+      # coordination churns and completes "committed to 0 table(s)", so Bronze never lands in the poll
+      # window. The real Kafka → Connect landing path is covered by the stream-worker Kafka e2e; the
+      # seed's only job is to give the medallion refresh some Bronze rows to build from.
+      - name: Seed Bronze fixture (direct DuckDB → Iceberg, deterministic)
         env:
-          KAFKA_BROKERS: localhost:19092
-          DUCKDB_SERVING_URL: http://localhost:8091
-        run: pnpm --filter @brain/stream-worker seed:bronze
+          S3_ENDPOINT: http://localhost:9000
+          ICEBERG_REST_URI: http://localhost:8181
+          ICEBERG_WAREHOUSE: s3://brain-bronze/
+          AWS_ACCESS_KEY_ID: brain
+          AWS_SECRET_ACCESS_KEY: brainbrain
+          AWS_REGION: us-east-1
+        run: /tmp/duckvenv/bin/python db/iceberg/duckdb/maintenance/seed_bronze_fixture.py
 
       # ── V4 transform: DuckDB Silver → DuckDB Gold → Iceberg, served by duckdb-serving views (REPLACES dbt+StarRocks+Spark+Trino) ──
       # Brain V4 removed dbt (Phase 6b), StarRocks (serving → Trino), Spark (transform → DuckDB, PR
@@ -137,11 +152,7 @@ jobs:
           NEO4J_USER: neo4j
           NEO4J_PASSWORD: brain_neo4j
         run: |
-          # Provision the DuckDB transform venv — the SAME deps the brain-duckdb cron image carries
-          # (db/iceberg/duckdb/requirements.txt: duckdb + numpy + splink + pyiceberg + neo4j).
-          python3 -m venv /tmp/duckvenv
-          /tmp/duckvenv/bin/pip install --quiet --upgrade pip
-          /tmp/duckvenv/bin/pip install --quiet -r db/iceberg/duckdb/requirements.txt
+          # The DuckDB transform venv was provisioned in the "Set up DuckDB transform venv" step above.
           # duckdb-refresh.sh runs keystone → silver ×2 → gold in dependency order (best-effort per job).
           # PYTHON points it at the venv; ONESHOT is a no-op (kept for call-site compatibility with the
           # retired v4-refresh-loop.sh).
@@ -245,14 +256,13 @@ jobs:
       - name: Install Playwright browser
         run: pnpm --filter @brain/web exec playwright install --with-deps chromium
 
-      - name: Materialize .env for the app stack (the dev scripts read --env-file=../../.env)
+      - name: Materialize .env.local-prod for the app stack (dev scripts read --env-file=../../.env.local-prod)
         run: |
-          cat > .env <<'ENV'
+          cat > .env.local-prod <<'ENV'
           NODE_ENV=development
           DATABASE_URL=postgres://brain:brain@localhost:5432/brain
           BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain
           REDIS_URL=redis://localhost:6379
-          KAFKA_BROKERS=localhost:19092
           KAFKA_BROKERS=localhost:19092
           DUCKDB_SERVING_HOST=localhost
           DUCKDB_SERVING_PORT=8091

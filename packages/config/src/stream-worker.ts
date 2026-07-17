@@ -57,8 +57,11 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .string()
     .default('postgres://brain_app:brain_app@localhost:5432/brain'),
 
-  // ── Live lane: topic + consumer groups (main.ts) ─────────────────────────────
-  /** Live collector topic the (remaining) erasure consumer subscribes to. */
+  // ── Live lane (producer-side only — this process runs NO Kafka consumers) ────
+  /**
+   * Live collector topic — PRODUCER-side lane name only (repull/backfill jobs + e2e suites).
+   * ADR-0015 WS4 completion: no stream-worker consumer subscribes to anything anymore.
+   */
   COLLECTOR_TOPIC: z.string().default('dev.collector.event.v1'),
   // ADR-0015 WS2: CONSUMER_GROUP_ID ('stream-worker-live', the pixel-lane Bronze consumer) is
   // RETIRED — the Kafka Connect sink is the single Bronze writer; validation/quarantine moved to
@@ -71,17 +74,18 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   // LIVE_LEDGER_CONSUMER_GROUP_ID, SETTLEMENT_LEDGER_CONSUMER_GROUP_ID.
   // Identity now resolves in the Silver stage (jobs/silver-identity — batch over the keystone),
   // which also folds consent projection, CAPI-deletion triggering, the dirty-set writes, and
-  // direct serving-cache eviction. The erasure orchestrator is the ONLY remaining live consumer.
-  /**
-   * Consumer group for the DPDP/PDPL crypto-shred erasure orchestrator. Reads the live
-   * collector topic — the last consumer group this process runs (ADR-0015 WS4). Runs the
-   * ordered 6-step shred sequence.
-   */
-  ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID: z
-    .string()
-    .default('stream-worker-erasure-orchestrator'),
+  // direct serving-cache eviction.
+  // ADR-0015 WS4 COMPLETION: ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID is RETIRED — the erasure
+  // orchestrator (the LAST stream-worker Kafka consumer) is now the PG request-driven poll
+  // lane below (ops.erasure_request_queue, migration 0140).
   // RETIRED (0117): GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID — the GoKwik AWB logistics model is gone
   // (webhook-first payments/checkout; logistics truth is Shiprocket).
+
+  // ── Erasure poll lane (ADR-0015 WS4 — jobs/erasure-orchestrator over ops.erasure_request_queue) ──
+  /** Poll interval for the DPDP/PDPL erasure request queue (erasures are rare; 30s default). */
+  ERASURE_QUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+  /** Max queue rows claimed per tick (per-brand heads only; processed sequentially). */
+  ERASURE_QUEUE_CLAIM_BATCH: z.coerce.number().int().positive().default(10),
 
   // ── Real-time touchpoint cache (SPEC: A.4 / flag identity.tp_cache, default OFF) ──
   // ADR-0015 WS3: the TouchpointCacheConsumer is gone; the cache is seeded by the Silver

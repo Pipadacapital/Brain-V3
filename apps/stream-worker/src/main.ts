@@ -1,5 +1,5 @@
 /**
- * Stream-worker (Deployable 2) — connector pull-job runner + the erasure consumer lane.
+ * Stream-worker (Deployable 2) — connector pull-job runner + the PG-driven erasure lane.
  *
  * ADR-0015 WS2 (single Bronze writer): the stream-worker NO LONGER writes Bronze in any form.
  * The Kafka Connect Iceberg sink (ADR-0010) is the SOLE Bronze writer — it lands the whole
@@ -19,19 +19,23 @@
  * AnalyticsCacheInvalidateConsumer, CapiDeletionConsumer, TouchpointCacheConsumer — and the
  * identity.* / cache.invalidate.v1 / gold.rewritten.v1 Kafka lanes they served.
  *
- * WHAT REMAINS HERE: the DPDP/PDPL erasure orchestrator (the one request-driven consumer group
- * left on the live collector topic) and the connector pull-job runner (backfills, repulls,
- * schedulers, DQ). The pull jobs PRODUCE to the log (Kafka Connect lands them — no direct Bronze
- * write anywhere in this process).
+ * ADR-0015 WS4 COMPLETION: the DPDP/PDPL erasure orchestrator — formerly the LAST Kafka
+ * consumer in this process (group stream-worker-erasure-orchestrator on the live collector
+ * topic + the collector.event.v1.dlq poison lane) — is now a PG request-driven poll lane:
+ * core's ErasureEventPublisher INSERTs the trigger envelope into ops.erasure_request_queue
+ * (0140) and jobs/erasure-orchestrator/run.ts claims + runs the UNCHANGED EraseSubjectUseCase
+ * ordered sequence (per-brand ordered, retry-with-backoff, dead-at-MAX — the PG DLQ
+ * replacement). THIS PROCESS RUNS NO KAFKA CONSUMERS.
+ *
+ * WHAT REMAINS HERE: the erasure poll lane and the connector pull-job runner (backfills,
+ * repulls, schedulers, DQ). The pull jobs PRODUCE to the log (Kafka Connect lands them — no
+ * direct Bronze write anywhere in this process).
  *
  * Connects as brain_app (not brain) so RLS is enforced (F-4). Dev DB superuser 'brain' BYPASSES
  * RLS — NEVER use DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
-import { Kafka, type ConsumerConfig } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
 import { assertRoleEnforcesRls } from '@brain/db';
-import { resolveRackId } from './infrastructure/kafka/resolveRackId.js';
-import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
 import { PgScopedRecomputeRepository } from './infrastructure/pg/ScopedRecomputeRepository.js';
 import { Redis } from 'ioredis';
@@ -49,10 +53,13 @@ import {
 } from '@brain/pii-vault';
 import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
-import { ErasureOrchestratorConsumer } from './interfaces/consumers/ErasureOrchestratorConsumer.js';
+import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
+import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
 import { EraseSubjectUseCase, type IBrainIdLookup } from './application/EraseSubjectUseCase.js';
 import { ArgoErasureWorkflowSubmitter } from './infrastructure/argo/ArgoErasureWorkflowSubmitter.js';
 import { ErasureRepository } from './infrastructure/pg/ErasureRepository.js';
+import { ErasureRequestQueueRepository } from './infrastructure/pg/ErasureRequestQueueRepository.js';
+import { startErasureOrchestrator } from './jobs/erasure-orchestrator/run.js';
 import {
   ServingCacheEvictor,
   DirectServingCacheInvalidator,
@@ -134,38 +141,16 @@ export async function main(): Promise<void> {
   // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
   registerProcessFailureHandlers({ log, serviceName: 'stream-worker', flush: closeSentry });
 
-  const brokers = cfg.KAFKA_BROKERS.split(',');
   const redisUrl = cfg.REDIS_URL;
   // IMPORTANT: must connect as brain_app to enforce RLS (not superuser 'brain')
   const dbUrl = cfg.BRAIN_APP_DATABASE_URL;
-  const topic = cfg.COLLECTOR_TOPIC;
-  // DPDP/PDPL crypto-shred erasure orchestrator: the ONE remaining consumer group on the live
-  // topic (ADR-0015 WS4 — request-driven; every other lane moved to the Silver identity stage).
-  // On a subject-erasure: shreds subject DEK (is_active=FALSE) + belt-and-suspenders hard delete
-  // + surrogate tombstone + scoped Gold re-projection + CAPI deletion. Ordered, idempotent,
-  // DLQ-after-MAX_RETRY. WIRED HERE: do NOT remove without updating erasure-orchestrator.unit.test.ts.
-  const erasureOrchestratorGroupId = cfg.ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID;
+  // ADR-0015 WS4 COMPLETION: this process runs NO Kafka consumers. The DPDP/PDPL erasure
+  // orchestrator (formerly the last consumer group on the live collector topic) is a PG
+  // request-driven poll lane over ops.erasure_request_queue — wired below. The pull jobs
+  // still PRODUCE to the log (they own their producers/config; Kafka Connect lands Bronze).
   // ADR-0015 WS2: the backfill-lane Bronze consumer is GONE (Kafka Connect lands the backfill
   // topic directly — it is in the collector sink's `topics` list); BACKFILL_TOPIC remains a
   // producer-side concern of the backfill jobs (they load config themselves).
-
-  const kafka = new Kafka({
-    clientId: 'stream-worker',
-    brokers,
-    retry: { retries: 5 },
-  });
-
-  // KIP-392: inject this pod's AZ as the consumer rackId so EVERY consumer fetches from a same-AZ
-  // replica (RackAwareReplicaSelector on the brokers) instead of the cross-AZ leader — cutting
-  // DataTransfer-Regional-Bytes $. One wrap covers all consumer sites; an empty rackId (IMDS
-  // unreachable / override unset) leaves today's leader-fetch behaviour untouched (no regression).
-  const rackId = await resolveRackId();
-  if (rackId) {
-    // Monkeypatch the shared client so every consumer created downstream inherits the rackId (KIP-392).
-    const base = kafka.consumer.bind(kafka);
-    kafka.consumer = (config: ConsumerConfig) => base({ ...config, rackId });
-    log.info('kafka rack-awareness enabled (KIP-392 follower fetching)', { rackId });
-  }
 
   // ── Worker PG pool (health probe + RLS fail-closed guard) ───────────────────
   // P2.3: every worker pool uses dbUrl (must be brain_app, NOBYPASSRLS). Fail closed at startup if
@@ -174,15 +159,12 @@ export async function main(): Promise<void> {
   const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
   await assertRoleEnforcesRls(auditPool, { label: 'stream-worker pool (dbUrl)' });
 
-  // ── Durable retry counter (T2-8) ────────────────────────────────────────────
-  // Redis-backed counter for the erasure consumer's retry/DLQ discipline. Keyed by
-  // {groupId}:{topic}:{partition}:{offset}. Connected once here, quit on shutdown.
-  const retryCounter = new RetryCounterAdapter(redisUrl);
-  await retryCounter.connect();
+  // T2-8 NOTE: the Redis retry counter is RETIRED with the Kafka erasure consumer — retry
+  // durability now lives in the queue row itself (ops.erasure_request_queue.attempts).
 
   // ── Liveness/readiness probes (T2-10) ───────────────────────────────────────
-  // Start the health port BEFORE the consumer so liveness answers during the (slow) boot
-  // window. Readiness stays false (503) until the consumer has started AND Postgres is
+  // Start the health port BEFORE the resident lanes so liveness answers during the (slow)
+  // boot window. Readiness stays false (503) until the lanes have started AND Postgres is
   // reachable. pingDb reuses auditPool (brain_app) — a SELECT 1 needs no RLS GUC.
   let consumersReady = false;
   const healthServer = startHealthServer({
@@ -221,10 +203,11 @@ export async function main(): Promise<void> {
     log.warn(`[erasure] Neo4j bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // ── Erasure orchestrator (DPDP/PDPL crypto-shred — feat-erasure-orchestrator) ──
+  // ── Erasure orchestrator (DPDP/PDPL crypto-shred — PG request-driven, ADR-0015 WS4) ──
   // Drives the ordered per-subject erasure sequence: DEK shred (subject_keyring is_active=FALSE) →
   // surrogate tombstone → Neo4j graph purge → scoped Gold re-projection + serving-cache eviction →
-  // Bronze raw sweep → CAPI deletion → erasure complete.
+  // Bronze raw sweep → CAPI deletion → erasure complete. Triggered by rows core enqueues into
+  // ops.erasure_request_queue (the retired Kafka lane's envelope, byte-identical).
   //
   // brainIdLookup: inline adapter over identityRepo.findBrainIdForErasure() — the erasure-lane
   // resolution that ALSO matches tombstoned edges (AUD-OPS-039 replay-safety). Throws on Neo4j
@@ -286,9 +269,29 @@ export async function main(): Promise<void> {
     // brain_id-only triggers (STEP 4).
     identityRepo,
   );
-  const erasureOrchestratorConsumer = new ErasureOrchestratorConsumer(
-    kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,
+  // Consent-withdrawal fold for the erasure lane (an erasure IS a full withdrawal): the trigger
+  // envelope no longer transits the log/Bronze, so the projection the retired suppressor lane /
+  // Bronze→Silver transit provided is folded in-lane (same ProjectConsentUseCase the Silver
+  // identity stage uses; idempotent ON CONFLICT, self-gating on brain_id-only triggers).
+  const erasureConsentRepo = new ConsentRepository(dbUrl);
+  const erasureProjectConsent = new ProjectConsentUseCase(saltProvider, erasureConsentRepo);
+  // The PG request queue + resident poll loop (jobs/erasure-orchestrator/run.ts): claims
+  // per-brand queue heads FOR UPDATE SKIP LOCKED, runs the ordered sequence, retries with
+  // backoff, dead-letters at MAX attempts (status='dead' — the PG DLQ replacement).
+  // WIRED HERE: do NOT remove without updating erasure-queue-lane.unit.test.ts.
+  const erasureQueueRepo = new ErasureRequestQueueRepository(dbUrl);
+  const erasureIntervalMs = cfg.ERASURE_QUEUE_POLL_INTERVAL_MS;
+  const erasureClaimBatch = cfg.ERASURE_QUEUE_CLAIM_BATCH;
+  const erasureOrchestrator = startErasureOrchestrator(
+    {
+      repo: erasureQueueRepo,
+      eraseSubject: eraseSubjectUseCase,
+      projectConsent: erasureProjectConsent,
+    },
+    erasureIntervalMs,
+    erasureClaimBatch,
   );
+  log.info(`erasure orchestrator running — queue=ops.erasure_request_queue interval=${erasureIntervalMs}ms batch=${erasureClaimBatch} (PG request-driven, ADR-0015 WS4)`);
 
   // ── On-demand "Sync now" claimer (feat-connector-sync-now) ──────────────────
   // NOT a new deployable: an interval loop in THIS process. Claims sentinel
@@ -440,7 +443,7 @@ export async function main(): Promise<void> {
     // consumers down (liveness keeps answering — the process is still alive and draining).
     consumersReady = false;
     await Promise.all([
-      erasureOrchestratorConsumer.stop(),
+      erasureOrchestrator.stop(),
       syncRequestClaimer.stop(),
       backfillClaimerJob.stop(),
       dqChecker.stop(),
@@ -458,7 +461,8 @@ export async function main(): Promise<void> {
     await connectorRateLimiter.quit().catch(() => undefined);
     await capiDeletionRepo.end();
     await erasureRepo.end();
-    await retryCounter.quit();
+    await erasureQueueRepo.end();
+    await erasureConsentRepo.end().catch(() => undefined);
     await auditPool.end();
     await cacheEvictionRedis.quit().catch(() => undefined);
     await opsPool.end().catch(() => undefined);
@@ -474,19 +478,11 @@ export async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  log.info(`starting — topic=${topic} brokers=${brokers.join(',')} (single Bronze writer = Kafka Connect ADR-0015 WS2; identity in Silver ADR-0015 WS3)`);
+  log.info('starting — NO Kafka consumers in this process (single Bronze writer = Kafka Connect ADR-0015 WS2; identity in Silver ADR-0015 WS3; erasure PG request-driven ADR-0015 WS4)');
 
-  // ── Erasure orchestrator consumer (feat-erasure-orchestrator MANDATORY WIRE) ──────
-  // The one remaining live-topic consumer group. Drives the ordered DPDP/PDPL 6-step
-  // crypto-shred sequence on a subject-erasure signal. WIRED HERE: do NOT remove without
-  // updating erasure-orchestrator.unit.test.ts.
-  log.info(`starting erasure orchestrator — topic=${topic} group=${erasureOrchestratorGroupId}`);
-  await erasureOrchestratorConsumer.start();
-  log.info('erasure orchestrator consumer running');
-
-  // All consumers are up — flip readiness so the orchestrator routes work to this instance.
+  // All resident lanes are up — flip readiness so the orchestrator routes work to this instance.
   consumersReady = true;
-  log.info('readiness: ready (erasure consumer + job runner started)');
+  log.info('readiness: ready (erasure poll lane + job runner started)');
 }
 
 // Run when invoked directly (not imported in tests)

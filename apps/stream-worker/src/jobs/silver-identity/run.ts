@@ -20,8 +20,9 @@
  *      resolve → skipped without touching Neo4j (only first-seen identifiers hit the graph),
  *   4. resolves the rest via the EXISTING BatchResolveIdentityUseCase → Neo4jIdentityRepository
  *      (matcher/resolver logic untouched; deterministic-only, same scope as the backfill CLI),
- *   5. applies the direct side effects (side-effects.ts): scoped-recompute + restitch/journey
- *      dirty-sets + tp-cache merge invalidation + identifier-cache priming,
+ *   5. applies the direct side effects (side-effects.ts) PER COMMITTED CHUNK (M2 — same
+ *      granularity as the Neo4j writes): scoped-recompute + restitch/journey dirty-sets +
+ *      tp-cache merge invalidation + identifier-cache priming,
  *   6. seeds the touchpoint hot cache (TouchpointCacheService — flag identity.tp_cache, OFF ⇒ inert),
  *   7. projects consent (ProjectConsentUseCase) and records CAPI retroactive deletions
  *      (RequestCapiDeletionUseCase) for consent-bearing rows — the former ConsentSuppressor/
@@ -359,26 +360,33 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
       }
 
       // Resolve the page's first-seen events through the EXISTING batch path (Neo4j SoR),
-      // then apply the direct side effects the removed consumers used to own.
+      // applying the direct side effects PER COMMITTED CHUNK (M2): the hook fires after each
+      // internal chunk's writeOutcomesBatch commits, so side effects land with the SAME
+      // granularity as the graph writes. A mid-page throw therefore never strands committed
+      // chunks' merge side effects (they would re-resolve as linked/skipped next run and the
+      // scoped-recompute/dirty-set/cache-evict work would be lost forever); the failed brand's
+      // watermark is held and the re-run re-applies idempotently (ON CONFLICT upserts,
+      // deterministic event_ids, sliding-TTL primes).
       if (toResolve.length > 0) {
         try {
-          const { results, outcomes } = await batchResolve.executeWithOutcomes(toResolve, nowIso);
-          result.resolved += results.filter((r) =>
-            r.outcome === 'minted' || r.outcome === 'linked' || r.outcome === 'merged' || r.outcome === 'skipped',
-          ).length;
-          result.invalidRows += results.filter((r) => r.outcome === 'invalid').length;
+          await batchResolve.executeWithOutcomes(toResolve, nowIso, async (chunk) => {
+            result.resolved += chunk.results.filter((r) =>
+              r.outcome === 'minted' || r.outcome === 'linked' || r.outcome === 'merged' || r.outcome === 'skipped',
+            ).length;
+            result.invalidRows += chunk.results.filter((r) => r.outcome === 'invalid').length;
 
-          const applied = await applyResolveSideEffects(brandId, outcomes, {
-            flags: flagService,
-            scopedRecomputeRepo,
-            restitchRepo,
-            journeyReversionRepo,
-            identifierCache,
-            tpMergeInvalidator: tpCacheService,
-            now: nowIso,
+            const applied = await applyResolveSideEffects(brandId, chunk.outcomes, {
+              flags: flagService,
+              scopedRecomputeRepo,
+              restitchRepo,
+              journeyReversionRepo,
+              identifierCache,
+              tpMergeInvalidator: tpCacheService,
+              now: nowIso,
+            });
+            addCounts(result.sideEffects, applied.counts);
+            servingCacheDirty = servingCacheDirty || applied.servingCacheDirty;
           });
-          addCounts(result.sideEffects, applied.counts);
-          servingCacheDirty = servingCacheDirty || applied.servingCacheDirty;
         } catch (err) {
           brandErrors += 1;
           log.error('[silver-identity] batch resolve failed — brand aborted (watermark held)', {

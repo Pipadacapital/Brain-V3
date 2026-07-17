@@ -127,16 +127,31 @@ export class BatchResolveIdentityUseCase {
    * post-resolve side effects the removed streaming consumers used to derive from identity.* events
    * (scoped-recompute + restitch/journey dirty-sets + serving-cache eviction) DIRECTLY. Purely
    * additive: the resolve/overlay/write path is byte-identical to execute().
+   *
+   * M2 — `onChunkCommitted`: optional per-chunk hook, invoked AFTER each internal chunk's
+   * writeOutcomesBatch has COMMITTED to the graph, with that chunk's results + outcomes. This
+   * gives callers side-effect granularity equal to the graph-write granularity: without it, a
+   * mid-page failure leaves earlier chunks committed in Neo4j but their merge side effects
+   * (scoped-recompute, restitch/journey dirty rows, cache eviction, tp merge-invalidation)
+   * never applied — the re-run re-resolves those events as linked/skipped (never merged again),
+   * so the side effects would be silently lost FOREVER. A throw from the hook propagates
+   * (caller treats it like a chunk failure; committed chunks' side effects are idempotent to
+   * re-apply). The whole-page return shape is unchanged for existing callers.
    */
   async executeWithOutcomes(
     rawValues: Array<Buffer | null>,
     now: string,
+    onChunkCommitted?: (chunk: {
+      results: ResolveResult[];
+      outcomes: BatchOutcomeItem[];
+    }) => Promise<void>,
   ): Promise<{ results: ResolveResult[]; outcomes: BatchOutcomeItem[] }> {
     const results: ResolveResult[] = [];
     const outcomes: BatchOutcomeItem[] = [];
     for (let i = 0; i < rawValues.length; i += this.batchSize) {
       const chunk = rawValues.slice(i, i + this.batchSize);
       const one = await this.executeOneBatch(chunk, now);
+      if (onChunkCommitted) await onChunkCommitted(one);
       results.push(...one.results);
       outcomes.push(...one.outcomes);
     }

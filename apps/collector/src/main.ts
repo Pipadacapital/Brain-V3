@@ -31,6 +31,7 @@ import {
 } from './interfaces/rest/pixel-identity-config.js';
 import { CollectorKafkaProducer } from './infrastructure/kafka-producer.js';
 import { LocalDiskFallback } from './infrastructure/local-disk-fallback.js';
+import { drainWalThenDisconnect } from './infrastructure/shutdown-drain.js';
 import { AcceptEventUseCase } from './application/accept-event.usecase.js';
 import { registerCollectRoute } from './interfaces/rest/collect.route.js';
 import { registerHealthRoutes } from './interfaces/rest/health.route.js';
@@ -192,6 +193,10 @@ export async function main(): Promise<void> {
     brokers,
     clientId: 'collector',
     topic,
+    // ADR-0015 §5.3 hot-brand composite partition keying — default-empty list means every
+    // brand keeps plain brand_id keys (zero behavior change until a brand is listed).
+    hotBrandIds: cfg.INGEST_HOT_BRAND_IDS,
+    hotBrandBuckets: cfg.INGEST_HOT_BRAND_BUCKETS,
     ...(cfg.KAFKA_SASL_USERNAME && cfg.KAFKA_SASL_PASSWORD
       ? {
           sasl: {
@@ -316,8 +321,21 @@ export async function main(): Promise<void> {
   });
 
   // Register routes
-  registerHealthRoutes(app, backpressure);
-  registerMetricsRoute(app); // GET /metrics — Prometheus exposition (AUD-LOCAL-016); ungated (guards match POST ingest routes only)
+  // draining: flipped by the shutdown handler BEFORE anything else so /readyz fails first and
+  // the k8s endpoints drop this pod while the final WAL drain runs (ADR-0015 durability posture).
+  let draining = false;
+  registerHealthRoutes(app, backpressure, () => draining);
+  // GET /metrics — Prometheus exposition (AUD-LOCAL-016); ungated (guards match POST ingest routes
+  // only). The WAL gauges (pending bytes/events, oldest-entry age) are sampled per scrape — they
+  // back the BrainCollectorWalPendingAge* alerts (durability exposure window open).
+  registerMetricsRoute(app, () => {
+    const s = fallback.walStats();
+    return [
+      { name: 'collector_wal_pending_bytes', value: s.pendingBytes },
+      { name: 'collector_wal_pending_events', value: s.pendingEvents },
+      { name: 'collector_wal_oldest_entry_age_seconds', value: s.oldestEntryAgeSeconds },
+    ];
+  });
   registerPixelAssetRoute(app, pixelIdentityConfig); // GET /pixel.js — the served brain.js asset (Track B + WA-07 identity bootstrap)
   registerCollectRoute(app, acceptUseCase, { firstPartyCookie: cfg.PIXEL_FIRST_PARTY_COOKIE });
 
@@ -335,15 +353,19 @@ export async function main(): Promise<void> {
   // while Kafka is down (each tick attempts connect before flushing).
   fallback.start();
 
-  // ── 8. Graceful shutdown ─────────────────────────────────────────────────────
+  // ── 8. Graceful shutdown (ADR-0015 WAL durability posture: drain+alert, not PVC) ────────
+  // Order is load-bearing: (1) fail readiness (endpoints drop the pod), (2) close HTTP (stop
+  // accepting), (3) final WAL drain bounded by INGEST_SHUTDOWN_FLUSH_TIMEOUT_MS — BEFORE the
+  // producer disconnect, the drain needs the producer. This covers every VOLUNTARY termination
+  // (deploys / Spot reclaim / consolidation); anything unflushed at the deadline survives on
+  // disk for the next boot's init() adoption, and the age alert covers the residual window.
   const shutdown = async (signal: string): Promise<void> => {
-    log.info('signal received — graceful shutdown', { signal });
+    draining = true; // /readyz now 503 'draining'
+    log.info('signal received — graceful shutdown (drain readiness failed)', { signal });
     await app.close();
-    // Best-effort final WAL flush, then stop the flusher + close the append handle. Anything
-    // unflushed survives on disk and is adopted by init() on the next boot (crash-safe WAL).
-    await fallback.flushOnce().catch((err) => log.debug('final WAL flush failed on shutdown', { err }));
-    await fallback.stop().catch((err) => log.debug('fallback stop failed on shutdown', { err }));
-    await kafkaProducer.disconnect().catch((err) => log.debug('producer disconnect failed on shutdown', { err }));
+    // Bounded final WAL flush → flusher stop → producer disconnect (order is load-bearing;
+    // see shutdown-drain.ts). Best-effort throughout — unflushed entries survive on disk.
+    await drainWalThenDisconnect(fallback, kafkaProducer, cfg.INGEST_SHUTDOWN_FLUSH_TIMEOUT_MS);
     // WA-07/WA-08 identity-bootstrap resources — best-effort teardown (both are fail-closed paths).
     await consentConfigReader.end().catch((err) => log.debug('consent-config pool end failed on shutdown', { err }));
     try { flagRedis.disconnect(); } catch (err) { log.debug('flag redis disconnect failed on shutdown', { err }); }

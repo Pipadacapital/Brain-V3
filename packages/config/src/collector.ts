@@ -41,6 +41,36 @@ export const CollectorEnvSchema = CommonEnvSchema.extend({
   INGEST_FALLBACK_FLUSH_INTERVAL_MS: z.coerce.number().int().min(100).default(5_000),
   /** Retry-After (seconds) returned on a 503 INGEST_BACKPRESSURE (log down AND WAL saturated). */
   INGEST_FALLBACK_RETRY_AFTER_SECONDS: z.coerce.number().int().min(1).default(5),
+  /**
+   * Bounded deadline (ms) for the final WAL flush on SIGTERM/SIGINT (ADR-0015 WAL durability
+   * posture: drain+alert, not PVC). On shutdown the collector fails readiness, stops accepting,
+   * then attempts ONE flushOnce() bounded by this deadline BEFORE disconnecting the producer.
+   * Anything unflushed at the deadline survives on disk and is adopted by init() on the next
+   * boot of the same pod; a hard node loss inside this window is the accepted residual risk
+   * (alerted via brain_collector_wal_oldest_entry_age_seconds). Must fit inside the pod's
+   * terminationGracePeriodSeconds minus the preStop sleep (60s − 15s in the helm chart).
+   */
+  INGEST_SHUTDOWN_FLUSH_TIMEOUT_MS: z.coerce.number().int().min(0).default(10_000),
+
+  // ── Hot-brand composite partition key (ADR-0015 §5.3) ────────────────────────
+  /**
+   * Comma-separated brand_id list whose events get a COMPOSITE partition key
+   * `${brand_id}:${bucket}` instead of plain brand_id — spreads a single hot brand
+   * across INGEST_HOT_BRAND_BUCKETS partitions when one brand saturates one partition.
+   * DEFAULT EMPTY: every brand keeps plain brand_id keying (zero behavior change).
+   * Safe because identity resolution is order-independent (deterministic lowest-UUID
+   * canonical) — only per-(brand,bucket) ordering is preserved, which is sufficient.
+   */
+  INGEST_HOT_BRAND_IDS: z
+    .string()
+    .default('')
+    .transform((s) => s.split(',').map((b) => b.trim()).filter((b) => b.length > 0)),
+  /**
+   * Bucket count for the hot-brand composite key. bucket = stableHash(anon_id, falling back
+   * to event_id then correlation_id) mod this — the SAME visitor always lands in the SAME
+   * bucket, so per-visitor event order is preserved within a partition. Default 4.
+   */
+  INGEST_HOT_BRAND_BUCKETS: z.coerce.number().int().min(1).default(4),
 
   // ── Apicurio ────────────────────────────────────────────────────────────────
   /**

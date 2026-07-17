@@ -58,6 +58,9 @@ Bronze raw 15 days; Silver detail 30 days; Gold aggregates 12 months. Long reten
 - Neo4j effective write rate must stay bounded — mitigated by the identifier cache (§ identity), escalating to per-brand Neo4j shards only if a single brand saturates.
 - Amends ADR-0012: transport is at-least-once; exactly-once is achieved by dedup layers, not by the transport alone.
 
+**WAL durability posture (edge case #1, decided: drain + alert — not PVC/StatefulSet).**
+The local-disk fallback WAL is pod-local by design. Voluntary terminations (deploys, Spot reclaim, node consolidation) are covered by the SIGTERM drain: the collector fails readiness, closes HTTP, then runs one final WAL flush bounded by `INGEST_SHUTDOWN_FLUSH_TIMEOUT_MS` (default 10s) **before** the producer disconnects; anything unflushed survives on disk and is adopted on the next boot. The residual risk is a **hard node crash while Kafka is down AND the WAL is non-empty** — accepted, and made observable rather than silent: the `brain_collector_wal_oldest_entry_age_seconds` gauge drives alerts at >5 min (warning) and >30 min (critical), so the exposure window is always visible while it is open. A PVC/StatefulSet conversion was rejected: it would trade a rare, alerted, bounded-loss window for permanent scheduling stiffness (pod-to-volume pinning, slower failover, AZ-bound rescheduling) on the horizontally-scaled ingest edge — disproportionate weight for the residual window it would close.
+
 ## CI / doctrine updates
 - Update `CLAUDE.md`: "dedup lives in Silver" → "dedup at Bronze compaction **and** Silver"; add "identity is resolved in the Silver transform stage; Neo4j is never wired to the collector, log, or Bronze."
 - Add a `tools/lint/v4-naming-guard.sh` rule forbidding any `stream-worker` Kafka consumer that imports the Neo4j identity repository (prevents regression of D5).

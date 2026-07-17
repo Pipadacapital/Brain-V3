@@ -12,6 +12,8 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const counterCalls: Array<{ name: string; labels: Record<string, string>; value: number }> = [];
+
 vi.mock('@brain/observability', () => ({
   createLogger: () => ({
     debug: () => undefined,
@@ -20,6 +22,9 @@ vi.mock('@brain/observability', () => ({
     error: () => undefined,
     child: function () { return this; },
   }),
+  incrementCounter: (name: string, labels: Record<string, string> = {}, value = 1) => {
+    counterCalls.push({ name, labels, value });
+  },
 }));
 
 import { LocalDiskFallback, FallbackSaturatedError, type FlushProducer } from './local-disk-fallback.js';
@@ -29,6 +34,7 @@ let dir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'collector-fallback-test-'));
+  counterCalls.length = 0;
 });
 
 afterEach(async () => {
@@ -176,6 +182,123 @@ describe('LocalDiskFallback cap (bounded buffer → 503 backpressure)', () => {
     await wal.flushOnce();
     expect(wal.isSaturated()).toBe(false);
     await wal.stop();
+  });
+});
+
+describe('LocalDiskFallback WAL observability (ADR-0015 durability posture)', () => {
+  it('walStats() gauges update on append and reset on flush', async () => {
+    const producer = stubProducer();
+    const wal = newFallback(producer);
+    await wal.init();
+    expect(wal.walStats()).toEqual({ pendingBytes: 0, pendingEvents: 0, oldestEntryAgeSeconds: 0 });
+
+    await wal.append([msg(1), msg(2)]);
+    await wal.append([msg(3)]);
+    const pending = wal.walStats();
+    expect(pending.pendingEvents).toBe(3);
+    expect(pending.pendingBytes).toBe(wal.pendingBytes());
+    expect(pending.pendingBytes).toBeGreaterThan(0);
+    expect(pending.oldestEntryAgeSeconds).toBeGreaterThanOrEqual(0);
+
+    await wal.flushOnce();
+    expect(wal.walStats()).toEqual({ pendingBytes: 0, pendingEvents: 0, oldestEntryAgeSeconds: 0 });
+    await wal.stop();
+  });
+
+  it('oldest-entry age tracks the FIRST unflushed entry and survives a failed flush (rotation)', async () => {
+    vi.useFakeTimers();
+    try {
+      let failing = true;
+      const producer = stubProducer({
+        produceBatch: async (batch: ProduceMessage[]) => {
+          if (failing) throw new Error('broker down');
+          producer.produced.push(...batch);
+        },
+      });
+      const wal = newFallback(producer);
+      await wal.init();
+
+      await wal.append([msg(1)]);
+      vi.advanceTimersByTime(10_000);
+      await wal.flushOnce(); // fails → entry rotated to .flushing but still pending
+      expect(wal.walStats().oldestEntryAgeSeconds).toBeCloseTo(10, 0);
+
+      // A newer append must NOT reset the age — the OLDEST entry drives the gauge.
+      await wal.append([msg(2)]);
+      vi.advanceTimersByTime(5_000);
+      expect(wal.walStats().oldestEntryAgeSeconds).toBeCloseTo(15, 0);
+
+      failing = false;
+      await wal.flushOnce(); // drains .flushing (msg 1)
+      await wal.flushOnce(); // drains rotated active (msg 2)
+      expect(wal.walStats().oldestEntryAgeSeconds).toBe(0);
+      await wal.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('increments collector_wal_flushed_total per drained event and flush_failures_total per failed pass', async () => {
+    let failing = true;
+    const producer = stubProducer({
+      produceBatch: async (batch: ProduceMessage[]) => {
+        if (failing) throw new Error('broker down');
+        producer.produced.push(...batch);
+      },
+    });
+    const wal = newFallback(producer);
+    await wal.init();
+    await wal.append([msg(1), msg(2)]);
+
+    await wal.flushOnce(); // fails
+    expect(counterCalls.filter((c) => c.name === 'collector_wal_flush_failures_total')).toHaveLength(1);
+    expect(counterCalls.filter((c) => c.name === 'collector_wal_flushed_total')).toHaveLength(0);
+
+    failing = false;
+    await wal.flushOnce();
+    const flushed = counterCalls.filter((c) => c.name === 'collector_wal_flushed_total');
+    expect(flushed).toHaveLength(1);
+    expect(flushed[0]!.value).toBe(2);
+    await wal.stop();
+  });
+
+  it('init() adopts pending-event count for crash-leftover WAL files', async () => {
+    const wal1 = newFallback(stubProducer());
+    await wal1.init();
+    await wal1.append([msg(1), msg(2), msg(3)]);
+    await wal1.stop(); // "crash" — nothing flushed
+
+    const wal2 = newFallback(stubProducer());
+    await wal2.init();
+    const stats = wal2.walStats();
+    expect(stats.pendingEvents).toBe(3);
+    expect(stats.oldestEntryAgeSeconds).toBeGreaterThanOrEqual(0);
+    await wal2.stop();
+  });
+});
+
+describe('LocalDiskFallback.drain (SIGTERM bounded final flush)', () => {
+  it('returns drained when the final flush completes inside the deadline', async () => {
+    const producer = stubProducer();
+    const wal = newFallback(producer);
+    await wal.init();
+    await wal.append([msg(1)]);
+    await expect(wal.drain(5_000)).resolves.toBe('drained');
+    expect(producer.produced.map((m) => m.eventId)).toEqual(['evt-1']);
+    expect(wal.pendingBytes()).toBe(0);
+    await wal.stop();
+  });
+
+  it('returns timeout when the flush outlives the deadline (WAL stays on disk)', async () => {
+    const producer = stubProducer({
+      // Hang the produce past the deadline — a broker black-hole during shutdown.
+      produceBatch: () => new Promise<void>(() => undefined),
+    });
+    const wal = newFallback(producer);
+    await wal.init();
+    await wal.append([msg(1)]);
+    await expect(wal.drain(50)).resolves.toBe('timeout');
+    expect(wal.pendingBytes()).toBeGreaterThan(0); // rotated, retained for next-boot adoption
   });
 });
 

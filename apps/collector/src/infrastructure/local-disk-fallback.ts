@@ -26,6 +26,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, open, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
+import { incrementCounter } from '@brain/observability';
 import type { ProduceMessage } from './kafka-producer.js';
 import { log } from '../log.js';
 
@@ -53,6 +54,21 @@ export interface FlushProducer {
   produceBatch(batch: ProduceMessage[]): Promise<void>;
 }
 
+/**
+ * WAL observability snapshot (ADR-0015 WAL durability posture) — exposed as gauges on
+ * GET /metrics: while pending > 0, events are ACK'd but NOT on the log yet — the durability
+ * exposure window is OPEN (a hard node loss would drop them). The oldest-entry age drives
+ * the BrainCollectorWalPendingAge* alerts (warning >5m, critical >30m).
+ */
+export interface WalStats {
+  /** Total unflushed bytes (active + rotated-but-not-yet-produced). */
+  pendingBytes: number;
+  /** Total unflushed entries (events ACK'd off the WAL append, not yet produce-ack'd). */
+  pendingEvents: number;
+  /** Age (seconds) of the OLDEST unflushed entry; 0 when the WAL is empty. */
+  oldestEntryAgeSeconds: number;
+}
+
 const ACTIVE_FILE = 'collector-fallback.wal';
 const FLUSHING_FILE = 'collector-fallback.flushing.wal';
 /** Lines produced per broker round-trip during a flush (bounds flush memory). */
@@ -64,6 +80,12 @@ export class LocalDiskFallback {
   private fh: FileHandle | null = null;
   private activeBytes = 0;
   private flushingBytes = 0;
+  /** Entry counts mirroring the byte accounting (WAL observability gauges). */
+  private activeEvents = 0;
+  private flushingEvents = 0;
+  /** Epoch-ms of the OLDEST entry in each file; null = file empty (drives the age gauge). */
+  private activeOldestMs: number | null = null;
+  private flushingOldestMs: number | null = null;
   /** Promise-chain mutex: appends and the flush's rotate step never interleave. */
   private lock: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -82,10 +104,18 @@ export class LocalDiskFallback {
     await mkdir(this.cfg.dir, { recursive: true });
     this.activeBytes = await fileSize(this.activePath);
     this.flushingBytes = await fileSize(this.flushingPath);
+    // Adopt observability state for crash-leftover files too: entry counts by a one-time line
+    // scan (boot only, bounded by the WAL cap), oldest-entry age approximated by the file's
+    // creation time (= its first append; mtime fallback where birthtime is unsupported).
+    this.activeEvents = this.activeBytes > 0 ? await countLines(this.activePath) : 0;
+    this.flushingEvents = this.flushingBytes > 0 ? await countLines(this.flushingPath) : 0;
+    this.activeOldestMs = this.activeBytes > 0 ? await fileBirthMs(this.activePath) : null;
+    this.flushingOldestMs = this.flushingBytes > 0 ? await fileBirthMs(this.flushingPath) : null;
     if (this.activeBytes + this.flushingBytes > 0) {
       log.info('fallback WAL has pending bytes from a previous run — flusher will drain them', {
         active_bytes: this.activeBytes,
         flushing_bytes: this.flushingBytes,
+        pending_events: this.activeEvents + this.flushingEvents,
       });
     }
   }
@@ -93,6 +123,24 @@ export class LocalDiskFallback {
   /** Total unflushed bytes (active + rotated-but-not-yet-produced). */
   pendingBytes(): number {
     return this.activeBytes + this.flushingBytes;
+  }
+
+  /**
+   * WAL observability gauges (scrape-time snapshot — always current with the append/flush
+   * accounting above; the /metrics route reads this per scrape).
+   */
+  walStats(): WalStats {
+    const oldestCandidates = [this.activeOldestMs, this.flushingOldestMs].filter(
+      (t): t is number => t !== null,
+    );
+    return {
+      pendingBytes: this.pendingBytes(),
+      pendingEvents: this.activeEvents + this.flushingEvents,
+      oldestEntryAgeSeconds:
+        oldestCandidates.length === 0
+          ? 0
+          : Math.max(0, (Date.now() - Math.min(...oldestCandidates)) / 1000),
+    };
   }
 
   /** At/over cap — new appends would throw; the admission gate sheds 503 pre-handler. */
@@ -120,6 +168,9 @@ export class LocalDiskFallback {
       // fsync per append batch: the ACK that follows must survive a pod crash.
       await this.fh.datasync();
       this.activeBytes += bytes;
+      this.activeEvents += messages.length;
+      // First entry into an empty active file opens the durability exposure window (age gauge).
+      this.activeOldestMs ??= Date.now();
     });
   }
 
@@ -142,6 +193,10 @@ export class LocalDiskFallback {
           await rename(this.activePath, this.flushingPath);
           this.flushingBytes = this.activeBytes;
           this.activeBytes = 0;
+          this.flushingEvents = this.activeEvents;
+          this.activeEvents = 0;
+          this.flushingOldestMs = this.activeOldestMs;
+          this.activeOldestMs = null;
         });
       }
       if (this.flushingBytes === 0) return;
@@ -155,26 +210,51 @@ export class LocalDiskFallback {
         }
       }
 
-      await this.produceFile(this.flushingPath);
+      const producedCount = await this.produceFile(this.flushingPath);
 
       // Every line produced (produce-ack'd) — the WAL entries are now durable in the log.
       await unlink(this.flushingPath);
       const drained = this.flushingBytes;
       this.flushingBytes = 0;
-      log.info('fallback WAL flushed to the log', { bytes: drained });
+      this.flushingEvents = 0;
+      this.flushingOldestMs = null;
+      // WAL observability: entries that made it from the WAL onto the log (durability window closed).
+      incrementCounter('collector_wal_flushed_total', {}, producedCount);
+      log.info('fallback WAL flushed to the log', { bytes: drained, events: producedCount });
     } catch (err) {
       // Produce failed mid-file: keep the .flushing file; next tick re-produces from the top
       // (at-least-once — Bronze-compaction + Silver dedup absorb the replay, ADR-0015 D2).
+      incrementCounter('collector_wal_flush_failures_total');
       log.warn('fallback WAL flush failed — will retry', { err });
     } finally {
       this.flushing = false;
     }
   }
 
+  /**
+   * SIGTERM/preStop drain (ADR-0015 WAL durability posture): ONE final flushOnce() bounded by
+   * `timeoutMs`. Returns 'drained' when the pass completed inside the deadline, 'timeout' when
+   * the deadline elapsed first (the flush keeps running best-effort; anything unflushed stays
+   * on disk and is adopted by init() on the next boot — crash-safe, alerted via the age gauge).
+   */
+  async drain(timeoutMs: number): Promise<'drained' | 'timeout'> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([this.flushOnce().then(() => 'drained' as const), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Stream the file's JSONL lines and produce them in bounded batches. Throws on produce failure. */
-  private async produceFile(path: string): Promise<void> {
+  private async produceFile(path: string): Promise<number> {
     const rl = createInterface({ input: createReadStream(path, 'utf8'), crlfDelay: Infinity });
     let batch: ProduceMessage[] = [];
+    let produced = 0;
     try {
       for await (const line of rl) {
         if (line.length === 0) continue;
@@ -189,12 +269,15 @@ export class LocalDiskFallback {
         batch.push(msg);
         if (batch.length >= FLUSH_PRODUCE_BATCH) {
           await this.producer.produceBatch(batch);
+          produced += batch.length;
           batch = [];
         }
       }
       if (batch.length > 0) {
         await this.producer.produceBatch(batch);
+        produced += batch.length;
       }
+      return produced;
     } finally {
       rl.close();
     }
@@ -236,5 +319,36 @@ async function fileSize(path: string): Promise<number> {
     return (await stat(path)).size;
   } catch {
     return 0; // ENOENT — no WAL yet
+  }
+}
+
+/**
+ * File creation time (epoch ms) — the moment of the file's FIRST append, i.e. its oldest
+ * entry. Used only for crash-adoption at init(); appends track exact timestamps in-process.
+ * birthtime is 0/epoch on filesystems that don't record it → fall back to mtime (older than
+ * the true oldest entry never — mtime is the LAST append — so the age gauge may under-read
+ * on such filesystems, an accepted approximation for the boot-adoption path only).
+ */
+async function fileBirthMs(path: string): Promise<number | null> {
+  try {
+    const s = await stat(path);
+    const birth = s.birthtimeMs;
+    return Number.isFinite(birth) && birth > 0 ? birth : s.mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/** Count newline-terminated entries in a WAL file (boot-adoption only — bounded by the cap). */
+async function countLines(path: string): Promise<number> {
+  try {
+    let count = 0;
+    const rl = createInterface({ input: createReadStream(path, 'utf8'), crlfDelay: Infinity });
+    for await (const line of rl) {
+      if (line.length > 0) count += 1;
+    }
+    return count;
+  } catch {
+    return 0; // ENOENT / unreadable — the byte accounting still drives saturation
   }
 }

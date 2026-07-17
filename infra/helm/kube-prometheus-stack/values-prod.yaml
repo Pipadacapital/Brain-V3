@@ -249,6 +249,31 @@ additionalPrometheusRulesMap:
               summary: "Collector is shedding ingest (503 backpressure)"
               description: "/collect has shed for 2m — the Kafka producer is failing AND the local disk-WAL fallback is saturated (ADR-0015 direct-to-log)."
 
+          - alert: BrainCollectorWalPendingAgeHigh
+            # ADR-0015 WAL durability posture: events ACK'd into the pod-local disk WAL but NOT yet
+            # produce-ack'd onto the log for >5m — the durability exposure window is OPEN (a hard
+            # node loss now would drop these ACK'd events). The flusher retries every tick; a
+            # sustained age means Kafka has been unreachable (or the flush failing) that whole time.
+            # max() over pods: ANY replica holding old unflushed entries is exposure.
+            expr: max(brain_collector_wal_oldest_entry_age_seconds) > 300
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Collector WAL has events pending >5m (durability exposure window open)"
+              description: "The oldest event ACK'd into a collector pod's local-disk WAL has not reached the log for over 5 minutes — check Kafka broker health and brain_collector_wal_flush_failures_total. These events survive pod restarts but NOT a hard node loss (ADR-0015 accepted residual risk)."
+
+          - alert: BrainCollectorWalPendingAgeCritical
+            # Same signal, 30m: the outage has outlived several flush cycles and the exposure window
+            # is now long enough that a node failure would lose a meaningful slice of ACK'd events.
+            expr: max(brain_collector_wal_oldest_entry_age_seconds) > 1800
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Collector WAL has events pending >30m (durability exposure critical)"
+              description: "Events ACK'd into a collector pod's local-disk WAL have not reached the log for over 30 minutes — the produce path has been down for the whole window. Restore Kafka / the producer path; the WAL drains automatically on reconnect (ADR-0015 drain+alert posture)."
+
       # ── Stream-worker: DLQ depth + consumer lag + ingest freshness ──────────────
       - name: brain-stream-worker
         rules:

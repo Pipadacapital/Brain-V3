@@ -37,13 +37,14 @@ vi.mock('@brain/observability', () => ({
   injectKafkaTraceContext: () => undefined,
 }));
 
-import { CollectorKafkaProducer, type ProduceMessage } from './kafka-producer.js';
+import { CollectorKafkaProducer, type KafkaProducerConfig, type ProduceMessage } from './kafka-producer.js';
 
-function newProducer(): CollectorKafkaProducer {
+function newProducer(overrides: Partial<KafkaProducerConfig> = {}): CollectorKafkaProducer {
   return new CollectorKafkaProducer({
     brokers: ['localhost:9092'],
     clientId: 'test',
     topic: 'test.collector.event.v1',
+    ...overrides,
   });
 }
 
@@ -112,6 +113,79 @@ describe('CollectorKafkaProducer partition key (ADR-0015: key = brand_id)', () =
     await p.produce(msg({ correlationId: 'corr-7' }));
     expect(sentMessages()[0]!.headers['correlation_id']).toBe('corr-7');
     expect(sentMessages()[0]!.headers['source']).toBe('collector');
+  });
+});
+
+describe('CollectorKafkaProducer hot-brand composite partition key (ADR-0015 §5.3)', () => {
+  const anonMsg = (anonId: string, overrides: Partial<ProduceMessage> = {}): ProduceMessage =>
+    msg({
+      valueText: JSON.stringify({ event_name: 'page.viewed', properties: { brain_anon_id: anonId } }),
+      ...overrides,
+    });
+
+  it('empty hot-brand list (the default) keeps plain brand_id keys — zero behavior change', async () => {
+    const p = newProducer(); // no hotBrandIds
+    await p.connect();
+    await p.produceBatch([anonMsg('anon-1'), anonMsg('anon-2', { brandId: 'brand-other' })]);
+    expect(sentMessages().map((m) => m.key)).toEqual(['brand-123', 'brand-other']);
+  });
+
+  it('an UNLISTED brand keeps its plain brand_id key even when a hot list exists', async () => {
+    const p = newProducer({ hotBrandIds: ['brand-hot'], hotBrandBuckets: 4 });
+    await p.connect();
+    await p.produce(anonMsg('anon-1')); // brand-123, not listed
+    expect(sentMessages()[0]!.key).toBe('brand-123');
+  });
+
+  it('a listed hot brand gets `${brand_id}:${bucket}` with a STABLE bucket per anon_id', async () => {
+    const p = newProducer({ hotBrandIds: ['brand-123'], hotBrandBuckets: 4 });
+    await p.connect();
+    await p.produceBatch([anonMsg('anon-stable'), anonMsg('anon-stable'), anonMsg('anon-stable')]);
+    const keys = sentMessages().map((m) => m.key);
+    expect(keys[0]).toMatch(/^brand-123:[0-3]$/);
+    // Same anon_id → same bucket, always (per-visitor partition ordering is preserved).
+    expect(new Set(keys).size).toBe(1);
+  });
+
+  it('bucket assignment is stable across producer instances (hash is process-independent)', async () => {
+    const p1 = newProducer({ hotBrandIds: ['brand-123'], hotBrandBuckets: 4 });
+    await p1.connect();
+    await p1.produce(anonMsg('anon-xyz'));
+    const key1 = sentMessages()[0]!.key;
+
+    sends.length = 0;
+    const p2 = newProducer({ hotBrandIds: ['brand-123'], hotBrandBuckets: 4 });
+    await p2.connect();
+    await p2.produce(anonMsg('anon-xyz'));
+    expect(sentMessages()[0]!.key).toBe(key1);
+  });
+
+  it('distributes distinct anon_ids across multiple buckets', async () => {
+    const p = newProducer({ hotBrandIds: ['brand-123'], hotBrandBuckets: 4 });
+    await p.connect();
+    await p.produceBatch(Array.from({ length: 64 }, (_, i) => anonMsg(`anon-${i}`)));
+    const buckets = new Set(sentMessages().map((m) => m.key));
+    for (const key of buckets) expect(key).toMatch(/^brand-123:[0-3]$/);
+    expect(buckets.size).toBeGreaterThan(1); // spread, not collapsed onto one composite key
+  });
+
+  it('falls back to event_id for the bucket when the envelope carries no anon_id', async () => {
+    const p = newProducer({ hotBrandIds: ['brand-123'], hotBrandBuckets: 4 });
+    await p.connect();
+    await p.produceBatch([
+      msg({ valueText: '{"event_name":"order.created"}', eventId: 'evt-noanon' }),
+      msg({ valueText: '{"event_name":"order.created"}', eventId: 'evt-noanon' }),
+    ]);
+    const keys = sentMessages().map((m) => m.key);
+    expect(keys[0]).toMatch(/^brand-123:[0-3]$/);
+    expect(new Set(keys).size).toBe(1); // same event_id → same bucket (deterministic fallback)
+  });
+
+  it('a hot brand with NO brand_id projected still sends no key (round-robin, unchanged)', async () => {
+    const p = newProducer({ hotBrandIds: ['brand-123'], hotBrandBuckets: 4 });
+    await p.connect();
+    await p.produce(msg({ brandId: null }));
+    expect(sentMessages()[0]!.key).toBeUndefined();
   });
 });
 

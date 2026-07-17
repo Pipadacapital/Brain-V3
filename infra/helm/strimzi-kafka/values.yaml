@@ -146,14 +146,16 @@ topics:
                             #          store with a 15-day collector-lane row-TTL; the log is
                             #          only a delivery buffer, not the replay window)
     standardMs: 604800000   # 7 days  — canonical + control lanes
-    longMs: 2592000000      # 30 days — DLQ / quarantine / order-backfill (replay window)
+    longMs: 2592000000      # 30 days — DLQ / order-backfill (replay window)
 
-  # Collector lane (+ DLQ / quarantine / order-backfill). retention: short | standard | long.
+  # Collector lane (+ DLQ / order-backfill). retention: short | standard | long.
+  # ADR-0015: collector.event.v1.quarantine is RETIRED — gate-failure quarantine lives in Silver
+  # (silver_quarantine); .dlq stays for the erasure orchestrator (the one consumer group on the
+  # live collector topic).
   collector:
     - { suffix: "collector.event.v1",            retention: "short" }
     - { suffix: "collector.order.backfill.v1",   retention: "long" }
     - { suffix: "collector.event.v1.dlq",        retention: "long" }
-    - { suffix: "collector.event.v1.quarantine", retention: "long" }
 
   # 9 connector raw lanes (Kafka Connect Iceberg sink — ADR-0010). Suffix -> <lane>.raw.v1
   rawLanes:
@@ -168,15 +170,13 @@ topics:
     - razorpay.settlement
 
   # Intelligence control/event topics.
-  # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,suppressed,
+  # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,unmerged,suppressed,
   # review_queued}.v1 + intelligence.cache.invalidate.v1 + intelligence.gold.rewritten.v1 lanes
   # are RETIRED — the Silver identity stage writes the dirty-sets and evicts the serving cache
-  # DIRECTLY in-process (no publisher, no consumer).
+  # DIRECTLY in-process (no publisher, no consumer); core's A.2.4 admin unmerge now writes
+  # ops.restitch_pending/ops.journey_reversion_pending directly too (no Kafka lane).
   control:
     - intelligence.customer360.recomputed.v1
-    # A.2.4 unmerge lane (WA-19) REMAINS: apps/core's merge-admin still publishes the unmerge
-    # reversal onto it (fail-open audit lane; auto-create is OFF so it must exist).
-    - identity.unmerged.v1
     # M1 application/domain events published by core's M1EventPublisher (workspace-access,
     # pixel, connector, auth). These were never declared before and, with auto-create OFF,
     # silently failed to publish ("This server does not host this topic-partition") — surfaced

@@ -376,11 +376,12 @@ services:
             --config retention.ms="$$3"
         }
         for PFX in dev prod; do
-          # Collector lane (+ DLQ / quarantine / order-backfill)
+          # Collector lane (+ DLQ / order-backfill). ADR-0015: the .quarantine topic is RETIRED —
+          # gate-failure quarantine lives in Silver (silver_quarantine); .dlq stays for the
+          # erasure orchestrator (the one consumer group on the live collector topic).
           mk "$$PFX.collector.event.v1"            12 604800000
           mk "$$PFX.collector.order.backfill.v1"   12 2592000000
           mk "$$PFX.collector.event.v1.dlq"        12 2592000000
-          mk "$$PFX.collector.event.v1.quarantine" 12 2592000000
           # 9 connector raw lanes (Kafka Connect Iceberg sink raw lanes — ADR-0010)
           for LANE in shopify.orders woocommerce.orders meta.spend google.spend \
                       ga4.rows shiprocket.shipments gokwik.events shopflo.checkout \
@@ -388,12 +389,13 @@ services:
             mk "$$PFX.$$LANE.raw.v1" 12 604800000
           done
           # Intelligence control/event topics.
-          # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,suppressed,
-          # review_queued}.v1 + intelligence.cache.invalidate.v1 + intelligence.gold.rewritten.v1
-          # lanes are RETIRED — the Silver identity stage writes dirty-sets and evicts the serving
-          # cache DIRECTLY (no publisher, no consumer). identity.unmerged.v1 REMAINS: apps/core's
-          # merge-admin still publishes the A.2.4 unmerge reversal onto it (fail-open audit lane).
-          for T in intelligence.customer360.recomputed.v1 identity.unmerged.v1; do
+          # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,unmerged,
+          # suppressed,review_queued}.v1 + intelligence.cache.invalidate.v1 +
+          # intelligence.gold.rewritten.v1 lanes are RETIRED — the Silver identity stage writes
+          # dirty-sets and evicts the serving cache DIRECTLY (no publisher, no consumer); core's
+          # A.2.4 admin unmerge now writes ops.restitch_pending/ops.journey_reversion_pending
+          # directly too (no Kafka lane).
+          for T in intelligence.customer360.recomputed.v1; do
             mk "$$PFX.$$T" 12 604800000
           done
           # Internal canonical fan-out lanes

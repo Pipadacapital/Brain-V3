@@ -39,15 +39,12 @@ topics:
       min.insync.replicas: "1"
     description: "Order backfill lane — shopify-backfill worker → Kafka Connect Iceberg sink (ADR-0015 WS2 single Bronze writer; the topic is in the collector sink's topics list). Single partition = natural throughput cap (ADR-BF-7 / D-3). Separate topic keeps backfill volume off the live lane."
 
-  - name: "{env}.collector.order.backfill.v1.dlq"
-    lane: dlq
-    partitions: 1
-    replication_factor: 1
-    config:
-      retention.ms: "2592000000"          # 30 days
-      cleanup.policy: "delete"
-      compression.type: "snappy"
-    description: "DLQ for backfill order lane — unrecoverable parse / write errors"
+  # ADR-0015: {env}.collector.order.backfill.v1.dlq and {env}.collector.event.v1.quarantine are
+  # RETIRED. Their only writers were the deleted stream-worker Bronze consumers (WS2): the
+  # order-backfill lane is landed by the Kafka Connect sink (no consumer left to DLQ it), and the
+  # parsed-but-failed-gate quarantine moved to the Silver keystone (silver_collector_event.py →
+  # brain_silver.silver_quarantine, replayable). The .dlq below stays: it serves the erasure
+  # orchestrator — the one sanctioned consumer group on the live collector topic.
 
   - name: "{env}.collector.event.v1.dlq"
     lane: dlq
@@ -57,17 +54,7 @@ topics:
       retention.ms: "2592000000"         # 30 days (DLQ — enough for investigation)
       cleanup.policy: "delete"
       compression.type: "snappy"
-    description: "Dead-letter queue — schema rejection, parse failures, unrecoverable errors"
-
-  - name: "{env}.collector.event.v1.quarantine"
-    lane: quarantine
-    partitions: 12
-    replication_factor: 1
-    config:
-      retention.ms: "2592000000"         # 30 days (forensic sink — enough for investigation)
-      cleanup.policy: "delete"
-      compression.type: "snappy"
-    description: "Quarantine sink (R3) — events that PARSED but FAILED a security/compliance gate: unresolved/mismatched install_token → brand (R2 tenant-unresolved / brand_mismatch) or absent consent_flags. Distinct from .dlq (malformed/unparseable). Reuses the shipped DlqProducer with a .quarantine topic suffix — no new producer, no new topic family."
+    description: "Dead-letter queue for the erasure orchestrator (the one remaining consumer group on the live collector topic) — poison messages after MAX_RETRY, replayed via dlq-redrive"
 
 consumer_groups:
   # ADR-0015 WS3/WS4 (identity in Silver): the stream-worker's identity/consent/CAPI/ledger/

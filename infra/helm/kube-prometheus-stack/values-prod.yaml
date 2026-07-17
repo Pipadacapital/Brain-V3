@@ -206,13 +206,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetFastBurn
             expr: |
               (
-                sum(rate(brain_collector_spool_full_total[5m]))
-                  / (sum(rate(brain_collector_accept_total[5m])) + sum(rate(brain_collector_spool_full_total[5m]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[5m]))
+                  / (sum(rate(brain_collector_accept_total[5m])) + sum(rate(brain_collector_backpressure_shed_total[5m]))) > (14.4 * 0.0005)
               )
               and
               (
-                sum(rate(brain_collector_spool_full_total[1h]))
-                  / (sum(rate(brain_collector_accept_total[1h])) + sum(rate(brain_collector_spool_full_total[1h]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[1h]))
+                  / (sum(rate(brain_collector_accept_total[1h])) + sum(rate(brain_collector_backpressure_shed_total[1h]))) > (14.4 * 0.0005)
               )
             for: 2m
             labels:
@@ -224,13 +224,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetSlowBurn
             expr: |
               (
-                sum(rate(brain_collector_spool_full_total[30m]))
-                  / (sum(rate(brain_collector_accept_total[30m])) + sum(rate(brain_collector_spool_full_total[30m]))) > (6 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[30m]))
+                  / (sum(rate(brain_collector_accept_total[30m])) + sum(rate(brain_collector_backpressure_shed_total[30m]))) > (6 * 0.0005)
               )
               and
               (
-                sum(rate(brain_collector_spool_full_total[6h]))
-                  / (sum(rate(brain_collector_accept_total[6h])) + sum(rate(brain_collector_spool_full_total[6h]))) > (6 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[6h]))
+                  / (sum(rate(brain_collector_accept_total[6h])) + sum(rate(brain_collector_backpressure_shed_total[6h]))) > (6 * 0.0005)
               )
             for: 15m
             labels:
@@ -241,13 +241,13 @@ additionalPrometheusRulesMap:
 
           - alert: BrainCollectorSheddingNow
             # Any sustained back-pressure shedding — the drainer (→ Kafka) is behind RIGHT NOW.
-            expr: sum(rate(brain_collector_spool_full_total[5m])) > 0
+            expr: sum(rate(brain_collector_backpressure_shed_total[5m])) > 0
             for: 2m
             labels:
               severity: critical
             annotations:
-              summary: "Collector is shedding ingest (503 SPOOL_FULL)"
-              description: "/collect has returned SPOOL_FULL for 2m — the spool backlog crossed the high-water mark and the drainer is behind."
+              summary: "Collector is shedding ingest (503 backpressure)"
+              description: "/collect has shed for 2m — the Kafka producer is failing AND the local disk-WAL fallback is saturated (ADR-0015 direct-to-log)."
 
       # ── Stream-worker: DLQ depth + consumer lag + ingest freshness ──────────────
       - name: brain-stream-worker

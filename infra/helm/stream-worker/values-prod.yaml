@@ -97,13 +97,21 @@ autoscaling:
   # sustained traffic grows. Rollback: minReplicas 3.
   minReplicas: 2
   maxReplicas: 12
+  # ADR-0015: kafka-lag KEDA scaling DISABLED — the live-lane consumer group
+  # 'stream-worker-live' is retired (CollectorEventConsumer removed; Kafka Connect is
+  # the sole Bronze writer, identity is a Silver-stage batch job). Stream-worker's
+  # remaining live-topic consumer is the low-volume erasure orchestrator; lag-scaling
+  # on it is meaningless for capacity. The plain CPU HPA (minReplicas/maxReplicas
+  # above) returns as the scaler. Right-sizing replicas for the job-runner role is
+  # part of the deferred ADR-0015 infra pass. Rollback: enabled: true (group below
+  # is pre-pointed at the erasure orchestrator so a re-enable is not dead-wrong).
   keda:
-    enabled: true
+    enabled: false
     kafka:
       # Strimzi in-cluster plaintext bootstrap (same host the app's KAFKA_BROKERS points at).
       bootstrapServers: "brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
-      # LIVE collector lane consumer group (packages/config stream-worker CONSUMER_GROUP_ID).
-      consumerGroup: stream-worker-live
+      # ADR-0015: the one remaining live-topic group (ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID).
+      consumerGroup: stream-worker-erasure-orchestrator
       # prod.* lane (strimzi values-prod prefix) — the partition-bearing live topic.
       topic: prod.collector.event.v1
       lagThreshold: "1000"

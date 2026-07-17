@@ -5,7 +5,7 @@
 # a failed metric automatically aborts the rollout → Argo rolls back to the last stable ReplicaSet. This
 # turns the currently-MANUAL bake watch ("echo the criteria, watch a dashboard") into automation.
 #
-# Grounded ONLY in metrics that exist today (C2): collector_accept_total / collector_spool_full_total
+# Grounded ONLY in metrics that exist today (C2): collector_accept_total / collector_backpressure_shed_total
 # (the 99.95% accept+ack SLO) and bronze_write_total (ingest freshness). The Analytics-API RED metrics
 # (error rate, p95) referenced in the bake window need OTel HTTP instrumentation first — tracked as a
 # C1 follow-up; their template is included DISABLED below so it can't fire a fantasy (never-true) check.
@@ -37,7 +37,7 @@ spec:
           query: |
             sum(rate(collector_accept_total[5m]))
               /
-            (sum(rate(collector_accept_total[5m])) + sum(rate(collector_spool_full_total[5m])))
+            (sum(rate(collector_accept_total[5m])) + sum(rate(collector_backpressure_shed_total[5m])))
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate

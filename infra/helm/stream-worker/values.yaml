@@ -101,8 +101,10 @@ autoscaling:
     kafka:
       # Plaintext in-cluster listener (same value the app's KAFKA_BROKERS uses in that env).
       bootstrapServers: ""
-      # The LIVE collector lane consumer group (packages/config stream-worker CONSUMER_GROUP_ID).
-      consumerGroup: stream-worker-live
+      # ADR-0015: the live-lane group 'stream-worker-live' is RETIRED (CollectorEventConsumer
+      # removed; Kafka Connect is the sole Bronze writer). The one remaining live-topic group
+      # is the erasure orchestrator (packages/config ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID).
+      consumerGroup: stream-worker-erasure-orchestrator
       # The live collector topic (env-prefixed; strimzi chart `prefix`).
       topic: ""
       # Scale out when average per-replica lag on the topic exceeds this many messages.

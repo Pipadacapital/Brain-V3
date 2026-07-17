@@ -64,8 +64,10 @@ import { ServingCacheEvictor } from '../../infrastructure/redis/ServingCacheEvic
 import { RedisTouchpointCacheStore } from '../../touchpoint-cache/TouchpointCacheStore.js';
 import { IdentityStoreBrainIdResolver } from '../../touchpoint-cache/BrainIdResolver.js';
 import { TouchpointCacheService } from '../../touchpoint-cache/TouchpointCacheService.js';
+import { incrementCounter } from '@brain/observability';
 import { createSilverReader, BRAND_PREDICATE, type SilverReader } from '../dq/silver-reader.js';
 import { applyResolveSideEffects, type SideEffectCounts } from './side-effects.js';
+import { computeWatermarkWindow } from './watermark-window.js';
 import { log } from '../../log.js';
 
 /** Watermark job key (ops.silver_identity_watermark.job_name). */
@@ -209,11 +211,35 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
     let servingCacheDirty = false;
 
     const storedWm = (await watermarkRepo.get(JOB_NAME, brandId)) ?? EPOCH_ISO;
-    // Trailing lookback: the keystone's ingested_at is the envelope ingest clock, not the Silver
-    // commit clock — re-read a bounded window below the watermark so late-landed rows still fold.
-    const fromIso = new Date(
-      Math.max(0, Date.parse(storedWm) - cfg.SILVER_IDENTITY_LOOKBACK_MS),
-    ).toISOString();
+    // SELF-HEALING trailing lookback (ADR-0015 edge case #2): the keystone's ingested_at is the
+    // envelope ingest clock, not the Silver commit clock — rows land late. The window re-covers
+    // everything since the last committed watermark PLUS the configured margin, so a stalled
+    // landing (Connect outage, paused cron) auto-catches-up on the next run instead of skipping
+    // rows forever. Re-processing the overlap is SAFE — the whole stage is idempotent/replay-safe
+    // (deterministic resolve, ON CONFLICT dirty-set writes, sliding-TTL cache primes).
+    const window = computeWatermarkWindow({
+      nowMs: Date.now(),
+      storedWatermarkMs: Date.parse(storedWm),
+      lookbackMs: cfg.SILVER_IDENTITY_LOOKBACK_MS,
+      maxCatchupMs: cfg.SILVER_IDENTITY_MAX_CATCHUP_MS,
+    });
+    if (window.clipped) {
+      // The cap bounded the scan: rows below the clipped floor are NOT covered by this run.
+      incrementCounter('silver_identity_catchup_clipped_total', { brand_id: brandId });
+      log.warn(
+        '[silver-identity] catch-up window CLIPPED by SILVER_IDENTITY_MAX_CATCHUP_MS — rows with ' +
+        'ingested_at below the clipped floor are NOT covered; run a manual FULL pass for this brand',
+        {
+          brand_id: brandId,
+          stored_watermark: storedWm,
+          catchup_gap_ms: window.catchupGapMs,
+          effective_lookback_ms: window.effectiveLookbackMs,
+          max_catchup_ms: cfg.SILVER_IDENTITY_MAX_CATCHUP_MS,
+          clipped_floor: window.fromIso,
+        },
+      );
+    }
+    const fromIso = window.fromIso;
     let maxSeenIso = storedWm;
 
     const batchResolve = new BatchResolveIdentityUseCase(saltProvider, identityRepo, brandId, {
@@ -388,6 +414,7 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
       log.info('[silver-identity] starting', {
         brands: brands.rows.length, page_size: pageSize,
         lookback_ms: cfg.SILVER_IDENTITY_LOOKBACK_MS,
+        max_catchup_ms: cfg.SILVER_IDENTITY_MAX_CATCHUP_MS,
       });
       for (const brand of brands.rows) {
         try {

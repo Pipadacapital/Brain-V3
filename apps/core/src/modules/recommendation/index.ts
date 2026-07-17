@@ -28,7 +28,7 @@ export type {
   RecommendationOutcome,
 } from './internal/application/queries/get-recommendations.js';
 // Phase 2 — request-time (fresh, cached) recommendation serving.
-export { getRecommendationsLive, RECOMMENDATIONS_LIVE_METRIC_ID } from './internal/application/queries/get-recommendations-live.js';
+export { getRecommendationsLive } from './internal/application/queries/get-recommendations-live.js';
 export type { RecommendationLiveDeps, RecommendationServingCache } from './internal/application/queries/get-recommendations-live.js';
 export {
   recordRecommendationAction,

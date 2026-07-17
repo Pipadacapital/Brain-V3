@@ -116,7 +116,7 @@ export function toResolveBuffer(row: Record<string, unknown>): Buffer | null {
   return Buffer.from(JSON.stringify(out), 'utf8');
 }
 
-export async function runIdentityBackfill(
+async function runIdentityBackfill(
   brandId: string,
   filePath: string,
   opts: { dryRun?: boolean; perEvent?: boolean; batchSize?: number } = {},

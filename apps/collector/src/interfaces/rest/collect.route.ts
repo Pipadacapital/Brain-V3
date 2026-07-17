@@ -12,7 +12,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { AcceptEventUseCase } from '../../application/accept-event.usecase.js';
 import { extractCorrelationId, incrementCounter } from '@brain/observability';
-import { loadCollectorConfig } from '@brain/config';
 import { log } from '../../log.js';
 
 /** brand_id (tenant key, a UUID — not PII) off a raw ingest body, when present pre-validation. */
@@ -30,8 +29,12 @@ function brandIdOf(rawBody: Record<string, unknown>): string | undefined {
 const ANON_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TWO_YEARS_SECONDS = 63_072_000;
 
-function maybeSetFirstPartyCookie(rawBody: Record<string, unknown>, reply: FastifyReply): void {
-  if (!loadCollectorConfig().PIXEL_FIRST_PARTY_COOKIE) return;
+function maybeSetFirstPartyCookie(
+  rawBody: Record<string, unknown>,
+  reply: FastifyReply,
+  enabled: boolean,
+): void {
+  if (!enabled) return;
   const props = rawBody['properties'] as Record<string, unknown> | undefined;
   const anon = typeof props?.['brain_anon_id'] === 'string' ? (props['brain_anon_id'] as string) : '';
   if (!ANON_UUID_RE.test(anon)) return;
@@ -44,7 +47,12 @@ function maybeSetFirstPartyCookie(rawBody: Record<string, unknown>, reply: Fasti
 export function registerCollectRoute(
   app: FastifyInstance,
   acceptUseCase: AcceptEventUseCase,
+  opts: { firstPartyCookie?: boolean } = {},
 ): void {
+  // D-1: the accept/ACK path must NOT read the full collector config (it is KAFKA_BROKERS-coupled,
+  // which would fail the ACK when Kafka is absent). The first-party-cookie flag is injected at
+  // wiring time (main.ts) so the hot path stays Kafka-config-independent.
+  const firstPartyCookie = opts.firstPartyCookie ?? false;
   // ── CORS (REQUIRED) ──────────────────────────────────────────────────────────────────────────
   // The pixel runs on arbitrary storefront origins (boddactive.com, …) and POSTs events cross-origin
   // to this collector. The browser sends a CORS preflight (OPTIONS /collect) first; without an answer
@@ -85,7 +93,7 @@ export function registerCollectRoute(
     // ACK counter — the denominator of the collector accept+ack SLO (C2 / R-05).
     incrementCounter('collector_accept_total');
     rlog.debug('event accepted + spooled', { spool_id: result.spoolId.toString() });
-    maybeSetFirstPartyCookie(rawBody, reply); // ITP defense (flag-gated)
+    maybeSetFirstPartyCookie(rawBody, reply, firstPartyCookie); // ITP defense (flag-gated)
     reply
       .header('X-Correlation-Id', correlationId)
       .header('X-Spool-Id', result.spoolId.toString())
@@ -105,7 +113,7 @@ export function registerCollectRoute(
 
     incrementCounter('collector_accept_total');
     rlog.debug('event accepted + spooled', { spool_id: result.spoolId.toString() });
-    maybeSetFirstPartyCookie(rawBody, reply); // ITP defense (flag-gated)
+    maybeSetFirstPartyCookie(rawBody, reply, firstPartyCookie); // ITP defense (flag-gated)
     reply
       .header('X-Correlation-Id', correlationId)
       .header('X-Spool-Id', result.spoolId.toString())

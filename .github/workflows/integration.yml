@@ -245,14 +245,13 @@ jobs:
       - name: Install Playwright browser
         run: pnpm --filter @brain/web exec playwright install --with-deps chromium
 
-      - name: Materialize .env for the app stack (the dev scripts read --env-file=../../.env)
+      - name: Materialize .env.local-prod for the app stack (dev scripts read --env-file=../../.env.local-prod)
         run: |
-          cat > .env <<'ENV'
+          cat > .env.local-prod <<'ENV'
           NODE_ENV=development
           DATABASE_URL=postgres://brain:brain@localhost:5432/brain
           BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain
           REDIS_URL=redis://localhost:6379
-          KAFKA_BROKERS=localhost:19092
           KAFKA_BROKERS=localhost:19092
           DUCKDB_SERVING_HOST=localhost
           DUCKDB_SERVING_PORT=8091

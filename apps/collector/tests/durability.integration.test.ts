@@ -39,8 +39,12 @@ const { Pool } = pg;
 const DATABASE_URL =
   process.env['DATABASE_URL'] ?? 'postgresql://brain:brain@localhost:5432/brain';
 
-const KAFKA_BROKERS =
-  process.env['KAFKA_BROKERS'] ?? 'localhost:9092';
+// Only the RECOVERY half of the Redpanda-down proof (step 4) needs a real broker. In the
+// Postgres-only integration lane KAFKA_BROKERS is unset → the recovery half is skipped and the
+// D-1/F-3 core (ACK + spool-pending + dead-broker HOLD) still runs. The live-engines lane
+// (duckdb-serving + Kafka) sets KAFKA_BROKERS → the full recovery proof runs.
+const LIVE_KAFKA_BROKERS = process.env['KAFKA_BROKERS'];
+const KAFKA_BROKERS = LIVE_KAFKA_BROKERS ?? 'localhost:9092';
 
 const DEAD_BROKER = 'localhost:19999'; // guaranteed-unreachable broker
 
@@ -217,7 +221,11 @@ describe('Track B — Accept-before-validate + Durability', () => {
       const rowAfterDeadDrain = await getSpoolRow(rawPool, String(spoolId));
       expect(rowAfterDeadDrain!.status).toBe('pending');
 
-      // Step 4: "Recover" Redpanda — drain with the real broker.
+      // Step 4: "Recover" Redpanda — drain with the real broker. Requires a LIVE broker; the
+      // Postgres-only integration lane has none (KAFKA_BROKERS unset) → the D-1/F-3 core above
+      // is already proven, so skip the recovery half here (it runs in the live-engines lane).
+      if (!LIVE_KAFKA_BROKERS) return;
+
       const liveProducer = new CollectorKafkaProducer({
         brokers: KAFKA_BROKERS.split(',').map((b) => b.trim()),
         clientId: 'test-live-producer',

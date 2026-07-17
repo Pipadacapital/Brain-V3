@@ -8,6 +8,20 @@
 # ── The map WRITER (produces the table) ──
 db/iceberg/duckdb/silver/silver_identity_map.py           # WRITER — projects the bi-temporal map from Neo4j (append-per-mutation)
 #
+# ── TRANSFORM-TIER readers (Silver/Gold jobs resolve brain_id_v2 from the raw map) ──
+#    The serving accessors (identity_current_v / identity_asof) are brain_serving VIEWS
+#    applied by duckdb-serving — NOT attachable in a transform DuckDB session, which reads
+#    the Iceberg REST catalog directly (CLAUDE.md: transform jobs may read the catalogs
+#    directly). These jobs resolve current brain_id via resolve_brain_id_v2_sql(), which
+#    encapsulates the bi-temporal current-filter (audit-G1).
+db/iceberg/duckdb/silver/silver_order_state.py            # transform — query-time brain_id_v2 resolution for the order spine
+db/iceberg/duckdb/silver/silver_session_identity.py       # transform — salted external_id → brain_id_v2 resolution
+db/iceberg/duckdb/gold/gold_customer_360.py               # transform — folds identities onto the canonical brain_id
+db/iceberg/duckdb/gold/gold_journey_events.py             # transform — brain_id_v2 resolution for the journey ledger
+db/iceberg/duckdb/gold/gold_journey_events_reversion.py   # transform — brain_id_v2 resolution for ledger reversion
+db/iceberg/duckdb/gold/gold_revenue_ledger.py             # transform — brain_id_v2 resolution for the revenue ledger
+db/iceberg/duckdb/test_revenue_identity_g1.py             # transform TEST — exercises resolve_brain_id_v2_sql against the raw map
+#
 # ── The two SANCTIONED accessors (they ARE the governed read surface) ──
 db/iceberg/duckdb/views/identity_current_v.sql            # serving accessor — valid-now + known-now view
 db/iceberg/duckdb/views/identity_asof.sql                 # serving accessor — bi-temporal as-of view
@@ -22,7 +36,6 @@ packages/contracts/src/api/intelligence.api.v1.ts         # reads_from job-contr
 packages/testing-golden/scripts/capture-baseline.sh       # captures min identifier_hash as a stable ref for byte-identical baselines
 #
 # ── Guard/enum TEST fixtures + a provenance LABEL (first post-migration full CI run, 2026-07-11) ──
-db/iceberg/spark/silver/silver_session_identity_test.py   # the test that ENFORCES the accessor rule — asserts the job resolves via identity_current(), mentions the raw name only in its assertion strings
 packages/contracts/src/api/journey-api.v1.B3.contract.test.ts  # 'silver_identity_map' is a source-enum VALUE in the evidence schema test, not a read
 packages/metric-engine/src/journey-identity-evidence.B3.test.ts # same source-enum value in expected output, not a read
 packages/metric-engine/src/journey-identity-evidence.ts   # provenance label string ('merge'|'silver_identity_map') on evidence rows; the actual read is brain_serving.mv_silver_identity_map (the sanctioned serving mirror above)

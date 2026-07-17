@@ -405,6 +405,7 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
       await watermarkRepo.set(JOB_NAME, brandId, maxSeenIso);
       result.watermarksAdvanced += 1;
     }
+    if (brandErrors === 0) incrementCounter('silver_identity_runs_total', { brand_id: brandId });
     result.errors += brandErrors;
   };
 

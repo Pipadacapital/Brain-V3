@@ -461,6 +461,27 @@ additionalPrometheusRulesMap:
               summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
               description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the DuckDB Silver CronWorkflows (v4-silver, db/iceberg/duckdb/silver) and duckdb-serving health. Analytics reads over Silver are behind."
 
+          # Silver identity stage (ADR-0015 WS3 / C1 2026-07-18) — the v4-identity CronWorkflow
+          # (infra/helm/cronworkflows/templates/v4-transform.yaml, every 5 min at :02/:07/…).
+          # brain_silver_identity_runs_total: stream-worker counter (silver-identity batch job), +1 per
+          # CLEAN per-brand pass — including a no-op empty window, so a healthy-but-quiet brand still
+          # ticks. absent() ⇒ the job has never run (the C1 failure mode: stage not scheduled) or its
+          # series vanished; zero increase over 15m (3 missed ticks = 3× the 5-min cadence, above the
+          # required 2× threshold) ⇒ the cron stopped firing or EVERY brand pass is erroring (watermarks
+          # held). Either way identity resolution has stalled: new events stop resolving to brain_id,
+          # silver_identity_map freezes, and gold_customer_360 + the attribution chain go stale.
+          - alert: BrainSilverIdentityStageStalled
+            expr: |
+              absent(brain_silver_identity_runs_total)
+              or
+              (sum(increase(brain_silver_identity_runs_total[15m])) == 0)
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Silver identity stage has not completed a clean brand pass in >15m"
+              description: "brain_silver_identity_runs_total is absent or flat for over 15m (cadence: every 5 min). Identity resolution is stalled — new events are not resolving to brain_id and the identity map / customer marts are going stale. Check the v4-identity CronWorkflow (argo -n argo list | grep v4-identity), duckdb-serving (the job's read path), Neo4j, and per-brand errors in the job logs (watermarks are held on error and converge on the next clean run)."
+
       # ── Revenue truth integrity ─────────────────────────────────────────────────
       - name: brain-revenue-integrity
         rules:
@@ -672,7 +693,8 @@ additionalPrometheusRulesMap:
   #
   # Series source: the Argo Workflows controller /metrics (metricsConfig +
   # ServiceMonitor flipped on in infra/argocd/envs/prod/argo-workflows.yaml);
-  # the spark-v4 CronWorkflows emit the brain_spark_workflow_* metrics.
+  # the v4 transform + bronze-maintenance CronWorkflows emit the
+  # brain_transform_workflow_* metrics (Spark→DuckDB rename tracked 2026-07-18).
   #
   # HONESTY NOTE (AUD-OPS-032): the Aurora ACU / Redis eviction tripwires are
   # CloudWatch metric alarms in terraform (modules/aurora + modules/elasticache)
@@ -683,37 +705,39 @@ additionalPrometheusRulesMap:
     groups:
       - name: brain-scale-tripwires
         rules:
-          - alert: SparkTierCutoverTriggerBreached
-            # The DEFINED executionMode:k8s cutover trigger (docs/ops/spark-on-k8s-migration.md §1):
-            # a Silver/Gold tier sustaining >20 min wall-time. Silver must clear the :25 gold start;
-            # both must stay far from the 2400s activeDeadlineSeconds. Realtime gauge → this fires
+          - alert: TransformTierSlow
+            # A Silver/Gold tier sustaining >20 min wall-time — far past the incremental steady state
+            # (minutes) and eating into the 9000s bootstrap ceiling. Realtime gauge → this fires
             # DURING the slow run, and the frozen final value keeps it visible after completion.
-            expr: max by (tier) (brain_spark_workflow_duration_seconds) > 1200
+            expr: max by (tier) (brain_transform_workflow_duration_seconds) > 1200
             for: 5m
             labels:
               severity: warning
             annotations:
-              summary: "Spark {{ $labels.tier }} tier ran > 20 min — k8s cutover trigger breached"
-              description: "The {{ $labels.tier }} CronWorkflow wall-time exceeded 1200s (value {{ $value | humanizeDuration }}). This is the DEFINED trigger to rehearse and flip sparkV4 executionMode: k8s (docs/ops/spark-on-k8s-migration.md §1). Per-mart durations: kubectl -n argo logs the workflow pod and grep '\"evt\":\"spark_job\"' (job_log.py duration_ms)."
+              summary: "Transform {{ $labels.tier }} tier ran > 20 min"
+              description: "The {{ $labels.tier }} CronWorkflow wall-time exceeded 1200s (value {{ $value | humanizeDuration }}). At the */5 realtime cadence Forbid is skipping ticks — freshness is degrading. Per-mart durations: kubectl -n argo logs the workflow pod (structured {\"job\":…} result lines)."
 
-          - alert: SparkTierNearDeadline
-            # 2100s = 87% of the 2400s activeDeadlineSeconds — the run is about to be killed and the
+          - alert: TransformTierNearDeadline
+            # 8100s = 90% of the 9000s activeDeadlineSeconds — the run is about to be killed and the
             # medallion (and every mv_* serving view over it) goes stale platform-wide.
-            expr: max by (tier) (brain_spark_workflow_duration_seconds) > 2100
+            expr: max by (tier) (brain_transform_workflow_duration_seconds) > 8100
             for: 1m
             labels:
               severity: critical
             annotations:
-              summary: "Spark {{ $labels.tier }} tier at {{ $value | humanizeDuration }} — approaching the 2400s deadline"
-              description: "The {{ $labels.tier }} CronWorkflow is within ~5 min of activeDeadlineSeconds (2400s). If it is killed, Silver/Gold freshness stalls platform-wide (serving reads only brain_serving.mv_* over these marts). Escalate the AUD-OPS-029 sizing knobs or execute the k8s cutover."
+              summary: "Transform {{ $labels.tier }} tier at {{ $value | humanizeDuration }} — approaching the 9000s deadline"
+              description: "The {{ $labels.tier }} CronWorkflow is within ~15 min of activeDeadlineSeconds (9000s). If it is killed, Silver/Gold freshness stalls platform-wide (serving reads only brain_serving.mv_* over these marts). Check for a re-bootstrap (lost watermark) or keystone fragmentation before it recurs."
 
-          - alert: SparkTierRunFailed
-            # A tier run ended Failed (deadline, OOMKill, retries exhausted). Downstream mart staleness
-            # is caught by the freshness rules; this points at the CAUSE hours earlier.
-            expr: sum by (tier) (increase(brain_spark_workflow_failed_total[2h])) > 0
+          - alert: TransformTierRunFailed
+            # A tier run ended Failed (deadline, OOMKill, retries exhausted) — covers the v4-silver /
+            # v4-identity / v4-gold transform tiers AND the bronze-maintenance workflow + its fail-soft
+            # bronze-dedup step (H4: dedup failure no longer aborts compaction/expiry — it surfaces
+            # HERE as tier=bronze-dedup instead). Downstream mart staleness is caught by the freshness
+            # rules; this points at the CAUSE hours earlier.
+            expr: sum by (tier) (increase(brain_transform_workflow_failed_total[2h])) > 0
             for: 5m
             labels:
               severity: warning
             annotations:
-              summary: "Spark {{ $labels.tier }} tier workflow FAILED in the last 2h"
-              description: "A {{ $labels.tier }} CronWorkflow run ended Failed (deadline overrun, OOMKill, or retries exhausted). Inspect: argo -n argo list; kubectl -n argo logs <pod>. If failures correlate with duration near 2400s, the AUD-OPS-029 vertical ceiling is the likely cause — see docs/ops/spark-on-k8s-migration.md."
+              summary: "{{ $labels.tier }} workflow FAILED in the last 2h"
+              description: "A {{ $labels.tier }} CronWorkflow run (or fail-soft step) ended Failed (deadline overrun, OOMKill, valve refusal, or retries exhausted). Inspect: argo -n argo list; kubectl -n argo logs <pod>. tier=bronze-dedup ⇒ Bronze may still hold duplicates (Silver MERGE remains the backstop) — see bronze_dedup.py output for the memory-valve / BRONZE_DEDUP_FORCE guidance."

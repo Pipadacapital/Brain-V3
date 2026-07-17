@@ -164,6 +164,18 @@ sparkV4:
   # next tick (never overlaps), so freshness degrades gracefully to whatever the tier can sustain.
   silverSchedule: "*/5 * * * *"   # every 5 min — keystone + order_state spine + the rest of Silver (incremental)
   goldSchedule: "*/5 * * * *"     # every 5 min — reads the latest committed Silver (Gold is still full-scan; Forbid throttles)
+  # ── Identity stage (ADR-0015 WS3; templates/v4-transform.yaml v4-identity) ─────────────────────
+  # Mirrors tools/dev/duckdb-refresh.sh's keystone → silver ×2 → IDENTITY → gold ordering: the Node
+  # silver-identity batch job (stream-worker image — resolves new keystone rows via Neo4j) then
+  # silver_identity_map.py (duckdb image — re-projects the graph into the Iceberg map) as TWO
+  # ordered steps in ONE workflow. +2min offset from the silver tick so the (incremental, ~1-2 min)
+  # silver pass usually commits first; watermark + idempotency make any miss converge next tick.
+  identitySchedule: "2-57/5 * * * *"   # every 5 min at :02/:07/… — after silver's :00/:05/… tick
+  identity:
+    # The resolve step is watermark-windowed (fast steady state); the FIRST run folds everything
+    # since epoch (bounded by SILVER_IDENTITY_MAX_CATCHUP_MS) — give it a 30-min ceiling; Forbid
+    # skips ticks until a long catch-up completes (established converge posture).
+    activeDeadlineSeconds: 1800
   # activeDeadlineSeconds stays HIGH (9000s / 2.5h): the FIRST run after SILVER_INCREMENTAL is enabled has
   # no watermark → a full-scan BOOTSTRAP (~75 min, the old runtime) that MUST complete to seed the
   # watermark. A low cap would kill the bootstrap before it writes the watermark → every run re-bootstraps

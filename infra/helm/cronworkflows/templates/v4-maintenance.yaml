@@ -31,42 +31,55 @@ Single-pod convention (maintenance is single-client Iceberg commits — no fleet
 {{- end -}}
 {{- $envFrom := .Values.envSecretName -}}
 {{- $m := .Values.sparkV4.maintenance -}}
+{{- /*
+LANE SPLIT (2026-07-17 fragmentation incident): the maintenance sweep is rendered once PER LANE in
+`$m.lanes`, so Gold and Silver can run on independent cadences/deadlines and neither can starve the
+other. Previously a single cron swept both namespaces table-by-table (Silver first, alphabetically);
+when Silver's heavy tables (silver_job_watermark ~7.3k tiny files) burned the whole activeDeadlineSeconds,
+Gold never got compacted → the serving marts (gold_customer_360) fragmented to ~50 files → 8s cold scans.
+Default values ship ONE lane (name:"" → the full Gold-first sweep, unchanged behavior). Prod overrides
+`lanes` to run a frequent Gold-only lane + a daily Silver-only lane. Each lane sets MAINT_NAMESPACES so
+the job scopes to that namespace (empty → both, Gold-first per medallion_maintenance.py).
+*/ -}}
+{{- range $lane := $m.lanes }}
+{{- $laneName := $lane.name | default "" -}}
+{{- $cronName := ternary "v4-maintenance" (printf "v4-maintenance-%s" $laneName) (eq $laneName "") -}}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
-  name: v4-maintenance
+  name: {{ $cronName }}
   labels:
-    {{- include "brain.labels" . | nindent 4 }}
-    brain.io/job: v4-maintenance
+    {{- include "brain.labels" $ | nindent 4 }}
+    brain.io/job: {{ $cronName }}
 spec:
   # NOTE: the ERASURE mode (ERASE_BRAND_ID=…) is NOT this cron — it is invoked on-demand by the
   # right-to-erasure orchestrator (same as Bronze).
-  schedule: {{ $m.schedule | quote }}
-  timezone: {{ .Values.timezone | quote }}
+  schedule: {{ $lane.schedule | default $m.schedule | quote }}
+  timezone: {{ $.Values.timezone | quote }}
   concurrencyPolicy: Forbid            # never overlap a maintenance sweep with itself
-  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
-  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
-  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ $.Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $.Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $.Values.defaults.failedJobsHistoryLimit }}
   workflowSpec:
-    serviceAccountName: {{ .Values.serviceAccount.name }}   # IRSA: S3 (medallion buckets) + REST catalog
+    serviceAccountName: {{ $.Values.serviceAccount.name }}   # IRSA: S3 (medallion buckets) + REST catalog
     entrypoint: run
     {{- /* AUD-PROD-006: pin the maintenance cron pod to the streaming pool (values-prod). */}}
-    {{- with .Values.sparkV4.nodeSelector }}
+    {{- with $.Values.sparkV4.nodeSelector }}
     nodeSelector:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    {{- with .Values.sparkV4.tolerations }}
+    {{- with $.Values.sparkV4.tolerations }}
     tolerations:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    activeDeadlineSeconds: {{ $m.activeDeadlineSeconds }}
+    activeDeadlineSeconds: {{ $lane.activeDeadlineSeconds | default $m.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess
     templates:
       - name: run
         retryStrategy:
-          limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent Iceberg procedures — retry-safe
+          limit: {{ $.Values.defaults.backoffLimit | quote }}   # idempotent Iceberg procedures — retry-safe
           retryPolicy: OnError
         container:
           image: {{ $ref | quote }}
@@ -78,12 +91,21 @@ spec:
               exec python /opt/brain/duckdb/maintenance/medallion_maintenance.py
           env:
             - { name: MODE, value: "maintain" }
-            {{- toYaml $m.env | nindent 12 }}
+            {{- if $lane.namespaces }}
+            - { name: MAINT_NAMESPACES, value: {{ $lane.namespaces | quote }} }
+            {{- end }}
+            {{- if hasKey $lane "orphanFiles" }}
+            - { name: ORPHAN_FILES, value: {{ $lane.orphanFiles | quote }} }
+            {{- end }}
+            {{- with $m.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- if $envFrom }}
           envFrom:
             - secretRef:
                 name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* (REST catalog + S3 seams)
           {{- end }}
           resources:
-            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+            {{- toYaml $.Values.sparkV4.resources | nindent 12 }}
+{{- end }}
 {{- end }}

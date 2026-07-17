@@ -235,7 +235,11 @@ resource "aws_rds_cluster" "postgres" {
   storage_encrypted = true
   kms_key_id        = var.kms_key_arn
 
-  backup_retention_period   = 35
+  # AUD-COST (2026-07-17): 35 → 5 days. The prod cluster is a ~1 GB operational-only
+  # Postgres (ops schema); 35-day PITR/backup retention drove the Aurora BackupUsage
+  # GB-Month line (which grows daily as backups accumulate over the retention window).
+  # 5 days is ample for an operational store whose system-of-record is Iceberg (S3).
+  backup_retention_period   = 5
   preferred_backup_window   = "02:00-03:00"
   skip_final_snapshot       = false
   final_snapshot_identifier = "${var.project}-${var.environment}-aurora-final-snapshot"

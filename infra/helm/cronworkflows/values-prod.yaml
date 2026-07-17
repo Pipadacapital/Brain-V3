@@ -43,6 +43,27 @@ sparkV4:
   resources:
     requests: {cpu: "2", memory: 6Gi}
     limits: {cpu: "3", memory: 8Gi}
+  # MAINTENANCE LANE SPLIT (2026-07-17 fragmentation incident). The single both-namespaces sweep
+  # processed Silver first (alphabetically) and burned its whole deadline on Silver's heavy tables
+  # (silver_job_watermark ~7.3k tiny files) → Gold never compacted → gold_customer_360 fragmented to
+  # ~50 files → 8s serving cold-scans. Split into two lanes so the serving-facing Gold marts are kept
+  # compacted on a fast cadence, independent of Silver's slow full sweep:
+  maintenance:
+    lanes:
+      # Gold: serving-facing marts — frequent + tight. Orphan sweep off (it is a no-op SKIP today and
+      # the compaction+expiry is what keeps serving fast). Finishes in minutes → 30-min deadline.
+      - name: gold
+        namespaces: brain_gold
+        schedule: "0 */2 * * *"        # every 2h — keeps gold_customer_360 &co consolidated for serving
+        activeDeadlineSeconds: 1800    # 30 min — Gold-only sweep is quick
+        orphanFiles: "0"
+      # Silver: heavy tables (job_watermark, fulfillment) — its own daily window with room to finish
+      # the full table-by-table optimize+expire without a deadline SIGTERM (the exit-143 history).
+      - name: silver
+        namespaces: brain_silver
+        schedule: "0 4 * * *"          # daily 04:00 IST — off the Gold cadence
+        activeDeadlineSeconds: 10800   # 3h — enough headroom for the fragmented Silver tables
+        orphanFiles: "1"
 envSecretName: core-env
 serviceAccount:
   name: brain-jobs

@@ -197,12 +197,13 @@ jobs:
             dockerfile: db/iceberg/duckdb/Dockerfile
             context: db/iceberg
             paths: '^db/iceberg/duckdb/'
-          # duckdb-serving (ADR-0014): the serving-tier HTTP service. Shares the db/iceberg
-          # context (it COPYs _catalog.py + views/ alongside serving/); rebuilt whenever the
-          # serving code, the shared catalog seam, or the serving views change.
+          # duckdb-serving (ADR-0014): the serving-tier HTTP service. Context is db/iceberg/duckdb
+          # — the Dockerfile COPYs `serving/`, `views/`, `_catalog.py` relative to it (same context
+          # the compose service builds with); rebuilt whenever the serving code, the shared catalog
+          # seam, or the serving views change.
           - image: duckdb-serving
             dockerfile: db/iceberg/duckdb/serving/Dockerfile
-            context: db/iceberg
+            context: db/iceberg/duckdb
             paths: '^db/iceberg/duckdb/(serving/|views/|_catalog\.py)'
     steps:
       - uses: actions/checkout@v6

@@ -99,6 +99,9 @@ jobs:
             \$\$;
           "
           pnpm migrate:up
+          # Seed the fixture organization the *.live / *.integration suites assume (the schema-only
+          # migrate seeds no tenant data; see tools/dev/seed-fixture-org.sql). Reference data is in 0136.
+          PGPASSWORD=brain psql -U brain -h localhost -d brain -f tools/dev/seed-fixture-org.sql
 
       # Provision the DuckDB transform venv (duckdb + numpy + splink + pyiceberg + neo4j) — the SAME
       # deps the brain-duckdb cron image carries (db/iceberg/duckdb/requirements.txt). Shared by the

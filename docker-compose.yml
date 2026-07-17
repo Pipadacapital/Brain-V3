@@ -238,6 +238,13 @@ services:
     volumes:
       - localstack-data:/var/lib/localstack   # AUD-INFRA-011 (KMS keys/secret ARNs still reset on
                                               # restart in community edition; bootstrap re-wraps)
+      # HANDS-OFF AWS-side re-seed on EVERY container start (2026-07-17): LocalStack runs
+      # /etc/localstack/init/ready.d/*.sh at READY, so the KMS alias + baseline app secrets exist
+      # again immediately after any restart — without waiting for a manual `pnpm bootstrap`.
+      # (Fixes the recurring provision 500: alias/brain-connector-secrets wiped by a restart.)
+      # The PG-dependent restore (dev_secret → SM, keyring re-wrap) still needs `pnpm bootstrap`.
+      - ./tools/seed/localstack-init/ready.d:/etc/localstack/init/ready.d:ro
+      - ./.env.local-prod:/etc/brain/.env.local-prod:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 10s

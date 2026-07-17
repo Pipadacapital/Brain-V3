@@ -16,6 +16,7 @@ function fakeProducer(): CollectorKafkaProducer {
   return {
     connect: async () => {},
     disconnect: async () => {},
+    isConnected: () => true,
   } as unknown as CollectorKafkaProducer;
 }
 
@@ -59,5 +60,70 @@ describe('Drainer — in-flight tick guard (AUD-PERF-006)', () => {
     await drainer.stop();
 
     expect(calls).toBeGreaterThanOrEqual(2); // error did not stop the loop (and inTick was released)
+  });
+});
+
+describe('Drainer — producer connect retry (startup race, 2026-07-17)', () => {
+  it('re-attempts producer.connect() each tick when startup connect lost the race, then drains', async () => {
+    // Reproduces the live incident: Kafka restarted ~1 min before the collector booted, the
+    // startup connect() failed, and the old drainer NEVER re-attempted connect — every spool row
+    // stayed 'pending' until a process restart. The tick must now retry connect and, once it
+    // succeeds, drain normally.
+    let connected = false;
+    let connectAttempts = 0;
+    const producer = {
+      connect: async () => {
+        connectAttempts += 1;
+        if (connectAttempts < 3) throw new Error('ECONNREFUSED 127.0.0.1:9092');
+        connected = true;
+      },
+      disconnect: async () => {
+        connected = false;
+      },
+      isConnected: () => connected,
+    } as unknown as CollectorKafkaProducer;
+
+    let drains = 0;
+    const useCase = {
+      execute: async () => {
+        // The drainer must never call the use case while the producer is not connected.
+        expect(connected).toBe(true);
+        drains += 1;
+        return 0;
+      },
+    } as unknown as DrainEventsUseCase;
+
+    const drainer = new Drainer(useCase, producer, { pollIntervalMs: 10, batchSize: 10 });
+    await drainer.start(); // attempt 1 fails (back-pressure mode) — loop starts anyway
+    await sleep(100); // ticks: attempt 2 fails, attempt 3 succeeds, then drains
+    await drainer.stop();
+
+    expect(connectAttempts).toBeGreaterThanOrEqual(3);
+    expect(drains).toBeGreaterThanOrEqual(1); // recovered WITHOUT a process restart
+  });
+
+  it('skips the drain (rows stay pending) while the producer cannot connect', async () => {
+    const producer = {
+      connect: async () => {
+        throw new Error('broker unreachable');
+      },
+      disconnect: async () => {},
+      isConnected: () => false,
+    } as unknown as CollectorKafkaProducer;
+
+    let drains = 0;
+    const useCase = {
+      execute: async () => {
+        drains += 1;
+        return 0;
+      },
+    } as unknown as DrainEventsUseCase;
+
+    const drainer = new Drainer(useCase, producer, { pollIntervalMs: 10, batchSize: 10 });
+    await drainer.start();
+    await sleep(60);
+    await drainer.stop().catch(() => undefined); // stop() disconnect may reject on the fake
+
+    expect(drains).toBe(0); // back-pressure hold: no claim/rollback churn on a dead producer
   });
 });

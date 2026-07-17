@@ -131,9 +131,13 @@ def build(con):
 
     # Idempotent MERGE on the (brand_id, acquisition_month, currency_code) PK — replay-safe restatement.
     # The FULL OUTER JOIN already yields one row per PK, so order_by_desc is a stable no-op tie-break.
+    # delete_orphans=True (2026-07-17): this job is ALWAYS a full recompute of both Silver sources, so a
+    # cell whose sources vanished (removed seed/test spend — live orphan: d1517a01 INR spend=20,000 with 0
+    # silver_marketing_spend rows) must be shed after the MERGE; an empty recompute never sheds (guard).
     return merge_on_pk(con, TARGET, staged, COLUMNS,
                        ["brand_id", "acquisition_month", "currency_code"],
-                       order_by_desc=["updated_at", "new_customers"])
+                       order_by_desc=["updated_at", "new_customers"],
+                       delete_orphans=True)
 
 
 if __name__ == "__main__":

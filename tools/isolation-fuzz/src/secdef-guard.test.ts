@@ -110,13 +110,31 @@ describe('SECURITY DEFINER guard (P2.1, live Postgres)', () => {
     ).toEqual([]);
   });
 
-  it('EVERY SECURITY DEFINER function pins search_path to exactly public (no mutable/extra schemas)', () => {
+  it('EVERY SECURITY DEFINER function pins search_path to ONLY trusted app schemas (no mutable schemas)', () => {
     if (!ready) return;
-    // A pinned-but-permissive search_path (e.g. "$user, public") reopens the hole. Require exactly public.
-    const loose = rows.filter((r) => r.config && /search_path=/.test(r.config) && !/search_path=public(,|$)/.test(r.config));
+    // A pinned-but-permissive search_path (e.g. "$user, public" or a pg_temp entry) reopens the
+    // hijack hole: the attack needs ONE attacker-writable schema anywhere on the pinned path.
+    // The old check was /search_path=public(,|$)/ — i.e. "public FIRST" — which (a) FALSELY
+    // PASSED "public, $user" (mutable schema after public) and (b) FALSELY FAILED the two
+    // legitimately-pinned functions that lead with a trusted schema: list_connectors_for_repull
+    // [connectors, public] and maintain_time_partitions [pg_catalog, public] (baseline 0000 pins
+    // — connectors is an app-owned schema and pg_catalog is system-owned + implicitly searched
+    // first anyway; neither is attacker-writable). The real invariant: EVERY schema on the pinned
+    // path must be in the trusted, brain-owned set below (the migration-0000 role search_path +
+    // pg_catalog). $user / pg_temp / anything unknown fails.
+    const TRUSTED_SCHEMAS = new Set([
+      'pg_catalog', 'public', 'iam', 'tenancy', 'connectors', 'jobs', 'billing', 'audit',
+      'ai_config', 'identity', 'consent', 'pixel', 'data_plane',
+    ]);
+    const loose = rows.filter((r) => {
+      const m = r.config?.match(/search_path=([^;]*)/);
+      if (!m) return false; // unpinned is the previous test's failure, not this one's
+      const schemas = m[1]!.split(',').map((s) => s.trim().replace(/^"|"$/g, ''));
+      return schemas.some((s) => !TRUSTED_SCHEMAS.has(s));
+    });
     expect(
       loose.map((r) => `${r.proname} [${r.config}]`),
-      'SECURITY DEFINER functions whose search_path is pinned but not exactly "public"',
+      'SECURITY DEFINER functions whose pinned search_path contains a non-trusted (potentially attacker-writable) schema',
     ).toEqual([]);
   });
 

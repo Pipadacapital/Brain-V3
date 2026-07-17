@@ -7,24 +7,32 @@ import { onboardToDashboard } from './helpers/onboard';
  * and the Shopify shop-domain prompt on the connectors page.
  */
 
-test('dashboard renders the cards and the brand-summary shows "1 member" (count fix)', async ({ page }) => {
+test('home renders and the members list shows exactly 1 member (DISTINCT count fix)', async ({ page }) => {
   await onboardToDashboard(page, 'dash');
 
-  // Onboarding-progress card always renders.
-  await expect(page.getByTestId('onboarding-progress-card')).toBeVisible();
+  // IA redesign: the dashboard is now /home; the old onboarding-progress-card and
+  // brand-summary-card were removed. Anchor on the always-rendered realized-revenue
+  // KPI tile and the brand switcher (the brand-context surface that replaced the card).
+  await expect(page.getByTestId('home-kpi-realized')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('brand-switcher')).toBeVisible();
 
-  // Brand-summary reflects the active brand. A sole owner holds an org-level + a
-  // brand-level membership row; the fixed count (COUNT DISTINCT) must show 1, not 2.
-  await expect(page.getByTestId('brand-summary-card')).toBeVisible();
-  await expect(page.getByText('1 member')).toBeVisible();
+  // Member-count fix regression: a sole owner holds an org-level + a brand-level
+  // membership row; the fixed COUNT(DISTINCT) semantics must surface exactly ONE
+  // member on the members page, not 2.
+  await page.goto('/settings/members');
+  await expect(page.getByTestId(/^member-row-/)).toHaveCount(1);
 });
 
-test('connectors page shows the Shopify store-domain input; Connect enables only with a domain', async ({ page }) => {
+test('connectors: Shopify Connect stays disabled until store domain AND BYO-app credentials are entered', async ({ page }) => {
   await onboardToDashboard(page, 'conn');
   await page.goto('/settings/connectors');
 
+  // Marketplace redesign: the connect button testid is `connector-tile-<id>-connect`
+  // (the old btn-connect-shopify id no longer exists). Shopify is now a BYO-app-REQUIRED
+  // OAuth tile: Connect requires the store domain AND the brand's own app Client ID/Secret
+  // (per the byo_app_required catalog contract), so the enable gate covers all three fields.
   const shopInput = page.getByTestId('input-shop-shopify');
-  const connectBtn = page.getByTestId('btn-connect-shopify');
+  const connectBtn = page.getByTestId('connector-tile-shopify-connect');
 
   await expect(shopInput).toBeVisible();
   await expect(connectBtn).toBeVisible();
@@ -32,6 +40,11 @@ test('connectors page shows the Shopify store-domain input; Connect enables only
   await expect(connectBtn).toBeDisabled();
 
   await shopInput.fill('boddactive-com.myshopify.com');
+  // Still disabled: the REQUIRED BYO OAuth app credentials are empty.
+  await expect(connectBtn).toBeDisabled();
+
+  await page.getByTestId('input-shopify-client_id').fill('e2e-client-id');
+  await page.getByTestId('input-shopify-client_secret').fill('e2e-client-secret');
   await expect(connectBtn).toBeEnabled();
 });
 

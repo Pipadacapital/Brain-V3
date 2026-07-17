@@ -77,6 +77,16 @@ def connect(read_only: bool = False):
     # deterministic and TZ-artifact-free (otherwise a session-local TZ shifts wall-clocks + breaks
     # cross-engine checksum comparison). Every ported job inherits this.
     con.execute("SET TimeZone='UTC';")
+    # DUCKDB 1.5.4 + iceberg BUG MITIGATION (2026-07-17): on MERGE-heavy Iceberg tables whose
+    # accumulated delete-file row counts exceed the estimated record count (e.g. brain_silver.
+    # silver_customer after 39 restatement snapshots), the iceberg scan's cardinality estimate
+    # (records − deletes) WRAPS NEGATIVE as unsigned (seen live: 18446744073709542474 = 2^64−9142)
+    # and the statistics-propagation optimizer then dies with `INTERNAL Error: Information loss on
+    # integer cast` when a UNION propagates it (gold_customer_segments failed every refresh).
+    # Statistics propagation is a PLANNER heuristic only — disabling it never changes results, and
+    # at this tier's data volumes (10^3–10^5 rows/table) the plan-quality cost is negligible.
+    # Remove once duckdb/duckdb-iceberg fixes the unsigned cardinality underflow.
+    con.execute("SET disabled_optimizers='statistics_propagation';")
     con.execute("INSTALL iceberg; LOAD iceberg;")
     con.execute("INSTALL httpfs; LOAD httpfs;")
 

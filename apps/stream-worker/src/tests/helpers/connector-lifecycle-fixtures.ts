@@ -145,10 +145,46 @@ export async function seedTestBrand(
   brandId: string,
   currency = 'INR',
 ): Promise<void> {
-  // Re-use an existing organization_id to satisfy FK (mirrors backfill.e2e:253-264)
+  // Re-use an existing organization_id to satisfy FK; if none (the CI lint/integration lane migrates
+  // but does not load seed data), self-seed a fixture app_user → organization (owner_user_id FK).
+  // Idempotent (ON CONFLICT DO NOTHING), same pattern the *.live.test.ts suites use.
   const orgResult = await superPool.query<{ id: string }>('SELECT id FROM organization LIMIT 1');
-  const orgId = orgResult.rows[0]?.id;
-  if (!orgId) throw new Error('[fixture] No organization row found — run seed migrations first');
+  let orgId = orgResult.rows[0]?.id;
+  if (!orgId) {
+    const FIXTURE_USER_ID = '00000000-0000-4000-8000-0000000000f1';
+    const FIXTURE_ORG_ID = '00000000-0000-4000-8000-0000000000f2';
+    await superPool.query(
+      `INSERT INTO app_user (id, email, email_normalized, password_hash)
+       VALUES ($1, 'fixture@x.invalid', 'fixture@x.invalid', 'x') ON CONFLICT DO NOTHING`,
+      [FIXTURE_USER_ID],
+    );
+    await superPool.query(
+      `INSERT INTO organization (id, name, slug, owner_user_id)
+       VALUES ($1, 'Fixture Org', 'fixture-org', $2) ON CONFLICT DO NOTHING`,
+      [FIXTURE_ORG_ID, FIXTURE_USER_ID],
+    );
+    orgId = FIXTURE_ORG_ID;
+  }
+
+  // brand.currency_code FKs to tenancy.ref_currency, which the schema-only migrate does not seed
+  // (the reference data lives outside the baseline). Ensure the supported currencies exist so the
+  // brand insert's FK holds. Idempotent; minor_unit_digits per ISO-4217 (KWD/BHD/OMR are 3-digit).
+  await superPool.query(
+    `INSERT INTO ref_currency (code, display_name, minor_unit_digits) VALUES
+       ('INR','Indian Rupee',2), ('AED','UAE Dirham',2), ('SAR','Saudi Riyal',2),
+       ('QAR','Qatari Riyal',2), ('KWD','Kuwaiti Dinar',3), ('BHD','Bahraini Dinar',3),
+       ('OMR','Omani Rial',3)
+     ON CONFLICT (code) DO NOTHING`,
+  );
+
+  // brand.timezone FKs to tenancy.ref_timezone (also unseeded by the schema-only migrate); the brand
+  // insert below uses the column default 'Asia/Kolkata'. Seed the India + GCC zones. Idempotent.
+  await superPool.query(
+    `INSERT INTO ref_timezone (name) VALUES
+       ('Asia/Kolkata'), ('Asia/Dubai'), ('Asia/Riyadh'), ('Asia/Qatar'),
+       ('Asia/Kuwait'), ('Asia/Bahrain'), ('Asia/Muscat')
+     ON CONFLICT (name) DO NOTHING`,
+  );
 
   await superPool.query(
     `INSERT INTO brand (id, organization_id, display_name, currency_code, region_code)

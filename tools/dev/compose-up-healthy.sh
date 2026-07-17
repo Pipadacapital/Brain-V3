@@ -12,7 +12,12 @@
 set -uo pipefail
 
 PROFILES=("$@")
-docker compose "${PROFILES[@]}" up -d --remove-orphans
+# --build: duckdb-serving is the ONLY locally-built service and its image BAKES IN the serving
+# views (db/iceberg/duckdb/views/**) — without a rebuild, a branch that adds/changes a view
+# (e.g. ADR-0015's mv_silver_collector_event, which the silver-identity stage reads) keeps
+# serving the STALE image and the refresh identity stage 500s. Layer-cached → a no-op when
+# nothing under db/iceberg/duckdb changed.
+docker compose "${PROFILES[@]}" up -d --build --remove-orphans
 
 deadline=$((SECONDS + 360))
 while :; do

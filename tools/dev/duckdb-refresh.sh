@@ -181,9 +181,37 @@ run_silver_passes() {
 #     BEFORE gold reads it. Both continue-on-error; failures count toward the exit code.
 SILVER_IDENTITY_CMD="${SILVER_IDENTITY_CMD:-pnpm --filter @brain/stream-worker run job:silver-identity}"
 
+# duckdb-serving endpoint the identity job reads through (host-side default; container overrides).
+DUCKDB_SERVING_URL="${DUCKDB_SERVING_URL:-http://localhost:8091}"
+# Bounded wait for brain_serving.mv_silver_collector_event to be queryable (default 120s).
+# COLD-START ORDERING: duckdb-serving applies its views at startup and on each epoch rotation —
+# on a cold catalog the startup pass ran BEFORE this refresh built the keystone table, so the
+# view lands only on the NEXT rotation (compose pins DUCKDB_SERVING_CATALOG_REFRESH_S=60 locally).
+# Waiting here makes the FIRST cold refresh's identity stage deterministic instead of failing
+# once and converging a run later. A timeout falls through to the job (which fails loudly and
+# holds its watermark — the established converge-next-run posture).
+IDENTITY_VIEW_WAIT_S="${IDENTITY_VIEW_WAIT_S:-120}"
+
+wait_for_identity_view() {
+  local deadline=$((SECONDS + IDENTITY_VIEW_WAIT_S))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if curl -sf -X POST "$DUCKDB_SERVING_URL/v1/query" \
+         -H 'content-type: application/json' \
+         -d '{"sql":"SELECT 1 FROM brain_serving.mv_silver_collector_event LIMIT 1"}' \
+         >/dev/null 2>&1; then
+      echo "[$(ts)] identity: mv_silver_collector_event is live on duckdb-serving"
+      return 0
+    fi
+    sleep 5
+  done
+  echo "[$(ts)] ⚠ identity: mv_silver_collector_event still absent after ${IDENTITY_VIEW_WAIT_S}s — running the job anyway (it fails loudly + holds its watermark)"
+  return 0
+}
+
 run_identity_stage() {
   local fail=0
   echo "[$(ts)] ── identity stage (ADR-0015 WS3: resolve in Silver → refresh the Iceberg identity map) ──"
+  wait_for_identity_view
   local logf="/tmp/duckdb-refresh-identity-silver-identity.log"
   local out rc
   out="$(cd "$ROOT" && eval "$SILVER_IDENTITY_CMD" 2>&1)"; rc=$?

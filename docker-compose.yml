@@ -701,6 +701,12 @@ services:
       # DuckDB memory_limit UNDER the 4g container bound: headroom for python + arrow buffers
       # so a heavy query degrades to a clean spill/error, never an OOM-killed container.
       DUCKDB_SERVING_MEMORY_LIMIT: 3GB
+      # Local-dev epoch rotation FASTER than the 900s default: on a cold catalog the startup
+      # view pass skips every view whose backing table the first refresh hasn't built yet
+      # (notably mv_silver_collector_event, which the ADR-0015 identity stage reads mid-refresh)
+      # — a 60s rotation re-applies them within one refresh run instead of 15 minutes later.
+      # Prod (helm) keeps its own value; this is the dev-loop knob only.
+      DUCKDB_SERVING_CATALOG_REFRESH_S: "60"
     # python:3.12-slim ships no curl/wget — probe /readyz with stdlib urllib (raises on non-200).
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/readyz', timeout=5)"]

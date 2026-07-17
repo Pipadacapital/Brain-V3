@@ -64,6 +64,7 @@ import {
   ServingCacheEvictor,
   DirectServingCacheInvalidator,
 } from './infrastructure/redis/ServingCacheEvictor.js';
+import { IdentifierCacheAdapter } from './infrastructure/redis/IdentifierCacheAdapter.js';
 // MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
 // is built FROM Bronze (silver_order_recognition → gold_revenue_ledger). Ad spend likewise flows
 // spend.live.v1 → Bronze (Iceberg, server-trusted) → silver_marketing_spend. PostgreSQL holds
@@ -236,6 +237,19 @@ export async function main(): Promise<void> {
   const directCacheInvalidator = new DirectServingCacheInvalidator(
     new ServingCacheEvictor(cacheEvictionRedis),
   );
+  // H2: the identifier cache (idcache:{brand}:idhash:*) is OUTSIDE the brand-wide evictable
+  // keyspace, so the erasure sequence purges a shredded subject's hash→brain_id entries
+  // EXPLICITLY (STEP 3c). Background connect: a purge before connectivity fails CLOSED →
+  // the erasure row retries with backoff; boot never blocks on Redis.
+  const erasureIdentifierCache = new IdentifierCacheAdapter(
+    redisUrl,
+    cfg.SILVER_IDENTITY_CACHE_TTL_SECONDS,
+  );
+  void erasureIdentifierCache.connect().catch((err) => {
+    log.warn(
+      `[erasure] identifier-cache Redis connect failed (purge fails closed + retries): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
   const erasureRepo = new ErasureRepository(dbUrl);
   // AUD-OPS-037: Bronze raw-PII erasure submitter — STEP 4 of the ordered sequence submits the
   // `bronze-raw-erasure` Argo WorkflowTemplate (erasure_raw_delete.py) so the subject's raw rows
@@ -268,6 +282,8 @@ export async function main(): Promise<void> {
     // AUD-OPS-039: Neo4j graph purge (STEP 2b) + graph-hash keying for the Bronze sweep on
     // brain_id-only triggers (STEP 4).
     identityRepo,
+    // H2: STEP 3c identifier-cache purge (fail-closed — see erasureIdentifierCache above).
+    erasureIdentifierCache,
   );
   // Consent-withdrawal fold for the erasure lane (an erasure IS a full withdrawal): the trigger
   // envelope no longer transits the log/Bronze, so the projection the retired suppressor lane /
@@ -465,6 +481,7 @@ export async function main(): Promise<void> {
     await erasureConsentRepo.end().catch(() => undefined);
     await auditPool.end();
     await cacheEvictionRedis.quit().catch(() => undefined);
+    await erasureIdentifierCache.quit().catch(() => undefined);
     await opsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();

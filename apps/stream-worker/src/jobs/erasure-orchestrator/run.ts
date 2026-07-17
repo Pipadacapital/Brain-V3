@@ -131,10 +131,12 @@ async function processRow(
         `event=${outcome.eventId} brain_id=${outcome.brainId} ` +
         `surrogate=${outcome.surrogateId} ` +
         `bronze_raw_workflow=${outcome.bronzeRawWorkflow ?? 'not_configured'} ` +
-        // AUD-OPS-039 / AUD-TP-22 evidence fields: graph edges tombstoned + whether the
-        // serving-cache eviction ran (FAIL-OPEN — false is stale-until-TTL).
+        // AUD-OPS-039 / AUD-TP-22 / H2 evidence fields: graph edges tombstoned, whether the
+        // serving-cache eviction ran (FAIL-OPEN — false is stale-until-TTL), and how many
+        // idcache hash→brain_id keys the STEP-3c purge deleted (FAIL-CLOSED when wired).
         `graph_links_tombstoned=${outcome.graphLinksTombstoned ?? 'not_wired'} ` +
-        `cache_invalidated=${outcome.cacheInvalidated ?? false}`,
+        `cache_invalidated=${outcome.cacheInvalidated ?? false} ` +
+        `idcache_purged=${outcome.idCacheKeysPurged ?? 'not_wired'}`,
       );
     } else if (outcome.outcome === 'no_brain_id') {
       result.skipped += 1;

@@ -198,13 +198,11 @@ sparkV4:
     env:
       - { name: ORPHAN_OLDER_THAN_DAYS, value: "7" }
     # LANES (2026-07-17): the maintenance cron renders once per lane so Gold/Silver can run on
-    # independent cadences and neither starves the other (see templates/v4-maintenance.yaml). The
-    # default is ONE full lane (name:"" → both namespaces, Gold-first in the job) = pre-split behavior.
-    # `namespaces` sets MAINT_NAMESPACES (empty → both); `orphanFiles` sets ORPHAN_FILES; schedule /
-    # activeDeadlineSeconds fall back to the values above when a lane omits them. Prod overrides `lanes`.
-    lanes:
-      - name: ""                    # full Gold-first sweep (unchanged single-cron behavior)
-        orphanFiles: "1"
+    # independent cadences and neither starves the other (see templates/v4-maintenance.yaml). This
+    # default MUST stay EMPTY: Argo CD/Helm merge overlapping list indices element-wise (base-wins), so
+    # a non-empty default swallowed prod's Gold lane at index 0. Empty → the template renders the single
+    # default lane (name:"" → both namespaces, Gold-first, orphan on); prod overrides `lanes` verbatim.
+    lanes: []
 
 # The scheduled jobs. `image` omitted → the default (core) image.
 #

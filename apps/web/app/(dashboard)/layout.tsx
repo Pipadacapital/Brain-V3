@@ -292,8 +292,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           {NAV_SECTIONS.map((section, i) => (
             <div key={section.title ?? 'overview'} className={cn(i > 0 && 'mt-4')}>
               {section.title && (
+                // Full text-muted-foreground (4.83:1 on white): the previous /60 opacity landed at
+                // 2.32:1, a serious WCAG AA color-contrast violation flagged by the e2e axe gate.
                 <p
-                  className="px-2.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60"
+                  className="px-2.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
                   aria-hidden="true"
                 >
                   {section.title}

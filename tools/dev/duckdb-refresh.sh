@@ -108,8 +108,37 @@ run_tier() {  # $1 = tier  $2 = label  $3.. = job basenames
 # Collect the job lists once (bash 3.2-compatible — macOS ships bash 3.2, no `mapfile`).
 SILVER_JOBS=()
 while IFS= read -r _j; do [ -n "$_j" ] && SILVER_JOBS+=("$_j"); done < <(list_jobs "$SILVER_DIR" "$KEYSTONE")
+
+# GOLD DEPENDENCY PRELIST (2026-07-17) — gold is single-pass, so gold→gold reads MUST run producer-first.
+# The old plain-alphabetical order broke several edges every refresh (a consumer folded the PREVIOUS run's
+# producer state): gold_order_economics (o) ran ~90s BEFORE gold_revenue_ledger (r) and reconciled against
+# the STALE ledger (verified live 2026-07-17: 14 missing AED orders Δ−332,950 minor + retained orphans),
+# and likewise attribution_credit←revenue_ledger, campaign_attribution←campaign_performance,
+# cohort_member←customer_360, customer_360←customer_{health,scores}, measurement_costs←product_costs,
+# product_economics←order_economics, snap_attribution_credit←marketing_attribution.
+# The prelist is a topological order of every gold→gold edge (grep 'GOLD_NAMESPACE}\.' in gold/*.py);
+# jobs NOT listed have no gold-table reads and follow alphabetically. A prelist entry that doesn't exist
+# on disk is skipped (rename-safe); a NEW gold→gold edge must be added here.
+GOLD_PRIORITY=(
+  gold_product_costs.py
+  gold_customer_health.py
+  gold_customer_scores.py
+  gold_revenue_ledger.py
+  gold_measurement_costs.py
+  gold_measurement_fees.py
+  gold_attribution_credit.py
+  gold_customer_360.py
+  gold_campaign_performance.py
+  gold_marketing_attribution.py
+  gold_order_economics.py
+)
 GOLD_JOBS=()
-while IFS= read -r _j; do [ -n "$_j" ] && GOLD_JOBS+=("$_j"); done < <(list_jobs "$GOLD_DIR")
+for _j in "${GOLD_PRIORITY[@]}"; do [ -e "$GOLD_DIR/$_j" ] && GOLD_JOBS+=("$_j"); done
+while IFS= read -r _j; do
+  [ -n "$_j" ] || continue
+  case " ${GOLD_PRIORITY[*]} " in *" $_j "*) continue ;; esac
+  GOLD_JOBS+=("$_j")
+done < <(list_jobs "$GOLD_DIR")
 
 TOTAL_FAIL=0
 

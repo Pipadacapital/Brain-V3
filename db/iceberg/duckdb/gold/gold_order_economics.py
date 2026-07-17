@@ -53,9 +53,12 @@ QUARANTINE: none — this Gold mart reads already-gated Silver + the Gold ledger
 REPLAY-SAFE: full recompute from the ledger + facts, MERGE-UPDATE'd on (brand_id, order_id). The Spark
   job is FULL recompute every run (NOT entity-incremental) — this port matches that exactly.
 
-CAVEAT vs the Spark job (parity-preserving): merge_on_pk here is MATCHED-UPDATE / NOT-MATCHED-INSERT
-  only. The Spark job's merge_on_pk (no delete_orphans passed) is likewise UPDATE/INSERT — so there is
-  NO orphan-shedding divergence for this mart (unlike contribution_margin, which opts into delete_orphans).
+ORPHAN-SHEDDING (2026-07-17): on a FULL recompute (incremental window off / first run / FULL_REFRESH)
+  this job now passes delete_orphans=True — a (brand_id, order_id) row whose order vanished from the
+  ledger (brand wiped from source, seed residue) is shed after the MERGE, so the mart converges to the
+  current ledger truth. (The retired Spark job was UPDATE/INSERT-only here and retained phantoms; live
+  validation found 5 phantom brands Σ27.5M minor retained that way.) Under an incremental window the
+  staged batch is a changed-order SUBSET, so shedding is disabled for that run.
 
 Honors MIGRATION_TABLE_SUFFIX (→ gold_order_economics_duckdb_test) for the parallel-run parity harness.
 Parity target: brain_gold.gold_order_economics (12830 rows).
@@ -381,9 +384,15 @@ def build(con):
     """
 
     # Full-recompute MERGE on (brand_id, order_id). The _econ_ledger GROUP BY already yields exactly one row
-    # per PK, so the in-batch dedup is a no-op; order_by is a nominal tie-break. MATCHED-UPDATE /
-    # NOT-MATCHED-INSERT — the Spark merge_on_pk here passes no delete_orphans, so this is parity-exact.
-    return merge_on_pk(con, TARGET, staged, COLUMNS, PK, order_by_desc=["updated_at", "net_revenue_minor"])
+    # per PK, so the in-batch dedup is a no-op; order_by is a nominal tie-break.
+    # delete_orphans on FULL recompute only (lo is None): the ledger fold is then complete truth, so any
+    # target row whose (brand_id, order_id) vanished from the ledger (a brand wiped from source, seed
+    # residue) must be shed — verified live 2026-07-17: 5 phantom brands (b444444a Σ27,000,000 ×220 rows,
+    # b111111a, aa100a1a, b333333a, d1517a01) survived MERGE-no-delete after their sources were removed.
+    # Under an INCREMENTAL window (lo not None) the staged batch is only the changed-order subset, so
+    # shedding is DISABLED (the anti-join would wipe every unchanged order).
+    return merge_on_pk(con, TARGET, staged, COLUMNS, PK, order_by_desc=["updated_at", "net_revenue_minor"],
+                       delete_orphans=(lo is None))
 
 
 if __name__ == "__main__":

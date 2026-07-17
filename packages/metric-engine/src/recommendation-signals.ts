@@ -133,6 +133,10 @@ export async function computeCm2MarketingSignal(
       `SELECT COALESCE(SUM(spend_minor), 0) AS marketing_minor
          FROM brain_serving.mv_silver_marketing_spend
         WHERE currency_code = '${safeCcy}'
+          -- GAP-C: the spend fact carries the SAME money at 'campaign', 'adset' AND 'ad' levels
+          -- (children roll up to their campaign). Summing all levels ~3×-counts marketing and
+          -- craters CM2. Pin to the canonical top-of-hierarchy 'campaign' level (mirrors gold_cac.py).
+          AND level = 'campaign'
           AND ${BRAND_PREDICATE}`,
       [],
     );

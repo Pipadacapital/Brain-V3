@@ -426,6 +426,17 @@ beforeAll(async () => {
     $$
   `);
 
+  // search_path: GRANT brain_app does NOT propagate brain_app's per-role search_path setting
+  // (rolconfig is per-role, not inherited) — a fresh role gets the default '"$user", public',
+  // so the unqualified `brand` (schema `tenancy`) queries below 42P01'd and the RLS assertions
+  // never executed (found live 2026-07-17). Pin the SAME search_path migration 0000 sets on
+  // brain_app. Run ALWAYS (outside the IF NOT EXISTS) so a pre-existing role is repaired too.
+  await fuzzAdminClient.query(`
+    ALTER ROLE ${FUZZ_BRAND_APP_ROLE}
+      SET search_path = public, iam, tenancy, connectors, jobs, billing, audit, ai_config,
+                        identity, consent, pixel, data_plane
+  `);
+
   // Seed fixture user FIRST (org FK references app_user).
   await fuzzAdminClient.query(`
     INSERT INTO app_user (id, email, email_normalized, password_hash)

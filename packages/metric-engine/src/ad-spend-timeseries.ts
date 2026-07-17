@@ -76,6 +76,10 @@ export async function computeAdSpendTimeseries(
          FROM ${spendView(deps.measurementMartsMigration)}
         WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
           ${platformPredicate}
+          -- GAP-C: the spend fact carries the SAME money at 'campaign', 'adset' AND 'ad' levels
+          -- (children roll up to their campaign). Summing all levels ~3×-counts every bucket.
+          -- Pin to the canonical top-of-hierarchy 'campaign' level (mirrors gold_cac.py).
+          AND level = 'campaign'
           AND ${BRAND_PREDICATE}
         GROUP BY 1, platform, currency_code
         ORDER BY 1 ASC, platform ASC, currency_code ASC`,

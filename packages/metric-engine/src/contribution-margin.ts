@@ -124,6 +124,10 @@ export async function computeContributionMargin(
       `SELECT currency_code, SUM(spend_minor) AS spend_minor
          FROM brain_serving.mv_silver_marketing_spend
         WHERE stat_date <= DATE '${asOfStr}'
+          -- GAP-C: the spend fact carries the SAME money at 'campaign', 'adset' AND 'ad' levels
+          -- (children roll up to their campaign). Summing all levels ~3×-counts marketing and
+          -- craters CM2. Pin to the canonical top-of-hierarchy 'campaign' level (mirrors gold_cac.py).
+          AND level = 'campaign'
           AND ${BRAND_PREDICATE}
         GROUP BY currency_code`,
       [],

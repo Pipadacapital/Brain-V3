@@ -50,16 +50,18 @@ export async function reconciliationCheck(
     ];
   }
 
-  // ── Bronze order count (the connect lift view over Trino, brand-scoped at the seam) ──
+  // ── Bronze order count (the connect lift view, brand-scoped at the seam) ──
   // order_id lives at payload.properties.order_id on order.* events (COALESCE the top-level form
-  // for legacy/synthetic payloads). The view's payload is a JSON string → json_extract_scalar.
+  // for legacy/synthetic payloads). The view's payload is a JSON string → json_extract_string.
   let bronzeOrders = 0;
   try {
     const br = await silver.scopedQuery<{ n: string | number }>(
       brandId,
-      // Trino dialect: json_extract_scalar (NOT StarRocks get_json_string, which Trino has no function
-      // for → it threw and silently became bronze_unreachable/D in the reconciliation check).
-      `SELECT COUNT(DISTINCT COALESCE(json_extract_scalar(payload, '$.properties.order_id'), json_extract_scalar(payload, '$.order_id'))) AS n
+      // DuckDB dialect (ADR-0014 duckdb-serving cutover): json_extract_string — NOT Trino's
+      // json_extract_scalar (DuckDB has no such function → HTTP 500 'Scalar Function with name
+      // json_extract_scalar does not exist' silently became bronze_unreachable/D for EVERY brand,
+      // the same failure mode as the earlier StarRocks get_json_string → Trino miss).
+      `SELECT COUNT(DISTINCT COALESCE(json_extract_string(payload, '$.properties.order_id'), json_extract_string(payload, '$.order_id'))) AS n
          FROM ${ICEBERG_BRONZE}
         WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
           AND event_type LIKE 'order.%'`,

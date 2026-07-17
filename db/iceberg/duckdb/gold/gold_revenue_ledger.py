@@ -56,13 +56,14 @@ IDEMPOTENT / REPLAY-SAFE: the Spark job does a full-fold overwritePartitions() (
 brands from Bronze every run — no watermark, no brand filter). A full-scan recompute + idempotent MERGE on
 the (brand_id, ledger_event_id) PK is PARITY-EQUIVALENT here: ledger_event_id is a deterministic sha over
 (brand_id, order_id, event_type, economic_effective_at), so re-running over the same gated source restates
-byte-identical rows (UPDATE) and inserts none new. NOTE the one behavioral difference the Spark docstring
-calls out: overwritePartitions() SHEDS orphans (a re-fold that changes an order's winning event replaces
-the whole brand-bucket partition), whereas MERGE is UPDATE/INSERT-only and cannot delete a stale
-ledger_event_id whose economic_effective_at shifted between runs. For the parity harness (a fresh
-<table>_duckdb_test folded once from the current gated source) the admission set is identical, so this is
-parity-equivalent; divergence would only appear across two runs where an order's recognition key changes.
-Documented, not silently dropped.
+byte-identical rows (UPDATE) and inserts none new. ORPHAN-SHEDDING (2026-07-17): the port now passes
+delete_orphans=True to merge_on_pk, restoring the Spark overwritePartitions() behavior this docstring
+previously documented away — after the MERGE, any target row whose (brand_id, ledger_event_id) is NOT in
+the current complete fold is DELETEd (a stale recognition key whose economic_effective_at shifted between
+runs, or a seed/fixture row written directly to the mart). Verified live: without shedding, 1,285 such
+rows (test fixtures + 23 fold orphans) inflated whole-table money sums vs Silver truth. Safe here because
+this job is ALWAYS a complete unwindowed re-fold of ALL brands; an empty fold never sheds (merge_on_pk
+guard).
 
 ── DIMENSION READS (Spark reads these over PG JDBC; reproduced faithfully) ──────────────────────────────
   • brain_id ← identity export. Same as silver_order_state.py: read the Iceberg SIBLINGS of the PG
@@ -451,11 +452,20 @@ def build(con):
     """
 
     # Idempotent MERGE on the (brand_id, ledger_event_id) PK — replay-safe restatement (the sha2 key is
-    # deterministic, so a re-fold over the same gated source restates byte-identical rows). See the module
-    # docstring on overwritePartitions() orphan-shedding vs MERGE (parity-equivalent for the harness).
+    # deterministic, so a re-fold over the same gated source restates byte-identical rows).
+    # delete_orphans=True restores the Spark overwritePartitions() orphan-shedding this port had
+    # documented away: this job is ALWAYS a complete re-fold of ALL brands from the gated source (no
+    # watermark, no brand filter — see read_gated_events_sql calls above, none windowed), so the mart
+    # must converge to EXACTLY the current fold. Without it, stale ledger_event_ids whose
+    # economic_effective_at shifted between runs (23 live MERGE orphans from the 2026-07-07/07-14 folds:
+    # aa111111 +1,050,000 INR; 9b88fa45 AED +865,600 / SAR +80,400 / OMR +432,000) and seed/fixture rows
+    # written directly to the mart by live tests whose cleanup failed (b444444a ×1,260 Σ+57,000,000 INR;
+    # b111111a ×2 with year-2099 updated_at breaking freshness) lingered forever and inflated whole-table
+    # money sums vs Silver truth (verified live 2026-07-17).
     return merge_on_pk(con, TARGET, ledger, COLUMNS,
                        ["brand_id", "ledger_event_id"],
-                       order_by_desc=["updated_at", "amount_minor"])
+                       order_by_desc=["updated_at", "amount_minor"],
+                       delete_orphans=True)
 
 
 if __name__ == "__main__":

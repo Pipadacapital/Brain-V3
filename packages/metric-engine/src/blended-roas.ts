@@ -100,6 +100,10 @@ export async function computeBlendedRoas(
       `SELECT platform, currency_code, SUM(spend_minor) AS spend_minor
          FROM ${spendView(deps.measurementMartsMigration)}
         WHERE stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
+          -- GAP-C: the spend fact carries the SAME money at 'campaign', 'adset' AND 'ad' levels
+          -- (children roll up to their campaign). Summing all levels ~3×-counts spend and deflates
+          -- ROAS. Pin to the canonical top-of-hierarchy 'campaign' level (mirrors gold_cac.py).
+          AND level = 'campaign'
           AND ${BRAND_PREDICATE}
         GROUP BY platform, currency_code`,
       [],

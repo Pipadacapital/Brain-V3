@@ -37,6 +37,12 @@ interface FactDescriptor {
   readonly producerVersion: string;
   /** What this fact contributes to the metric. */
   readonly role: string;
+  /**
+   * Optional extra row predicate ANDed into the count/version reads — used when a metric consumes
+   * only a slice of the physical fact (e.g. GAP-C: spend readers pin level = 'campaign'), so the
+   * audited row_count matches the rows the metric actually derives from.
+   */
+  readonly predicate?: string;
 }
 
 /** The measurement fact registry — one entry per physical Iceberg fact table. */
@@ -80,6 +86,10 @@ const FACTS = {
     schema: 'brain_silver', table: 'silver_marketing_spend', dateColumn: 'stat_date',
     jobVersionColumn: null, producerVersion: 'silver_marketing_spend.py',
     role: 'day×channel×campaign ad spend (gold_measurement_spend alias, AMD-16)',
+    // GAP-C: the spend fact carries the SAME money at 'campaign', 'adset' AND 'ad' levels
+    // (children roll up to their campaign). Every spend-consuming metric pins the canonical
+    // top-of-hierarchy 'campaign' level (mirrors gold_cac.py), so the audited row_count must too.
+    predicate: `level = 'campaign'`,
   },
   product_costs: {
     schema: 'brain_gold', table: 'gold_product_costs', dateColumn: 'valid_from',
@@ -190,10 +200,12 @@ export async function computeMetricLineage(
         date !== null && f.dateColumn !== null
           ? ` AND CAST(${f.dateColumn} AS date) <= DATE '${date}'`
           : '';
+      // Slice predicate (GAP-C level pin on the spend fact) — count only the rows the metric consumes.
+      const slice = 'predicate' in f && f.predicate ? ` AND ${f.predicate}` : '';
 
       // Row count — brand-scoped; honest-empty (missing table) degrades to [] → 0.
       const countRows = await scope.runScoped<Record<string, unknown>>(
-        `SELECT count(*) AS c FROM ${fqtn} WHERE ${BRAND_PREDICATE}${dateFilter}`,
+        `SELECT count(*) AS c FROM ${fqtn} WHERE ${BRAND_PREDICATE}${dateFilter}${slice}`,
       );
       const rowCount = numFrom(countRows, 'c');
 

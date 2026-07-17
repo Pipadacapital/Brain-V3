@@ -87,6 +87,11 @@ export async function computeCampaignRoas(
          FROM ${spendView(deps.measurementMartsMigration)}
         WHERE campaign_id IS NOT NULL
           AND stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
+          -- GAP-C: the spend fact carries the SAME money at 'campaign', 'adset' AND 'ad' levels,
+          -- and the child rows ALSO carry campaign_id — so a per-campaign GROUP BY without a level
+          -- pin ~3×-counts each campaign's spend and deflates its ROAS. Pin to the canonical
+          -- top-of-hierarchy 'campaign' level (mirrors gold_cac.py).
+          AND level = 'campaign'
           AND ${BRAND_PREDICATE}
         GROUP BY campaign_id, currency_code`,
       [],

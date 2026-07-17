@@ -168,6 +168,9 @@ const ENTITIES: Record<RecordEntity, EntityConfig> = {
       { key: 'updated_at', label: 'Updated', type: 'date' },
     ],
   },
+  // GAP-C note: this is a raw RECORD BROWSER (no SUM) — it intentionally lists ALL hierarchy levels
+  // (campaign/adset/ad, with `level` as a visible/searchable column), so NO level pin here. Every
+  // spend-AGGREGATING reader pins level = 'campaign' (see blended-roas/ad-spend-timeseries/etc.).
   ad_spend: {
     from: 'brain_serving.mv_silver_marketing_spend',
     dateCol: 'stat_date',

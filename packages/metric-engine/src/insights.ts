@@ -233,6 +233,10 @@ export async function computeInsights(
           `SELECT currency_code, COALESCE(SUM(spend_minor), 0) AS spend_minor
              FROM brain_serving.mv_silver_marketing_spend
             WHERE stat_date >= DATE '${window.current.from}' AND stat_date <= DATE '${window.current.to}'
+              -- GAP-C: the spend fact carries the SAME money at 'campaign', 'adset' AND 'ad' levels
+              -- (children roll up to their campaign). Summing all levels ~3×-counts spend and deflates
+              -- ROAS. Pin to the canonical top-of-hierarchy 'campaign' level (mirrors gold_cac.py).
+              AND level = 'campaign'
               AND ${BRAND_PREDICATE}
             GROUP BY currency_code`,
           [],

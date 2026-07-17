@@ -74,8 +74,87 @@ spec:
     activeDeadlineSeconds: {{ .Values.sparkBronze.activeDeadlineSeconds }}
     podGC:
       strategy: OnWorkflowSuccess
+    {{- /* Failure telemetry (same emission idiom as v4-transform): the DEDUP step's failure is
+           tolerated by the run (continueOn below) so the workflow still ends Succeeded — its
+           failed counter is therefore emitted at TEMPLATE level (template {{status}}), while the
+           workflow-level counter covers a genuine maintenance failure. Both land on the shared
+           brain_transform_workflow_failed_total series the scale-tripwire workflow-failure alert
+           watches (infra/observe/alerts/scale-tripwires.rules.yml). */}}
+    metrics:
+      prometheus:
+        - name: brain_transform_workflow_failed_total
+          help: "Maintenance/transform workflow runs that ended Failed (deadline/retries exhausted)"
+          labels:
+            - key: tier
+              value: bronze-maintenance
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
     templates:
+      {{- /* H4 (2026-07-18): dedup is DECOUPLED from compaction/snapshot-expiry. It used to run
+             `python bronze_dedup.py` inside the same set -e script — any dedup failure (e.g. the
+             COW memory valve refusing an oversized rewrite) aborted the WHOLE run, so Bronze also
+             lost compaction + snapshot expiry until an operator intervened. Now dedup is its own
+             step with continueOn.failed: Argo marks the step Failed (loud + metered via the
+             template-level counter above) while the maintenance step still runs. Dedup converges
+             on a later run (idempotent); Silver's admission MERGE remains the dupe backstop. */}}
       - name: run
+        steps:
+          {{- if .Values.sparkBronze.dedup.enabled }}
+          - - name: dedup
+              template: dedup
+              continueOn:
+                failed: true
+          {{- end }}
+          - - name: maintain
+              template: maintain
+      {{- if .Values.sparkBronze.dedup.enabled }}
+      - name: dedup
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent targeted COW delete — retry-safe
+          retryPolicy: OnError
+        metrics:
+          prometheus:
+            - name: brain_transform_workflow_failed_total
+              help: "Maintenance/transform workflow runs that ended Failed (deadline/retries exhausted)"
+              labels:
+                - key: tier
+                  value: bronze-dedup
+              when: {{ `"{{status}} == Failed"` }}
+              counter:
+                value: "1"
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # ADR-0015 D2(b): compaction-time Bronze dedup FIRST — keep-latest on the
+              # (brand_id, event_id) lifted from the collector lane's payload (bronze_dedup.py:
+              # targeted COW loser deletes), so the optimize pass in the next step compacts an
+              # already-deduped layout and expire_snapshots sweeps the superseded files.
+              # FAIL-SOFT contract: a non-zero exit marks THIS step Failed (alertable via the
+              # bronze-dedup tier counter) but never blocks the maintain step (continueOn).
+              rc=0
+              python /opt/brain/duckdb/maintenance/bronze_dedup.py || rc=$?
+              if [ "${rc}" -ne 0 ]; then
+                echo "✗ BRONZE-DEDUP FAILED (rc=${rc}) — Bronze may still hold duplicates; compaction/snapshot-expiry continue in the maintain step. See bronze_dedup.py output above (memory valve ⇒ rerun with BRONZE_DEDUP_FORCE=1 on a bigger pod)." >&2
+                exit "${rc}"
+              fi
+          env:
+            {{- with .Values.sparkBronze.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* (REST catalog + S3 seams)
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+      {{- end }}
+      - name: maintain
         retryStrategy:
           limit: {{ .Values.defaults.backoffLimit | quote }}
           retryPolicy: OnError

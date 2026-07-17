@@ -32,13 +32,20 @@ DELETE PREDICATE reproduced EXACTLY:
   STRING-typed columns (Connect envelope `fetched_at`) get a CAST — unparseable → NULL → row kept
   (the safe direction). A table with NONE of these columns is loudly skipped (WARN).
 
-collector_events_connect is DELIBERATELY NOT here — it is the system-of-record event stream ("no
-event loss") and its per-subject RTBF path is erasure_raw_delete.py (payload-path predicate erasure).
+COLLECTOR LANE (ADR-0015 D7 — amends the old "never deleted" posture): collector_events_connect is
+now a 15-DAY REPLAY BUFFER, not an indefinite system-of-record — Silver is the durable layer. It is
+swept here on ITS OWN window, COLLECTOR_RETENTION_HOURS (default 360h = 15 days), separate from the
+RAW_RETENTION_HOURS raw lanes. Its 14-day durable time-travel window (DURABLE_SNAPSHOT_TTL_MS,
+AUD-OPS-015 — same env/default as bronze_maintenance.py) stays NESTED inside the row TTL: the
+collector lane's snapshot expiry uses max(row-TTL window, DURABLE_SNAPSHOT_TTL_MS), so snapshots
+younger than the durable window are never expired even if the row TTL is tightened below 14d.
 
-RTBF: this is the retention (temporal) half. The subject-based erasure half is erasure_raw_delete.py.
+RTBF: this is the retention (temporal) half. The subject-based erasure half is erasure_raw_delete.py
+(payload-path predicate erasure — still the collector lane's per-subject path).
 
-Run: python bronze_raw_retention.py  (env: RAW_RETENTION_HOURS, RAW_ROW_TTL, plus the
-ICEBERG_REST_*/S3/AWS connection seams in _maintenance_base.py).
+Run: python bronze_raw_retention.py  (env: RAW_RETENTION_HOURS, COLLECTOR_RETENTION_HOURS,
+DURABLE_SNAPSHOT_TTL_MS, RAW_ROW_TTL, plus the ICEBERG_REST_*/S3/AWS connection seams in
+_maintenance_base.py).
 """
 from __future__ import annotations
 
@@ -56,11 +63,18 @@ RAW_RETENTION_HOURS = int(os.environ.get("RAW_RETENTION_HOURS", "168"))  # 7 day
 # Row-level TTL DELETE (the D4 mitigation proper). Default ON: without it raw un-hashed PII persists in
 # current table state indefinitely. RAW_ROW_TTL=0 falls back to snapshot-expiry-only.
 RAW_ROW_TTL = os.environ.get("RAW_ROW_TTL", "1") == "1"
+# ADR-0015 D7: the collector lane is a 15-day replay buffer (Silver is the durable layer) — its own
+# row-TTL window, independent of the (shorter, privacy-contract) RAW_RETENTION_HOURS raw lanes.
+COLLECTOR_RETENTION_HOURS = int(os.environ.get("COLLECTOR_RETENTION_HOURS", "360"))  # 15 days
+# AUD-OPS-015 durable time-travel window for the collector lane — same env/default as
+# bronze_maintenance.py so the two jobs can never disagree about the rollback window.
+DURABLE_SNAPSHOT_TTL_MS = int(os.environ.get("DURABLE_SNAPSHOT_TTL_MS", str(1_209_600_000)))  # 14 days
+COLLECTOR_TABLE = "collector_events_connect"
 
 # Every RAW Bronze table — the *_raw_connect lanes the ADR-0010 Kafka Connect Iceberg sink writes.
 # Each is auto-created on the lane's FIRST record, so a not-yet-existing table is skipped by the
-# _exists guard and joins the sweep once its first record lands. collector_events_connect is NOT here
-# (system-of-record; its RTBF path is erasure_raw_delete.py).
+# _exists guard and joins the sweep once its first record lands. collector_events_connect is NOT in
+# this list — it is swept on its OWN COLLECTOR_RETENTION_HOURS window (see _lanes(); ADR-0015 D7).
 RAW_TABLES = [
     "shopify_orders_raw_connect",
     "woocommerce_orders_raw_connect",
@@ -92,8 +106,16 @@ def _ttl_column(cat, table: str) -> "tuple[str, bool] | None":
     return None
 
 
-def _delete_expired_rows(cat, namespace: str, table: str) -> int:
-    """Row-level D4 TTL: hard-DELETE rows older than the retention window. Returns the number of
+def collector_expire_ttl_ms(retention_hours: int, durable_ttl_ms: int) -> int:
+    """Snapshot-expiry window (ms) for the collector lane: the row-TTL window with the AUD-OPS-015
+    durable time-travel window NESTED inside — never smaller than durable_ttl_ms, so tightening
+    COLLECTOR_RETENTION_HOURS below 14d can never shrink the rollback window. At the defaults
+    (360h row TTL ⊃ 14d durable) the row-TTL window simply wins (15d)."""
+    return max(retention_hours * 3_600_000, durable_ttl_ms)
+
+
+def _delete_expired_rows(cat, namespace: str, table: str, retention_hours: int) -> int:
+    """Row-level TTL: hard-DELETE rows older than `retention_hours`. Returns the number of
     merge-on-read (DuckDB-lane) deletes issued with >0 rows, so the caller knows a forced
     compaction is needed to get the rows out of the live data files."""
     from pyiceberg.expressions import LessThan
@@ -107,7 +129,7 @@ def _delete_expired_rows(cat, namespace: str, table: str) -> int:
         )
         return 0
     col, is_timestamp = found
-    cutoff = mb.hours_to_cutoff(RAW_RETENTION_HOURS)
+    cutoff = mb.hours_to_cutoff(retention_hours)
     con = mb.duckdb_connect()
 
     if is_timestamp:
@@ -128,18 +150,35 @@ def _delete_expired_rows(cat, namespace: str, table: str) -> int:
     return expired
 
 
+def _lanes() -> "list[tuple[str, int, int]]":
+    """The (table, row_ttl_hours, snapshot_expiry_ttl_ms) sweep plan. Raw lanes expire snapshots on
+    the SAME window as their row TTL (D4: raw PII must leave time-travel with the rows); the
+    collector lane rides its own 15-day replay-buffer window (ADR-0015 D7) with the 14-day durable
+    time-travel window nested inside (collector_expire_ttl_ms — never expire younger than durable)."""
+    raw_ttl_ms = RAW_RETENTION_HOURS * 3_600_000  # snapshot-expiry window == row-TTL window
+    plan = [(t, RAW_RETENTION_HOURS, raw_ttl_ms) for t in RAW_TABLES]
+    plan.append(
+        (
+            COLLECTOR_TABLE,
+            COLLECTOR_RETENTION_HOURS,
+            collector_expire_ttl_ms(COLLECTOR_RETENTION_HOURS, DURABLE_SNAPSHOT_TTL_MS),
+        )
+    )
+    return plan
+
+
 def main() -> None:
     cat = mb.pyiceberg_catalog()
-    ttl_ms = RAW_RETENTION_HOURS * 3_600_000  # snapshot-expiry window == row-TTL window
-    for t in RAW_TABLES:
+    for t, retention_hours, ttl_ms in _lanes():
         if not mb.table_exists(cat, BRONZE_NAMESPACE, t):
             continue
         fq = mb.fqtn(BRONZE_NAMESPACE, t)
-        # 1. Row-level TTL DELETE (D4 proper): remove expired raw rows from CURRENT table state.
+        # 1. Row-level TTL DELETE (D4 raw lanes; ADR-0015 D7 collector replay buffer): remove
+        # expired rows from CURRENT table state.
         mor_deleted = 0
         if RAW_ROW_TTL:
             try:
-                mor_deleted = _delete_expired_rows(cat, BRONZE_NAMESPACE, t)
+                mor_deleted = _delete_expired_rows(cat, BRONZE_NAMESPACE, t, retention_hours)
             except Exception as exc:  # noqa: BLE001 — never let one table abort the sweep
                 print(f"[bronze-raw-retention] WARN {fq} row TTL: {exc}", flush=True)
         # 2. Compaction: FORCED after a merge-on-read delete so the deleted rows physically leave
@@ -149,12 +188,13 @@ def main() -> None:
             mb.optimize(cat, BRONZE_NAMESPACE, t, force=mor_deleted > 0)
         except Exception as exc:  # noqa: BLE001
             print(f"[bronze-raw-retention] WARN {fq} optimize: {exc}", flush=True)
-        # 3. Expire snapshots older than the retention window + physical sweep (frees the underlying
-        # data files → raw PII is not recoverable via time-travel beyond the window, incl. the rows
-        # step 1 deleted).
+        # 3. Expire snapshots older than the lane's expiry window + physical sweep (frees the
+        # underlying data files → expired rows are not recoverable via time-travel beyond the
+        # window, incl. the rows step 1 deleted). For the collector lane ttl_ms is already clamped
+        # to >= DURABLE_SNAPSHOT_TTL_MS, so the 14d rollback window is never shrunk.
         try:
             mb.expire(cat, BRONZE_NAMESPACE, t, ttl_ms)
-            print(f"[bronze-raw-retention] expired snapshots > {RAW_RETENTION_HOURS}h on {fq}", flush=True)
+            print(f"[bronze-raw-retention] expired snapshots > {ttl_ms}ms on {fq}", flush=True)
         except Exception as exc:  # noqa: BLE001 — never let one table abort the sweep
             print(f"[bronze-raw-retention] WARN {fq}: {exc}", flush=True)
 

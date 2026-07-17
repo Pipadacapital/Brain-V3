@@ -32,8 +32,8 @@ export class RedisDedupAdapter {
   /**
    * Explicitly connect to Redis (required when lazyConnect=true).
    * Call once before the first checkAndClaim in tests or standalone jobs.
-   * The KafkaJS consumer wires this via CollectorEventConsumer.start() in the
-   * live path (consumer.start() → dedup is called only after Kafka subscribe).
+   * (ADR-0015 WS2: the Bronze-writing consumers are gone; this adapter is retained as the
+   * identifier-cache seam for the Silver identity stage — doc 18 PR 3.1.)
    */
   async connect(): Promise<void> {
     await this.redis.connect();

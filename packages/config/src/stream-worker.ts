@@ -57,96 +57,91 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
     .string()
     .default('postgres://brain_app:brain_app@localhost:5432/brain'),
 
-  // ── Live lane: topic + consumer groups (main.ts) ─────────────────────────────
-  /** Live collector topic the consumers subscribe to. */
-  COLLECTOR_TOPIC: z.string().default('dev.collector.event.v1'),
-  CONSUMER_GROUP_ID: z.string().default('stream-worker-live'),
-  IDENTITY_CONSUMER_GROUP_ID: z.string().default('identity-bridge-live'),
-  CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID: z
-    .string()
-    .default('stream-worker-consent-suppressor'),
-  CAPI_DELETION_CONSUMER_GROUP_ID: z.string().default('stream-worker-capi-deletion'),
+  // ── Live lane (producer-side only — this process runs NO Kafka consumers) ────
   /**
-   * Consumer group for the DPDP/PDPL crypto-shred erasure orchestrator. Reads the same
-   * live collector topic as ConsentSuppressorConsumer / CapiDeletionConsumer — separate
-   * group, no new topic, no new deployable (I-E05). Runs the ordered 6-step shred sequence.
+   * Live collector topic — PRODUCER-side lane name only (repull/backfill jobs + e2e suites).
+   * ADR-0015 WS4 completion: no stream-worker consumer subscribes to anything anymore.
    */
-  ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID: z
-    .string()
-    .default('stream-worker-erasure-orchestrator'),
-  LIVE_LEDGER_CONSUMER_GROUP_ID: z.string().default('live-ledger-bridge'),
-  SETTLEMENT_LEDGER_CONSUMER_GROUP_ID: z.string().default('settlement-ledger-bridge'),
+  COLLECTOR_TOPIC: z.string().default('dev.collector.event.v1'),
+  // ADR-0015 WS2: CONSUMER_GROUP_ID ('stream-worker-live', the pixel-lane Bronze consumer) is
+  // RETIRED — the Kafka Connect sink is the single Bronze writer; validation/quarantine moved to
+  // the Silver keystone.
+  // ADR-0015 WS3/WS4: the identity/consent/CAPI/cache/touchpoint consumer groups are RETIRED —
+  // IDENTITY_CONSUMER_GROUP_ID, CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID,
+  // CAPI_DELETION_CONSUMER_GROUP_ID, IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID,
+  // ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID, RESTITCH_DIRTY_CONSUMER_GROUP_ID,
+  // JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID, TP_CACHE_CONSUMER_GROUP_ID,
+  // LIVE_LEDGER_CONSUMER_GROUP_ID, SETTLEMENT_LEDGER_CONSUMER_GROUP_ID.
+  // Identity now resolves in the Silver stage (jobs/silver-identity — batch over the keystone),
+  // which also folds consent projection, CAPI-deletion triggering, the dirty-set writes, and
+  // direct serving-cache eviction.
+  // ADR-0015 WS4 COMPLETION: ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID is RETIRED — the erasure
+  // orchestrator (the LAST stream-worker Kafka consumer) is now the PG request-driven poll
+  // lane below (ops.erasure_request_queue, migration 0140).
   // RETIRED (0117): GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID — the GoKwik AWB logistics model is gone
   // (webhook-first payments/checkout; logistics truth is Shiprocket).
-  /** Consumer group for identity-change → scoped-Gold-recompute pipeline (V4). */
-  IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID: z
-    .string()
-    .default('stream-worker-identity-recompute'),
 
-  /**
-   * Consumer group for the analytics cache-invalidation consumer — it consumes
-   * cache.invalidate.v1 (emitted by the identity-recompute consumer) and evicts the
-   * brand-scoped serving-cache keys so the serving tier never serves stale Gold.
-   */
-  ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID: z
-    .string()
-    .default('stream-worker-analytics-cache-invalidate'),
-
-  /**
-   * SPEC: A.2.3.5 (WA-18, AMD-08) — consumer group for the event-driven re-stitch dirty-set consumer.
-   * It consumes the SAME identity.{minted,linked,merged,unmerged}.v1 lane under its OWN group (AMD-08 R1
-   * unifies the map-mutation lane; separate offsets from the recompute consumer) and marks the affected
-   * (brand_id, identifier_hash | brain_id) keys dirty in ops.restitch_pending so the Spark stitch job
-   * re-evaluates PAST sessions within the attribution lookback. Per-brand gated by `stitch.v2` (DEFAULT
-   * OFF): with no brand opted in it is an inert flag-check (nothing enqueued, byte-identical golden).
-   */
-  RESTITCH_DIRTY_CONSUMER_GROUP_ID: z
-    .string()
-    .default('stream-worker-restitch-dirty'),
-
-  /**
-   * SPEC: B.2 (WB-B2, AMD-08, AMD-11) — consumer group for the event-driven cross-device JOURNEY
-   * re-version dirty-set consumer. It consumes the SAME identity.{linked,merged,unmerged}.v1 lane under
-   * its OWN group (AMD-08 R1 unifies the map-mutation lane; separate offsets from the recompute + restitch
-   * consumers) and marks the affected BRAIN_IDS dirty in ops.journey_reversion_pending so the Spark
-   * reversion job rebuilds those brains' journeys as version N+1 + writes journey_version_log. Per-brand
-   * gated by `journey.engine` (DEFAULT OFF): with no brand opted in it is an inert flag-check (nothing
-   * enqueued, byte-identical golden journeys).
-   */
-  JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID: z
-    .string()
-    .default('stream-worker-journey-reversion-dirty'),
+  // ── Erasure poll lane (ADR-0015 WS4 — jobs/erasure-orchestrator over ops.erasure_request_queue) ──
+  /** Poll interval for the DPDP/PDPL erasure request queue (erasures are rare; 30s default). */
+  ERASURE_QUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+  /** Max queue rows claimed per tick (per-brand heads only; processed sequentially). */
+  ERASURE_QUEUE_CLAIM_BATCH: z.coerce.number().int().positive().default(10),
 
   // ── Real-time touchpoint cache (SPEC: A.4 / flag identity.tp_cache, default OFF) ──
-  /**
-   * Consumer group for the touchpoint-cache consumer. Reads the SAME live collector topic
-   * (touchpoint content) AND the identity.merged.v1 lane (merge invalidation) under its OWN
-   * group — no new topic, no new deployable (I-E05). Per-event gated by the per-brand
-   * identity.tp_cache flag (default OFF): with no brand opted in it is an inert flag-check.
-   */
-  TP_CACHE_CONSUMER_GROUP_ID: z.string().default('stream-worker-tp-cache'),
+  // ADR-0015 WS3: the TouchpointCacheConsumer is gone; the cache is seeded by the Silver
+  // identity stage (same flag gate, same service). The knobs below still shape the zsets.
   /** Max touchpoints retained per {brand}:tp:{brain} zset (A.4 = 200). */
   TP_CACHE_MAX_TOUCHPOINTS: z.coerce.number().int().positive().default(200),
   /** Sliding TTL (days) refreshed on every write (A.4 = 30d). */
   TP_CACHE_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
-  // ── Backfill lane (main.ts) ──────────────────────────────────────────────────
+  // ── Silver identity stage (ADR-0015 WS3 — jobs/silver-identity) ──────────────
+  /**
+   * Kill switch for the Silver identity stage. DEFAULT ON — deviation from doc-18's staged
+   * default-off rollout, owner-approved for the single-PR cutover on dummy data. Set the env to
+   * anything other than 'true' (e.g. 'false') to make the job an inert no-op.
+   */
+  IDENTITY_IN_SILVER: strictTrue(true),
+  /** Serving-read page size (keyset pagination over mv_silver_collector_event). */
+  SILVER_IDENTITY_PAGE_SIZE: z.coerce.number().int().positive().default(5000),
+  /**
+   * Trailing re-read window below the stored watermark (ms). Covers Bronze→Silver landing lag
+   * (the keystone's ingested_at is the envelope ingest clock, not the Silver commit clock);
+   * resolution is idempotent so the overlap re-process is safe. Default 30 min.
+   */
+  SILVER_IDENTITY_LOOKBACK_MS: z.coerce.number().int().nonnegative().default(1_800_000),
+  /**
+   * Upper bound (ms) on the SELF-HEALING catch-up window (ADR-0015 edge case #2): the effective
+   * lookback stretches to re-cover everything since the last committed watermark plus the
+   * configured margin (so a stalled landing/paused cron auto-catches-up on the next run), and
+   * this caps how far back a single run may scan (bounds a pathological first-run/very-stale
+   * scan). When the cap clips the window the job warns loudly + increments
+   * silver_identity_catchup_clipped_total — an operator must run a manual FULL pass to cover
+   * the clipped range. Default 7 days.
+   */
+  SILVER_IDENTITY_MAX_CATCHUP_MS: z.coerce.number().int().positive().default(604_800_000),
+  /** Neo4j bulk read/write batch size (BatchResolveIdentityUseCase). */
+  SILVER_IDENTITY_BATCH_SIZE: z.coerce.number().int().positive().default(500),
+  /** identifier_hash → brain_id Redis cache TTL (seconds, sliding). Default 7 days. */
+  SILVER_IDENTITY_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(604_800),
+
+  // ── Backfill lane (producer-side only since ADR-0015 WS2) ────────────────────
   /**
    * Backfill topic. Default DERIVES from NODE_ENV (prod→'prod', else→'dev'); the
    * field below is optional and, when unset, the loader computes the derived
-   * default — see the loader's post-parse step.
+   * default — see the loader's post-parse step. The backfill JOBS produce to it;
+   * the former BackfillOrderConsumer (+ BACKFILL_CONSUMER_GROUP_ID) is retired —
+   * Kafka Connect lands the topic (it is in the collector sink's `topics` list).
    */
   BACKFILL_TOPIC: z.string().optional(),
-  BACKFILL_CONSUMER_GROUP_ID: z.string().default('stream-worker-backfill'),
 
   // ── Health / probes (main.ts) ────────────────────────────────────────────────
   // 8091 (NOT 8090): Trino maps host 8090 in docker-compose, so a local stream-worker health
   // server on 8090 collides (EADDRINUSE). k8s separates them, but keep dev clean too.
   HEALTH_PORT: z.coerce.number().int().default(8091),
 
-  // ── Bronze write switch (main.ts) ────────────────────────────────────────────
-  /** PG bronze_events write — RETIRED, default OFF (===' true' semantics). */
-  BRONZE_PG_WRITE_ENABLED: strictTrue(false),
+  // ADR-0015 WS2: BRONZE_PG_WRITE_ENABLED is REMOVED (the legacy PG bronze_events escape hatch —
+  // the table was dropped in 0070 and the whole stream-worker Bronze write path is deleted).
 
   // ── CAPI creds gate (main.ts) ────────────────────────────────────────────────
   META_CAPI_CREDS_WIRED: strictTrue(false),
@@ -185,16 +180,6 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   PARTITION_AHEAD_MONTHS: z.coerce.number().int().default(3),
   /** Optional — no default (job branches on undefined). */
   PARTITION_RETENTION_MONTHS: z.string().optional(),
-
-  // ── ingest-dedup-prune job (ADR-0012) ────────────────────────────────────────
-  /**
-   * Retention window for data_plane.ingest_dedup, as a Postgres interval literal (e.g. '180 days').
-   * Rows whose ingested_at is older than now() - this are pruned. Must stay >= the longest backfill
-   * window so a re-ingest never re-presents a forgotten (brand_id, event_id). Default 180 days.
-   */
-  INGEST_DEDUP_RETAIN: z.string().default('180 days'),
-  /** Batch size for the batched prune DELETE (bounds the lock per statement). */
-  INGEST_DEDUP_PRUNE_BATCH: z.coerce.number().int().positive().default(50000),
 
   // ── Repull / backfill paging knobs ───────────────────────────────────────────
   /** shopify-backfill page sleep (ms). */

@@ -77,7 +77,7 @@ import { registerFeedbackRoutes } from './routes/feedback.routes.js';
 import { registerSegmentsRoutes } from './routes/segments.routes.js';
 import { registerAdminFlagsRoutes } from './routes/admin-flags.routes.js';
 import type { FlagService } from '@brain/platform-flags';
-import type { IdentityEventPublisher } from '../../../infrastructure/events/IdentityEventPublisher.js';
+import type { IdentityUnmergeDirtyWriter } from '../../../infrastructure/pg/IdentityUnmergeDirtyRepository.js';
 import type { ErasureEventPublisher } from '../../../infrastructure/events/ErasureEventPublisher.js';
 
 export function registerBffRoutes(
@@ -98,8 +98,8 @@ export function registerBffRoutes(
   servingCache?: ServingCacheReader,
   /** SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed). Trailing-optional. */
   flagService?: FlagService,
-  /** SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge. Trailing-optional. */
-  identityEventPublisher?: IdentityEventPublisher,
+  /** SPEC: A.2.4 (WA-19) / ADR-0015 WS3 — direct PG dirty-queue writer for the admin unmerge. Trailing-optional. */
+  identityUnmergeDirty?: IdentityUnmergeDirtyWriter,
   /** SPEC: B.3 / A.4 — the Redis touchpoint-cache read client (shared ioredis). Trailing-optional. */
   touchpointCacheReader?: TouchpointZsetClient,
   /** SPEC: D.3 — semantic-serving flag switch (compiled-view migration; DEFAULT OFF). Trailing-optional. */
@@ -263,7 +263,7 @@ export function registerBffRoutes(
     flagService,
     vaultService,
     identityReader,
-    identityEventPublisher,
+    identityUnmergeDirty,
     erasureEventPublisher,
     getCoreSaltHex,
     sessionPreHandler,

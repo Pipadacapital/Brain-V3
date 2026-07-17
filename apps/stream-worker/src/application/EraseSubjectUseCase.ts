@@ -35,6 +35,15 @@
  *      the durable ops write already succeeded; TTL expiry + the next refresh pass's
  *      gold.rewritten.v1 are the backstop. Result carries cacheInvalidated for the log line.
  *
+ *   3c. Identifier-cache purge (H2) — delete the subject's `idcache:{brand}:idhash:*` entries
+ *      (IIdentifierCachePurge). The identifier cache moved OUT of the brand-wide evictable
+ *      keyspace (prefix-first re-key — see IdentifierCacheAdapter), so the brand-wide sweep in
+ *      3b no longer clears it; the erasure lane must purge the subject's hash→brain_id entries
+ *      EXPLICITLY or the shredded subject's post-erasure events would be cache-skipped against
+ *      the erased brain_id instead of re-minted. Keyed by the subject hash + the graph's
+ *      identifier-hash enumeration (the same set that keys the STEP-4 Bronze sweep).
+ *      FAIL-CLOSED: a purge failure THROWS → retry (the sequence is idempotent).
+ *
  *   4. Bronze raw-PII erasure (AUD-OPS-037) — submit the `bronze-raw-erasure` Argo
  *      WorkflowTemplate (wraps db/iceberg/spark/erasure_raw_delete.py: hard-deletes the
  *      subject's rows across the raw Bronze tables + the payload-path sweep of
@@ -71,6 +80,7 @@ import { hashIdentifier, type IdentifierType } from '@brain/identity-core';
 import { SaltProvider } from '../infrastructure/secrets/SaltProvider.js';
 import type { IErasureRepository } from '../infrastructure/pg/ErasureRepository.js';
 import type { IBronzeRawErasureSubmitter } from '../infrastructure/argo/ArgoErasureWorkflowSubmitter.js';
+import type { IIdentifierCachePurge } from '../infrastructure/redis/IdentifierCacheAdapter.js';
 
 // Re-export so consumers (tests, main.ts) can import from one place.
 export type { IErasureRepository };
@@ -201,6 +211,8 @@ export interface EraseSubjectResult {
   graphLinksTombstoned?: number;
   /** TRUE when the cache.invalidate.v1 publish succeeded (AUD-TP-22; FAIL-OPEN — false is non-fatal). */
   cacheInvalidated?: boolean;
+  /** idcache keys deleted by STEP 3c (H2; set only when the purge port is wired). */
+  idCacheKeysPurged?: number;
   reason?: string;
 }
 
@@ -241,6 +253,14 @@ export class EraseSubjectUseCase {
      * when set: a graph failure THROWS (retryable — consumer does not commit; DLQ@MAX_RETRY).
      */
     private readonly identityGraph?: IErasureIdentityGraph,
+    /**
+     * H2: identifier-cache purge port (STEP 3c — IdentifierCacheAdapter.purgeSubjectHashes).
+     * The `idcache:` keyspace is exempt from the brand-wide serving-cache sweep, so the erasure
+     * lane deletes the subject's hash→brain_id entries explicitly. Optional: unset (tests) →
+     * STEP 3c is skipped. FAIL-CLOSED when set: a purge failure THROWS (retryable — the
+     * shredded subject's hashes must not stay mapped to the erased brain_id).
+     */
+    private readonly identifierCachePurge?: IIdentifierCachePurge,
   ) {}
 
   async execute(rawValue: Buffer | null, now: string): Promise<EraseSubjectResult> {
@@ -385,6 +405,36 @@ export class EraseSubjectUseCase {
       }
     }
 
+    // ── Subject identifier-hash enumeration (shared by STEP 3c + STEP 4) ──────
+    // The graph's hash set (AUD-OPS-039 — aliases included, ANY edge state, so it still
+    // answers after STEP 2b's tombstone; replay-safe) is fetched ONCE when either consumer
+    // needs it: the idcache purge always wants the FULL set (a subject may have cached
+    // anon/device/email hashes beyond the trigger's raw subject), and the Bronze sweep
+    // falls back to it on brain_id-only triggers. FAIL-CLOSED (throws → retry).
+    let graphHashes: string[] = [];
+    if (
+      this.identityGraph &&
+      (this.identifierCachePurge !== undefined ||
+        (this.bronzeRawErasure !== undefined && !subjectHash))
+    ) {
+      graphHashes = await this.identityGraph.listIdentifierHashesForErasure(brandId, brainId);
+    }
+
+    // STEP 3c — Identifier-cache purge (H2).
+    // Delete the subject's `idcache:{brand}:idhash:*` entries so the shredded subject's hashes
+    // stop resolving to the erased brain_id (the brand-wide sweep in 3b is prefix-blind to this
+    // keyspace by design). Union of the trigger's subject hash + the graph's enumeration —
+    // hashes only, never raw PII. Idempotent (absent keys delete 0). FAIL-CLOSED: a Redis
+    // failure THROWS → the orchestrator retries the (idempotent) sequence.
+    let idCacheKeysPurged: number | undefined;
+    if (this.identifierCachePurge) {
+      const purgeHashes = [...new Set([...(subjectHash ? [subjectHash] : []), ...graphHashes])];
+      idCacheKeysPurged =
+        purgeHashes.length > 0
+          ? await this.identifierCachePurge.purgeSubjectHashes(brandId, purgeHashes)
+          : 0;
+    }
+
     // STEP 4 — Bronze raw-PII erasure (AUD-OPS-037).
     // Submit the bronze-raw-erasure Argo WorkflowTemplate (erasure_raw_delete.py): hard-deletes
     // the subject's raw Bronze rows, keyed by (brand_id, subjectHash) + the RAW anon/device ids
@@ -400,10 +450,9 @@ export class EraseSubjectUseCase {
     // hashes for this brain (AUD-OPS-039 — closes the residual: previously brain_id-only
     // triggers NEVER got a Bronze sweep). Hashes only — never fabricated, never raw PII.
     // Graph lookup is FAIL-CLOSED (throws → retry) and any-state (replay-safe post-purge).
-    let identifierHashes: string[] = subjectHash ? [subjectHash] : [];
-    if (this.bronzeRawErasure && identifierHashes.length === 0 && this.identityGraph) {
-      identifierHashes = await this.identityGraph.listIdentifierHashesForErasure(brandId, brainId);
-    }
+    // (Semantics unchanged: raw-subject triggers key on the trigger's own hash; brain_id-only
+    // triggers key on the graph enumeration — already fetched above, never re-fetched.)
+    const identifierHashes: string[] = subjectHash ? [subjectHash] : graphHashes;
 
     let bronzeRawWorkflow: string | undefined;
     if (this.bronzeRawErasure && identifierHashes.length > 0) {
@@ -461,6 +510,7 @@ export class EraseSubjectUseCase {
       bronzeRawWorkflow,
       graphLinksTombstoned,
       cacheInvalidated,
+      idCacheKeysPurged,
     };
   }
 

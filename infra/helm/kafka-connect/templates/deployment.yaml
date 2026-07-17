@@ -112,6 +112,11 @@ spec:
               value: "false"
             - name: CONNECT_PLUGIN_PATH
               value: "/usr/share/java,/usr/share/confluent-hub-components,/opt/connect-plugins"
+            # ADR-0015 WS2 (EOS transport): sinkDefaults pins consumer.override.isolation.level=
+            # read_committed on every connector; the worker's default override policy (None) would
+            # reject that at registration — All admits consumer.override.* (mirrors local compose).
+            - name: CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY
+              value: "All"
           ports:
             - name: rest
               containerPort: 8083

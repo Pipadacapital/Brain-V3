@@ -97,9 +97,9 @@ const DB_URL = cfg.BRAIN_APP_DATABASE_URL;
 const BROKERS = cfg.KAFKA_BROKERS.split(',');
 // intentional raw: NODE_ENV-derived Kafka topic-prefix selection (must precede config load).
 const ENV = process.env['NODE_ENV'] === 'production' ? 'prod' : 'dev';
-// §6.4 lane isolation: backfill events MUST go to the backfill topic (same lane the
-// BackfillOrderConsumer reads) — NEVER to the live collector topic. Using the live topic
-// would starve/contaminate the live consumer group and violates ADR-BF-7 / SI-3.
+// §6.4 lane isolation: backfill events MUST go to the backfill topic (landed by the Kafka
+// Connect collector sink — ADR-0015 WS2 single Bronze writer) — NEVER to the live collector
+// topic. Using the live topic would contaminate the live lane and violates ADR-BF-7 / SI-3.
 export const BACKFILL_TOPIC = `${ENV}.${ORDER_BACKFILL_V1_TOPIC_SUFFIX}`;
 const REGION_CODE = cfg.BRAIN_REGION_CODE;
 

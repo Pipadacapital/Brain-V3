@@ -10,8 +10,7 @@
     "dev": "PORT=8787 tsx watch --env-file=../../.env.${APP_ENV:-local-prod} src/main.ts",
     "start": "node dist/main.js",
     "test:unit": "vitest run --passWithNoTests --exclude '**/*.e2e.test.ts' --exclude '**/*.live.test.ts' --exclude '**/*.integration.test.ts'",
-    "test:integration": "vitest run --passWithNoTests integration.test",
-    "test:durability": "vitest run tests/durability.integration.test.ts"
+    "test:integration": "vitest run --passWithNoTests integration.test"
   },
   "dependencies": {
     "fastify": "^4.28.0",

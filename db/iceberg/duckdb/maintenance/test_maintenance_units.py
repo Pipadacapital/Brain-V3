@@ -21,6 +21,7 @@ sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))  # parent dir: _catalog.py (the DuckDB attach seam)
 
 import _maintenance_base as mb  # noqa: E402
+import bronze_raw_retention as brr  # noqa: E402
 import erasure_raw_delete as erd  # noqa: E402
 
 
@@ -42,6 +43,46 @@ def test_hours_to_cutoff_retention_window():
     cutoff = mb.hours_to_cutoff(168)
     expect = datetime.now(timezone.utc) - timedelta(hours=168)
     assert abs((cutoff - expect).total_seconds()) < 5
+
+
+# ── Collector-lane retention (ADR-0015 D7: 15-day replay buffer, 14d durable window nested) ──────
+
+
+def test_collector_retention_hours_default_and_env_parse(monkeypatch):
+    import importlib
+
+    monkeypatch.delenv("COLLECTOR_RETENTION_HOURS", raising=False)
+    monkeypatch.delenv("DURABLE_SNAPSHOT_TTL_MS", raising=False)
+    importlib.reload(brr)
+    assert brr.COLLECTOR_RETENTION_HOURS == 360  # 15 days (ADR-0015 D7)
+    assert brr.DURABLE_SNAPSHOT_TTL_MS == 1_209_600_000  # 14 days (AUD-OPS-015, same as bronze_maintenance)
+    monkeypatch.setenv("COLLECTOR_RETENTION_HOURS", "720")
+    importlib.reload(brr)
+    assert brr.COLLECTOR_RETENTION_HOURS == 720
+    monkeypatch.delenv("COLLECTOR_RETENTION_HOURS")
+    importlib.reload(brr)  # restore module defaults for the other tests
+
+
+def test_lanes_include_collector_on_its_own_window():
+    assert brr.COLLECTOR_TABLE == "collector_events_connect"
+    assert brr.COLLECTOR_TABLE not in brr.RAW_TABLES  # never double-swept on the raw window
+    by_table = {t: (hours, ttl_ms) for t, hours, ttl_ms in brr._lanes()}
+    for t in brr.RAW_TABLES:
+        # Raw lanes: snapshot-expiry window == row-TTL window (D4).
+        assert by_table[t] == (brr.RAW_RETENTION_HOURS, brr.RAW_RETENTION_HOURS * 3_600_000)
+    hours, ttl_ms = by_table[brr.COLLECTOR_TABLE]
+    assert hours == brr.COLLECTOR_RETENTION_HOURS
+    assert ttl_ms == brr.collector_expire_ttl_ms(brr.COLLECTOR_RETENTION_HOURS, brr.DURABLE_SNAPSHOT_TTL_MS)
+
+
+def test_collector_expiry_never_shrinks_durable_window():
+    durable = 1_209_600_000  # 14 days
+    # Defaults: 15d row TTL ⊃ 14d durable window → the row-TTL window wins.
+    assert brr.collector_expire_ttl_ms(360, durable) == 360 * 3_600_000
+    # Row TTL tightened BELOW the durable window → clamped: the 14d rollback window is never shrunk.
+    assert brr.collector_expire_ttl_ms(24, durable) == durable
+    # Exactly equal windows (336h == 14d) are a no-op clamp.
+    assert brr.collector_expire_ttl_ms(336, durable) == durable == 336 * 3_600_000
 
 
 # ── Rewrite-unit coalescing ───────────────────────────────────────────────────────────────────────

@@ -76,7 +76,9 @@ a missing digest, B3) and a cluster. Each job is an idempotent Iceberg MERGE, wr
 Iceberg maintenance (snapshot expiry / COW compaction; orphan-file sweep is a loud SKIP until
 PyIceberg ships it, ADR-0014) runs via the **PyIceberg + DuckDB maintenance tier** the `brain-duckdb`
 image carries (`db/iceberg/duckdb/maintenance/**`):
-`python /opt/brain/duckdb/maintenance/bronze_maintenance.py` (daily 03:00, `bronze-maintenance`),
+`python /opt/brain/duckdb/maintenance/bronze_dedup.py` then `bronze_maintenance.py` (daily 03:00,
+`bronze-maintenance` — the ADR-0015 D2b compaction-time keep-latest dedup on (brand_id, event_id)
+runs first, then compaction + snapshot expiry),
 `bronze_raw_retention.py` (daily 03:40, `bronze-raw-retention`, the D4 raw-PII window), and
 `medallion_maintenance.py` (weekly Sun 04:45, `v4-maintenance`, Silver/Gold sweep).
 

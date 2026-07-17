@@ -37,7 +37,7 @@ import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '.
 import { Kafka, type Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import {
   mapShiprocketShipment,
@@ -54,7 +54,6 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import { createSaltProvider, type SaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { log } from '../../log.js';
 import { acquireCursorLock, getCursorValue, upsertCursorValue } from '../../infrastructure/pg/CursorRepository.js';
-import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { SyncRunRepository } from '../../infrastructure/pg/SyncRunRepository.js';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
@@ -312,40 +311,19 @@ async function repullShipmentCursor(params: CursorRepullParams): Promise<number>
 
     let emittedThisPage = 0;
     if (messages.length > 0) {
-      // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
-      // so a re-pull/backfill overlap never re-floods Bronze (Silver dedup is now only a backstop).
-      // brand GUC set on a short pooled client (same pattern as setSyncState), then filter+mark.
-      const dedupClient = await pool.connect();
-      let unseen: Set<string>;
-      try {
-        await dedupClient.query(buildContextGucSql({ brandId, correlationId: '' }));
-        unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
-
-        const toSend = messages.filter((m) => unseen.has(m.eventId));
-        const dropped = messages.length - toSend.length;
-        if (dropped > 0) {
-          incrementCounter('ingest_dedup_dropped_total', { provider: 'shiprocket' });
-          log.info(`[shiprocket-shipment-repull] connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} ` +
-                  `dedup: dropped ${dropped} already-ingested events`);
-        }
-
-        if (toSend.length > 0) {
-          // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-          // message so the bronze-bridge consumer resumes this repull's trace.
-          const traceHeaders: Record<string, Buffer | string> = {};
-          injectKafkaTraceContext(traceHeaders);
-          // ORDER IS CRITICAL (ADR-0012): produce FIRST, mark AFTER. A crash between at worst
-          // re-produces a dup on retry (Silver backstops) — it never loses an event.
-          await producer.send({
-            topic: LIVE_TOPIC,
-            messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
-          });
-          await markEventIdsSeen(dedupClient, brandId, toSend.map((m) => m.eventId));
-          emittedThisPage = toSend.length;
-        }
-      } finally {
-        dedupClient.release();
-      }
+      // ADR-0015: produce unconditionally — the PG ingest-dedup gate is removed. event_id is
+      // deterministic (uuidV5FromShipment over brand/awb/status/status_changed_at), so a re-pull
+      // overlap re-mints the SAME (brand_id, event_id) and is collapsed by Bronze compaction
+      // dedup + the Silver MERGE.
+      // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+      // message so the bronze-bridge consumer resumes this repull's trace.
+      const traceHeaders: Record<string, Buffer | string> = {};
+      injectKafkaTraceContext(traceHeaders);
+      await producer.send({
+        topic: LIVE_TOPIC,
+        messages: messages.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+      });
+      emittedThisPage = messages.length;
     }
     log.info(`[shiprocket-shipment-repull] connector=${ciId} cursor=${SHIPMENT_CURSOR_RESOURCE} ` +
             `skip=${skip} emitted=${emittedThisPage} total=${recordsProcessed}`);

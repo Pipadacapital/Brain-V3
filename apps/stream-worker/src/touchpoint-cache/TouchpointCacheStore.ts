@@ -64,7 +64,7 @@ export interface ITouchpointCacheStore {
 }
 
 /**
- * ioredis-backed adapter. Mirrors RetryCounterAdapter's lifecycle (lazyConnect + explicit
+ * ioredis-backed adapter. Mirrors the ConnectorRateLimiter's lifecycle (lazyConnect + explicit
  * connect()/quit(), owned by main.ts). Every write is a MULTI so cap + TTL are inseparable
  * from the insert.
  */

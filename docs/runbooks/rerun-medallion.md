@@ -95,6 +95,37 @@ compute for no benefit). Then run a normal `v4-gold` (§1) so downstream marts f
 re-baselined Silver. Locally the same thing is
 `FULL_REFRESH=1 db/iceberg/spark/silver/run-silver-<job>.sh`.
 
+## 3b. Quarantine replay and the Silver identity stage (consent hole — ADR-0015 M3)
+
+The silver-identity job (`apps/stream-worker/src/jobs/silver-identity/run.ts` — identity
+resolution + **consent projection + CAPI recording**) is watermark-driven on the keystone's
+`ingested_at`. A quarantine replay (`brain_silver.silver_quarantine` → fix the rule → re-run
+the Silver job with FULL_REFRESH, §2 item 3) re-admits rows with their **ORIGINAL**
+`ingested_at` — below the silver-identity watermark — so the identity stage's catch-up window
+will **NOT** see them. For most rows that only delays identity folding; for a replayed
+**consent-revocation** row it means the projection never happens (a compliance-relevant
+silent skip, not just stale analytics).
+
+**Operational rule: any quarantine replay that can contain consent-bearing rows MUST be
+followed by a one-off widened-lookback silver-identity run**, with BOTH knobs sized ≥ the age
+of the oldest replayed row. The catch-up cap is anchored at *now* and CLIPS the window —
+raise `SILVER_IDENTITY_MAX_CATCHUP_MS` together with the lookback, or the run logs
+`catch-up window CLIPPED` (+ `silver_identity_catchup_clipped_total`) and still skips the old
+rows:
+
+```yaml
+# One-off pod (same pattern as §3, but the stream-worker image); oldest replayed row ~30d old:
+env:
+  - { name: SILVER_IDENTITY_LOOKBACK_MS,    value: "2678400000" }   # 31 d
+  - { name: SILVER_IDENTITY_MAX_CATCHUP_MS, value: "2678400000" }   # raise the clip cap too
+command: ["pnpm", "exec", "tsx", "src/jobs/silver-identity/run.ts"]
+```
+
+The whole stage is idempotent/replay-safe (deterministic resolve, ON CONFLICT consent/CAPI +
+dirty-set writes, sliding-TTL cache primes) — a wider window only costs read volume.
+Reconciliation stays possible at any time: Bronze retains every original, so consent events
+in Bronze vs projected `consent_state` rows bound the exposure for any window.
+
 ## 4. Verify after any re-run
 
 ```bash

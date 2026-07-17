@@ -206,13 +206,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetFastBurn
             expr: |
               (
-                sum(rate(brain_collector_spool_full_total[5m]))
-                  / (sum(rate(brain_collector_accept_total[5m])) + sum(rate(brain_collector_spool_full_total[5m]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[5m]))
+                  / (sum(rate(brain_collector_accept_total[5m])) + sum(rate(brain_collector_backpressure_shed_total[5m]))) > (14.4 * 0.0005)
               )
               and
               (
-                sum(rate(brain_collector_spool_full_total[1h]))
-                  / (sum(rate(brain_collector_accept_total[1h])) + sum(rate(brain_collector_spool_full_total[1h]))) > (14.4 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[1h]))
+                  / (sum(rate(brain_collector_accept_total[1h])) + sum(rate(brain_collector_backpressure_shed_total[1h]))) > (14.4 * 0.0005)
               )
             for: 2m
             labels:
@@ -224,13 +224,13 @@ additionalPrometheusRulesMap:
           - alert: BrainCollectorErrorBudgetSlowBurn
             expr: |
               (
-                sum(rate(brain_collector_spool_full_total[30m]))
-                  / (sum(rate(brain_collector_accept_total[30m])) + sum(rate(brain_collector_spool_full_total[30m]))) > (6 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[30m]))
+                  / (sum(rate(brain_collector_accept_total[30m])) + sum(rate(brain_collector_backpressure_shed_total[30m]))) > (6 * 0.0005)
               )
               and
               (
-                sum(rate(brain_collector_spool_full_total[6h]))
-                  / (sum(rate(brain_collector_accept_total[6h])) + sum(rate(brain_collector_spool_full_total[6h]))) > (6 * 0.0005)
+                sum(rate(brain_collector_backpressure_shed_total[6h]))
+                  / (sum(rate(brain_collector_accept_total[6h])) + sum(rate(brain_collector_backpressure_shed_total[6h]))) > (6 * 0.0005)
               )
             for: 15m
             labels:
@@ -241,29 +241,60 @@ additionalPrometheusRulesMap:
 
           - alert: BrainCollectorSheddingNow
             # Any sustained back-pressure shedding — the drainer (→ Kafka) is behind RIGHT NOW.
-            expr: sum(rate(brain_collector_spool_full_total[5m])) > 0
+            expr: sum(rate(brain_collector_backpressure_shed_total[5m])) > 0
             for: 2m
             labels:
               severity: critical
             annotations:
-              summary: "Collector is shedding ingest (503 SPOOL_FULL)"
-              description: "/collect has returned SPOOL_FULL for 2m — the spool backlog crossed the high-water mark and the drainer is behind."
+              summary: "Collector is shedding ingest (503 backpressure)"
+              description: "/collect has shed for 2m — the Kafka producer is failing AND the local disk-WAL fallback is saturated (ADR-0015 direct-to-log)."
 
-      # ── Stream-worker: DLQ depth + consumer lag + ingest freshness ──────────────
-      - name: brain-stream-worker
-        rules:
-          - alert: BrainDlqGrowing
-            # DLQ is a topic; a still-advancing high-watermark (log end offset) on a .dlq topic = terminal failures.
-            expr: |
-              sum by (topic) (
-                rate(kafka_log_log_logendoffset{topic=~".*\\.dlq"}[15m])
-              ) > 0
-            for: 10m
+          - alert: BrainCollectorWalPendingAgeHigh
+            # ADR-0015 WAL durability posture: events ACK'd into the pod-local disk WAL but NOT yet
+            # produce-ack'd onto the log for >5m — the durability exposure window is OPEN (a hard
+            # node loss now would drop these ACK'd events). The flusher retries every tick; a
+            # sustained age means Kafka has been unreachable (or the flush failing) that whole time.
+            # max() over pods: ANY replica holding old unflushed entries is exposure.
+            expr: max(brain_collector_wal_oldest_entry_age_seconds) > 300
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Collector WAL has events pending >5m (durability exposure window open)"
+              description: "The oldest event ACK'd into a collector pod's local-disk WAL has not reached the log for over 5 minutes — check Kafka broker health and brain_collector_wal_flush_failures_total. These events survive pod restarts but NOT a hard node loss (ADR-0015 accepted residual risk)."
+
+          - alert: BrainCollectorWalPendingAgeCritical
+            # Same signal, 30m: the outage has outlived several flush cycles and the exposure window
+            # is now long enough that a node failure would lose a meaningful slice of ACK'd events.
+            expr: max(brain_collector_wal_oldest_entry_age_seconds) > 1800
+            for: 2m
             labels:
               severity: critical
             annotations:
-              summary: "DLQ topic {{ $labels.topic }} is growing"
-              description: "Events are landing in the DLQ (offset advancing for 10m) — terminal processing failures after MAX_RETRY."
+              summary: "Collector WAL has events pending >30m (durability exposure critical)"
+              description: "Events ACK'd into a collector pod's local-disk WAL have not reached the log for over 30 minutes — the produce path has been down for the whole window. Restore Kafka / the producer path; the WAL drains automatically on reconnect (ADR-0015 drain+alert posture)."
+
+      # ── Stream-worker: erasure queue + consumer lag + ingest freshness ──────────
+      - name: brain-stream-worker
+        rules:
+          - alert: BrainErasureQueueDead
+            # ADR-0015 WS4: the Kafka DLQ lane (.dlq topics + DlqProducer + redrive CLI) is DELETED —
+            # the erasure lane's poison path is now ops.erasure_request_queue status='dead'
+            # (attempts >= MAX_RETRY(5), or an invalid envelope). brain_erasure_queue_dead_total is the
+            # PG replacement for the old DLQ signal. A dead row = an RTBF erasure NOT completed —
+            # operator action required (inspect ops.erasure_request_queue WHERE status='dead').
+            # Absent-safe: increase() over the not-yet-registered counter yields an empty vector (no
+            # false fire); the counter registers on first dead row. NOTE: only dead_total exists today —
+            # the lane emits no oldest-pending-age gauge, so a parked-but-not-dead (stale) queue is not
+            # directly alertable yet; the head-of-line blocking design means sustained retries surface
+            # here at MAX_RETRY within ~30 min.
+            expr: sum by (reason) (increase(brain_erasure_queue_dead_total[15m])) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Erasure queue has dead rows (reason: {{ $labels.reason }})"
+              description: "An RTBF erasure request went status='dead' in ops.erasure_request_queue ({{ $labels.reason }}) — the crypto-shred sequence did NOT complete for that subject and will not retry. Investigate ops.erasure_request_queue WHERE status='dead' (last_error column) and re-enqueue after fixing the cause."
 
           - alert: BrainConsumerLagHigh
             # kafka_consumergroup_lag (kafka_exporter): summed lag across all topic-partitions of a group.
@@ -364,31 +395,9 @@ additionalPrometheusRulesMap:
               summary: "Connector {{ $labels.provider }} sustainedly rate-limited"
               description: "Brain is throttling {{ $labels.provider }} repulls to protect its shared app quota — those connectors are re-pulling slower than their interval. Quota is the scaling bottleneck for this provider."
 
-          # P2.2 — DLQ redrive. The redrive tool replays transient-failure messages back to their
-          # source topic; messages that exhaust the loop guard (x-redrive-count ≥ max) are GENUINE
-          # poison left parked. A non-zero exhausted rate means human investigation is needed — the
-          # DLQ is no longer self-healing for those messages.
-          - alert: BrainDlqRedriveExhausted
-            # brain_dlq_redrive_exhausted_total: stream-worker counter (P2.2). A redrive pass left messages
-            # parked because they hit the max-redrive ceiling — they keep failing on replay.
-            expr: sum by (target_topic) (increase(brain_dlq_redrive_exhausted_total[1h])) > 0
-            for: 5m
-            labels:
-              severity: warning
-            annotations:
-              summary: "DLQ redrive left poison parked for {{ $labels.target_topic }}"
-              description: "A redrive pass exhausted the loop guard for messages targeting {{ $labels.target_topic }} — they fail every replay. Investigate the payload/schema; they will not self-heal."
-
-          - alert: BrainDlqRedriveErrors
-            # brain_dlq_redrive_error_total: republish to the source topic failed during a redrive (broker
-            # issue) — the operator's drain is not making progress.
-            expr: sum by (target_topic) (increase(brain_dlq_redrive_error_total[15m])) > 0
-            for: 5m
-            labels:
-              severity: warning
-            annotations:
-              summary: "DLQ redrive republish failing for {{ $labels.target_topic }}"
-              description: "Redrive could not republish to {{ $labels.target_topic }} — the operator drain is stalling. Check broker health."
+          # (BrainDlqRedriveExhausted / BrainDlqRedriveErrors REMOVED — ADR-0015 WS4 deleted the Kafka
+          # dlq-redrive CLI along with the last Kafka consumer; brain_dlq_redrive_*_total are never
+          # emitted. The poison-path signal is BrainErasureQueueDead above.)
 
           # P2.6 — connector auth rejection. A repull whose credential is rejected (Meta/Google token
           # expired, Shopify/Razorpay 401) writes sync_status='error' and RETURNS — it does NOT throw,
@@ -435,6 +444,27 @@ additionalPrometheusRulesMap:
             annotations:
               summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
               description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the DuckDB Silver CronWorkflows (v4-silver, db/iceberg/duckdb/silver) and duckdb-serving health. Analytics reads over Silver are behind."
+
+          # Silver identity stage (ADR-0015 WS3 / C1 2026-07-18) — the v4-identity CronWorkflow
+          # (infra/helm/cronworkflows/templates/v4-transform.yaml, every 5 min at :02/:07/…).
+          # brain_silver_identity_runs_total: stream-worker counter (silver-identity batch job), +1 per
+          # CLEAN per-brand pass — including a no-op empty window, so a healthy-but-quiet brand still
+          # ticks. absent() ⇒ the job has never run (the C1 failure mode: stage not scheduled) or its
+          # series vanished; zero increase over 15m (3 missed ticks = 3× the 5-min cadence, above the
+          # required 2× threshold) ⇒ the cron stopped firing or EVERY brand pass is erroring (watermarks
+          # held). Either way identity resolution has stalled: new events stop resolving to brain_id,
+          # silver_identity_map freezes, and gold_customer_360 + the attribution chain go stale.
+          - alert: BrainSilverIdentityStageStalled
+            expr: |
+              absent(brain_silver_identity_runs_total)
+              or
+              (sum(increase(brain_silver_identity_runs_total[15m])) == 0)
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Silver identity stage has not completed a clean brand pass in >15m"
+              description: "brain_silver_identity_runs_total is absent or flat for over 15m (cadence: every 5 min). Identity resolution is stalled — new events are not resolving to brain_id and the identity map / customer marts are going stale. Check the v4-identity CronWorkflow (argo -n argo list | grep v4-identity), duckdb-serving (the job's read path), Neo4j, and per-brand errors in the job logs (watermarks are held on error and converge on the next clean run)."
 
       # ── Revenue truth integrity ─────────────────────────────────────────────────
       - name: brain-revenue-integrity
@@ -647,7 +677,8 @@ additionalPrometheusRulesMap:
   #
   # Series source: the Argo Workflows controller /metrics (metricsConfig +
   # ServiceMonitor flipped on in infra/argocd/envs/prod/argo-workflows.yaml);
-  # the spark-v4 CronWorkflows emit the brain_spark_workflow_* metrics.
+  # the v4 transform + bronze-maintenance CronWorkflows emit the
+  # brain_transform_workflow_* metrics (Spark→DuckDB rename tracked 2026-07-18).
   #
   # HONESTY NOTE (AUD-OPS-032): the Aurora ACU / Redis eviction tripwires are
   # CloudWatch metric alarms in terraform (modules/aurora + modules/elasticache)
@@ -658,37 +689,39 @@ additionalPrometheusRulesMap:
     groups:
       - name: brain-scale-tripwires
         rules:
-          - alert: SparkTierCutoverTriggerBreached
-            # The DEFINED executionMode:k8s cutover trigger (docs/ops/spark-on-k8s-migration.md §1):
-            # a Silver/Gold tier sustaining >20 min wall-time. Silver must clear the :25 gold start;
-            # both must stay far from the 2400s activeDeadlineSeconds. Realtime gauge → this fires
+          - alert: TransformTierSlow
+            # A Silver/Gold tier sustaining >20 min wall-time — far past the incremental steady state
+            # (minutes) and eating into the 9000s bootstrap ceiling. Realtime gauge → this fires
             # DURING the slow run, and the frozen final value keeps it visible after completion.
-            expr: max by (tier) (brain_spark_workflow_duration_seconds) > 1200
+            expr: max by (tier) (brain_transform_workflow_duration_seconds) > 1200
             for: 5m
             labels:
               severity: warning
             annotations:
-              summary: "Spark {{ $labels.tier }} tier ran > 20 min — k8s cutover trigger breached"
-              description: "The {{ $labels.tier }} CronWorkflow wall-time exceeded 1200s (value {{ $value | humanizeDuration }}). This is the DEFINED trigger to rehearse and flip sparkV4 executionMode: k8s (docs/ops/spark-on-k8s-migration.md §1). Per-mart durations: kubectl -n argo logs the workflow pod and grep '\"evt\":\"spark_job\"' (job_log.py duration_ms)."
+              summary: "Transform {{ $labels.tier }} tier ran > 20 min"
+              description: "The {{ $labels.tier }} CronWorkflow wall-time exceeded 1200s (value {{ $value | humanizeDuration }}). At the */5 realtime cadence Forbid is skipping ticks — freshness is degrading. Per-mart durations: kubectl -n argo logs the workflow pod (structured {\"job\":…} result lines)."
 
-          - alert: SparkTierNearDeadline
-            # 2100s = 87% of the 2400s activeDeadlineSeconds — the run is about to be killed and the
+          - alert: TransformTierNearDeadline
+            # 8100s = 90% of the 9000s activeDeadlineSeconds — the run is about to be killed and the
             # medallion (and every mv_* serving view over it) goes stale platform-wide.
-            expr: max by (tier) (brain_spark_workflow_duration_seconds) > 2100
+            expr: max by (tier) (brain_transform_workflow_duration_seconds) > 8100
             for: 1m
             labels:
               severity: critical
             annotations:
-              summary: "Spark {{ $labels.tier }} tier at {{ $value | humanizeDuration }} — approaching the 2400s deadline"
-              description: "The {{ $labels.tier }} CronWorkflow is within ~5 min of activeDeadlineSeconds (2400s). If it is killed, Silver/Gold freshness stalls platform-wide (serving reads only brain_serving.mv_* over these marts). Escalate the AUD-OPS-029 sizing knobs or execute the k8s cutover."
+              summary: "Transform {{ $labels.tier }} tier at {{ $value | humanizeDuration }} — approaching the 9000s deadline"
+              description: "The {{ $labels.tier }} CronWorkflow is within ~15 min of activeDeadlineSeconds (9000s). If it is killed, Silver/Gold freshness stalls platform-wide (serving reads only brain_serving.mv_* over these marts). Check for a re-bootstrap (lost watermark) or keystone fragmentation before it recurs."
 
-          - alert: SparkTierRunFailed
-            # A tier run ended Failed (deadline, OOMKill, retries exhausted). Downstream mart staleness
-            # is caught by the freshness rules; this points at the CAUSE hours earlier.
-            expr: sum by (tier) (increase(brain_spark_workflow_failed_total[2h])) > 0
+          - alert: TransformTierRunFailed
+            # A tier run ended Failed (deadline, OOMKill, retries exhausted) — covers the v4-silver /
+            # v4-identity / v4-gold transform tiers AND the bronze-maintenance workflow + its fail-soft
+            # bronze-dedup step (H4: dedup failure no longer aborts compaction/expiry — it surfaces
+            # HERE as tier=bronze-dedup instead). Downstream mart staleness is caught by the freshness
+            # rules; this points at the CAUSE hours earlier.
+            expr: sum by (tier) (increase(brain_transform_workflow_failed_total[2h])) > 0
             for: 5m
             labels:
               severity: warning
             annotations:
-              summary: "Spark {{ $labels.tier }} tier workflow FAILED in the last 2h"
-              description: "A {{ $labels.tier }} CronWorkflow run ended Failed (deadline overrun, OOMKill, or retries exhausted). Inspect: argo -n argo list; kubectl -n argo logs <pod>. If failures correlate with duration near 2400s, the AUD-OPS-029 vertical ceiling is the likely cause — see docs/ops/spark-on-k8s-migration.md."
+              summary: "{{ $labels.tier }} workflow FAILED in the last 2h"
+              description: "A {{ $labels.tier }} CronWorkflow run (or fail-soft step) ended Failed (deadline overrun, OOMKill, valve refusal, or retries exhausted). Inspect: argo -n argo list; kubectl -n argo logs <pod>. tier=bronze-dedup ⇒ Bronze may still hold duplicates (Silver MERGE remains the backstop) — see bronze_dedup.py output for the memory-valve / BRONZE_DEDUP_FORCE guidance."

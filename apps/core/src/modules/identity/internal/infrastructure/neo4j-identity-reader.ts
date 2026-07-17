@@ -89,7 +89,8 @@ export interface IdentityReader {
    * (ALIAS_OF.valid_to set — nothing destroyed), the absorbed id restored to independent existence,
    * an UnmergeEvent audit node kept forever, and the reversible-decision-log row written to
    * identity_audit (action='unmerge', actor + reason). Returns the survivor + the original merge id
-   * so the caller can emit identity.unmerged.v1 (AMD-08) for downstream re-versioning/re-stitch.
+   * so the caller can enqueue the downstream re-versioning/re-stitch dirty rows (ADR-0015 WS3:
+   * ops.restitch_pending + ops.journey_reversion_pending, drained by the Silver identity stage).
    */
   unmergeCustomer(
     brandId: string,
@@ -382,7 +383,7 @@ export class Neo4jIdentityReader implements IdentityReader {
     if (!graph) return { unmerged: false, reason: 'not_found' };
 
     // Legacy admin ALIAS_OF edges predating WA-19 carry no merge_id — mint a reversal handle so the
-    // identity.unmerged.v1 contract (merge_id REQUIRED) and the audit row always have a stable id.
+    // downstream dirty-queue provenance (source_event_id) and the audit row always have a stable id.
     const mergeEventId = graph.mergeId ?? randomUUID();
     const survivorBrainId = graph.survivor ?? undefined;
 

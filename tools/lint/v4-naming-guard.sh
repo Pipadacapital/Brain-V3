@@ -53,6 +53,15 @@
 #         createDuckDbServingPool/withServingBrand client); maintenance is the PyIceberg client (db/iceberg/
 #         duckdb/maintenance/**). NEVER a bare `:8090` ban — that is the stream-worker metrics port; only
 #         a trino-qualified host:port form matches.
+#   R8  STREAM-TIER IDENTITY COUPLING (ADR-0015 D5): identity is resolved in the SILVER transform
+#         stage (the batch, watermark-driven jobs/silver-identity job) — Neo4j is NEVER wired to the
+#         collector, the log, or Bronze. A stream-worker Kafka CONSUMER path (apps/stream-worker/src/
+#         interfaces/consumers/**, a re-created identity-bridge/ dir, or any *Consumer* file under
+#         apps/stream-worker/src) that names Neo4jIdentityRepository, or ANY stream-worker import from
+#         an identity-bridge/ module path (the IdentityBridgeConsumer tree is DELETED), is a violation.
+#         apps/stream-worker/src/jobs/silver-identity/** is the ONE sanctioned Neo4j invocation path
+#         (allowlisted), and the erasure lane's wiring in main.ts (ADR-0004 RTBF lookup + purge — not
+#         a consumer path) stays legal. This rule stops identity creeping back onto the log.
 #
 # EXCLUDED from scanning (by design):
 #   • test fixtures: *.test.ts, *.spec.ts, *.live.test.ts, tools/isolation-fuzz/**, **/test/**
@@ -332,6 +341,48 @@ scan_trino_coupling() {
   done < <(candidate_files '[Tt]rino|TRINO_')
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# R8: STREAM-TIER IDENTITY COUPLING (ADR-0015 D5). Identity is a SILVER-stage batch step
+#   (apps/stream-worker/src/jobs/silver-identity/** — the sanctioned, allowlisted Neo4j invocation
+#   path, watermark-driven between the silver passes and gold). Neo4j must NEVER be wired back onto
+#   the collector event stream. Two signals, scoped to apps/stream-worker/**:
+#     1. a Kafka CONSUMER path (src/interfaces/consumers/**, a re-created src/identity-bridge/** dir,
+#        or any *Consumer* file under src/) whose live code names Neo4jIdentityRepository;
+#     2. ANY live import/require from an identity-bridge/ module path — the IdentityBridgeConsumer
+#        tree is DELETED (WS4); importing it anywhere is a regression.
+#   NOT signals: the erasure lane's Neo4j wiring in main.ts (ADR-0004 RTBF lookup + purge; main.ts is
+#   the composition root, not a consumer path), batch jobs under src/jobs/** (backfill-identity,
+#   silver-identity), and '[identity-bridge]' log/error STRING literals (SaltProvider) — the import
+#   regex requires a from/require quote, and prose comments are stripped by noncomment_lines().
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+scan_stream_identity_coupling() {
+  local f l content in_consumer_path
+  while IFS= read -r f; do
+    # Scope: stream-worker only — ADR-0015's guard is about the stream tier.
+    case "$f" in
+      apps/stream-worker/*) ;;
+      *) continue ;;
+    esac
+    is_excluded "$f" && continue
+    case "$f" in
+      apps/stream-worker/src/jobs/silver-identity/*) continue ;; # the sanctioned Silver identity stage
+      apps/stream-worker/src/infrastructure/neo4j/*) continue ;; # the preserved repository itself
+    esac
+    in_consumer_path=0
+    case "$f" in
+      apps/stream-worker/src/interfaces/consumers/*|apps/stream-worker/src/identity-bridge/*|apps/stream-worker/src/*[Cc]onsumer*) in_consumer_path=1 ;;
+    esac
+    while IFS= read -r line; do
+      l="${line%%:*}"; content="${line#*:}"
+      if [ "$in_consumer_path" -eq 1 ] && printf '%s' "$content" | grep -qE 'Neo4jIdentityRepository'; then
+        flag R8 "$f:$l" "a stream-worker Kafka consumer path names Neo4jIdentityRepository — identity is resolved in the SILVER stage (jobs/silver-identity, ADR-0015 D5); Neo4j is never wired to the collector, the log, or Bronze: ${content#"${content%%[![:space:]]*}"}"
+      elif printf '%s' "$content" | grep -qE "(from[[:space:]]+|require\()['\"][^'\"]*identity-bridge"; then
+        flag R8 "$f:$l" "import from the DELETED identity-bridge consumer tree (ADR-0015 WS4 removed IdentityBridgeConsumer) — identity is a Silver-stage batch step (jobs/silver-identity): ${content#"${content%%[![:space:]]*}"}"
+      fi
+    done < <(noncomment_lines "$f")
+  done < <(candidate_files 'Neo4jIdentityRepository|identity-bridge')
+}
+
 # ── Self-test ──────────────────────────────────────────────────────────────────────────────────────
 # Proves the guard FAILS on a known-bad corpus (one line per rule) and PASSES on the allowed forms.
 selftest() {
@@ -384,6 +435,13 @@ EOF
   # querying the serving tier must not carry Trino coupling just because it isn't a .ts file).
   cat > "$d/bad.trino.mjs" <<'EOF'
 const SERVING = process.env.TRINO_URL ?? 'http://trino:8080';
+EOF
+  # R8 bad corpus — a stream-worker Kafka consumer re-wiring identity onto the log (one signal per
+  # line: the Neo4j repo named in a consumer-path file, + an import from the deleted identity-bridge
+  # tree). In the tree scan this file would live under apps/stream-worker/src/interfaces/consumers/.
+  cat > "$d/bad.streamid.ts" <<'EOF'
+import { Neo4jIdentityRepository } from '../../infrastructure/neo4j/Neo4jIdentityRepository.js';
+import { IdentityBridgeConsumer } from '../../identity-bridge/IdentityBridgeConsumer.js';
 EOF
 
   # ── Good corpus (must NOT trigger) ────────────────────────────────────────
@@ -446,6 +504,16 @@ python /opt/brain/duckdb/maintenance/medallion_maintenance.py   # PyIceberg main
 curl -fsS http://localhost:8091/readyz                          # duckdb-serving view-apply gate
 curl -fsS http://localhost:8090/metrics                         # stream-worker metrics (bare :8090 — allowed)
 EOF
+  # R8 good corpus — the shapes that must NOT flag even inside a consumer-path file: a comment naming
+  # the removed IdentityBridgeConsumer (stripped), and an '[identity-bridge]' error-STRING literal
+  # (SaltProvider's fail-closed message — not an import; the R8 import regex requires from/require).
+  # The sanctioned jobs/silver-identity + erasure-lane main.ts wiring are path-allowlisted in the
+  # real scan, exercised by running the guard on the live tree, not by this corpus.
+  cat > "$d/good.streamid.ts" <<'EOF'
+import type { EraseSubjectUseCase } from '../../application/EraseSubjectUseCase.js';
+// replaced by the Silver identity stage — IdentityBridgeConsumer / identity-bridge/ are DELETED (comment, allowed)
+throw new Error('[identity-bridge] salt fetch failed — fail-closed (string literal, allowed)');
+EOF
 
   local fail_bad=0 fail_good=0
 
@@ -502,6 +570,18 @@ EOF
   # PLUS the .mjs corpus line's two signals (env + host) so *.mjs stays a scanned extension.
   [ "$r7_hits" -ge 8 ] || { echo "${RED}SELFTEST FAIL: R7 missed a Trino-coupling signal in bad.trino.* incl. the .mjs corpus (hits=$r7_hits)${RST}"; fail_bad=1; }
 
+  # ── Check bad.streamid.ts catches R8 (consumer-path Neo4j repo + identity-bridge import) ───
+  local r8_hits; r8_hits=0
+  while IFS= read -r line; do
+    local content="${line#*:}"
+    # signal 1 — the corpus stands in for a consumer-path file, so the Neo4j-repo grep applies:
+    printf '%s' "$content" | grep -qE 'Neo4jIdentityRepository' && r8_hits=$((r8_hits+1))
+    # signal 2 — an import/require from an identity-bridge/ module path:
+    printf '%s' "$content" | grep -qE "(from[[:space:]]+|require\()['\"][^'\"]*identity-bridge" && r8_hits=$((r8_hits+1))
+  done < <(noncomment_lines "$d/bad.streamid.ts")
+  # The 2-line corpus carries both signals; require every one to be caught.
+  [ "$r8_hits" -ge 2 ] || { echo "${RED}SELFTEST FAIL: R8 missed a stream-identity-coupling signal in bad.streamid.ts (hits=$r8_hits)${RST}"; fail_bad=1; }
+
   # ── Check good.sql + good.py produce NO false positives ───────────────────
   for f in "$d/good.sql" "$d/good.py"; do
     local hits; hits=0
@@ -550,8 +630,17 @@ EOF
   done
   [ "$r7_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R7 false-positived on the duckdb-serving client / the :8090 metrics port / a provenance comment (hits=$r7_fp)${RST}"; fail_good=1; }
 
+  # ── Check good.streamid.ts (erasure-consumer shape: comment + string literal) produces NO R8 FPs ──
+  local r8_fp; r8_fp=0
+  while IFS= read -r line; do
+    local content="${line#*:}"
+    printf '%s' "$content" | grep -qE 'Neo4jIdentityRepository' && r8_fp=$((r8_fp+1))
+    printf '%s' "$content" | grep -qE "(from[[:space:]]+|require\()['\"][^'\"]*identity-bridge" && r8_fp=$((r8_fp+1))
+  done < <(noncomment_lines "$d/good.streamid.ts")
+  [ "$r8_fp" -eq 0 ] || { echo "${RED}SELFTEST FAIL: R8 false-positived on an allowed consumer shape (comment / '[identity-bridge]' string literal) in good.streamid.ts (hits=$r8_fp)${RST}"; fail_good=1; }
+
   if [ "$fail_bad" -eq 0 ] && [ "$fail_good" -eq 0 ]; then
-    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 + R5 StarRocks + R6 Spark + R7 Trino coupling on the bad corpus; no false positives on allowed Iceberg/DuckDB/duckdb-serving forms incl. the bare :8090 metrics port).${RST}"
+    echo "${GRN}✓ v4-naming-guard self-test passed (catches R1/R2/R3 + R5 StarRocks + R6 Spark + R7 Trino + R8 stream-identity coupling on the bad corpus; no false positives on allowed Iceberg/DuckDB/duckdb-serving forms incl. the bare :8090 metrics port and the erasure-lane consumer shape).${RST}"
     return 0
   fi
   return 1
@@ -570,6 +659,7 @@ scan_feature_precompute
 scan_starrocks_coupling
 scan_spark_coupling
 scan_trino_coupling
+scan_stream_identity_coupling
 
 if [ "$violations" -gt 0 ]; then
   echo ""
@@ -584,8 +674,11 @@ if [ "$violations" -gt 0 ]; then
   echo "(trinodb/trino / TRINO_* / createTrinoPool|withTrinoBrand|TrinoPool / db/trino / db/iceberg/trino"
   echo "/ /opt/brain/trino / trino:8080|trino…:8090) is FORBIDDEN (R7); use the duckdb-serving client"
   echo "(createDuckDbServingPool / withServingBrand) and the PyIceberg maintenance tier."
+  echo "Identity is resolved in the SILVER stage (ADR-0015) — a stream-worker Kafka consumer path that"
+  echo "names Neo4jIdentityRepository, or any import from the deleted identity-bridge tree, is FORBIDDEN"
+  echo "(R8); the sanctioned invocation path is apps/stream-worker/src/jobs/silver-identity."
   exit 1
 fi
 
-echo "${GRN}✓ v4-naming-guard passed — no retired-dbt-DB refs, no dbt invocations, no feature precompute, no StarRocks coupling, no Trino coupling.${RST}"
+echo "${GRN}✓ v4-naming-guard passed — no retired-dbt-DB refs, no dbt invocations, no feature precompute, no StarRocks coupling, no Trino coupling, no stream-tier identity coupling.${RST}"
 exit 0

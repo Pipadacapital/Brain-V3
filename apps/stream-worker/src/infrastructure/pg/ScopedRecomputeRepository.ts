@@ -20,8 +20,7 @@
  * DDL: db/migrations/0116_brain_ops_to_pg.sql (ops.scoped_recompute_request).
  */
 import type pg from 'pg';
-import type { ScopedRecompute } from '../../domain/identity/ScopedRecompute.js';
-import type { IScopedRecomputeRepository } from '../../interfaces/consumers/IdentityChangeRecomputeConsumer.js';
+import type { ScopedRecompute, IScopedRecomputeRepository } from '../../domain/identity/ScopedRecompute.js';
 
 export class PgScopedRecomputeRepository implements IScopedRecomputeRepository {
   /**

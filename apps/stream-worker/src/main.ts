@@ -1,53 +1,44 @@
 /**
- * Stream-worker (Deployable 2) — KafkaJS live consumer group.
+ * Stream-worker (Deployable 2) — connector pull-job runner + the PG-driven erasure lane.
  *
- * Pipeline: consume → Zod validate (M1-local) → Redis dedup → Bronze INSERT
- *   → commit Kafka offset ONLY after write confirmed (D-7).
+ * ADR-0015 WS2 (single Bronze writer): the stream-worker NO LONGER writes Bronze in any form.
+ * The Kafka Connect Iceberg sink (ADR-0010) is the SOLE Bronze writer — it lands the whole
+ * collector topic (pixel + server-trusted + backfill lanes) into brain_bronze.collector_events_connect,
+ * and the Silver keystone (silver_collector_event.py) owns validation, the R2 tenant / R3 consent
+ * gate, quarantine routing, and the (brand_id, event_id) admission MERGE.
  *
- * Architecture plan §6 Slice 3 (Track A / data-engineer):
- *   - consume from dev.collector.event.v1
- *   - Redis SET NX EX 604800 dedup (D-3)
- *   - INSERT INTO bronze_events under brain_app + set_config GUC (D-8)
- *   - commit offset ONLY after Bronze write confirmed (D-7)
- *   - DLQ after MAX_RETRY=5 failures per (partition, offset)
+ * ADR-0015 WS3/WS4 (identity in Silver): the identity/consent/CAPI/cache/touchpoint consumer lanes
+ * are DELETED from the streaming path. Identity resolution is a SILVER-STAGE batch step now —
+ * jobs/silver-identity/run.ts reads new canonical Silver rows since a watermark, resolves via the
+ * PRESERVED IdentityResolver/Neo4jIdentityRepository (fronted by an identifier_hash→brain_id Redis
+ * cache), writes the merge/suppress dirty-sets to ops.*_pending DIRECTLY, folds consent projection
+ * (ProjectConsentUseCase) + CAPI-deletion triggering, and evicts brand-scoped serving-cache keys
+ * in-process (ServingCacheEvictor). Neo4j is NEVER wired to the collector, the log, or Bronze.
+ * The removed consumers: IdentityBridgeConsumer, IdentityChangeRecomputeConsumer,
+ * RestitchDirtyConsumer, JourneyReversionDirtyConsumer, ConsentSuppressorConsumer,
+ * AnalyticsCacheInvalidateConsumer, CapiDeletionConsumer, TouchpointCacheConsumer — and the
+ * identity.* / cache.invalidate.v1 / gold.rewritten.v1 Kafka lanes they served.
  *
- * Connects as brain_app (not brain) so RLS is enforced on bronze_events (F-4).
- * Dev DB connects as superuser 'brain' which BYPASSES RLS — NEVER use
- * DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
+ * ADR-0015 WS4 COMPLETION: the DPDP/PDPL erasure orchestrator — formerly the LAST Kafka
+ * consumer in this process (group stream-worker-erasure-orchestrator on the live collector
+ * topic + the collector.event.v1.dlq poison lane) — is now a PG request-driven poll lane:
+ * core's ErasureEventPublisher INSERTs the trigger envelope into ops.erasure_request_queue
+ * (0140) and jobs/erasure-orchestrator/run.ts claims + runs the UNCHANGED EraseSubjectUseCase
+ * ordered sequence (per-brand ordered, retry-with-backoff, dead-at-MAX — the PG DLQ
+ * replacement). THIS PROCESS RUNS NO KAFKA CONSUMERS.
+ *
+ * WHAT REMAINS HERE: the erasure poll lane and the connector pull-job runner (backfills,
+ * repulls, schedulers, DQ). The pull jobs PRODUCE to the log (Kafka Connect lands them — no
+ * direct Bronze write anywhere in this process).
+ *
+ * Connects as brain_app (not brain) so RLS is enforced (F-4). Dev DB superuser 'brain' BYPASSES
+ * RLS — NEVER use DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
-import { Kafka, type ConsumerConfig } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
 import { assertRoleEnforcesRls } from '@brain/db';
-import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
-import {
-  buildTopic,
-  IDENTITY_MINTED_TOPIC_SUFFIX,
-  IDENTITY_LINKED_TOPIC_SUFFIX,
-  IDENTITY_MERGED_TOPIC_SUFFIX,
-  IDENTITY_SUPPRESSED_TOPIC_SUFFIX,
-  IDENTITY_UNMERGED_TOPIC_SUFFIX,
-} from '@brain/contracts';
-import { resolveRackId } from './infrastructure/kafka/resolveRackId.js';
-import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
-import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
-import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
-import { createIdempotentProducer } from './infrastructure/kafka/idempotent-producer.js';
-import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
-import { IdentityChangeRecomputeConsumer } from './interfaces/consumers/IdentityChangeRecomputeConsumer.js';
 import { PgScopedRecomputeRepository } from './infrastructure/pg/ScopedRecomputeRepository.js';
-import { RestitchDirtyConsumer } from './interfaces/consumers/RestitchDirtyConsumer.js';
-import { PgRestitchDirtyRepository } from './infrastructure/pg/RestitchDirtyRepository.js';
-import { JourneyReversionDirtyConsumer } from './interfaces/consumers/JourneyReversionDirtyConsumer.js';
-import { PgJourneyReversionDirtyRepository } from './infrastructure/pg/JourneyReversionDirtyRepository.js';
-import { CacheInvalidatePublisher } from './infrastructure/kafka/CacheInvalidatePublisher.js';
-import { AnalyticsCacheInvalidateConsumer } from './interfaces/consumers/AnalyticsCacheInvalidateConsumer.js';
 import { Redis } from 'ioredis';
-import { createFlagService, RedisFlagStoreAdapter, type RedisFlagClient } from '@brain/platform-flags';
-import { RedisTouchpointCacheStore } from './touchpoint-cache/TouchpointCacheStore.js';
-import { IdentityStoreBrainIdResolver } from './touchpoint-cache/BrainIdResolver.js';
-import { TouchpointCacheService } from './touchpoint-cache/TouchpointCacheService.js';
-import { TouchpointCacheConsumer } from './touchpoint-cache/TouchpointCacheConsumer.js';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
 import { initObservability, initSentry, createLogger, registerProcessFailureHandlers } from '@brain/observability';
 import { loadStreamWorkerConfig } from '@brain/config';
@@ -60,32 +51,24 @@ import {
   AwsKmsDecryptAdapter,
   type VaultKeyProvider,
 } from '@brain/pii-vault';
-import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
-import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
-import { ConfidenceEngine } from './domain/identity/confidence/index.js';
-import { createDefaultMatcherRegistry } from './domain/identity/matchers/MatcherRegistry.js';
-import { DecisionEngine } from './domain/identity/decisions/DecisionEngine.js';
-import { IdentityAuditDecisionLog } from './infrastructure/identity/IdentityAuditDecisionLog.js';
-import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
-import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
-import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
-import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
-import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
-import { CapiDeletionConsumer } from './interfaces/consumers/CapiDeletionConsumer.js';
 import { RequestCapiDeletionUseCase } from './application/RequestCapiDeletionUseCase.js';
 import { CapiDeletionRepository } from './infrastructure/pg/CapiDeletionRepository.js';
-import { ErasureOrchestratorConsumer } from './interfaces/consumers/ErasureOrchestratorConsumer.js';
+import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
+import { ConsentRepository } from './infrastructure/pg/ConsentRepository.js';
 import { EraseSubjectUseCase, type IBrainIdLookup } from './application/EraseSubjectUseCase.js';
 import { ArgoErasureWorkflowSubmitter } from './infrastructure/argo/ArgoErasureWorkflowSubmitter.js';
 import { ErasureRepository } from './infrastructure/pg/ErasureRepository.js';
-import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
+import { ErasureRequestQueueRepository } from './infrastructure/pg/ErasureRequestQueueRepository.js';
+import { startErasureOrchestrator } from './jobs/erasure-orchestrator/run.js';
+import {
+  ServingCacheEvictor,
+  DirectServingCacheInvalidator,
+} from './infrastructure/redis/ServingCacheEvictor.js';
+import { IdentifierCacheAdapter } from './infrastructure/redis/IdentifierCacheAdapter.js';
 // MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
-// is built FROM Bronze by dbt (silver_order_recognition → gold_revenue_ledger). Ad spend likewise
-// flows spend.live.v1 → Bronze (Iceberg, server-trusted) → silver_marketing_spend. The former
-// SpendLedgerConsumer (spend.live.v1 → PG billing.ad_spend_ledger) was a DUAL-WRITE that made PG a
-// second, divergent SoR; it is removed so Bronze is the SOLE spend SoR (dedup = deterministic
-// event_id MERGE in Bronze — no PG/Bronze count drift). PostgreSQL holds operational state only.
-import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronzeBridges.js';
+// is built FROM Bronze (silver_order_recognition → gold_revenue_ledger). Ad spend likewise flows
+// spend.live.v1 → Bronze (Iceberg, server-trusted) → silver_marketing_spend. PostgreSQL holds
+// operational state only.
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer, enumerateConnectedConnectors } from './jobs/sync-request-claimer/run.js';
 import { run as runShopifyBackfill } from './jobs/shopify-backfill/run.js';
@@ -159,95 +142,31 @@ export async function main(): Promise<void> {
   // structured logger + Sentry (instead of Node's raw-stderr crash), then exit non-zero.
   registerProcessFailureHandlers({ log, serviceName: 'stream-worker', flush: closeSentry });
 
-  const brokers = cfg.KAFKA_BROKERS.split(',');
   const redisUrl = cfg.REDIS_URL;
   // IMPORTANT: must connect as brain_app to enforce RLS (not superuser 'brain')
   const dbUrl = cfg.BRAIN_APP_DATABASE_URL;
-  const topic = cfg.COLLECTOR_TOPIC;
-  const groupId = cfg.CONSUMER_GROUP_ID;
-  const identityGroupId = cfg.IDENTITY_CONSUMER_GROUP_ID;
-  // Consent-suppressor (feat-d13-consent-cancontact): separate consumer group on the
-  // SAME live topic (no new topic, no new deployable — I-E05). Projects the first-class
-  // consent_flags envelope field into consent_record + consent_tombstone (the SoR the
-  // can_contact() chokepoint queries fail-closed). WIRED HERE: do NOT remove without
-  // updating consent-suppressor.e2e.test.ts.
-  const consentSuppressorGroupId = cfg.CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID;
-  // CAPI retroactive-deletion (feat-capi-conversion-feedback / Phase 6): a SEPARATE
-  // consumer group on the SAME live topic (no new topic, no new deployable — I-E05).
-  // On an 'advertising' consent withdrawal/erasure → records a capi_deletion_log request
-  // within the DPDP ≤15min withdrawal-propagation SLA. WIRED HERE: do NOT remove without
-  // updating capi-deletion.e2e.test.ts.
-  const capiDeletionGroupId = cfg.CAPI_DELETION_CONSUMER_GROUP_ID;
-  // DPDP/PDPL crypto-shred erasure orchestrator: separate consumer group on the live topic.
-  // On a subject-erasure: shreds subject DEK (is_active=FALSE) + belt-and-suspenders hard delete
-  // + surrogate tombstone + scoped Gold re-projection + CAPI deletion. Ordered, idempotent,
-  // DLQ-after-MAX_RETRY. WIRED HERE: do NOT remove without updating erasure-orchestrator.unit.test.ts.
-  const erasureOrchestratorGroupId = cfg.ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID;
-  // Live-ledger bridge (ORCH-LV-H1 fix): separate consumer group on the live topic — mirrors
-  // IdentityBridgeConsumer pattern. Does NOT double-write Bronze (CollectorEventConsumer handles
-  // Bronze). Filters to order.live.v1 events only; routes provisional_recognition / rto_reversal.
-  const liveLedgerGroupId = cfg.LIVE_LEDGER_CONSUMER_GROUP_ID;
-  // Settlement ledger bridge (ADR-RZ-6 / MB-4): separate consumer group on the live topic.
-  // Filters settlement.live.v1 events; does TWO-HOP JOIN → net-of-fees finalization writes.
-  // WIRED HERE (MB-4 NON-NEGOTIABLE) — unwiring triggers durable-rule proposal (occurrence #3).
-  const settlementLedgerGroupId = cfg.SETTLEMENT_LEDGER_CONSUMER_GROUP_ID;
-  // RETIRED (0117): the GoKwik AWB ledger bridge group. GoKwik is webhook-first payments/checkout
-  // with no AWB-read API — the synthetic logistics model (gokwik.awb_status.v1 → cod_rto_clawback)
-  // was removed. Logistics truth is Shiprocket. The ledger consumer itself was already removed in the
-  // Medallion realignment (recognition is built from Bronze); this drops the now-dead config read.
-  // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact.
-  // BACKFILL_TOPIC default derives from NODE_ENV inside the config loader.
-  const backfillTopic = cfg.BACKFILL_TOPIC;
-  const backfillGroupId = cfg.BACKFILL_CONSUMER_GROUP_ID;
+  // ADR-0015 WS4 COMPLETION: this process runs NO Kafka consumers. The DPDP/PDPL erasure
+  // orchestrator (formerly the last consumer group on the live collector topic) is a PG
+  // request-driven poll lane over ops.erasure_request_queue — wired below. The pull jobs
+  // still PRODUCE to the log (they own their producers/config; Kafka Connect lands Bronze).
+  // ADR-0015 WS2: the backfill-lane Bronze consumer is GONE (Kafka Connect lands the backfill
+  // topic directly — it is in the collector sink's `topics` list); BACKFILL_TOPIC remains a
+  // producer-side concern of the backfill jobs (they load config themselves).
 
-  const kafka = new Kafka({
-    clientId: 'stream-worker',
-    brokers,
-    retry: { retries: 5 },
-  });
-
-  // KIP-392: inject this pod's AZ as the consumer rackId so EVERY consumer fetches from a same-AZ
-  // replica (RackAwareReplicaSelector on the brokers) instead of the cross-AZ leader — cutting
-  // DataTransfer-Regional-Bytes $. One wrap covers all consumer sites; an empty rackId (IMDS
-  // unreachable / override unset) leaves today's leader-fetch behaviour untouched (no regression).
-  const rackId = await resolveRackId();
-  if (rackId) {
-    // Monkeypatch the shared client so every consumer created downstream inherits the rackId (KIP-392).
-    const base = kafka.consumer.bind(kafka);
-    kafka.consumer = (config: ConsumerConfig) => base({ ...config, rackId });
-    log.info('kafka rack-awareness enabled (KIP-392 follower fetching)', { rackId });
-  }
-
-  // ── Audit writer (R3/REC-1: pixel.brand_mismatch) ───────────────────────────
-  // audit_log has RLS DISABLED (cross-brand SoR); isolation is the mandatory
-  // WHERE brand_id filter inside DbAuditWriter. brain_app holds INSERT+SELECT on it.
-  const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
+  // ── Worker PG pool (health probe + RLS fail-closed guard) ───────────────────
   // P2.3: every worker pool uses dbUrl (must be brain_app, NOBYPASSRLS). Fail closed at startup if
-  // it points at the superuser 'brain' — the worker writes Bronze/ledgers/consent under per-brand
+  // it points at the superuser 'brain' — the worker writes consent/erasure state under per-brand
   // GUCs and a bypassing role would silently defeat FORCE RLS on those tables (the dev footgun).
+  const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
   await assertRoleEnforcesRls(auditPool, { label: 'stream-worker pool (dbUrl)' });
-  const auditDbClient: AuditDbClient = {
-    query: async (sql, params) => {
-      const r = await auditPool.query(sql, params);
-      return { rows: r.rows as never[], rowCount: r.rowCount };
-    },
-  };
-  const auditWriter = new DbAuditWriter(auditDbClient);
 
-  // ── Durable retry counter (T2-8) ────────────────────────────────────────────
-  // ONE shared Redis-backed counter for every consumer. Replaces the per-instance in-memory
-  // Maps that reset on restart (a poison message would otherwise retry forever, never reaching
-  // the DLQ). Keyed by {groupId}:{topic}:{partition}:{offset} so the consumers sharing the live
-  // topic under different groups never collide. Connected once here, quit on shutdown.
-  const retryCounter = new RetryCounterAdapter(redisUrl);
-  await retryCounter.connect();
+  // T2-8 NOTE: the Redis retry counter is RETIRED with the Kafka erasure consumer — retry
+  // durability now lives in the queue row itself (ops.erasure_request_queue.attempts).
 
   // ── Liveness/readiness probes (T2-10) ───────────────────────────────────────
-  // Start the health port BEFORE the consumers so liveness answers during the (slow) boot
-  // window — K8s must not restart a pod that is merely still wiring consumers. Readiness
-  // stays false (503) until every consumer has started AND Postgres is reachable, so the
-  // worker only joins rotation once it can actually do work. pingDb reuses auditPool
-  // (brain_app) — a SELECT 1 needs no RLS GUC.
+  // Start the health port BEFORE the resident lanes so liveness answers during the (slow)
+  // boot window. Readiness stays false (503) until the lanes have started AND Postgres is
+  // reachable. pingDb reuses auditPool (brain_app) — a SELECT 1 needs no RLS GUC.
   let consumersReady = false;
   const healthServer = startHealthServer({
     port: cfg.HEALTH_PORT,
@@ -258,67 +177,19 @@ export async function main(): Promise<void> {
     log,
   });
 
-  // ── Bronze pipeline (LIVE collector lane — R2/R3 gate ON) ───────────────────
-  const dedup = new RedisDedupAdapter(redisUrl);
-  const bronze = new BronzeRepository(dbUrl);
-  // Slice 6 (ADR-0002): the PG Bronze write switch — default ENABLED. Set BRONZE_PG_WRITE_ENABLED=false
-  // ONLY to retire the PG write (Spark→Iceberg becomes the sole Bronze SoR). Do NOT flip until readers
-  // are on Iceberg (Slice 5) AND the Spark writer enforces R2/R3 + quarantine (it does not yet) AND a
-  // parity soak is green — see ProcessEventUseCase.pgWriteEnabled.
-  // DB-AUDIT C4: PG bronze write is RETIRED — default OFF (opt-in). Spark→Iceberg is the sole Bronze SoR
-  // and data_plane.bronze_events is dropped (0070). Set BRONZE_PG_WRITE_ENABLED=true only as a legacy escape.
-  const pgWriteEnabled = cfg.BRONZE_PG_WRITE_ENABLED;
-  if (!pgWriteEnabled) log.info('PG bronze_events write RETIRED (default) — Iceberg (Spark) is the sole Bronze SoR');
-  // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
-  // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
-  const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter, true, pgWriteEnabled);
-  const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId, retryCounter);
-
-  // ── Bronze bridges (P0 — restore severed server-trusted-event landings) ──────
-  // Shopflo checkout-abandoned + GoKwik RTO-Predict events carry NO install_token; the pixel lane
-  // above quarantines them, so they never reached Bronze and their read seams were permanent
-  // no_data. These separate consumer groups land them in Bronze with enforceTenantDerivation=FALSE
-  // (brand_id is already server-trusted — the webhook/emit derived it from the connector row, MT-1).
-  // One shared ProcessEventUseCase + dedup + bronze (stateless). WIRED: do NOT remove without
-  // updating the corresponding *-bronze-wiring.e2e.test.ts.
-  const bridgeProcessEvent = new ProcessEventUseCase(
-    dedup, bronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
-  );
-  // Registry-driven Bronze bridges (re-platform Phase B). One EventBronzeBridgeConsumer per entry in
-  // BRONZE_BRIDGES (shopflo checkout, gokwik rto-predict, shiprocket shipment,
-  // order.live) — each lands a server-trusted event_name into Bronze on its own consumer group
-  // (enforceTenantDerivation=false). Built, started, and stopped as ONE array below, so a new
-  // connector's Bronze landing is a single registry entry, never three hand-edits (kills the
-  // "wired-to-nothing" anti-pattern). See bronzeBridges.ts + bronzeBridges.test.ts.
-  const bronzeBridgeConsumers = buildBronzeBridges({
-    kafka,
-    processEvent: bridgeProcessEvent,
-    topic,
-    retryCounter,
-  });
-
-  // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
-  // SaltProvider: dev uses LocalSecretsProvider (env var holds 64-hex salt directly).
-  // Prod: swap LocalSecretsProvider for AwsSecretsProvider (ARN in env var).
-  // saltArnFn maps brand UUID → env var name or AWS Secrets Manager ARN.
-  // Salt resolution: DEV uses the deterministic dev salt (resolveSaltHex, shared with apps/core so the
-  // same email hashes identically). PROD reads the per-brand salt from the DB identity-salt store
-  // (KMS-unwrapped) — a RUNTIME-created brand has no IDENTITY_SALT env, so the env path can't serve it.
-  // One resolver, every salt site (§3.1). D-2 guard still fires on any fetch/length failure.
+  // ── ADR-0015 WS3: NO identity resolution in this process ────────────────────────────────
+  // The Silver identity stage (jobs/silver-identity/run.ts, ordered into tools/dev/duckdb-refresh.sh
+  // between the silver passes and gold) owns extract → resolve (Neo4j) → dirty-sets → consent/CAPI →
+  // cache eviction. The Neo4j repository below exists ONLY for the erasure lane's brain_id lookup +
+  // graph purge (request-driven compliance — not stream identity resolution).
   const saltProvider = createSaltProvider(dbUrl);
   // PII vault DEK provider (P0-C): dev derives a deterministic per-brand DEK; prod unwraps
-  // the brand_keyring DEK via AWS KMS. The contact_pii write-population encrypts with this key
-  // (the SAME provider apps/core's vault read path uses, via @brain/pii-vault).
+  // the brand_keyring DEK via AWS KMS.
   // intentional raw: NODE_ENV prod-gating selects the secret/KMS code path.
   const vaultKeyProvider: VaultKeyProvider =
     process.env['NODE_ENV'] === 'production'
       ? new KmsVaultKeyProvider(new PgPool({ connectionString: dbUrl, max: 2 }), new AwsKmsDecryptAdapter())
       : new DevVaultKeyProvider();
-  // MEDALLION REALIGNMENT (Epic 3 / ADR-0004): Neo4j is the identity SYSTEM-OF-RECORD. The graph
-  // (customer / identity_link edges / merge / alias / phone-guard / merge-review) lives in Neo4j; the
-  // immutable identity_audit ledger + the encrypted contact_pii vault + the brand phone-guard config
-  // stay in PostgreSQL (passed via dbUrl). The pure IdentityResolver runs unchanged (IdentityStore
-  // contract). Supersedes ADR-0003 (the retired PG-SoR + Neo4j-dual-write experiment).
   const identityRepo = new Neo4jIdentityRepository(
     cfg.NEO4J_URI,
     cfg.NEO4J_USER,
@@ -328,201 +199,20 @@ export async function main(): Promise<void> {
   );
   try {
     await identityRepo.bootstrap();
-    log.info('[identity] Neo4j identity SoR wired (ADR-0004); audit + contact_pii in PG.');
+    log.info('[erasure] Neo4j identity SoR wired for the erasure lane (ADR-0004; lookup + purge only).');
   } catch (err) {
-    log.warn(`[identity] Neo4j bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`[erasure] Neo4j bootstrap failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  // ── Identity domain-event publisher (identity.{minted,linked,merged,suppressed,review_queued}.v1) ──
-  // One idempotent producer for the identity lane (EoS at the broker, no-event-loss). The use-case
-  // publishes the outcome AFTER the Neo4j graph write (commit-after-write) with deterministic
-  // event_ids → replay-safe. Partition key = brand_id (tenant-first). env prefix mirrors the rest of
-  // the worker (NODE_ENV-driven, same scheme as BACKFILL_TOPIC).
-  const identityEventEnvPrefix = cfg.NODE_ENV === 'production' ? 'prod' : 'dev';
-  const identityEventProducer = createIdempotentProducer(kafka);
-  await identityEventProducer.connect();
-  const identityEventPublisher = new KafkaIdentityEventPublisher(
-    identityEventProducer, identityEventEnvPrefix, log,
-  );
-  // ── Confidence + decision layer (F1): WIRE the probabilistic review gate into the live path ──
-  // ConfidenceEngine aggregates the ENABLED matchers from createDefaultMatcherRegistry (deterministic
-  // union-find + the review-gated ProbabilisticMatcher; disabled ML/household/cross-device are never
-  // invoked). DecisionEngine maps a sub-exact (probabilistic) verdict to a reversible route_to_review
-  // Command; IdentityAuditDecisionLog persists it ADDITIVELY into the identity_audit ledger (it is
-  // BOTH the DecisionLogRepository and the EvidenceStore). A weak-signal agreement → route_to_review,
-  // NEVER auto-merge (isMergeEligible stays band==='exact'); deterministic strong-key merges are
-  // unchanged. All optional + fail-open: a confidence/review failure never loses the graph write.
-  const matcherRegistry = createDefaultMatcherRegistry();
-  const confidenceEngine = new ConfidenceEngine({ matchers: matcherRegistry.enabled() });
-  const decisionEngine = new DecisionEngine();
-  const identityDecisionLog = new IdentityAuditDecisionLog(new PgPool({ connectionString: dbUrl, max: 3 }));
-  // SPEC A.1.5 (WA-12): per-brand feature-flag service gating the ordered identity-priority path.
-  // A dedicated ioredis client (mirrors cacheEvictionRedis / RetryCounterAdapter); the domain
-  // FlagService is fail-closed + DEFAULT OFF, so `identity.priority_config` reads OFF everywhere until
-  // an admin sets it → the legacy fixed-tier resolver runs byte-identically until then.
-  const flagRedis = new Redis(redisUrl);
-  const identityFlagService = createFlagService({
-    store: new RedisFlagStoreAdapter(flagRedis as unknown as RedisFlagClient),
-  });
-  const resolveIdentityUseCase = new ResolveIdentityUseCase(
-    saltProvider,
-    identityRepo,
-    identityEventPublisher,
-    {
-      confidenceEngine,
-      decisionEngine,
-      decisionLog: identityDecisionLog,
-      evidenceStore: identityDecisionLog,
-    },
-    identityFlagService,
-  );
-  // T2-8: pass the shared durable RetryCounterAdapter so identity-bridge retries survive
-  // pod restarts and a poison message always reaches the DLQ (mirrors ConsentSuppressor /
-  // Backfill / LiveLedger — every consumer that receives retryCounter here).
-  const identityConsumer = new IdentityBridgeConsumer(
-    kafka, resolveIdentityUseCase, topic, identityGroupId, retryCounter,
-  );
 
-  // ── Identity-change → scoped-Gold-recompute consumer (V4 / §H) ──────────────
-  // Listens to identity.{merged,suppressed}.v1 — the topics KafkaIdentityEventPublisher
-  // emits to. On merge/suppress:
-  //   (a) FAIL-CLOSED: upserts a ScopedRecompute row to ops.scoped_recompute_request
-  //       (PG ops schema — idempotent on retry via ON CONFLICT (brand_id, request_id) DO UPDATE).
-  //   (b) FAIL-OPEN: publishes cache.invalidate.v1 per affected customer-grained Gold mart
-  //       so the serving layer can bust its Redis cache immediately.
-  // The v4-refresh-loop.sh SCOPED_RECOMPUTE=1 step drains these rows + issues targeted MV
-  // SYNC refreshes; step 6 (full mv_* refresh) still runs as a safety net.
-  //
-  // Shares the SAME identityEventEnvPrefix + identityEventProducer as KafkaIdentityEventPublisher
-  // so the consume topics EXACTLY match the produce topics (NODE_ENV-driven prefix).
-  //
-  // ops pool: pg, the worker's brain_app dbUrl (V4 StarRocks REMOVAL — ops moved to the PG
-  // `ops` schema, migration 0116). If PG is unreachable the upsert fails → consumer retries → DLQ
-  // after 5 = correct fail-closed.
-  const identityRecomputeGroupId = cfg.IDENTITY_CHANGE_RECOMPUTE_CONSUMER_GROUP_ID;
-  const opsPool = new PgPool({ connectionString: dbUrl, max: 3 });
-  const scopedRecomputeRepo = new PgScopedRecomputeRepository(opsPool);
-  // CacheInvalidatePublisher reuses identityEventProducer (already connected, idempotent EoS).
-  const cacheInvalidatePublisher = new CacheInvalidatePublisher(
-    identityEventProducer, identityEventEnvPrefix, log,
-  );
-  const identityRecomputeTopics = [
-    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
-    buildTopic(identityEventEnvPrefix, IDENTITY_SUPPRESSED_TOPIC_SUFFIX),
-  ];
-  const identityRecomputeConsumer = new IdentityChangeRecomputeConsumer(
-    kafka,
-    scopedRecomputeRepo,
-    cacheInvalidatePublisher,
-    identityRecomputeTopics,
-    identityRecomputeGroupId,
-    retryCounter,
-  );
-
-  // ── Event-driven re-stitch dirty-set consumer (SPEC: A.2.3.5 / WA-18 / AMD-08) ──
-  // Consumes the SAME identity.{minted,linked,merged,unmerged}.v1 map-mutation lane under its OWN group
-  // (AMD-08 R1 unifies the lane; separate offsets from the recompute consumer). On each mutation it marks
-  // the affected (brand_id, identifier_hash | brain_id) keys dirty in ops.restitch_pending so the Spark
-  // stitch job (silver_session_identity.py) re-evaluates PAST sessions within the attribution lookback —
-  // the A.2.3(5) / A.5.5 "day-7 identify stitches day-1 sessions in one incremental run" lift.
-  //
-  // FLAG-GATED per-brand `stitch.v2` (DEFAULT OFF, fail-closed) via the SAME identityFlagService: with no
-  // brand opted in NOTHING is enqueued → the drain no-ops → golden outputs byte-identical (A.5.8). Reuses
-  // opsPool (brain_app; ops.restitch_pending is a cross-brand ETL queue, not RLS-forced, like
-  // ops.scoped_recompute_request) + the shared durable retryCounter (DLQ after 5).
-  const restitchDirtyRepo = new PgRestitchDirtyRepository(opsPool);
-  const restitchDirtyTopics = [
-    buildTopic(identityEventEnvPrefix, IDENTITY_MINTED_TOPIC_SUFFIX),
-    buildTopic(identityEventEnvPrefix, IDENTITY_LINKED_TOPIC_SUFFIX),
-    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
-    buildTopic(identityEventEnvPrefix, IDENTITY_UNMERGED_TOPIC_SUFFIX),
-  ];
-  const restitchDirtyConsumer = new RestitchDirtyConsumer(
-    kafka,
-    restitchDirtyRepo,
-    identityFlagService,
-    restitchDirtyTopics,
-    cfg.RESTITCH_DIRTY_CONSUMER_GROUP_ID,
-    retryCounter,
-  );
-
-  // ── Event-driven cross-device JOURNEY re-version dirty-set consumer (SPEC: B.2 / WB-B2 / AMD-08/11) ──
-  // Consumes the SAME identity.{linked,merged,unmerged}.v1 map-mutation lane under its OWN group (separate
-  // offsets from the recompute + restitch consumers). On each mutation it marks the affected BRAIN_IDS
-  // dirty in ops.journey_reversion_pending with the re-version CAUSE (merge|unmerge|restitch) so the Spark
-  // reversion job (gold_journey_events_reversion.py) rebuilds those brains' journeys as version N+1 and
-  // writes journey_version_log {brand_id, brain_id, from_version, to_version, cause, at} (AMD-11).
-  //
-  // FLAG-GATED per-brand `journey.engine` (DEFAULT OFF, fail-closed) via the SAME identityFlagService:
-  // with no brand opted in NOTHING is enqueued → the drain no-ops → golden journeys byte-identical. Reuses
-  // opsPool (brain_app; ops.journey_reversion_pending is a cross-brand ETL queue, not RLS-forced, like
-  // ops.restitch_pending) + the shared durable retryCounter (DLQ after 5).
-  const journeyReversionDirtyRepo = new PgJourneyReversionDirtyRepository(opsPool);
-  const journeyReversionDirtyTopics = [
-    buildTopic(identityEventEnvPrefix, IDENTITY_LINKED_TOPIC_SUFFIX),
-    buildTopic(identityEventEnvPrefix, IDENTITY_MERGED_TOPIC_SUFFIX),
-    buildTopic(identityEventEnvPrefix, IDENTITY_UNMERGED_TOPIC_SUFFIX),
-  ];
-  const journeyReversionDirtyConsumer = new JourneyReversionDirtyConsumer(
-    kafka,
-    journeyReversionDirtyRepo,
-    identityFlagService,
-    journeyReversionDirtyTopics,
-    cfg.JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID,
-    retryCounter,
-  );
-
-  // ── Analytics cache-invalidation consumer (the CONSUMER side of cache.invalidate.v1) ──
-  // The identity-recompute consumer EMITS cache.invalidate.v1 after an identity merge/suppress;
-  // this consumer evicts the brand-scoped serving-cache keys so the serving tier never serves
-  // stale Gold (no waiting for TTL). A dedicated ioredis client (mirrors RetryCounterAdapter) —
-  // ioredis Redis satisfies ICacheEvictionClient structurally (del/scan), all deletes brand-gated.
-  const cacheEvictionRedis = new Redis(redisUrl);
-  const analyticsCacheInvalidateConsumer = new AnalyticsCacheInvalidateConsumer(
-    kafka,
-    cacheEvictionRedis,
-    identityEventEnvPrefix,
-    cfg.ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID,
-  );
-
-  // ── Consent suppressor (feat-d13-consent-cancontact) ────────────────────────
-  // Same live topic, separate consumer group. Reuses the SAME SaltProvider as the
-  // identity bridge (one sanctioned per-brand hasher — D-2 hard-crash on salt failure)
-  // so a subject's consent_record.subject_hash equals its identity_link.identifier_value.
-  // Writes consent_record + consent_tombstone under brain_app + brand GUC (RLS FORCE).
-  const consentRepo = new ConsentRepository(dbUrl);
-  const projectConsentUseCase = new ProjectConsentUseCase(saltProvider, consentRepo);
-  const consentSuppressorConsumer = new ConsentSuppressorConsumer(
-    kafka, projectConsentUseCase, topic, consentSuppressorGroupId, retryCounter,
-  );
-
-  // ── CAPI retroactive-deletion consumer (feat-capi-conversion-feedback) ───────
-  // Same live topic, separate consumer group. Reuses the SAME SaltProvider (the one
-  // sanctioned per-brand hasher — D-2 hard-crash on salt failure) so the deletion's
-  // subject_hash equals the consent_record / capi_passback_log subject_hash and targets
-  // the right prior passbacks. Default-closed: in dev (no Meta creds) the request is
-  // recorded as 'would_delete_dev' — NOTHING is sent to Meta. hasMetaCreds is derived
-  // from env (false in dev); prod wires the Secrets Manager fetch (platform follow-up).
-  const capiHasMetaCreds = cfg.META_CAPI_CREDS_WIRED;
-  const capiDeletionRepo = new CapiDeletionRepository(dbUrl);
-  const requestCapiDeletionUseCase = new RequestCapiDeletionUseCase(
-    saltProvider, capiDeletionRepo, capiHasMetaCreds,
-  );
-  const capiDeletionConsumer = new CapiDeletionConsumer(
-    kafka, requestCapiDeletionUseCase, topic, capiDeletionGroupId, retryCounter,
-  );
-
-  // ── Erasure orchestrator (DPDP/PDPL crypto-shred — feat-erasure-orchestrator) ──
-  // Same live topic, separate consumer group. Drives the ordered per-subject erasure sequence:
-  // DEK shred (subject_keyring is_active=FALSE) → surrogate tombstone → Neo4j graph purge →
-  // scoped Gold re-projection + serving-cache invalidation → Bronze raw sweep → CAPI deletion
-  // → erasure complete. Reuses the SAME saltProvider, requestCapiDeletionUseCase, identityRepo
-  // and cacheInvalidatePublisher as the other consumers — no new hashing logic, no duplicated
-  // CAPI deletion path, no parallel cache-invalidation lane.
+  // ── Erasure orchestrator (DPDP/PDPL crypto-shred — PG request-driven, ADR-0015 WS4) ──
+  // Drives the ordered per-subject erasure sequence: DEK shred (subject_keyring is_active=FALSE) →
+  // surrogate tombstone → Neo4j graph purge → scoped Gold re-projection + serving-cache eviction →
+  // Bronze raw sweep → CAPI deletion → erasure complete. Triggered by rows core enqueues into
+  // ops.erasure_request_queue (the retired Kafka lane's envelope, byte-identical).
   //
   // brainIdLookup: inline adapter over identityRepo.findBrainIdForErasure() — the erasure-lane
-  // resolution that ALSO matches tombstoned edges (AUD-OPS-039 replay-safety: STEP 2b tombstones
-  // the graph, and a replayed erasure must still resolve to re-run the idempotent remainder).
-  // Throws on Neo4j down (→ retry). Returns null on not-found (→ 'no_brain_id' skip, WARN).
+  // resolution that ALSO matches tombstoned edges (AUD-OPS-039 replay-safety). Throws on Neo4j
+  // down (→ retry). Returns null on not-found (→ 'no_brain_id' skip, WARN).
   const brainIdLookup: IBrainIdLookup = {
     async findBrainId(lookupBrandId, subjectHash, identifierType) {
       // SEC H-1: match on the SUBJECT'S identifier type (email OR phone) — hardcoding 'email'
@@ -530,6 +220,36 @@ export async function main(): Promise<void> {
       return identityRepo.findBrainIdForErasure(lookupBrandId, identifierType, subjectHash);
     },
   };
+  // ops pool: the scoped-recompute queue the erasure lane fail-closed writes (PG `ops` schema).
+  const opsPool = new PgPool({ connectionString: dbUrl, max: 3 });
+  const scopedRecomputeRepo = new PgScopedRecomputeRepository(opsPool);
+  // CAPI retroactive deletion — REUSED by the erasure sequence (the consent-withdrawal trigger
+  // itself moved to the Silver identity stage). Default-closed: in dev (no Meta creds) requests
+  // are recorded as 'would_delete_dev' — NOTHING is sent to Meta.
+  const capiDeletionRepo = new CapiDeletionRepository(dbUrl);
+  const requestCapiDeletionUseCase = new RequestCapiDeletionUseCase(
+    saltProvider, capiDeletionRepo, cfg.META_CAPI_CREDS_WIRED,
+  );
+  // AUD-TP-22 → ADR-0015 WS3: serving-cache invalidation is now a DIRECT Redis eviction
+  // (ServingCacheEvictor — the same brand-guarded SCAN+DEL the removed
+  // AnalyticsCacheInvalidateConsumer ran), fulfilling the use case's publisher port in-process.
+  const cacheEvictionRedis = new Redis(redisUrl);
+  const directCacheInvalidator = new DirectServingCacheInvalidator(
+    new ServingCacheEvictor(cacheEvictionRedis),
+  );
+  // H2: the identifier cache (idcache:{brand}:idhash:*) is OUTSIDE the brand-wide evictable
+  // keyspace, so the erasure sequence purges a shredded subject's hash→brain_id entries
+  // EXPLICITLY (STEP 3c). Background connect: a purge before connectivity fails CLOSED →
+  // the erasure row retries with backoff; boot never blocks on Redis.
+  const erasureIdentifierCache = new IdentifierCacheAdapter(
+    redisUrl,
+    cfg.SILVER_IDENTITY_CACHE_TTL_SECONDS,
+  );
+  void erasureIdentifierCache.connect().catch((err) => {
+    log.warn(
+      `[erasure] identifier-cache Redis connect failed (purge fails closed + retries): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
   const erasureRepo = new ErasureRepository(dbUrl);
   // AUD-OPS-037: Bronze raw-PII erasure submitter — STEP 4 of the ordered sequence submits the
   // `bronze-raw-erasure` Argo WorkflowTemplate (erasure_raw_delete.py) so the subject's raw rows
@@ -556,71 +276,38 @@ export async function main(): Promise<void> {
     // SEC M-1: evict the hot subject DEK from this process's vault cache the instant it is shredded.
     (b, s) => vaultKeyProvider.invalidate(b, s),
     bronzeRawErasureSubmitter,
-    // AUD-TP-22: RTBF → serving-cache invalidation. The SAME CacheInvalidatePublisher the
-    // identity-recompute lane uses (one publisher → one AnalyticsCacheInvalidateConsumer →
-    // brand-scoped Redis eviction). FAIL-OPEN inside the use case.
-    cacheInvalidatePublisher,
+    // AUD-TP-22: RTBF → serving-cache invalidation — DIRECT eviction (ADR-0015 WS3), same
+    // brand-scoped guarantees as the retired cache.invalidate.v1 lane. FAIL-OPEN inside the use case.
+    directCacheInvalidator,
     // AUD-OPS-039: Neo4j graph purge (STEP 2b) + graph-hash keying for the Bronze sweep on
-    // brain_id-only triggers (STEP 4). Same identityRepo as every identity consumer.
+    // brain_id-only triggers (STEP 4).
     identityRepo,
+    // H2: STEP 3c identifier-cache purge (fail-closed — see erasureIdentifierCache above).
+    erasureIdentifierCache,
   );
-  const erasureOrchestratorConsumer = new ErasureOrchestratorConsumer(
-    kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,
-  );
-
-  // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
-  // Separate topic (backfillTopic) + separate consumer group (backfillGroupId)
-  // → structurally impossible to lag the live consumer group (SI-3 / D-3).
-  // Bronze write reuses the same ProcessEventUseCase (same code path, different lane).
-  // MEDALLION REALIGNMENT (Epic 1): the backfill→PG-ledger wire is removed; backfilled orders reach
-  // the recognition ledger by landing in Bronze (dbt builds gold_revenue_ledger from there).
-  const backfillDedup = new RedisDedupAdapter(redisUrl);
-  const backfillBronze = new BronzeRepository(dbUrl);
-  // Backfill-order lane: enforceTenantDerivation=FALSE — these events carry NO install_token
-  // (event_name='order.backfill.v1'); their brand_id is already server-trusted (derived from
-  // the authenticated connector). The R2 browser-spoofing gate does not apply (architecture §5).
-  const backfillProcessEvent = new ProcessEventUseCase(
-    backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
-  );
-  const backfillConsumer = new BackfillOrderConsumer(
-    kafka, backfillProcessEvent, backfillTopic, backfillGroupId, retryCounter,
-  );
-
-  // ── Real-time touchpoint cache (SPEC: A.4 — flag identity.tp_cache, DEFAULT OFF) ──────────
-  // A NEW consumer group on the SAME live collector topic (touchpoint content) PLUS the
-  // identity.merged.v1 lane (merge invalidation) — no new topic, no new deployable (I-E05).
-  // Maintains the Redis zset `{brand_id}:tp:{brain_id}` (last 200 touchpoints, score=event-ts-ms).
-  // Best-effort HOT cache: every write is fail-safe (offset commits regardless) — journey APIs
-  // fall back to Iceberg (the truth). Per-brand gated by identity.tp_cache: with no brand opted
-  // in, this loop is an inert flag-check per message (byte-identical golden, flags-OFF invariant).
-  // Reuses identityFlagService (WA-12) + saltProvider + identityRepo — the resolver is a READ-ONLY
-  // deterministic lookup (never mints/links/merges; that stays the identity-bridge consumer's job).
-  const tpCacheStore = new RedisTouchpointCacheStore(redisUrl);
-  await tpCacheStore.connect();
-  const tpCacheService = new TouchpointCacheService(
-    identityFlagService,
-    new IdentityStoreBrainIdResolver(saltProvider, identityRepo),
-    tpCacheStore,
+  // Consent-withdrawal fold for the erasure lane (an erasure IS a full withdrawal): the trigger
+  // envelope no longer transits the log/Bronze, so the projection the retired suppressor lane /
+  // Bronze→Silver transit provided is folded in-lane (same ProjectConsentUseCase the Silver
+  // identity stage uses; idempotent ON CONFLICT, self-gating on brain_id-only triggers).
+  const erasureConsentRepo = new ConsentRepository(dbUrl);
+  const erasureProjectConsent = new ProjectConsentUseCase(saltProvider, erasureConsentRepo);
+  // The PG request queue + resident poll loop (jobs/erasure-orchestrator/run.ts): claims
+  // per-brand queue heads FOR UPDATE SKIP LOCKED, runs the ordered sequence, retries with
+  // backoff, dead-letters at MAX attempts (status='dead' — the PG DLQ replacement).
+  // WIRED HERE: do NOT remove without updating erasure-queue-lane.unit.test.ts.
+  const erasureQueueRepo = new ErasureRequestQueueRepository(dbUrl);
+  const erasureIntervalMs = cfg.ERASURE_QUEUE_POLL_INTERVAL_MS;
+  const erasureClaimBatch = cfg.ERASURE_QUEUE_CLAIM_BATCH;
+  const erasureOrchestrator = startErasureOrchestrator(
     {
-      maxTouchpoints: cfg.TP_CACHE_MAX_TOUCHPOINTS,
-      ttlSeconds: cfg.TP_CACHE_TTL_DAYS * 24 * 60 * 60,
+      repo: erasureQueueRepo,
+      eraseSubject: eraseSubjectUseCase,
+      projectConsent: erasureProjectConsent,
     },
+    erasureIntervalMs,
+    erasureClaimBatch,
   );
-  const touchpointCacheConsumer = new TouchpointCacheConsumer(
-    kafka, tpCacheService, topic, identityEventEnvPrefix, cfg.TP_CACHE_CONSUMER_GROUP_ID,
-  );
-
-  // ── MEDALLION REALIGNMENT (Epic 1 / decision B) ────────────────────────────
-  // REMOVED: LiveLedgerBridgeConsumer (provisional/rto), SettlementLedgerConsumer (net-of-fees),
-  // GokwikAwb/ShipmentLedgerConsumer (COD delivery/RTO). All were pure PG realized_revenue_ledger
-  // writers. The recognition ledger is now built from Bronze by dbt (silver_order_recognition →
-  // brain_gold.gold_revenue_ledger). The live attribution clawback hook + live journey-stitch they
-  // carried are backstopped by the hourly attribution-reconcile + journey-stitch-from-identity crons.
-
-  // NOTE: the SpendLedgerConsumer (spend.live.v1 → PG billing.ad_spend_ledger) was REMOVED — ad
-  // spend is analytical data, so it lands in Bronze (Iceberg) via the server-trusted lane like every
-  // other event and is projected to silver_marketing_spend. PG is no longer a spend sink (it was a
-  // divergent dual-write); Bronze is the sole SoR and dedups on the deterministic spend event_id.
+  log.info(`erasure orchestrator running — queue=ops.erasure_request_queue interval=${erasureIntervalMs}ms batch=${erasureClaimBatch} (PG request-driven, ADR-0015 WS4)`);
 
   // ── On-demand "Sync now" claimer (feat-connector-sync-now) ──────────────────
   // NOT a new deployable: an interval loop in THIS process. Claims sentinel
@@ -640,11 +327,8 @@ export async function main(): Promise<void> {
   // the sync-request claimer). Per-tick: enumerate active brands → run the 4 deterministic
   // DQ executors (freshness / completeness / schema_validity / reconciliation) under
   // brain_app + per-brand GUC → append one dq_check_result row per (brand, category, target)
-  // with a FROZEN letter grade. The freshness executor is the LIVE freshness-SLA monitor
-  // (Phase-7 acceptance). schema_validity REUSES the existing DLQ/quarantine signal;
-  // reconciliation reads Bronze↔serving(mv_silver_order_state) deltas. MUST use brain_app
-  // (RLS enforced) — never superuser 'brain'. WIRED HERE: do not remove without updating
-  // dq-checks.e2e.test.ts. Tier-0 deterministic (no model; $0/mo).
+  // with a FROZEN letter grade. MUST use brain_app (RLS enforced) — never superuser 'brain'.
+  // WIRED HERE: do not remove without updating dq-checks.e2e.test.ts. Tier-0 deterministic.
   const dqPool = new PgPool({ connectionString: dbUrl, max: 3 });
   const dqIntervalMs = cfg.DQ_CHECK_INTERVAL_MS;
   // Silver/Gold serving config over duckdb-serving (Brain V4 — Trino removed, ADR-0014) — when
@@ -687,13 +371,12 @@ export async function main(): Promise<void> {
 
   // ── Advertising metadata + 2-year backfill schedulers (A2/A3 Transport handoffs) ─────────────
   // In-process periodic loops (same shape as the ingest scheduler). meta-entity-sync / google-entity-sync
-  // emit the SHARED `ad.entity.updated` feed (now admitted to SERVER_TRUSTED above) on the live collector
-  // lane → silver_campaign's authoritative dim; the spend-repull backfill lanes walk back 730 days
-  // resumably (reusing the spend.live.v1 event_id so they MERGE-dedup against the trailing 28-day repull —
-  // no double-count) and are an instant no-op once the floor is reached. Each job self-enumerates its
-  // activated ad connectors via the SECURITY-DEFINER enumerate fns and derives brand_id server-side (MT-1);
-  // these schedulers hold NO brand context. Cadences are env-tunable — defaults: entity-sync ~6h, spend
-  // backfill daily (the backfill is safe to re-trigger more often; each run does a bounded resumable slice).
+  // emit the SHARED `ad.entity.updated` feed on the live collector lane → silver_campaign's authoritative
+  // dim; the spend-repull backfill lanes walk back 730 days resumably (reusing the spend.live.v1 event_id
+  // so they MERGE-dedup against the trailing 28-day repull — no double-count) and are an instant no-op
+  // once the floor is reached. Each job self-enumerates its activated ad connectors via the
+  // SECURITY-DEFINER enumerate fns and derives brand_id server-side (MT-1); these schedulers hold NO
+  // brand context. Cadences are env-tunable — defaults: entity-sync ~6h, spend backfill daily.
   const adEntitySyncIntervalMs = Number(process.env['AD_ENTITY_SYNC_INTERVAL_MS'] ?? 6 * 60 * 60 * 1000);
   const adSpendBackfillIntervalMs = Number(process.env['AD_SPEND_BACKFILL_INTERVAL_MS'] ?? 24 * 60 * 60 * 1000);
   // Google spend backfill is per-connector (no self-enumerating overload like Meta's): enumerate the
@@ -776,19 +459,7 @@ export async function main(): Promise<void> {
     // consumers down (liveness keeps answering — the process is still alive and draining).
     consumersReady = false;
     await Promise.all([
-      consumer.stop(),
-      identityConsumer.stop(),
-      identityRecomputeConsumer.stop(),
-      restitchDirtyConsumer.stop(),
-      journeyReversionDirtyConsumer.stop(),
-      analyticsCacheInvalidateConsumer.stop(),
-      consentSuppressorConsumer.stop(),
-      capiDeletionConsumer.stop(),
-      erasureOrchestratorConsumer.stop(),
-      backfillConsumer.stop(),
-      touchpointCacheConsumer.stop(),
-      // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
-      ...bronzeBridgeConsumers.map((c) => c.stop()),
+      erasureOrchestrator.stop(),
       syncRequestClaimer.stop(),
       backfillClaimerJob.stop(),
       dqChecker.stop(),
@@ -804,19 +475,13 @@ export async function main(): Promise<void> {
     await ingestSchedulerPool.end();
     await googleBackfillPool.end().catch(() => undefined);
     await connectorRateLimiter.quit().catch(() => undefined);
-    await consentRepo.end();
     await capiDeletionRepo.end();
     await erasureRepo.end();
-    await retryCounter.quit();
-    await dedup.quit();
-    await backfillDedup.quit();
-    await tpCacheStore.quit().catch(() => undefined);
-    await bronze.end();
-    await backfillBronze.end();
+    await erasureQueueRepo.end();
+    await erasureConsentRepo.end().catch(() => undefined);
     await auditPool.end();
-    await identityEventProducer.disconnect().catch(() => undefined);
     await cacheEvictionRedis.quit().catch(() => undefined);
-    await flagRedis.quit().catch(() => undefined);
+    await erasureIdentifierCache.quit().catch(() => undefined);
     await opsPool.end().catch(() => undefined);
     await identityRepo.end();
     await healthServer.close();
@@ -830,105 +495,11 @@ export async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  log.info(`starting — topic=${topic} group=${groupId} brokers=${brokers.join(',')}`);
-  await consumer.start();
-  log.info('bronze consumer running');
+  log.info('starting — NO Kafka consumers in this process (single Bronze writer = Kafka Connect ADR-0015 WS2; identity in Silver ADR-0015 WS3; erasure PG request-driven ADR-0015 WS4)');
 
-  log.info(`starting identity bridge — topic=${topic} group=${identityGroupId}`);
-  await identityConsumer.start();
-  log.info('identity bridge consumer running');
-
-  // ── Identity-change recompute consumer (V4 scoped Gold-recompute MANDATORY WIRE) ──
-  // Subscribes to the SAME topics KafkaIdentityEventPublisher emits to (same env prefix).
-  // Must start AFTER identityEventProducer is connected (it shares the producer for
-  // cache.invalidate.v1 publishes). WIRED HERE: do NOT remove without verifying the
-  // scoped-recompute-loop integration test and the ops.scoped_recompute_request drain.
-  log.info(`starting identity-recompute consumer — topics=${identityRecomputeTopics.join(',')} group=${identityRecomputeGroupId}`);
-  await identityRecomputeConsumer.start();
-
-  // Cache-invalidation consumer: evict brand-scoped serving-cache keys on cache.invalidate.v1
-  // (the CONSUMER side of what identityRecomputeConsumer emits). Closes LOW-1 — without it,
-  // cache.invalidate events are published but never consumed → serving cache stays stale to TTL.
-  log.info(`starting analytics cache-invalidate consumer — group=${cfg.ANALYTICS_CACHE_INVALIDATE_CONSUMER_GROUP_ID}`);
-  await analyticsCacheInvalidateConsumer.start();
-  log.info('identity-recompute consumer running');
-
-  // ── Event-driven re-stitch dirty-set consumer (SPEC: A.2.3.5 / WA-18 MANDATORY WIRE) ──
-  // Subscribes to the identity.{minted,linked,merged,unmerged}.v1 map-mutation lane (same env prefix) and
-  // marks re-stitch dirty keys in ops.restitch_pending (per-brand stitch.v2 gated, DEFAULT OFF → inert).
-  // WIRED HERE: do NOT remove without verifying the restitch-dirty unit test + the Spark drain.
-  log.info(`starting restitch-dirty consumer — topics=${restitchDirtyTopics.join(',')} group=${cfg.RESTITCH_DIRTY_CONSUMER_GROUP_ID}`);
-  await restitchDirtyConsumer.start();
-  log.info('restitch-dirty consumer running');
-
-  // ── Event-driven cross-device JOURNEY re-version dirty-set consumer (SPEC: B.2 / WB-B2 MANDATORY WIRE) ──
-  // Subscribes to the identity.{linked,merged,unmerged}.v1 map-mutation lane and marks affected brain_ids
-  // dirty in ops.journey_reversion_pending (per-brand journey.engine gated, DEFAULT OFF → inert). WIRED
-  // HERE: do NOT remove without verifying the journey-reversion-dirty unit test + the Spark drain.
-  log.info(`starting journey-reversion-dirty consumer — topics=${journeyReversionDirtyTopics.join(',')} group=${cfg.JOURNEY_REVERSION_DIRTY_CONSUMER_GROUP_ID}`);
-  await journeyReversionDirtyConsumer.start();
-  log.info('journey-reversion-dirty consumer running');
-
-  // ── Consent suppressor consumer (feat-d13-consent-cancontact MANDATORY WIRE) ──
-  // Same live topic, independent consumer group. Projects consent_flags →
-  // consent_record + consent_tombstone (the SoR can_contact() reads fail-closed).
-  // WIRED HERE: do NOT remove without updating consent-suppressor.e2e.test.ts.
-  log.info(`starting consent suppressor — topic=${topic} group=${consentSuppressorGroupId}`);
-  await consentSuppressorConsumer.start();
-  log.info('consent suppressor consumer running');
-
-  // ── CAPI retroactive-deletion consumer (feat-capi-conversion-feedback MANDATORY WIRE) ──
-  // Same live topic, independent consumer group. On an 'advertising' consent withdrawal/
-  // erasure → records a capi_deletion_log request within the DPDP ≤15min SLA. Default-closed
-  // (dev: 'would_delete_dev', NOTHING sent). WIRED HERE: do NOT remove without updating
-  // capi-deletion.e2e.test.ts.
-  log.info(`starting capi-deletion consumer — topic=${topic} group=${capiDeletionGroupId}`);
-  await capiDeletionConsumer.start();
-  log.info('capi-deletion consumer running');
-
-  // ── Erasure orchestrator consumer (feat-erasure-orchestrator MANDATORY WIRE) ──────
-  // Same live topic, independent consumer group. Drives the ordered DPDP/PDPL 6-step
-  // crypto-shred sequence on a subject-erasure signal. WIRED HERE: do NOT remove without
-  // updating erasure-orchestrator.unit.test.ts.
-  log.info(`starting erasure orchestrator — topic=${topic} group=${erasureOrchestratorGroupId}`);
-  await erasureOrchestratorConsumer.start();
-  log.info('erasure orchestrator consumer running');
-
-  // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
-  // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.
-  // stream-worker-backfill consumer group offset lag is independent of stream-worker-live.
-  log.info(`starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
-  await backfillConsumer.start();
-  log.info('backfill consumer running');
-
-  // ── Touchpoint-cache consumer (SPEC: A.4 MANDATORY WIRE) ──────────────────────
-  // New group on the live collector topic + identity.merged.v1. Per-brand gated by
-  // identity.tp_cache (DEFAULT OFF). WIRED HERE: do NOT remove without updating
-  // touchpoint-cache.A4.test.ts.
-  log.info(`starting touchpoint-cache consumer — topic=${topic}+identity.merged group=${cfg.TP_CACHE_CONSUMER_GROUP_ID}`);
-  await touchpointCacheConsumer.start();
-  log.info('touchpoint-cache consumer running');
-
-  // ── MEDALLION REALIGNMENT (Epic 1): live-ledger / settlement / gokwik-awb ledger bridges REMOVED.
-  // The recognition ledger is built from Bronze by dbt (recognition-refresh). See the wiring note above.
-
-  // (Spend reaches Bronze via the server-trusted lane in the Spark sink — no PG consumer here.)
-
-  // ── Bronze bridge consumers (registry-driven — re-platform Phase B) ─────────
-  // Start every bridge in BRONZE_BRIDGES on its own consumer group. The loop guarantees every
-  // registry entry is started (no per-bridge hand-wiring to forget). WIRED: the set is asserted by
-  // bronzeBridges.test.ts; the per-source landings are covered by *-bronze-wiring.e2e.test.ts.
-  for (let i = 0; i < bronzeBridgeConsumers.length; i++) {
-    const def = BRONZE_BRIDGES[i]!;
-    // intentional raw: groupIdEnv is a DYNAMIC env-var name from the registry, not a fixed field.
-    log.info(`starting bronze bridge ${def.eventName} — topic=${topic} group=${process.env[def.groupIdEnv] ?? def.defaultGroupId}`);
-    await bronzeBridgeConsumers[i]!.start();
-    log.info(`bronze bridge ${def.eventName} consumer running`);
-  }
-
-  // All consumers are up — flip readiness so the orchestrator routes work to this instance.
+  // All resident lanes are up — flip readiness so the orchestrator routes work to this instance.
   consumersReady = true;
-  log.info('readiness: ready (all consumers started)');
+  log.info('readiness: ready (erasure poll lane + job runner started)');
 }
 
 // Run when invoked directly (not imported in tests)

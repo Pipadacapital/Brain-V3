@@ -24,7 +24,7 @@ import type { IdentityReader } from '../../../identity/index.js';
 import type { ContactPiiVaultService } from '../../../identity/index.js';
 import type { FoundationSignals } from '../../../analytics/index.js';
 import type { FlagService } from '@brain/platform-flags';
-import type { IdentityEventPublisher } from '../../../../infrastructure/events/IdentityEventPublisher.js';
+import type { IdentityUnmergeDirtyWriter } from '../../../../infrastructure/pg/IdentityUnmergeDirtyRepository.js';
 import type { ErasureEventPublisher } from '../../../../infrastructure/events/ErasureEventPublisher.js';
 
 // @fastify/cookie v11 module augmentation is not automatically applied in
@@ -85,11 +85,12 @@ export interface BffDeps {
   vaultService?: ContactPiiVaultService;
   identityReader?: IdentityReader;
   /**
-   * SPEC: A.2.4 (WA-19) — identity-lane producer for admin mutations (unmerge → identity.unmerged.v1).
-   * Optional: absent → the unmerge still commits (Neo4j split + PG audit) but emits no wire event
-   * (the batch re-version job folds the change from silver_identity_map). Existing tests omit it.
+   * SPEC: A.2.4 (WA-19) / ADR-0015 WS3 — direct PG dirty-queue writer for the admin unmerge
+   * (ops.restitch_pending + ops.journey_reversion_pending, drained by the Silver identity stage).
+   * Optional: absent → the unmerge still commits (Neo4j split + PG audit) but enqueues no dirty
+   * rows (the batch re-version job folds the change from silver_identity_map). Tests may omit it.
    */
-  identityEventPublisher?: IdentityEventPublisher;
+  identityUnmergeDirty?: IdentityUnmergeDirtyWriter;
   /**
    * AUD-OPS-036 — the RTBF erasure-trigger bridge (privacy.erasure.requested on the collector
    * lane). Optional: absent → the erase route still performs the synchronous partial erase but

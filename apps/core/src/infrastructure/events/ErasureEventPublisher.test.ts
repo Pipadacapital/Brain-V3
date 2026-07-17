@@ -1,19 +1,24 @@
 /**
- * ErasureEventPublisher.test.ts — AUD-OPS-036 (the RTBF erasure-trigger bridge).
+ * ErasureEventPublisher.test.ts — AUD-OPS-036 (the RTBF erasure-trigger bridge),
+ * ADR-0015 WS4 PG request-driven lane.
  *
- * Pure unit tests over a fake kafka producer. Proves:
- *   1. The wire event lands on {env}.collector.event.v1, keyed brand_id, and VALIDATES against
- *      CollectorEventV1Schema (never an invalid produce onto the live collector lane).
- *   2. The wire event satisfies the stream-worker orchestrator's trigger predicate — mirrored
+ * Pure unit tests over a fake pg pool. Proves:
+ *   1. The trigger row lands in ops.erasure_request_queue keyed by (id=event_id, brand_id)
+ *      with ON CONFLICT DO NOTHING, and the stored payload VALIDATES against
+ *      CollectorEventV1Schema (the envelope shape is UNCHANGED from the Kafka lane — the
+ *      worker feeds it byte-identically to EraseSubjectUseCase).
+ *   2. The payload satisfies the stream-worker orchestrator's trigger predicate — mirrored
  *      here exactly like a2-4-merge-unmerge-roundtrip mirrors derive_unmerge_pairs (the
  *      cross-layer handoff contract): consent_flags present, event_name contains 'erasure',
  *      subject extractable (email / phone / direct brain_id).
  *   3. Tenant-first + addressability guards: no brand_id or no subject → log-and-skip
- *      (never a tenantless or dead event).
- *   4. FAIL-OPEN: a producer failure never throws into the calling route/webhook.
- *   5. No raw PII in the publisher's own logs (I-S02) — presence booleans only.
+ *      (never a tenantless or dead row).
+ *   4. FAIL-OPEN: an INSERT failure never throws into the calling route/webhook.
+ *   5. No raw PII in the publisher's own logs (I-S02) — presence booleans only; and
+ *      subject_ref is NEVER the raw identifier (digest/brain_id only).
  */
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { CollectorEventV1Schema } from '@brain/contracts';
 import {
   createErasureEventPublisher,
@@ -30,8 +35,8 @@ const PHONE = '+919999999999';
 // TS mirror of stream-worker EraseSubjectUseCase's parse/extractFlags/isErasure/
 // extractSubject/extractDirectBrainId gates (apps/stream-worker/src/application/
 // EraseSubjectUseCase.ts — exhaustively unit-tested in erasure-orchestrator.unit.test.ts).
-// Kept intentionally tiny: it asserts the event THIS module emits is exactly what the
-// orchestrator's consumer group accepts — the cross-layer handoff AUD-OPS-036 is about.
+// Kept intentionally tiny: it asserts the payload THIS module enqueues is exactly what the
+// orchestrator accepts — the cross-layer handoff AUD-OPS-036 is about.
 function orchestratorAccepts(wire: Record<string, unknown>): {
   triggered: boolean;
   subject: { type: string; value: string } | null;
@@ -72,21 +77,41 @@ function orchestratorAccepts(wire: Record<string, unknown>): {
   return { triggered: subject !== null || directBrainId !== null, subject, directBrainId };
 }
 
+/** The publisher's unsalted ops-handle digest (subject_ref parity assertion). */
+function digest(raw: string): string {
+  return createHash('sha256').update(raw.trim().toLowerCase()).digest('hex');
+}
+
 // ── Harness ───────────────────────────────────────────────────────────────────
 
+interface CapturedInsert {
+  sql: string;
+  params: unknown[];
+}
+
 function makeHarness() {
-  const sends: Array<{
-    topic: string;
-    messages: Array<{ key?: string; value: Buffer; headers?: Record<string, string | Buffer> }>;
-  }> = [];
-  const producer = {
-    send: vi.fn(async (rec: (typeof sends)[number]) => { sends.push(rec); }),
+  const inserts: CapturedInsert[] = [];
+  const pool = {
+    query: vi.fn(async (sql: string, params: unknown[]) => {
+      inserts.push({ sql, params });
+      return { rowCount: 1, rows: [] };
+    }),
   };
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const publisher = createErasureEventPublisher({ producer: producer as never, env: 'dev', log });
-  const wireOf = (i = 0): Record<string, unknown> =>
-    JSON.parse(sends[i]!.messages[0]!.value.toString('utf8')) as Record<string, unknown>;
-  return { publisher, producer, sends, log, wireOf };
+  const publisher = createErasureEventPublisher({ pool: pool as never, log });
+  /** Parsed row shape: [id, brand_id, subject_kind, subject_ref, source, payload-json]. */
+  const rowOf = (i = 0) => {
+    const p = inserts[i]!.params;
+    return {
+      id: p[0] as string,
+      brandId: p[1] as string,
+      subjectKind: p[2] as string,
+      subjectRef: p[3] as string,
+      source: p[4] as string,
+      payload: JSON.parse(p[5] as string) as Record<string, unknown>,
+    };
+  };
+  return { publisher, pool, inserts, log, rowOf };
 }
 
 async function emit(harness: ReturnType<typeof makeHarness>, evt: Partial<ErasureEmit>): Promise<void> {
@@ -99,46 +124,60 @@ async function emit(harness: ReturnType<typeof makeHarness>, evt: Partial<Erasur
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe('ErasureEventPublisher — wire contract (collector lane)', () => {
-  it('publishes to {env}.collector.event.v1 keyed brand_id, and the envelope validates against CollectorEventV1Schema', async () => {
+describe('ErasureEventPublisher — queue-row contract (ops.erasure_request_queue)', () => {
+  it('INSERTs into ops.erasure_request_queue keyed (id=event_id, brand_id) ON CONFLICT DO NOTHING, and the payload validates against CollectorEventV1Schema', async () => {
     const h = makeHarness();
     await emit(h, { subjectEmail: EMAIL, correlationId: 'corr-1' });
 
-    expect(h.sends).toHaveLength(1);
-    expect(h.sends[0]!.topic).toBe('dev.collector.event.v1');
-    expect(h.sends[0]!.messages[0]!.key).toBe(BRAND);
+    expect(h.inserts).toHaveLength(1);
+    expect(h.inserts[0]!.sql).toContain('ops.erasure_request_queue');
+    expect(h.inserts[0]!.sql).toContain('ON CONFLICT (id) DO NOTHING');
 
-    const wire = h.wireOf();
-    // The live collector lane must never receive an invalid envelope.
-    const parsed = CollectorEventV1Schema.safeParse(wire);
+    const row = h.rowOf();
+    expect(row.brandId).toBe(BRAND);
+    expect(row.source).toBe('consent.withdraw');
+    // The stored envelope is the UNCHANGED Kafka-lane wire shape — the worker must be able
+    // to feed it to EraseSubjectUseCase byte-identically.
+    const parsed = CollectorEventV1Schema.safeParse(row.payload);
     expect(parsed.success).toBe(true);
-    expect(wire['brand_id']).toBe(BRAND);
-    expect(wire['event_name']).toBe(ERASURE_REQUESTED_EVENT_NAME);
-    expect(wire['correlation_id']).toBe('corr-1');
+    expect(row.payload['brand_id']).toBe(BRAND);
+    expect(row.payload['event_id']).toBe(row.id); // PK = envelope event_id (idempotency key)
+    expect(row.payload['event_name']).toBe(ERASURE_REQUESTED_EVENT_NAME);
+    expect(row.payload['correlation_id']).toBe('corr-1');
     // An erasure request withdraws EVERYTHING — all-false consent flags.
-    expect(wire['consent_flags']).toEqual({
+    expect(row.payload['consent_flags']).toEqual({
       analytics: false,
       marketing: false,
       personalization: false,
       ai_processing: false,
     });
-    const props = wire['properties'] as Record<string, unknown>;
+    const props = row.payload['properties'] as Record<string, unknown>;
     expect(props['reason']).toBe('erasure');
     expect(props['source']).toBe('consent.withdraw');
-  });
-
-  it('carries the event_name + correlation_id Kafka headers (consumer routing/trace parity)', async () => {
-    const h = makeHarness();
-    await emit(h, { subjectEmail: EMAIL, correlationId: 'corr-2' });
-    const headers = h.sends[0]!.messages[0]!.headers!;
-    expect(String(headers['event_name'])).toBe(ERASURE_REQUESTED_EVENT_NAME);
-    expect(String(headers['correlation_id'])).toBe('corr-2');
   });
 
   it('passes region_code through top-level (orchestrator hash-parity seam)', async () => {
     const h = makeHarness();
     await emit(h, { subjectEmail: EMAIL, regionCode: 'IN' });
-    expect(h.wireOf()['region_code']).toBe('IN');
+    expect(h.rowOf().payload['region_code']).toBe('IN');
+  });
+
+  it('subject_ref is NEVER raw PII — email/phone are stored as unsalted sha256 digests', async () => {
+    const h = makeHarness();
+    await emit(h, { subjectEmail: EMAIL });
+    await emit(h, { subjectPhone: PHONE });
+    expect(h.rowOf(0).subjectKind).toBe('email');
+    expect(h.rowOf(0).subjectRef).toBe(digest(EMAIL));
+    expect(h.rowOf(1).subjectKind).toBe('phone');
+    expect(h.rowOf(1).subjectRef).toBe(digest(PHONE));
+    expect(h.rowOf(0).subjectRef).not.toContain('@');
+  });
+
+  it('brain_id-only trigger stores subject_kind=brain_id with the UUID as subject_ref', async () => {
+    const h = makeHarness();
+    await emit(h, { brainId: BRAIN_ID, source: 'identity.erase' });
+    expect(h.rowOf().subjectKind).toBe('brain_id');
+    expect(h.rowOf().subjectRef).toBe(BRAIN_ID);
   });
 });
 
@@ -146,7 +185,7 @@ describe('ErasureEventPublisher — orchestrator trigger-predicate handoff (the 
   it('email subject (consent.withdraw): the orchestrator predicate accepts and extracts the email', async () => {
     const h = makeHarness();
     await emit(h, { subjectEmail: EMAIL, source: 'consent.withdraw' });
-    const verdict = orchestratorAccepts(h.wireOf());
+    const verdict = orchestratorAccepts(h.rowOf().payload);
     expect(verdict.triggered).toBe(true);
     expect(verdict.subject).toEqual({ type: 'email', value: EMAIL });
   });
@@ -154,7 +193,7 @@ describe('ErasureEventPublisher — orchestrator trigger-predicate handoff (the 
   it('phone subject (consent.withdraw via whatsapp/sms): predicate accepts and extracts the phone', async () => {
     const h = makeHarness();
     await emit(h, { subjectPhone: PHONE, source: 'consent.withdraw' });
-    const verdict = orchestratorAccepts(h.wireOf());
+    const verdict = orchestratorAccepts(h.rowOf().payload);
     expect(verdict.triggered).toBe(true);
     expect(verdict.subject).toEqual({ type: 'phone', value: PHONE });
   });
@@ -162,7 +201,7 @@ describe('ErasureEventPublisher — orchestrator trigger-predicate handoff (the 
   it('brain_id-only subject (identity.erase — raw identifier already hard-deleted): predicate accepts via direct addressing', async () => {
     const h = makeHarness();
     await emit(h, { brainId: BRAIN_ID, source: 'identity.erase' });
-    const verdict = orchestratorAccepts(h.wireOf());
+    const verdict = orchestratorAccepts(h.rowOf().payload);
     expect(verdict.triggered).toBe(true);
     expect(verdict.subject).toBeNull();
     expect(verdict.directBrainId).toBe(BRAIN_ID);
@@ -176,52 +215,61 @@ describe('ErasureEventPublisher — orchestrator trigger-predicate handoff (the 
       brainId: BRAIN_ID,
       source: 'shopify.customers_redact',
     });
-    const verdict = orchestratorAccepts(h.wireOf());
+    const verdict = orchestratorAccepts(h.rowOf().payload);
     expect(verdict.triggered).toBe(true);
     expect(verdict.subject).toEqual({ type: 'email', value: EMAIL }); // email wins (orchestrator order)
     expect(verdict.directBrainId).toBe(BRAIN_ID);
-    expect((h.wireOf()['properties'] as Record<string, unknown>)['source']).toBe('shopify.customers_redact');
+    expect((h.rowOf().payload['properties'] as Record<string, unknown>)['source']).toBe('shopify.customers_redact');
   });
 });
 
 describe('ErasureEventPublisher — guards (I-S01 tenant-first + addressability)', () => {
-  it('missing/invalid brand_id → NOT emitted (warn, no send)', async () => {
+  it('missing/invalid brand_id → NOT enqueued (warn, no insert)', async () => {
     const h = makeHarness();
     await emit(h, { brandId: 'not-a-uuid', subjectEmail: EMAIL } as Partial<ErasureEmit>);
-    expect(h.sends).toHaveLength(0);
+    expect(h.inserts).toHaveLength(0);
     expect(h.log.warn).toHaveBeenCalledTimes(1);
   });
 
-  it('no subject address at all (no email/phone/brain_id) → NOT emitted (dead event)', async () => {
+  it('no subject address at all (no email/phone/brain_id) → NOT enqueued (dead row)', async () => {
     const h = makeHarness();
     await emit(h, {});
-    expect(h.sends).toHaveLength(0);
+    expect(h.inserts).toHaveLength(0);
     expect(h.log.warn).toHaveBeenCalledTimes(1);
   });
 
-  it('malformed brain_id with no other subject → NOT emitted (never a garbage key)', async () => {
+  it('malformed brain_id with no other subject → NOT enqueued (never a garbage key)', async () => {
     const h = makeHarness();
     await emit(h, { brainId: 'garbage' });
-    expect(h.sends).toHaveLength(0);
+    expect(h.inserts).toHaveLength(0);
   });
 
   it('blank-string email/phone are treated as absent', async () => {
     const h = makeHarness();
     await emit(h, { subjectEmail: '  ', subjectPhone: '' });
-    expect(h.sends).toHaveLength(0);
+    expect(h.inserts).toHaveLength(0);
   });
 });
 
 describe('ErasureEventPublisher — fail-open + log hygiene', () => {
-  it('producer failure does NOT throw into the caller (synchronous erase already durable) and logs an error', async () => {
-    const producer = { send: vi.fn(async () => { throw new Error('kafka down'); }) };
+  it('INSERT failure does NOT throw into the caller (synchronous erase already durable) and logs an error', async () => {
+    const pool = { query: vi.fn(async () => { throw new Error('pg down'); }) };
     const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const publisher = createErasureEventPublisher({ producer: producer as never, env: 'dev', log });
+    const publisher = createErasureEventPublisher({ pool: pool as never, log });
 
     await expect(
       publisher.emitErasureRequested({ brandId: BRAND, subjectEmail: EMAIL, source: 'identity.erase' }),
     ).resolves.toBeUndefined();
     expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('duplicate enqueue (ON CONFLICT rowCount=0) still logs success with enqueued=false (idempotent re-issue)', async () => {
+    const pool = { query: vi.fn(async () => ({ rowCount: 0, rows: [] })) };
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const publisher = createErasureEventPublisher({ pool: pool as never, log });
+    await publisher.emitErasureRequested({ brandId: BRAND, subjectEmail: EMAIL, source: 'consent.withdraw' });
+    expect(log.info).toHaveBeenCalledTimes(1);
+    expect(log.info.mock.calls[0]![0]).toMatchObject({ enqueued: false });
   });
 
   it('success log carries NO raw PII (presence booleans only — I-S02)', async () => {

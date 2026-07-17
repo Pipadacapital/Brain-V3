@@ -28,6 +28,7 @@
     "iceberg.tables.auto-create-props.write.parquet.compression-codec": "zstd",
     "iceberg.control.topic": "control-iceberg",
     "iceberg.control.commit.interval-ms": "30000",
-    "iceberg.control.commit.timeout-ms": "60000"
+    "iceberg.control.commit.timeout-ms": "60000",
+    "consumer.override.isolation.level": "read_committed"
   }
 }

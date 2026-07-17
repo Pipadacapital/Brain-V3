@@ -2,24 +2,24 @@
  * pipeline-wire.e2e.test.ts — Full-wire end-to-end test (F-QA-01).
  *
  * Exercises the COMPLETE ingest spine in a single test — no mocked seams at any cross-component
- * boundary, all the way to the Bronze system-of-record (Iceberg):
+ * boundary, all the way to the Bronze system-of-record (Iceberg). ADR-0015 direct-to-log:
  *
  *   POST /collect (real TCP HTTP, collector on a real OS port)
- *     → collector_spool (INSERT, status=pending)
- *     → drainer produces to Kafka (real broker, the collector topic)
- *     → collector_spool status=drained
+ *     → collector PRODUCES straight to Kafka (idempotent producer, acks=-1 — the spool is DELETED)
+ *     → event observed on the collector topic by a real Kafka consumer (the mid-wire proof)
  *     → the Kafka Connect Iceberg sink (the compose kafka-connect service — the SOLE Bronze writer,
- *       ADR-0010, ~30s commit interval) APPENDS the record into Iceberg Bronze
- *       (brain_bronze.collector_events_connect; the PG bronze write is retired)
+ *       ADR-0010/ADR-0015 D3, ~30s commit interval) APPENDS the record into Iceberg Bronze
+ *       (brain_bronze.collector_events_connect)
  *     → the row is readable over duckdb-serving via the lift view, brand-scoped
  *     → wrong-brand-scoped read → 0 rows (read-seam tenant isolation)
  *
  * The event is order.live.v1 (SERVER_TRUSTED lane) so nothing gates it downstream (the pixel-lane
- * R2/R3 gate lives at Silver admission and is owned by ingest-hardening.e2e.test.ts) — this suite
- * proves the WIRING from the HTTP edge all the way to Iceberg Bronze.
+ * R2/R3 gate lives at Silver admission) — this suite proves the WIRING from the HTTP edge all the
+ * way to Iceberg Bronze.
  *
- * REQUIRES the `lakehouse` docker profile (collector deps: Kafka + PG; plus kafka-connect + Iceberg
- * REST + MinIO + duckdb-serving). The collector runs as a child process; the Connect sink runs in Docker.
+ * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO +
+ * duckdb-serving; PG only for the collector's fail-open edge-guard oracle). The collector runs as
+ * a child process; the Connect sink runs in Docker.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -28,7 +28,8 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { Pool } from 'pg';
+import { Kafka, logLevel } from 'kafkajs';
+import type { Consumer } from 'kafkajs';
 import { makeBronzeServingPool, icebergBronzeAvailable, pollIcebergBronzeCount, type BronzePool } from './helpers/iceberg-bronze.js';
 
 // ── Test config ────────────────────────────────────────────────────────────────
@@ -36,9 +37,14 @@ import { makeBronzeServingPool, icebergBronzeAvailable, pollIcebergBronzeCount, 
 const DATABASE_URL =
   process.env['DATABASE_URL'] ?? 'postgresql://brain:brain@localhost:5432/brain';
 
-const KAFKA_BROKERS_STR =
-  process.env['KAFKA_BROKERS'] ?? process.env['KAFKA_BROKERS'] ?? 'localhost:9092';
+const KAFKA_BROKERS_STR = process.env['KAFKA_BROKERS'] ?? 'localhost:9092';
 const KAFKA_BROKERS = KAFKA_BROKERS_STR.split(',').map((b) => b.trim());
+
+// The collector derives its topic prefix from NODE_ENV (main.ts): production → `prod.`, which is
+// what the RUNNING Kafka Connect collector sink consumes in the local-prod stack. Overridable for
+// a dev-prefixed stack (COLLECTOR_NODE_ENV=development → dev. prefix).
+const COLLECTOR_NODE_ENV = process.env['COLLECTOR_NODE_ENV'] ?? 'production';
+const COLLECTOR_TOPIC = `${COLLECTOR_NODE_ENV === 'production' ? 'prod' : 'dev'}.collector.event.v1`;
 
 // Test brand UUIDs (valid UUIDv4)
 const BRAND_A = 'aaaa1111-aaaa-4aaa-8aaa-111111111111';
@@ -146,31 +152,48 @@ const COLLECTOR_MAIN = `${REPO_ROOT}apps/collector/src/main.ts`;
 
 // ── Test suite ─────────────────────────────────────────────────────────────────
 
-describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda → Spark → Iceberg Bronze', () => {
+describe('Full-wire pipeline E2E (F-QA-01): POST /collect → Kafka → Connect → Iceberg Bronze', () => {
   let collectorProc: ChildProcess | null = null;
   let collectorPort: number;
-  let superPool: Pool | null = null;     // collector_spool (operational PG)
+  let consumer: Consumer | null = null;
   let sr: BronzePool | null = null;      // duckdb-serving — reads Iceberg Bronze (the SoR)
   let infraAvailable = false;
 
   // Per-run unique event UUID (Iceberg event_id is a string; UUID is fine).
   const TEST_EVENT_ID = crypto.randomUUID();
 
+  // The mid-wire proof: a real consumer on the collector topic records every observed event_id
+  // (subscribed BEFORE the POST so the produced record cannot be missed).
+  const observedEventIds = new Set<string>();
+
   beforeAll(async () => {
-    // Collector deps (Redpanda + PG) must be up, plus the lakehouse read path (StarRocks/Iceberg).
+    // Collector deps (Kafka; PG only for the fail-open edge guard) plus the lakehouse read path.
     const [broker] = KAFKA_BROKERS;
-    const [rpHost, rpPortStr] = (broker ?? 'localhost:9092').split(':');
-    const rpOk = await tcpReachable(rpHost ?? 'localhost', Number(rpPortStr ?? 9092));
-    const pgOk = await tcpReachable('127.0.0.1', 5432);
+    const [kHost, kPortStr] = (broker ?? 'localhost:9092').split(':');
+    const kafkaOk = await tcpReachable(kHost ?? 'localhost', Number(kPortStr ?? 9092));
     sr = makeBronzeServingPool();
     const lakehouseOk = await icebergBronzeAvailable(sr);
-    infraAvailable = rpOk && pgOk && lakehouseOk;
+    infraAvailable = kafkaOk && lakehouseOk;
     if (!infraAvailable) {
-      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Kafka/PG/duckdb-serving)');
+      console.warn('[pipeline-wire.e2e] SKIP — infra not reachable (Kafka/duckdb-serving)');
       return;
     }
 
-    superPool = new Pool({ connectionString: DATABASE_URL });
+    // ── Mid-wire Kafka observer: consume the collector topic (unique group, latest offset) ────
+    const kafka = new Kafka({ clientId: 'pipeline-wire-e2e', brokers: KAFKA_BROKERS, logLevel: logLevel.NOTHING });
+    consumer = kafka.consumer({ groupId: `pipeline-wire-e2e-${crypto.randomUUID()}` });
+    await consumer.connect();
+    await consumer.subscribe({ topic: COLLECTOR_TOPIC, fromBeginning: false });
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        try {
+          const parsed = JSON.parse(message.value?.toString() ?? '{}') as { event_id?: string };
+          if (typeof parsed.event_id === 'string') observedEventIds.add(parsed.event_id);
+        } catch {
+          // non-JSON records on the topic are not this test's concern
+        }
+      },
+    });
 
     // ── Start collector subprocess on a free port ─────────────────────────────
     collectorPort = await getFreePort();
@@ -181,16 +204,13 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
         env: {
           ...process.env,
           PORT: String(collectorPort),
-          // The collector derives its topic prefix from NODE_ENV (main.ts): production → `prod.`,
-          // which is what the RUNNING Spark Bronze sink consumes in the local-prod stack. NOT
-          // inherited from process.env — vitest sets NODE_ENV=test (→ `dev.` prefix, no sink).
-          // Override via COLLECTOR_NODE_ENV for a dev-prefixed stack.
-          NODE_ENV: process.env['COLLECTOR_NODE_ENV'] ?? 'production',
+          // production → `prod.` topic prefix (what the RUNNING Connect collector sink consumes).
+          // NOT inherited from process.env — vitest sets NODE_ENV=test (→ `dev.` prefix, no sink).
+          NODE_ENV: COLLECTOR_NODE_ENV,
           DATABASE_URL,
           KAFKA_BROKERS: KAFKA_BROKERS_STR,
-          DRAIN_POLL_INTERVAL_MS: '200',
-          // Point Apicurio at a connection-refused port so the backoff exhausts quickly and the
-          // collector degrades gracefully to spool-only mode (D-10) — avoids the ~30s CI wait.
+          // Point Apicurio at a connection-refused port so registration attempts fail fast and the
+          // collector degrades gracefully (D-10) — the accept path never depends on the registry.
           APICURIO_REGISTRY_URL: 'http://127.0.0.1:9',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -203,11 +223,11 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
     await pollUntil(
       () => httpGet(collectorPort, '/healthz').catch(() => null),
       (r) => r !== null && r.status === 200,
-      45_000,
+      60_000,
       500,
     );
     console.info(`[pipeline-wire.e2e] collector ready on port ${collectorPort}`);
-  }, 90_000);
+  }, 120_000);
 
   afterAll(async () => {
     if (collectorProc && !collectorProc.killed) {
@@ -218,12 +238,12 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
         setTimeout(resolve, 3000);
       });
     }
+    await consumer?.disconnect().catch(() => undefined);
     await sr?.end?.().catch(() => undefined);
-    await superPool?.end().catch(() => undefined);
   }, 30_000);
 
   it(
-    'event travels end-to-end: POST /collect → spool(drained) → Redpanda → Spark → Iceberg Bronze',
+    'event travels end-to-end: POST /collect → produce-ack → Kafka → Connect → Iceberg Bronze',
     async () => {
       if (!infraAvailable) {
         console.warn('[pipeline-wire.e2e] Skipping — infra not available');
@@ -231,8 +251,8 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
       }
 
       // ── Step 1: POST to the collector over a real TCP socket ──────────────
-      // order.live.v1 = SERVER_TRUSTED lane (server-derived brand, no install_token) → the Spark sink
-      // writes it as-is, exercising the full wire without the pixel gate.
+      // order.live.v1 = SERVER_TRUSTED lane (server-derived brand, no install_token) → the Connect
+      // sink lands it as-is, exercising the full wire without the pixel gate.
       const syntheticEvent = {
         schema_version: '1',
         event_id: TEST_EVENT_ID,
@@ -248,28 +268,21 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
       const postResp = await httpPost(collectorPort, '/collect', syntheticEvent);
       expect(postResp.status).toBe(200);
       expect((postResp.body as { accepted: boolean }).accepted).toBe(true);
+      // ADR-0015 public contract: no X-Spool-Id anymore; correlation + received-at are stamped.
+      expect(postResp.headers['x-correlation-id']).toBeTruthy();
+      expect(postResp.headers['x-received-at']).toBeTruthy();
+      expect((postResp.body as { received_at: string }).received_at).toBeTruthy();
 
-      const spoolId = postResp.headers['x-spool-id'];
-      expect(spoolId).toBeTruthy();
-      console.info(`[pipeline-wire.e2e] spool_id=${spoolId}`);
-
-      // ── Step 2: collector_spool reaches status='drained' (produced to Redpanda) ──
-      const drainedRow = await pollUntil(
-        async () => {
-          const r = await superPool!.query<{ status: string }>(
-            'SELECT status FROM collector_spool WHERE id = $1',
-            [spoolId],
-          );
-          return r.rows[0] ?? null;
-        },
-        (row) => row.status === 'drained',
+      // ── Step 2: the produced record is observable on the collector topic (mid-wire proof) ──
+      await pollUntil(
+        async () => observedEventIds.has(TEST_EVENT_ID),
+        (seen) => seen === true,
         20_000,
         300,
       );
-      expect(drainedRow.status).toBe('drained');
-      console.info('[pipeline-wire.e2e] spool row drained — event produced to Redpanda');
+      console.info('[pipeline-wire.e2e] event observed on the collector topic — produced to Kafka');
 
-      // ── Step 3: the Spark sink lands it in Iceberg Bronze (read via StarRocks, brand-scoped) ──
+      // ── Step 3: the Connect sink lands it in Iceberg Bronze (read via duckdb-serving, brand-scoped) ──
       const landed = await pollIcebergBronzeCount(sr!, { brandId: BRAND_A, eventId: TEST_EVENT_ID }, { min: 1, timeoutMs: 75_000 });
       expect(landed).toBe(1);
       console.info('[pipeline-wire.e2e] bronze row found in Iceberg under BRAND_A');
@@ -279,6 +292,6 @@ describe('Full-wire pipeline E2E (F-QA-01): POST /collect → spool → Redpanda
       expect(wrongBrand).toBe(0);
       console.info(`[pipeline-wire.e2e] read-seam isolation: wrong-brand → ${wrongBrand} rows (expected 0)`);
     },
-    120_000,
+    180_000,
   );
 });

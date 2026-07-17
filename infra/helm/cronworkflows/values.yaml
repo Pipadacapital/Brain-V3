@@ -67,27 +67,40 @@ sparkBronze:
     pullPolicy: IfNotPresent
   maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + snapshot-expiry (Slice 7; 7d / 14d durable lane)
   activeDeadlineSeconds: 1800
-  # ── Raw-lane PII retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038) ──────────────────────────────
+  # ── Bronze compaction-time dedup (ADR-0015 D2b) ────────────────────────────────────────────────
+  # bronze_dedup.py runs FIRST inside the bronze-maintenance CronWorkflow pod (dedup → optimize →
+  # expire, one sequenced run): keep-latest on the (brand_id, event_id) lifted from the collector
+  # lane's verbatim payload, COW rewrite (no MoR deletes). Steady state under the EOS transport is
+  # a fast no-op; the memory valve refuses an oversized rewrite loudly (BRONZE_DEDUP_FORCE=1 for a
+  # deliberate one-off backlog clear). Silver's admission MERGE remains the final backstop.
+  dedup:
+    enabled: true
+  # ── Raw-lane PII retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038) + ADR-0015 collector TTL ─────
   # bronze_raw_retention.py: row-TTL DELETE + snapshot expiry over the *_raw_connect lanes so raw
-  # un-hashed PII/PCI never outlives the 7-day landing-buffer window (Silver is the durable layer;
-  # collector_events_connect is excluded by the job — system-of-record, hashed-safe). The job's env
-  # defaults ARE the D4 posture (RAW_RETENTION_HOURS=168, RAW_ROW_TTL=1); RAW_RETENTION_HOURS is
-  # pinned explicitly so the window is auditable from values. This is the prod half of the D4 gate —
-  # the dev half runs on the daily guard-file cadence in tools/dev/v4-refresh-loop.sh.
+  # un-hashed PII/PCI never outlives the 7-day landing-buffer window. ADR-0015 D7 adds the
+  # COLLECTOR lane on its own window: collector_events_connect is a 15-day REPLAY BUFFER, no
+  # longer keep-forever — Silver (canonical, deduped) is the durable event layer past that
+  # window. Silver/Gold row-retention stays OFF until GOLD_INCREMENTAL is validated (a Silver
+  # trim before append-mode Gold would shrink recomputed history). The job's env defaults ARE
+  # the D4 posture (RAW_RETENTION_HOURS=168, RAW_ROW_TTL=1); both windows are pinned explicitly
+  # so they are auditable from values. Prod half of the D4 gate — the dev half runs on the daily
+  # guard-file cadence in tools/dev/v4-refresh-loop.sh.
   rawRetention:
     enabled: true
     schedule: "40 3 * * *"              # daily 03:40 IST — after the 03:00 compaction/snapshot-expiry pass
     activeDeadlineSeconds: 1800
     env:
       - { name: RAW_RETENTION_HOURS, value: "168" }   # 7 days (D4); tighten per region/regime
+      - { name: COLLECTOR_RETENTION_HOURS, value: "360" } # 15 days (ADR-0015 D7) — collector-lane replay buffer
   # Non-secret extra env for the maintenance run. Secrets (envSecretName)
   # MUST include ICEBERG_REST_URI/Glue + AWS_*. There is NO CHECKPOINT_LOCATION / STARTING_OFFSETS
   # anymore — those belonged to the removed Spark-SS landing; Kafka Connect keeps its offsets in the
   # Iceberg snapshots + its own topics.
-  # AUD-OPS-015: the durable collector lane (collector_events_connect — append-only SoR, rows never
-  # deleted) keeps a 14-day Iceberg time-travel window (range 14–30d per the audit; default 7d stays
-  # for everything else, incl. the PII *_raw_connect lanes whose short window is a privacy contract).
-  # Pinned here explicitly so the recovery window is auditable from values — see docs/runbooks/DR.md.
+  # AUD-OPS-015 (amended by ADR-0015 D7): the collector lane (collector_events_connect) keeps a
+  # 14-day Iceberg time-travel window — now nested inside its 15-day row-TTL replay buffer (rows
+  # older than 15d are deleted by bronze_raw_retention; Silver is the durable layer). Default 7d
+  # snapshot window stays for everything else, incl. the PII *_raw_connect lanes whose short
+  # window is a privacy contract. Pinned explicitly for auditability — see docs/runbooks/DR.md.
   env:
     - { name: DURABLE_SNAPSHOT_TTL_MS, value: "1209600000" } # 14d
     - { name: DURABLE_TABLES, value: "collector_events_connect" }
@@ -151,6 +164,18 @@ sparkV4:
   # next tick (never overlaps), so freshness degrades gracefully to whatever the tier can sustain.
   silverSchedule: "*/5 * * * *"   # every 5 min — keystone + order_state spine + the rest of Silver (incremental)
   goldSchedule: "*/5 * * * *"     # every 5 min — reads the latest committed Silver (Gold is still full-scan; Forbid throttles)
+  # ── Identity stage (ADR-0015 WS3; templates/v4-transform.yaml v4-identity) ─────────────────────
+  # Mirrors tools/dev/duckdb-refresh.sh's keystone → silver ×2 → IDENTITY → gold ordering: the Node
+  # silver-identity batch job (stream-worker image — resolves new keystone rows via Neo4j) then
+  # silver_identity_map.py (duckdb image — re-projects the graph into the Iceberg map) as TWO
+  # ordered steps in ONE workflow. +2min offset from the silver tick so the (incremental, ~1-2 min)
+  # silver pass usually commits first; watermark + idempotency make any miss converge next tick.
+  identitySchedule: "2-57/5 * * * *"   # every 5 min at :02/:07/… — after silver's :00/:05/… tick
+  identity:
+    # The resolve step is watermark-windowed (fast steady state); the FIRST run folds everything
+    # since epoch (bounded by SILVER_IDENTITY_MAX_CATCHUP_MS) — give it a 30-min ceiling; Forbid
+    # skips ticks until a long catch-up completes (established converge posture).
+    activeDeadlineSeconds: 1800
   # activeDeadlineSeconds stays HIGH (9000s / 2.5h): the FIRST run after SILVER_INCREMENTAL is enabled has
   # no watermark → a full-scan BOOTSTRAP (~75 min, the old runtime) that MUST complete to seed the
   # watermark. A low cap would kill the bootstrap before it writes the watermark → every run re-bootstraps
@@ -343,16 +368,3 @@ jobs:
     # GROUPING KEY here; serving reads only ever go through the compiled ${BRAND_PREDICATE}-guarded
     # mv_metric_* views. Idempotent (re-run = replace again); exits non-zero if ANY table failed so
     # a partial failure surfaces. Needs ICEBERG_REST_URI + AWS_* in the pod env (core-env secret).
-  - name: ingest-dedup-prune
-    schedule: "20 4 * * 0"         # weekly Sun 04:20 IST — bound the ADR-0012 global dedup index
-    command: ["pnpm", "exec", "tsx", "src/jobs/ingest-dedup-prune.ts"]
-    useStreamWorkerImage: true
-    env:
-      # Retention window (Postgres interval literal). MUST stay >= the longest backfill window so a
-      # re-ingest never re-presents a forgotten (brand_id, event_id); Silver per-lane dedup backstops
-      # a very-old re-ingest regardless (ADR-0012). Change here to retune — it is the SELECT's argument.
-      - { name: INGEST_DEDUP_RETAIN, value: "180 days" }
-    # Calls the SECURITY-DEFINER data_plane.prune_ingest_dedup('180 days'::interval, batch) (migration
-    # 0131) as brain_app in batched DELETEs — no brand GUC needed (definer bypasses ingest_dedup RLS,
-    # brain_app has no DELETE grant on the table). Idempotent (re-run = prune again); Forbid +
-    # startingDeadline make a missed/retried run safe. Needs BRAIN_APP_DATABASE_URL (envSecretName).

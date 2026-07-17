@@ -88,22 +88,38 @@ resources:
 # suppresses the plain CPU HPA. Rollback = keda.enabled: false (plain CPU HPA returns).
 autoscaling:
   enabled: true
-  # AUD-COST (2026-07-13): warm baseline 3 → 2 — right-sized for current low
-  # traffic. KEDA still bursts to maxReplicas=12 on real consumer lag (replay /
-  # backfill / traffic spike), so throughput headroom is unchanged; this only
-  # trims the IDLE floor. Kept at 2 (not 1) deliberately: the consumers now run
-  # on SPOT, so 2 replicas keep one consumer alive through a single-node reclaim
-  # and allow safe rolling updates (PDB). Raise back toward maxReplicas as
-  # sustained traffic grows. Rollback: minReplicas 3.
-  minReplicas: 2
-  maxReplicas: 12
+  # ADR-0015 right-size: stream-worker is no longer the live-lane consumer fleet
+  # (CollectorEventConsumer + identity/consent/cache consumers removed; Kafka
+  # Connect lands Bronze, identity is a Silver-stage batch job; WS4 completion:
+  # the erasure orchestrator is a PG poll lane over ops.erasure_request_queue —
+  # NO Kafka consumers remain in this process). What remains is the erasure poll
+  # lane + the cron-invoked connector pull jobs — a job-runner, not a throughput
+  # tier. 1 warm replica suffices; CPU HPA bursts to 3 for job overlap. A drain
+  # gap on the erasure lane is acceptable (the request queue is durable PG; the
+  # poll lane resumes, and stale 'processing' claims self-requeue). Rollback: 2/12.
+  minReplicas: 1
+  maxReplicas: 3
+  # ADR-0015: kafka-lag KEDA scaling DISABLED — VESTIGIAL block (WS4 completion):
+  # the stream-worker runs NO Kafka consumers at all now (live-lane group retired by
+  # WS2; the erasure orchestrator group 'stream-worker-erasure-orchestrator' is gone
+  # entirely — the erasure lane drains ops.erasure_request_queue). There is no
+  # consumer group to lag-scale on; the plain CPU HPA (minReplicas/maxReplicas
+  # above) is the scaler. Do NOT re-enable without a new ADR reintroducing a
+  # consumer (and set consumerGroup/topic to that consumer's lane then).
   keda:
-    enabled: true
+    enabled: false
     kafka:
       # Strimzi in-cluster plaintext bootstrap (same host the app's KAFKA_BROKERS points at).
       bootstrapServers: "brain-prod-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
-      # LIVE collector lane consumer group (packages/config stream-worker CONSUMER_GROUP_ID).
-      consumerGroup: stream-worker-live
-      # prod.* lane (strimzi values-prod prefix) — the partition-bearing live topic.
+      consumerGroup: ""
       topic: prod.collector.event.v1
       lagThreshold: "1000"
+
+# ADR-0015 right-size companion: with minReplicas 1, the base pdb (minAvailable: 1)
+# would BLOCK node drains / Spot reclaims / Karpenter consolidation whenever only
+# the single warm replica exists. The erasure lane tolerates a drain gap (the
+# request queue is durable PG — ops.erasure_request_queue; the poll lane resumes
+# and stale claims self-requeue), so the PDB is disabled in prod. Re-enable if
+# minReplicas returns to >= 2.
+pdb:
+  enabled: false

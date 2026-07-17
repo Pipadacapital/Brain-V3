@@ -22,18 +22,18 @@
  * Idempotency (CONTENT-deterministic event_id, ADR-0012): Google Ads exposes no per-entity
  * change-clock, so the event_id version is a CONTENT HASH over EVERY meaningful field of the entity
  * row (name/status/channel-type/bidding/budgets/dates/RSA text/...). It is NEVER a sync-DATE bucket:
- *   - an UNCHANGED re-pull re-mints the SAME event_id → the ADR-0012 dedup gate drops it (no churn);
+ *   - an UNCHANGED re-pull re-mints the SAME event_id → deduped downstream (no churn);
  *   - ANY real change to ANY hashed field advances the version → a NEW event whose occurred_at lets
  *     silver_campaign's latest-by-occurred_at pick up the status/name/budget change (keep-latest via a
  *     safe drop — NEVER an event loss). A wall-clock bucket would instead have re-minted the SAME id
- *     for a real same-day change → the gate would DROP it = event loss (why the gate was skipped).
+ *     for a real same-day change → dedup would COLLAPSE it = event loss (why a date bucket is banned).
  *   - occurred_at = entity_updated_at = the sync timestamp (ordering only; NOT part of the event_id).
  *   - This event_id scheme + payload shape MUST MATCH Meta's entity-sync (the shared lane): both use a
  *     content hash over the full meaningful payload as the version, keyed by brand:platform:level:id.
  *
- * Dedup gate (ADR-0012): at the produce site we filter event_ids already ingested for the brand
- * (data_plane.ingest_dedup), produce ONLY the unseen ones, then mark-after-produce (produce-first,
- * mark-after — a crash never loses an event). Mirrors meta-spend-repull / shiprocket-shipment-repull.
+ * Dedup (ADR-0015): produce unconditionally — duplicates collapse at Bronze compaction on
+ * (brand_id, event_id) with the Silver MERGE as the final backstop (the PG ingest-dedup gate is
+ * removed). Mirrors meta-spend-repull / shiprocket-shipment-repull.
  *
  * Tokens NEVER logged (I-S09). Throttle reuses the client's ADR-AD-7 two-error branch.
  */
@@ -43,14 +43,12 @@ import { Kafka, type Producer } from 'kafkajs';
 import { hashToUuidShaped } from '@brain/connector-core';
 import { microsToMinorString } from '@brain/ad-spend-mapper';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
-import { buildContextGucSql } from '@brain/db';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
 import { recordConnectorAuthRejected } from '../../infrastructure/observability/connector-auth-health.js';
 import { updateConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
-import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import {
   GoogleAdsSearchStreamClient,
   GOOGLE_AUTH_ERROR,
@@ -169,7 +167,7 @@ async function syncConnector(params: SyncParams): Promise<void> {
       continue; // non-fatal per level
     }
 
-    totalEmitted += await emitEntities({ rows, brandId, ciId, producer, pool, syncIso });
+    totalEmitted += await emitEntities({ rows, brandId, ciId, producer, syncIso });
   }
 
   // entity sync is a metadata feed — it deliberately does NOT touch connector_sync_status (the spend
@@ -182,7 +180,6 @@ interface EmitEntityParams {
   brandId: string;
   ciId: string;
   producer: Producer;
-  pool: Pool;
   syncIso: string;
 }
 
@@ -264,37 +261,17 @@ async function emitEntities(p: EmitEntityParams): Promise<number> {
 
   if (messages.length === 0) return 0;
 
-  // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing, so an
-  // unchanged re-pull never re-floods Bronze (Silver dedup is now only a backstop). Because the version
-  // is content-deterministic, a real change mints a NEW id and is NEVER dropped here (no event loss).
-  // brand GUC set on a short pooled client, then filter+mark. ORDER IS CRITICAL: produce FIRST, mark
-  // AFTER (a crash between at worst re-produces a dup on retry, which Silver backstops).
-  const dedupClient = await p.pool.connect();
-  let emitted = 0;
-  try {
-    await dedupClient.query(buildContextGucSql({ brandId: p.brandId, correlationId: '' }));
-    const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
-
-    const toSend = messages.filter((m) => unseen.has(m.eventId));
-    const dropped = messages.length - toSend.length;
-    if (dropped > 0) {
-      incrementCounter('ingest_dedup_dropped_total', { provider: 'google_ads' });
-      log.info(`entity-sync connector=${p.ciId} dedup: dropped ${dropped} already-ingested events`);
-    }
-
-    if (toSend.length > 0) {
-      const traceHeaders: Record<string, Buffer | string> = {};
-      injectKafkaTraceContext(traceHeaders);
-      await p.producer.send({
-        topic: LIVE_TOPIC,
-        messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
-      });
-      await markEventIdsSeen(dedupClient, p.brandId, toSend.map((m) => m.eventId));
-      emitted = toSend.length;
-    }
-  } finally {
-    dedupClient.release();
-  }
+  // ADR-0015: produce unconditionally — the PG ingest-dedup gate is removed. The event_id is
+  // CONTENT-deterministic (entityEventId: payload content-hash), so an unchanged re-pull re-mints
+  // the SAME (brand_id, event_id) and is collapsed by Bronze compaction dedup + the Silver MERGE,
+  // while a real change mints a NEW id and always lands (no event loss).
+  const traceHeaders: Record<string, Buffer | string> = {};
+  injectKafkaTraceContext(traceHeaders);
+  await p.producer.send({
+    topic: LIVE_TOPIC,
+    messages: messages.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+  });
+  const emitted = messages.length;
 
   log.info(`entity-sync connector=${p.ciId} emitted=${emitted}`);
   return emitted;
@@ -322,7 +299,7 @@ function contentHashVersion(row: GoogleAdsEntityRow): string {
 /**
  * Deterministic ad.entity.updated event_id (A3), CONTENT-deterministic (ADR-0012). The version is a
  * content hash over the full meaningful payload (NOT a date), so an unchanged re-pull re-mints the same
- * id (gate drops it) and any real change mints a new one (silver picks it up — no event loss). Provably
+ * id (deduped downstream) and any real change mints a new one (silver picks it up — no event loss). Provably
  * non-colliding with spend.live.v1 (':ad.entity.updated' discriminator appears in no spend seed). MUST
  * MATCH Meta's scheme (both key brand:platform:level:id and use a full-payload content hash version).
  */

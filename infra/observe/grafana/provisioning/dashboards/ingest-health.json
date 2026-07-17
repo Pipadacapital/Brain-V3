@@ -1,7 +1,7 @@
 {
   "uid": "brain-ingest-health",
   "title": "Brain — Ingest Health",
-  "description": "Collector accept rate, spool-full shedding, Bronze write rate, DLQ growth, consumer lag.",
+  "description": "Collector accept rate, backpressure shedding, Bronze write rate, DLQ growth, consumer lag.",
   "tags": ["brain", "ingest"],
   "timezone": "browser",
   "schemaVersion": 38,
@@ -27,12 +27,12 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Spool-Full Shedding Rate (events/s)",
+      "title": "Backpressure Shedding Rate (events/s)",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(brain_collector_spool_full_total[1m]))",
+          "expr": "sum(rate(brain_collector_backpressure_shed_total[1m]))",
           "legendFormat": "shed/s"
         }
       ],

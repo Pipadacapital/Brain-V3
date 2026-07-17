@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "dev": "tsx watch --env-file=../../.env.${APP_ENV:-local-prod} src/main.ts",
     "dlq:redrive": "tsx --env-file=../../.env.${APP_ENV:-local-prod} src/jobs/dlq-redrive/run.ts",
+    "job:silver-identity": "tsx --env-file=../../.env.${APP_ENV:-local-prod} src/jobs/silver-identity/run.ts",
     "seed:bronze": "node tools/seed-bronze.mjs",
     "test:unit": "vitest run --passWithNoTests --exclude '**/*.e2e.test.ts' --exclude '**/*.live.test.ts' --exclude '**/*.integration.test.ts'",
     "test:integration": "vitest run --passWithNoTests integration.test",

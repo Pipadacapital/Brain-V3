@@ -17,8 +17,10 @@
  * DDL: db/migrations/0124_restitch_pending.sql.
  */
 import type pg from 'pg';
-import type { RestitchDirtyEntry } from '../../domain/identity/RestitchDirty.js';
-import type { IRestitchDirtyRepository } from '../../interfaces/consumers/RestitchDirtyConsumer.js';
+import type {
+  RestitchDirtyEntry,
+  IRestitchDirtyRepository,
+} from '../../domain/identity/RestitchDirty.js';
 
 export class PgRestitchDirtyRepository implements IRestitchDirtyRepository {
   /**

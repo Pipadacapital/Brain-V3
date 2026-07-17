@@ -185,3 +185,14 @@ export function buildJourneyVersionLogEntry(
     at,
   };
 }
+
+// ── Repository port (ADR-0015 WS3) ─────────────────────────────────────────────
+// Moved here from the removed JourneyReversionDirtyConsumer: the Silver identity stage
+// (jobs/silver-identity) writes the dirty entries DIRECTLY after each resolve outcome.
+
+/** The port for persisting dirty entries to ops.journey_reversion_pending.
+ *  Impl: PgJourneyReversionDirtyRepository. */
+export interface IJourneyReversionDirtyRepository {
+  /** Idempotent upsert of the brand-first, brain-grain dirty entries (PK brand_id+brain_id). */
+  markDirty(entries: JourneyDirtyEntry[]): Promise<void>;
+}

@@ -164,18 +164,15 @@ topics:
     - shopflo.checkout
     - razorpay.settlement
 
-  # Identity + intelligence control/event topics.
+  # Intelligence control/event topics.
+  # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,suppressed,
+  # review_queued}.v1 + intelligence.cache.invalidate.v1 + intelligence.gold.rewritten.v1 lanes
+  # are RETIRED — the Silver identity stage writes the dirty-sets and evicts the serving cache
+  # DIRECTLY in-process (no publisher, no consumer).
   control:
-    - intelligence.cache.invalidate.v1
     - intelligence.customer360.recomputed.v1
-    - intelligence.gold.rewritten.v1
-    - identity.merged.v1
-    - identity.suppressed.v1
-    - identity.minted.v1
-    - identity.linked.v1
-    - identity.review_queued.v1
-    # A.2.4 unmerge lane (WA-19); the restitch-dirty consumer subscribes to it — a missing topic
-    # crashes the stream-worker on startup (auto-create OFF). Must exist in prod too.
+    # A.2.4 unmerge lane (WA-19) REMAINS: apps/core's merge-admin still publishes the unmerge
+    # reversal onto it (fail-open audit lane; auto-create is OFF so it must exist).
     - identity.unmerged.v1
     # M1 application/domain events published by core's M1EventPublisher (workspace-access,
     # pixel, connector, auth). These were never declared before and, with auto-create OFF,

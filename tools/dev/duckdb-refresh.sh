@@ -27,11 +27,26 @@
 # a transient/ordering failure is expected to clear on the next pass). Every job's result line is
 # printed. Exit code = total distinct failures on the FINAL silver pass + gold pass.
 #
+# IDENTITY STAGE (ADR-0015 WS3 — identity resolves in Silver): between the silver passes and
+# gold we run
+#   (1) the Node silver-identity batch job (apps/stream-worker/src/jobs/silver-identity/run.ts,
+#       via `pnpm --filter @brain/stream-worker run job:silver-identity`) — reads new canonical
+#       keystone rows since its watermark over duckdb-serving, resolves via the preserved
+#       IdentityResolver → Neo4j (the identity SoR, ADR-0004), writes dirty-sets/consent/CAPI,
+#       then
+#   (2) silver/silver_identity_map.py AGAIN — the Neo4j graph is the SoR; the map job projects it
+#       into the Iceberg bi-temporal map, so a re-run AFTER the identity job guarantees gold
+#       (gold_customer_360 etc.) reads a map that reflects THIS run's resolutions.
+# Both are continue-on-error like every other job (the next pass converges); failures count
+# toward the exit code. Override the node invocation with SILVER_IDENTITY_CMD=… (e.g. a built
+# dist path in a container: `node dist/jobs/silver-identity/run.js`).
+#
 # Usage:
-#   tools/dev/duckdb-refresh.sh                 # full run: keystone → silver ×2 → gold
+#   tools/dev/duckdb-refresh.sh                 # full run: keystone → silver ×2 → identity → gold
 #   STAGE=keystone  tools/dev/duckdb-refresh.sh # just the keystone (silver_collector_event)
 #   STAGE=silver1   tools/dev/duckdb-refresh.sh # silver pass 1 only
 #   STAGE=silver2   tools/dev/duckdb-refresh.sh # silver pass 2 only
+#   STAGE=identity  tools/dev/duckdb-refresh.sh # identity stage only (node job + map re-project)
 #   STAGE=gold      tools/dev/duckdb-refresh.sh # gold only
 #   SILVER_PASSES=1 tools/dev/duckdb-refresh.sh # single silver pass (default 2)
 #
@@ -159,8 +174,46 @@ run_silver_passes() {
   done
 }
 
+# ── IDENTITY STAGE (ADR-0015 WS3): keystone → silver → IDENTITY → gold ──────────────────────────
+# (1) the Node silver-identity batch job (Neo4j writes via the preserved resolver; flag
+#     IDENTITY_IN_SILVER default ON makes it a no-op kill-switchable), then
+# (2) silver_identity_map.py RE-RUN so the Iceberg map reflects this run's graph mutations
+#     BEFORE gold reads it. Both continue-on-error; failures count toward the exit code.
+SILVER_IDENTITY_CMD="${SILVER_IDENTITY_CMD:-pnpm --filter @brain/stream-worker run job:silver-identity}"
+
+run_identity_stage() {
+  local fail=0
+  echo "[$(ts)] ── identity stage (ADR-0015 WS3: resolve in Silver → refresh the Iceberg identity map) ──"
+  local logf="/tmp/duckdb-refresh-identity-silver-identity.log"
+  local out rc
+  out="$(cd "$ROOT" && eval "$SILVER_IDENTITY_CMD" 2>&1)"; rc=$?
+  printf '%s\n' "$out" > "$logf"
+  if [ "$rc" -eq 0 ]; then
+    local rline
+    rline="$(printf '%s\n' "$out" | grep -E '^\{"job"' | tail -1)"
+    echo "[$(ts)] ✓ identity/silver-identity  ${rline:-ok}"
+  else
+    fail=$((fail+1))
+    echo "[$(ts)] ✗ identity/silver-identity FAILED (rc=${rc}) — $(printf '%s' "$out" | tail -1 | cut -c1-160)  [see ${logf}]"
+  fi
+  # Re-project the graph → Iceberg map so gold reads THIS run's resolutions (Neo4j is the SoR).
+  if [ -e "$SILVER_DIR/silver_identity_map.py" ]; then
+    run_job silver "silver_identity_map.py" || fail=$((fail+1))
+  fi
+  echo "[$(ts)] identity stage: $((2-fail))/2 ok, ${fail} failed"
+  return "$fail"
+}
+
 run_gold_tier() {
   run_tier gold "gold" "${GOLD_JOBS[@]}"; TOTAL_FAIL=$((TOTAL_FAIL+$?))
+  # Post-gold serving-cache bust (direct Redis eviction — the gold.rewritten.v1 lane is retired,
+  # ADR-0015 WS3). FAIL-OPEN: cache busting is an optimization; a failure never fails the refresh.
+  if [ "${SKIP_GOLD_CACHE_BUST:-0}" != "1" ]; then
+    ( cd "$ROOT" && eval "${GOLD_CACHE_BUST_CMD:-pnpm --filter @brain/stream-worker exec tsx src/jobs/gold-rewritten-publish/run.ts}" ) \
+      > /tmp/duckdb-refresh-gold-cache-bust.log 2>&1 \
+      && echo "[$(ts)] ✓ gold/serving-cache-bust" \
+      || echo "[$(ts)] ⚠ gold/serving-cache-bust failed (fail-open — TTL is the safety net) [see /tmp/duckdb-refresh-gold-cache-bust.log]"
+  fi
 }
 
 echo "▶ DuckDB refresh (LIVE catalog cutover) — python=${PYTHON}, stage=${STAGE}, silver_passes=${SILVER_PASSES}"
@@ -171,13 +224,17 @@ case "$STAGE" in
   silver1)  run_tier silver "silver pass 1" "${SILVER_JOBS[@]}"; TOTAL_FAIL=$((TOTAL_FAIL+$?)) ;;
   silver2)  run_tier silver "silver pass 2" "${SILVER_JOBS[@]}"; TOTAL_FAIL=$((TOTAL_FAIL+$?)) ;;
   silver)   run_silver_passes ;;
+  identity) run_identity_stage; TOTAL_FAIL=$((TOTAL_FAIL+$?)) ;;
   gold)     run_gold_tier ;;
   all)
     run_keystone || TOTAL_FAIL=$((TOTAL_FAIL+1))
     run_silver_passes
+    # ADR-0015 WS3: identity BETWEEN silver and gold — keystone → silver → IDENTITY → gold —
+    # so gold_customer_360 (and every brain_id-reading mart) sees a fresh silver_identity_map.
+    run_identity_stage; TOTAL_FAIL=$((TOTAL_FAIL+$?))
     run_gold_tier
     ;;
-  *) echo "✗ unknown STAGE '$STAGE' (keystone|silver1|silver2|silver|gold|all)" >&2; exit 2 ;;
+  *) echo "✗ unknown STAGE '$STAGE' (keystone|silver1|silver2|silver|identity|gold|all)" >&2; exit 2 ;;
 esac
 
 if [ "$TOTAL_FAIL" -eq 0 ]; then

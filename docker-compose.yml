@@ -387,14 +387,13 @@ services:
                       razorpay.settlement; do
             mk "$$PFX.$$LANE.raw.v1" 12 604800000
           done
-          # Identity + intelligence control/event topics
-          # NOTE: identity.unmerged.v1 (A.2.4 unmerge lane, WA-19) MUST be here — the restitch-dirty
-          # consumer (WA-18) subscribes to it, and with broker auto-create OFF a missing topic throws a
-          # KafkaJSProtocolError metadata fatal that crashes the whole stream-worker on startup.
-          for T in intelligence.cache.invalidate.v1 intelligence.customer360.recomputed.v1 \
-                   intelligence.gold.rewritten.v1 identity.merged.v1 identity.suppressed.v1 \
-                   identity.minted.v1 identity.linked.v1 identity.review_queued.v1 \
-                   identity.unmerged.v1; do
+          # Intelligence control/event topics.
+          # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,suppressed,
+          # review_queued}.v1 + intelligence.cache.invalidate.v1 + intelligence.gold.rewritten.v1
+          # lanes are RETIRED — the Silver identity stage writes dirty-sets and evicts the serving
+          # cache DIRECTLY (no publisher, no consumer). identity.unmerged.v1 REMAINS: apps/core's
+          # merge-admin still publishes the A.2.4 unmerge reversal onto it (fail-open audit lane).
+          for T in intelligence.customer360.recomputed.v1 identity.unmerged.v1; do
             mk "$$PFX.$$T" 12 604800000
           done
           # Internal canonical fan-out lanes

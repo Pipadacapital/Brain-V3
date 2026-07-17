@@ -21,15 +21,15 @@
  *   version = Meta `updated_time` (its real change-clock, when present)
  *             else contentHashVersion(e)  — a hash over EVERY meaningful payload field.
  * There is NO wall-clock / sync-DATE fallback. A version that changed only because the day rolled
- * over would let a real metadata change WITHIN the same day re-mint the same event_id, and the
- * ADR-0012 dedup gate would then DROP that change = event loss. Because the fallback is a content
- * hash, an UNCHANGED re-sync mints the SAME event_id (gate drops it, no churn) while ANY real change
+ * over would let a real metadata change WITHIN the same day re-mint the same event_id, and dedup
+ * would then COLLAPSE that change = event loss. Because the fallback is a content hash, an
+ * UNCHANGED re-sync mints the SAME event_id (deduped downstream, no churn) while ANY real change
  * to a hashed field advances the version, minting a NEW event Silver keeps as latest (keep-latest via
  * a safe drop). Logical grain remains (brand_id, platform, level, entity_id).
  *
- * Dedup gate (ADR-0012): at the produce site we filter event_ids already ingested for the brand
- * (data_plane.ingest_dedup), produce ONLY the unseen ones, then mark-after-produce (produce-first,
- * mark-after — a crash never loses an event). Mirrors meta-spend-repull / shiprocket-shipment-repull.
+ * Dedup (ADR-0015): produce unconditionally — duplicates collapse at Bronze compaction on
+ * (brand_id, event_id) with the Silver MERGE as the final backstop (the PG ingest-dedup gate is
+ * removed). Mirrors meta-spend-repull / shiprocket-shipment-repull.
  *
  * Tokens are NEVER logged (I-S09). Cadence: ~6h (scheduled by the verify/admission slice — see handoff).
  */
@@ -42,7 +42,6 @@ import { buildPartitionKey } from '@brain/events';
 import { hashToUuidShaped } from '@brain/connector-core';
 import { CollectorEventV1Schema, COLLECTOR_EVENT_V1_TOPIC_SUFFIX } from '@brain/contracts';
 import { loadStreamWorkerConfig } from '@brain/config';
-import { buildContextGucSql } from '@brain/db';
 import {
   enumerateConnectors,
   resolveMetaCredentials,
@@ -53,7 +52,6 @@ import {
 } from '../meta-spend-repull/meta-insights-client.js';
 import { MetaEntityClient, type MetaAdEntity } from './meta-entity-client.js';
 import { acquireCursorLock } from '../../infrastructure/pg/CursorRepository.js';
-import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { log } from '../../log.js';
 
 const cfg = loadStreamWorkerConfig();
@@ -139,7 +137,7 @@ async function syncConnector(params: SyncParams): Promise<void> {
   // units — it MUST carry the account currency as its sibling (I-S07, never blended/float). Best-effort
   // fetch; default 'USD' so a currency hiccup never blocks the entity sync.
   const accountCurrency = await client.fetchAccountCurrency().catch(() => 'USD');
-  const emitted = await emitEntities({ entities, brandId, ciId, producer, pool, accountCurrency });
+  const emitted = await emitEntities({ entities, brandId, ciId, producer, accountCurrency });
   log.info(`[meta-entity-sync] connector=${ciId} COMPLETED entities=${entities.length} emitted=${emitted}`);
 }
 
@@ -148,7 +146,6 @@ interface EmitParams {
   brandId: string;
   ciId: string;
   producer: Producer;
-  pool: Pool;
   /** Ad account ISO currency — the sibling for every MINOR-unit money field on the envelope (I-S07). */
   accountCurrency: string;
 }
@@ -157,7 +154,7 @@ interface EmitParams {
  * CONTENT-hash version fallback (ADR-0012) for the event_id — used for EVERY grain that Meta returns
  * WITHOUT `updated_time`. It hashes EVERY meaningful field that lands in the emitted `properties` and
  * that Silver reads for the SCD, so:
- *   - an UNCHANGED entity re-mints the SAME event_id (the dedup gate drops it — no re-sync churn),
+ *   - an UNCHANGED entity re-mints the SAME event_id (deduped downstream — no re-sync churn),
  *   - ANY real change to ANY hashed field advances the version, minting a NEW event Silver picks as
  *     latest (keep-latest via a safe drop — NEVER an event loss).
  * It is NEVER random and NEVER a day-bucket, so it does not depend on the wall clock.
@@ -242,7 +239,7 @@ export async function emitEntities(p: EmitParams): Promise<number> {
   for (const e of p.entities) {
     // CONTENT-deterministic event_id (ADR-0012): version = Meta updated_time (real change-clock) when
     // present, else a hash over EVERY meaningful payload field (contentHashVersion). NEVER a sync-DATE:
-    // a same-day metadata change must mint a NEW id, or the dedup gate would drop it (event loss).
+    // a same-day metadata change must mint a NEW id, or dedup would collapse it (event loss).
     const eventId = entityEventId(p.brandId, e, p.accountCurrency);
     const occurredAt = toUtcIso(e.entity_updated_at) ?? new Date().toISOString();
 
@@ -301,38 +298,18 @@ export async function emitEntities(p: EmitParams): Promise<number> {
     incrementCounter('meta_entity_sync_total', { level: e.level });
   }
 
-  // ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing, so an
-  // unchanged re-pull never re-floods Bronze (Silver dedup is now only a backstop). Because the version
-  // is content-deterministic, a real change mints a NEW id and is NEVER dropped here (no event loss).
-  // brand GUC set on a short pooled client, then filter+mark. ORDER IS CRITICAL: produce FIRST, mark
-  // AFTER (a crash between at worst re-produces a dup on retry, which Silver backstops).
-  const dedupClient = await p.pool.connect();
-  let emitted = 0;
-  try {
-    await dedupClient.query(buildContextGucSql({ brandId: p.brandId, correlationId: '' }));
-    const unseen = await filterUnseenEventIds(dedupClient, p.brandId, messages.map((m) => m.eventId));
-
-    const toSend = messages.filter((m) => unseen.has(m.eventId));
-    const dropped = messages.length - toSend.length;
-    if (dropped > 0) {
-      incrementCounter('ingest_dedup_dropped_total', { provider: 'meta' });
-      log.info(`[meta-entity-sync] connector=${p.ciId} dedup: dropped ${dropped} already-ingested events`);
-    }
-
-    if (toSend.length > 0) {
-      // OTel trace-context propagation (OBS-1/OBS-2) — same as the spend repull.
-      const traceHeaders: Record<string, Buffer | string> = {};
-      injectKafkaTraceContext(traceHeaders);
-      await p.producer.send({
-        topic: LIVE_TOPIC,
-        messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
-      });
-      await markEventIdsSeen(dedupClient, p.brandId, toSend.map((m) => m.eventId));
-      emitted = toSend.length;
-    }
-  } finally {
-    dedupClient.release();
-  }
+  // ADR-0015: produce unconditionally — the PG ingest-dedup gate is removed. The event_id is
+  // CONTENT-deterministic (entityEventId: updated_time or a payload content-hash), so an unchanged
+  // re-sync re-mints the SAME (brand_id, event_id) and is collapsed by Bronze compaction dedup +
+  // the Silver MERGE, while a real change mints a NEW id and always lands (no event loss).
+  // OTel trace-context propagation (OBS-1/OBS-2) — same as the spend repull.
+  const traceHeaders: Record<string, Buffer | string> = {};
+  injectKafkaTraceContext(traceHeaders);
+  await p.producer.send({
+    topic: LIVE_TOPIC,
+    messages: messages.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+  });
+  const emitted = messages.length;
 
   log.info(`[meta-entity-sync] connector=${p.ciId} emitted=${emitted}`);
   return emitted;

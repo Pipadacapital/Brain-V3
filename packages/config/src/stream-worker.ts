@@ -106,6 +106,16 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
    * resolution is idempotent so the overlap re-process is safe. Default 30 min.
    */
   SILVER_IDENTITY_LOOKBACK_MS: z.coerce.number().int().nonnegative().default(1_800_000),
+  /**
+   * Upper bound (ms) on the SELF-HEALING catch-up window (ADR-0015 edge case #2): the effective
+   * lookback stretches to re-cover everything since the last committed watermark plus the
+   * configured margin (so a stalled landing/paused cron auto-catches-up on the next run), and
+   * this caps how far back a single run may scan (bounds a pathological first-run/very-stale
+   * scan). When the cap clips the window the job warns loudly + increments
+   * silver_identity_catchup_clipped_total — an operator must run a manual FULL pass to cover
+   * the clipped range. Default 7 days.
+   */
+  SILVER_IDENTITY_MAX_CATCHUP_MS: z.coerce.number().int().positive().default(604_800_000),
   /** Neo4j bulk read/write batch size (BatchResolveIdentityUseCase). */
   SILVER_IDENTITY_BATCH_SIZE: z.coerce.number().int().positive().default(500),
   /** identifier_hash → brain_id Redis cache TTL (seconds, sliding). Default 7 days. */
@@ -166,16 +176,6 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   PARTITION_AHEAD_MONTHS: z.coerce.number().int().default(3),
   /** Optional — no default (job branches on undefined). */
   PARTITION_RETENTION_MONTHS: z.string().optional(),
-
-  // ── ingest-dedup-prune job (ADR-0012) ────────────────────────────────────────
-  /**
-   * Retention window for data_plane.ingest_dedup, as a Postgres interval literal (e.g. '180 days').
-   * Rows whose ingested_at is older than now() - this are pruned. Must stay >= the longest backfill
-   * window so a re-ingest never re-presents a forgotten (brand_id, event_id). Default 180 days.
-   */
-  INGEST_DEDUP_RETAIN: z.string().default('180 days'),
-  /** Batch size for the batched prune DELETE (bounds the lock per statement). */
-  INGEST_DEDUP_PRUNE_BATCH: z.coerce.number().int().positive().default(50000),
 
   // ── Repull / backfill paging knobs ───────────────────────────────────────────
   /** shopify-backfill page sleep (ms). */

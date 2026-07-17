@@ -38,9 +38,8 @@ import { recordConnectorAuthRejected } from '../../infrastructure/observability/
 import { updateConnectorInstanceHealth, recoverConnectorInstanceHealth } from '../../infrastructure/pg/ConnectorInstanceHealthRepository.js';
 import { Kafka, Producer } from 'kafkajs';
 import { createIdempotentProducer } from '../../infrastructure/kafka/idempotent-producer.js';
-import { filterUnseenEventIds, markEventIdsSeen } from '../../infrastructure/pg/IngestDedupRepository.js';
 import { buildPartitionKey } from '@brain/events';
-import { injectKafkaTraceContext, incrementCounter } from '@brain/observability';
+import { injectKafkaTraceContext } from '@brain/observability';
 import { createSaltProvider } from '../../infrastructure/secrets/SaltProvider.js';
 import { PgBackfillJobRepository, parseRequestedWindowMs } from '../../infrastructure/pg/BackfillJobRepository.js';
 import { ORDER_BACKFILL_V1_TOPIC_SUFFIX, CollectorEventV1Schema } from '@brain/contracts';
@@ -430,40 +429,21 @@ async function runBackfillLoop(params: BackfillLoopParams): Promise<void> {
         recordsProcessed += 1n;
       }
 
-      // ── ADR-0012 ingest dedup gate: drop event_ids already ingested for this brand BEFORE producing,
-      //    so a re-run/overlap never re-floods Bronze. brand GUC set on a short pooled client, then
-      //    filter+mark. ORDER IS CRITICAL: produce FIRST, mark AFTER (a crash between at worst
-      //    re-produces a dup on retry, which Silver backstops — never loses an event).
+      // ── ADR-0015: produce unconditionally — the PG ingest-dedup gate is removed. event_id is
+      //    deterministic (uuidV5FromOrderBackfill), so a re-run/overlap re-mints the SAME
+      //    (brand_id, event_id) and is collapsed by Bronze compaction dedup + the Silver MERGE.
       // ── D-4: Emit directly to Redpanda (not via collector HTTP edge) ──────
       let emittedThisPage = 0;
       if (messages.length > 0) {
-        const dedupClient = await pool.connect();
-        try {
-          await dedupClient.query(buildContextGucSql({ brandId, correlationId: '' }));
-          const unseen = await filterUnseenEventIds(dedupClient, brandId, messages.map((m) => m.eventId));
-
-          const toSend = messages.filter((m) => unseen.has(m.eventId));
-          const dropped = messages.length - toSend.length;
-          if (dropped > 0) {
-            incrementCounter('ingest_dedup_dropped_total', { provider: 'shopify' });
-            log.info(`job=${jobId} page=${pageCount} dedup: dropped ${dropped} already-ingested events`);
-          }
-
-          if (toSend.length > 0) {
-            // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
-            // message so the bronze-bridge consumer resumes this backfill's trace.
-            const traceHeaders: Record<string, Buffer | string> = {};
-            injectKafkaTraceContext(traceHeaders);
-            await producer.send({
-              topic: BACKFILL_TOPIC,
-              messages: toSend.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
-            });
-            await markEventIdsSeen(dedupClient, brandId, toSend.map((m) => m.eventId));
-            emittedThisPage = toSend.length;
-          }
-        } finally {
-          dedupClient.release();
-        }
+        // OTel trace-context propagation (OBS-1/OBS-2): stamp traceparent on each
+        // message so the bronze-bridge consumer resumes this backfill's trace.
+        const traceHeaders: Record<string, Buffer | string> = {};
+        injectKafkaTraceContext(traceHeaders);
+        await producer.send({
+          topic: BACKFILL_TOPIC,
+          messages: messages.map((m) => ({ key: m.key, value: m.value, headers: traceHeaders })),
+        });
+        emittedThisPage = messages.length;
       }
 
       log.info(`job=${jobId} page=${pageCount} emitted=${emittedThisPage} total=${recordsProcessed}`);

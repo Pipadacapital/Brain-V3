@@ -88,15 +88,15 @@ resources:
 # suppresses the plain CPU HPA. Rollback = keda.enabled: false (plain CPU HPA returns).
 autoscaling:
   enabled: true
-  # AUD-COST (2026-07-13): warm baseline 3 → 2 — right-sized for current low
-  # traffic. KEDA still bursts to maxReplicas=12 on real consumer lag (replay /
-  # backfill / traffic spike), so throughput headroom is unchanged; this only
-  # trims the IDLE floor. Kept at 2 (not 1) deliberately: the consumers now run
-  # on SPOT, so 2 replicas keep one consumer alive through a single-node reclaim
-  # and allow safe rolling updates (PDB). Raise back toward maxReplicas as
-  # sustained traffic grows. Rollback: minReplicas 3.
-  minReplicas: 2
-  maxReplicas: 12
+  # ADR-0015 right-size: stream-worker is no longer the live-lane consumer fleet
+  # (CollectorEventConsumer + identity/consent/cache consumers removed; Kafka
+  # Connect lands Bronze, identity is a Silver-stage batch job). What remains is
+  # the low-volume erasure orchestrator + the cron-invoked connector pull jobs —
+  # a job-runner, not a throughput tier. 1 warm replica suffices; CPU HPA bursts
+  # to 3 for job overlap. A drain gap on the erasure lane is acceptable (Kafka
+  # retains; the consumer resumes from committed offsets). Rollback: 2/12.
+  minReplicas: 1
+  maxReplicas: 3
   # ADR-0015: kafka-lag KEDA scaling DISABLED — the live-lane consumer group
   # 'stream-worker-live' is retired (CollectorEventConsumer removed; Kafka Connect is
   # the sole Bronze writer, identity is a Silver-stage batch job). Stream-worker's
@@ -115,3 +115,11 @@ autoscaling:
       # prod.* lane (strimzi values-prod prefix) — the partition-bearing live topic.
       topic: prod.collector.event.v1
       lagThreshold: "1000"
+
+# ADR-0015 right-size companion: with minReplicas 1, the base pdb (minAvailable: 1)
+# would BLOCK node drains / Spot reclaims / Karpenter consolidation whenever only
+# the single warm replica exists. The erasure lane tolerates a drain gap (Kafka
+# retains 7d on its lane; consumer resumes from committed offsets), so the PDB is
+# disabled in prod. Re-enable if minReplicas returns to >= 2.
+pdb:
+  enabled: false

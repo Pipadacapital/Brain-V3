@@ -44,13 +44,15 @@ CostCenter: brain-platform
 {{- end -}}
 
 {{/*
-Resolve a topic's retention.ms from a symbolic tier ("standard" | "long") or an explicit override.
+Resolve a topic's retention.ms from a symbolic tier ("short" | "standard" | "long") or an explicit override.
 Usage: include "strimziKafka.retentionMs" (dict "tier" $t.retention "root" $)
 */}}
 {{- define "strimziKafka.retentionMs" -}}
 {{- $root := .root -}}
 {{- if eq .tier "long" -}}
 {{- $root.Values.topics.retention.longMs | int64 -}}
+{{- else if eq .tier "short" -}}
+{{- $root.Values.topics.retention.shortMs | int64 -}}
 {{- else -}}
 {{- $root.Values.topics.retention.standardMs | int64 -}}
 {{- end -}}

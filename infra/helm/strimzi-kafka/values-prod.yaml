@@ -130,5 +130,6 @@ topics:
   partitions: 12
   replicas: 3
   retention:
+    shortMs: 172800000      # 48 h — live collector lane (ADR-0015: Bronze 15d is the replay store)
     standardMs: 604800000   # 7 days
     longMs: 2592000000      # 30 days

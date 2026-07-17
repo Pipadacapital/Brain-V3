@@ -142,12 +142,15 @@ topics:
   replicas: 3
 
   retention:
-    standardMs: 604800000   # 7 days  — event + canonical + control lanes
+    shortMs: 172800000      # 48 h   — live collector lane (ADR-0015: Bronze is the replay
+                            #          store with a 15-day collector-lane row-TTL; the log is
+                            #          only a delivery buffer, not the replay window)
+    standardMs: 604800000   # 7 days  — canonical + control lanes
     longMs: 2592000000      # 30 days — DLQ / quarantine / order-backfill (replay window)
 
-  # Collector lane (+ DLQ / quarantine / order-backfill). retention: standard | long.
+  # Collector lane (+ DLQ / quarantine / order-backfill). retention: short | standard | long.
   collector:
-    - { suffix: "collector.event.v1",            retention: "standard" }
+    - { suffix: "collector.event.v1",            retention: "short" }
     - { suffix: "collector.order.backfill.v1",   retention: "long" }
     - { suffix: "collector.event.v1.dlq",        retention: "long" }
     - { suffix: "collector.event.v1.quarantine", retention: "long" }

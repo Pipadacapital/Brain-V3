@@ -158,9 +158,12 @@ describe('SyncRunRepository — start→fail lifecycle', () => {
       error_class: string | null;
       error_detail: string | null;
     }>(
+      // The terminal row is a NEW ledger row with its OWN run_id: the PK is composite
+      // (run_id, started_at) and closeRun copies started_at, so it assigns a fresh run_id to avoid a
+      // PK collision. started↔terminal therefore correlate by (brand_id, started_at), NOT run_id.
       `SELECT status, error_class, error_detail FROM connector_sync_run
-       WHERE run_id = $1 AND brand_id = $2 AND status = 'failed'`,
-      [runId, SR_BRAND_A],
+       WHERE brand_id = $1 AND started_at = $2 AND status = 'failed'`,
+      [SR_BRAND_A, startedAt],
     );
 
     expect(rows.rows.length).toBe(1);
@@ -189,9 +192,10 @@ describe('SyncRunRepository — start→fail lifecycle', () => {
     });
 
     const rows = await superPool.query<{ error_detail: string | null }>(
+      // Correlate the terminal row by (brand_id, started_at) — see the note above; run_id differs.
       `SELECT error_detail FROM connector_sync_run
-       WHERE run_id = $1 AND brand_id = $2 AND status = 'failed'`,
-      [runId, SR_BRAND_A],
+       WHERE brand_id = $1 AND started_at = $2 AND status = 'failed'`,
+      [SR_BRAND_A, startedAt],
     );
 
     expect(rows.rows.length).toBe(1);

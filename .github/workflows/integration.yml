@@ -99,6 +99,9 @@ jobs:
             \$\$;
           "
           pnpm migrate:up
+          # Seed the fixture organization the *.live / *.integration suites assume (the schema-only
+          # migrate seeds no tenant data; see tools/dev/seed-fixture-org.sql). Reference data is in 0136.
+          PGPASSWORD=brain psql -U brain -h localhost -d brain -f tools/dev/seed-fixture-org.sql
 
       # Provision the DuckDB transform venv (duckdb + numpy + splink + pyiceberg + neo4j) — the SAME
       # deps the brain-duckdb cron image carries (db/iceberg/duckdb/requirements.txt). Shared by the
@@ -248,6 +251,9 @@ jobs:
         run: |
           cat > .env.local-prod <<'ENV'
           NODE_ENV=development
+          # apps/core listens on PORT and web's next.config proxies /api → localhost:3001; core's
+          # config default is 3000 (== web) so it MUST be pinned to 3001 or register never reaches it.
+          PORT=3001
           DATABASE_URL=postgres://brain:brain@localhost:5432/brain
           BRAIN_APP_DATABASE_URL=postgres://brain_app:brain_app@localhost:5432/brain
           REDIS_URL=redis://localhost:6379
@@ -255,11 +261,24 @@ jobs:
           DUCKDB_SERVING_HOST=localhost
           DUCKDB_SERVING_PORT=8091
           DUCKDB_SERVING_URL=http://localhost:8091
+          # apps/core getEnvOrThrow()s these at startup (main.ts) and mints the register JWT + session
+          # cookie from them; in dev LocalSecretsProvider returns the raw values as-is. Without them
+          # core crashes on boot → register POST hits a dead :3001 → the onboarding e2e stalls on /register.
+          JWT_SIGNING_SECRET=dev-jwt-signing-secret-not-for-prod-0123456789abcdef
+          COOKIE_SECRET=dev-cookie-secret-not-for-prod-0123456789abcdef
+          SHOPIFY_CLIENT_SECRET=dev-shopify-client-secret-not-for-prod
           ENV
 
       - name: Bring up engines
         # shared poll helper — `up --wait` dies on one-shot inits exiting 0 mid-wait
         run: bash tools/dev/compose-up-healthy.sh --profile core
+
+      - name: Map Kafka EXTERNAL advertised host to localhost
+        # Kafka advertises EXTERNAL://brain-kafka-ext:19092; host-side clients bootstrap localhost:19092
+        # then RECONNECT to the advertised `brain-kafka-ext`, which doesn't resolve on the runner. apps/core
+        # fail-fasts at startup if it can't reach Kafka, so without this the whole app stack (core) never
+        # boots and register POSTs hit a dead :3001. Mirrors the live-suite job.
+        run: echo "127.0.0.1 brain-kafka-ext" | sudo tee -a /etc/hosts
 
       - name: Provision brain_app + migrate
         run: |

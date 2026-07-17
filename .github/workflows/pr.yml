@@ -64,6 +64,9 @@ jobs:
           "
           # Apply all migrations through 0020 (includes ledger schema + named functions)
           pnpm migrate:up
+          # Seed the fixture organization the *.integration suites assume (the schema-only migrate
+          # seeds no tenant data; see tools/dev/seed-fixture-org.sql). Reference data is in 0136.
+          PGPASSWORD=brain psql -U brain -h localhost -d brain -f tools/dev/seed-fixture-org.sql
       - name: Turbo lint + typecheck + unit (affected only)
         run: pnpm turbo run lint typecheck test:unit --affected
       # AUD-IMPL-016: DB-backed suites moved out of the hermetic test:unit tag into

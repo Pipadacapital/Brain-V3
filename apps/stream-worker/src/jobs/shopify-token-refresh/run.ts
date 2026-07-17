@@ -113,10 +113,13 @@ async function readBrandAppCreds(
 // ── Enumerate (SECURITY DEFINER, NO GUC) ──────────────────────────────────────
 
 async function enumerateShopifyConnectors(pool: Pool): Promise<ShopifyConnectorRow[]> {
+  // list_connectors_for_repull() (no-arg overload) is ALREADY shopify-scoped (its body filters
+  // ci.provider = 'shopify') and returns no `provider` column — so an outer WHERE provider = 'shopify'
+  // fails with "column provider does not exist". The p_provider overload has provider but no
+  // shop_domain, which this job needs; so use the no-arg overload as-is.
   const result = await pool.query<ShopifyConnectorRow>(
     `SELECT connector_instance_id, brand_id, shop_domain, secret_ref
-     FROM list_connectors_for_repull()
-     WHERE provider = 'shopify'`,
+     FROM list_connectors_for_repull()`,
   );
   return result.rows;
 }

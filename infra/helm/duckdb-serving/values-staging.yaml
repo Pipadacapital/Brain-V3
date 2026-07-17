@@ -5,7 +5,7 @@ image:
   tag: ""
   # PLACEHOLDER — the first master build (deploy.yml build-data-images) writes the real digest
   # here via the staging bump; the prod promote copies it into values-prod. Fails-closed until then.
-  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  digest: "sha256:a6350c5fa81b18336d8651044761c416c7959b605f112ff6ca981db5f5a0f919"
 
 # Replicas ride the untainted `streaming` Spot pool (infra/helm/karpenter) — no dedicated pool:
 # the `trino` Karpenter pool is retired with the trino chart (ADR-0014), and at ≥2 replicas a Spot

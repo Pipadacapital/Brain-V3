@@ -51,10 +51,16 @@ survives verbatim. The fallback below reconstructs the single default lane when 
 {{- if not $lanes -}}
 {{- $lanes = list (dict "name" "" "orphanFiles" "1") -}}
 {{- end -}}
-{{- range $lane := $lanes }}
+{{- range $i, $lane := $lanes }}
 {{- $laneName := $lane.name | default "" -}}
 {{- $cronName := ternary "v4-maintenance" (printf "v4-maintenance-%s" $laneName) (eq $laneName "") -}}
+{{- /* Separator BETWEEN documents only — never a LEADING `---`. A leading document separator makes the
+       first rendered doc an empty/fragment document that Argo CD's manifest splitter drops (helm's own
+       splitter tolerates it, so `helm template` shows both lanes but Argo CD applied only the 2nd/Silver
+       lane → Gold silently never deployed, 2026-07-17). `if $i` emits `---` only before the 2nd+ doc. */ -}}
+{{- if $i }}
 ---
+{{- end }}
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:

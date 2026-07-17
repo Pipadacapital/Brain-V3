@@ -14,7 +14,18 @@
 --     ONLY caller was the deleted ingest-dedup-prune CronWorkflow.
 --
 -- The 0130 cross-brand helpers (filter_unseen_events / mark_events_seen) were already dropped
--- by 0137 with the collector spool. Owner confirmed data is dummy — plain DROPs, no archival.
+-- by 0137. Owner confirmed data is dummy — plain DROPs, no archival.
+--
+-- ROLLOUT-WINDOW ASSESSMENT (H1 follow-up, 2026-07-18): this PreSync drop shares 0137's shape —
+-- OLD-release stream-worker pods still consult data_plane.ingest_dedup (IngestDedupRepository in
+-- the 10 pull/repull jobs) until the new image rolls, and their pulls will ERROR against the
+-- dropped table during that window. Assessed ACCEPTABLE — deliberately NOT split like 0137's
+-- collector_spool: these are SCHEDULED pull jobs (cron/scheduler-driven, minutes-cadence), not a
+-- pre-ACK browser ingest path. A failed tick surfaces as a retryable job error, the next tick
+-- (on the new image) re-pulls the same provider window, and every lane's event_id is
+-- deterministic for the same provider record — so the worst case is a few minutes of connector
+-- staleness, NEVER event loss (contrast: dropping collector_spool mid-roll 500'd live pixel
+-- ACKs — see db/migrations/deferred/drop_collector_spool.sql).
 --
 BEGIN;
 

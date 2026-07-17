@@ -159,3 +159,4 @@ Each phase ships via `feature/* → release → master`, flag-gated and reversib
 1. Local-disk fallback size/format on the collector pod (durability window during total log outage).
 2. Whether the Silver identity stage runs as a Node batch step or is ported to Python in the DuckDB tier (recommendation: Node batch, to reuse tested `IdentityResolver`).
 3. Consent/CAPI/erasure exact placement (Silver stage vs request-driven batch) — confirm per compliance owner.
+4. **Deferred `collector_spool` drop (H1 rollout safety):** migration 0137 now drops only the drainer-only functions — the table itself stays through this release (old collector pods INSERT into it pre-ACK during the roll; a PreSync `DROP TABLE` = live pixel loss). Promote `db/migrations/deferred/drop_collector_spool.sql` to a numbered migration in the NEXT release, once the direct-to-log collector image is fully rolled.

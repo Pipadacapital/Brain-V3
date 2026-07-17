@@ -201,6 +201,8 @@ export async function main(): Promise<void> {
     // broker fails fast to the WAL instead of piling requests behind maxInFlightRequests=1.
     requestTimeoutMs: cfg.INGEST_PRODUCE_REQUEST_TIMEOUT_MS,
     produceDeadlineMs: cfg.INGEST_PRODUCE_DEADLINE_MS,
+    // Batch compression (ramp lever 0: ~4x broker disk/network on JSON). Default gzip.
+    compression: cfg.INGEST_PRODUCE_COMPRESSION,
     ...(cfg.KAFKA_SASL_USERNAME && cfg.KAFKA_SASL_PASSWORD
       ? {
           sasl: {

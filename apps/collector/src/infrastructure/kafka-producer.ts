@@ -66,6 +66,15 @@ export interface KafkaProducerConfig {
   hotBrandIds?: string[];
   /** Bucket count for the composite key (INGEST_HOT_BRAND_BUCKETS). Default 4. */
   hotBrandBuckets?: number;
+  /**
+   * Producer batch compression (INGEST_PRODUCE_COMPRESSION). Default 'gzip' — ~4x on JSON
+   * envelopes, which is what sizes broker disk/network for the 40K/s ramp (ingest-scale-ramp
+   * runbook). 'none' is the escape hatch if broker-side CPU or a codec regression ever
+   * demands it. zstd is deliberately NOT offered: kafkajs has no built-in zstd — the only
+   * community codec (@kafkajs/zstd 0.1.x) is an immature native-binding dep we will not put
+   * on the ingest hot path; revisit only if CPU profiling at ≥20K/s shows gzip cost.
+   */
+  compression?: 'gzip' | 'none';
 }
 
 /** The envelope fields the producer projects from ONE JSON.parse of the serialized body. */
@@ -121,6 +130,8 @@ export class CollectorKafkaProducer {
   /** Hot-brand composite keying (ADR-0015 §5.3) — empty set = plain brand_id keys everywhere. */
   private readonly hotBrandIds: Set<string>;
   private readonly hotBrandBuckets: number;
+  /** Batch compression codec resolved once from config ('gzip' default → GZIP). */
+  private readonly compression: CompressionTypes;
   private producer: Producer | null = null;
   /** Single-flight connect guard: the accept path + fallback flusher must never race two connects. */
   private connecting: Promise<void> | null = null;
@@ -173,6 +184,8 @@ export class CollectorKafkaProducer {
     this.hotBrandIds = new Set(config.hotBrandIds ?? []);
     this.hotBrandBuckets = Math.max(1, config.hotBrandBuckets ?? 4);
     this.produceDeadlineMs = config.produceDeadlineMs ?? 6_000;
+    this.compression =
+      (config.compression ?? 'gzip') === 'none' ? CompressionTypes.None : CompressionTypes.GZIP;
   }
 
   /**
@@ -318,7 +331,7 @@ export class CollectorKafkaProducer {
         this.producer.send({
           topic: this.topic,
           acks: -1, // produce-ack from ALL in-sync replicas IS the durability anchor (ADR-0015 D1)
-          compression: CompressionTypes.GZIP,
+          compression: this.compression,
           messages,
         }),
       );

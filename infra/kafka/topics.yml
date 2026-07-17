@@ -37,7 +37,7 @@ topics:
       cleanup.policy: "delete"
       compression.type: "snappy"
       min.insync.replicas: "1"
-    description: "Order backfill lane — shopify-backfill worker → BackfillOrderConsumer. Single partition = natural throughput cap (ADR-BF-7 / D-3). Separate topic from live lane ensures zero lag on stream-worker-live consumer group."
+    description: "Order backfill lane — shopify-backfill worker → Kafka Connect Iceberg sink (ADR-0015 WS2 single Bronze writer; the topic is in the collector sink's topics list). Single partition = natural throughput cap (ADR-BF-7 / D-3). Separate topic keeps backfill volume off the live lane."
 
   - name: "{env}.collector.order.backfill.v1.dlq"
     lane: dlq

@@ -467,6 +467,13 @@ services:
       CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
       CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      # ADR-0015 WS2 (PR 2.1 — EOS transport): every iceberg-bronze-*.json pins
+      # consumer.override.isolation.level=read_committed (never surface aborted transactional
+      # writes to the Bronze landing). Connect's default override policy (None) REJECTS
+      # consumer.override.* at connector registration — All admits it. The sink itself is
+      # exactly-once by design (KIP-447 commit coordination over control-iceberg; offsets live
+      # in the Iceberg snapshot metadata) — there is no separate EOS toggle in connect 1.9.2.
+      CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: "All"
       CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components,/opt/connect-plugins"
       # APACHE Iceberg Kafka Connect runtime — version-locked to the stack's Iceberg 1.9.2
       # (iceberg-rest fixture + iceberg-spark-runtime). connector.class =

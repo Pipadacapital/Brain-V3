@@ -318,8 +318,8 @@ describe('ingestion framework — strict dedup + no loss', () => {
 
 // ── §6.4 lane-isolation assertions ────────────────────────────────────────────────────────────────
 // These tests MUST fail if the producer topic is ever re-pointed to the live collector topic.
-// The backfill consumer (BackfillOrderConsumer, main.ts) reads ONLY the backfill topic; routing
-// backfill events to the live topic would starve/contaminate the live consumer group (ADR-BF-7).
+// The backfill topic is landed by the Kafka Connect collector sink (ADR-0015 WS2); routing
+// backfill events to the live topic would contaminate the live lane (ADR-BF-7).
 describe('§6.4 lane isolation — ingestion-backfill emits to BACKFILL topic, never LIVE', () => {
   it('BACKFILL_TOPIC is derived from ORDER_BACKFILL_V1_TOPIC_SUFFIX (backfill lane)', () => {
     expect(BACKFILL_TOPIC).toContain(ORDER_BACKFILL_V1_TOPIC_SUFFIX);

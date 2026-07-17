@@ -86,6 +86,13 @@ spec:
           args:
             - |
               set -euo pipefail
+              {{- if .Values.sparkBronze.dedup.enabled }}
+              # ADR-0015 D2(b): compaction-time Bronze dedup FIRST — keep-latest on the
+              # (brand_id, event_id) lifted from the collector lane's payload (bronze_dedup.py),
+              # so the optimize pass below compacts an already-deduped layout and the
+              # expire_snapshots pass sweeps the superseded duplicate files in the same run.
+              python /opt/brain/duckdb/maintenance/bronze_dedup.py
+              {{- end }}
               exec python /opt/brain/duckdb/maintenance/bronze_maintenance.py
           env:
             - { name: MODE, value: "maintain" }

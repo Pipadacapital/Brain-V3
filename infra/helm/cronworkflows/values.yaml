@@ -67,6 +67,14 @@ sparkBronze:
     pullPolicy: IfNotPresent
   maintenanceSchedule: "0 3 * * *"      # daily 03:00 IST — compaction + snapshot-expiry (Slice 7; 7d / 14d durable lane)
   activeDeadlineSeconds: 1800
+  # ── Bronze compaction-time dedup (ADR-0015 D2b) ────────────────────────────────────────────────
+  # bronze_dedup.py runs FIRST inside the bronze-maintenance CronWorkflow pod (dedup → optimize →
+  # expire, one sequenced run): keep-latest on the (brand_id, event_id) lifted from the collector
+  # lane's verbatim payload, COW rewrite (no MoR deletes). Steady state under the EOS transport is
+  # a fast no-op; the memory valve refuses an oversized rewrite loudly (BRONZE_DEDUP_FORCE=1 for a
+  # deliberate one-off backlog clear). Silver's admission MERGE remains the final backstop.
+  dedup:
+    enabled: true
   # ── Raw-lane PII retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038) ──────────────────────────────
   # bronze_raw_retention.py: row-TTL DELETE + snapshot expiry over the *_raw_connect lanes so raw
   # un-hashed PII/PCI never outlives the 7-day landing-buffer window (Silver is the durable layer;

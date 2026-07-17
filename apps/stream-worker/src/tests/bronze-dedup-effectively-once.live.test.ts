@@ -33,8 +33,8 @@
  * parallel to force it).
  *
  * Uses a SERVER_TRUSTED event type (order.live.v1) so Silver admission passes without the pixel-lane
- * R2/R3 gate (that gate is covered by ingest-hardening.e2e.test.ts — and under ADR-0010 it lives in
- * the Silver admission, not in front of Bronze).
+ * R2/R3 gate (under ADR-0010/ADR-0015 that gate lives in the Silver admission keystone
+ * silver_collector_event.py, not in front of Bronze).
  *
  * Bronze is read over the serving tier through the ADR-0010 lift view
  * `brain_bronze.collector_events_connect_lifted` (the raw connect table is payload + kafka

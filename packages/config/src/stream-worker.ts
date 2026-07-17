@@ -60,7 +60,9 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   // ── Live lane: topic + consumer groups (main.ts) ─────────────────────────────
   /** Live collector topic the consumers subscribe to. */
   COLLECTOR_TOPIC: z.string().default('dev.collector.event.v1'),
-  CONSUMER_GROUP_ID: z.string().default('stream-worker-live'),
+  // ADR-0015 WS2: CONSUMER_GROUP_ID ('stream-worker-live', the pixel-lane Bronze consumer) is
+  // RETIRED — the Kafka Connect sink is the single Bronze writer; validation/quarantine moved to
+  // the Silver keystone.
   IDENTITY_CONSUMER_GROUP_ID: z.string().default('identity-bridge-live'),
   CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID: z
     .string()
@@ -130,23 +132,23 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
   /** Sliding TTL (days) refreshed on every write (A.4 = 30d). */
   TP_CACHE_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
-  // ── Backfill lane (main.ts) ──────────────────────────────────────────────────
+  // ── Backfill lane (producer-side only since ADR-0015 WS2) ────────────────────
   /**
    * Backfill topic. Default DERIVES from NODE_ENV (prod→'prod', else→'dev'); the
    * field below is optional and, when unset, the loader computes the derived
-   * default — see the loader's post-parse step.
+   * default — see the loader's post-parse step. The backfill JOBS produce to it;
+   * the former BackfillOrderConsumer (+ BACKFILL_CONSUMER_GROUP_ID) is retired —
+   * Kafka Connect lands the topic (it is in the collector sink's `topics` list).
    */
   BACKFILL_TOPIC: z.string().optional(),
-  BACKFILL_CONSUMER_GROUP_ID: z.string().default('stream-worker-backfill'),
 
   // ── Health / probes (main.ts) ────────────────────────────────────────────────
   // 8091 (NOT 8090): Trino maps host 8090 in docker-compose, so a local stream-worker health
   // server on 8090 collides (EADDRINUSE). k8s separates them, but keep dev clean too.
   HEALTH_PORT: z.coerce.number().int().default(8091),
 
-  // ── Bronze write switch (main.ts) ────────────────────────────────────────────
-  /** PG bronze_events write — RETIRED, default OFF (===' true' semantics). */
-  BRONZE_PG_WRITE_ENABLED: strictTrue(false),
+  // ADR-0015 WS2: BRONZE_PG_WRITE_ENABLED is REMOVED (the legacy PG bronze_events escape hatch —
+  // the table was dropped in 0070 and the whole stream-worker Bronze write path is deleted).
 
   // ── CAPI creds gate (main.ts) ────────────────────────────────────────────────
   META_CAPI_CREDS_WIRED: strictTrue(false),

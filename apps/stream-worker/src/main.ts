@@ -1,24 +1,26 @@
 /**
- * Stream-worker (Deployable 2) — KafkaJS live consumer group.
+ * Stream-worker (Deployable 2) — KafkaJS consumers + connector pull-job runner.
  *
- * Pipeline: consume → Zod validate (M1-local) → Redis dedup → Bronze INSERT
- *   → commit Kafka offset ONLY after write confirmed (D-7).
+ * ADR-0015 WS2 (single Bronze writer): the stream-worker NO LONGER writes Bronze in any form.
+ * The Kafka Connect Iceberg sink (ADR-0010) is the SOLE Bronze writer — it lands the whole
+ * collector topic (pixel + server-trusted + backfill lanes) into brain_bronze.collector_events_connect,
+ * and the Silver keystone (silver_collector_event.py) owns validation, the R2 tenant / R3 consent
+ * gate, quarantine routing, and the (brand_id, event_id) admission MERGE. The former
+ * CollectorEventConsumer / EventBronzeBridgeConsumer registry / BackfillOrderConsumer /
+ * ProcessEventUseCase / BronzeRepository pipeline is DELETED — those consumers had already stopped
+ * persisting anything (the PG bronze_events write was retired with migration 0070), and every event
+ * they consumed is produced to the log by its origin (collector, webhook strategies, repull jobs),
+ * so Connect lands it without any re-emit.
  *
- * Architecture plan §6 Slice 3 (Track A / data-engineer):
- *   - consume from dev.collector.event.v1
- *   - Redis SET NX EX 604800 dedup (D-3)
- *   - INSERT INTO bronze_events under brain_app + set_config GUC (D-8)
- *   - commit offset ONLY after Bronze write confirmed (D-7)
- *   - DLQ after MAX_RETRY=5 failures per (partition, offset)
+ * What remains here: the identity/consent/CAPI/erasure/touchpoint consumer lanes (moving to the
+ * Silver stage in ADR-0015 WS4) and the connector pull-job runner (backfills, repulls, schedulers).
  *
- * Connects as brain_app (not brain) so RLS is enforced on bronze_events (F-4).
- * Dev DB connects as superuser 'brain' which BYPASSES RLS — NEVER use
- * DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
+ * Connects as brain_app (not brain) so RLS is enforced (F-4). Dev DB superuser 'brain' BYPASSES
+ * RLS — NEVER use DATABASE_URL=postgres://brain@... for this service. Use BRAIN_APP_DATABASE_URL.
  */
 import { Kafka, type ConsumerConfig } from 'kafkajs';
 import { Pool, Pool as PgPool } from 'pg';
 import { assertRoleEnforcesRls } from '@brain/db';
-import { DbAuditWriter, type AuditDbClient } from '@brain/audit';
 import {
   buildTopic,
   IDENTITY_MINTED_TOPIC_SUFFIX,
@@ -28,9 +30,7 @@ import {
   IDENTITY_UNMERGED_TOPIC_SUFFIX,
 } from '@brain/contracts';
 import { resolveRackId } from './infrastructure/kafka/resolveRackId.js';
-import { RedisDedupAdapter } from './infrastructure/redis/RedisDedupAdapter.js';
 import { RetryCounterAdapter } from './infrastructure/redis/RetryCounterAdapter.js';
-import { BronzeRepository } from './infrastructure/pg/BronzeRepository.js';
 import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRepository.js';
 import { createIdempotentProducer } from './infrastructure/kafka/idempotent-producer.js';
 import { KafkaIdentityEventPublisher } from './infrastructure/kafka/KafkaIdentityEventPublisher.js';
@@ -60,13 +60,11 @@ import {
   AwsKmsDecryptAdapter,
   type VaultKeyProvider,
 } from '@brain/pii-vault';
-import { ProcessEventUseCase } from './application/ProcessEventUseCase.js';
 import { ResolveIdentityUseCase } from './application/ResolveIdentityUseCase.js';
 import { ConfidenceEngine } from './domain/identity/confidence/index.js';
 import { createDefaultMatcherRegistry } from './domain/identity/matchers/MatcherRegistry.js';
 import { DecisionEngine } from './domain/identity/decisions/DecisionEngine.js';
 import { IdentityAuditDecisionLog } from './infrastructure/identity/IdentityAuditDecisionLog.js';
-import { CollectorEventConsumer } from './interfaces/consumers/CollectorEventConsumer.js';
 import { IdentityBridgeConsumer } from './identity-bridge/IdentityBridgeConsumer.js';
 import { ConsentSuppressorConsumer } from './interfaces/consumers/ConsentSuppressorConsumer.js';
 import { ProjectConsentUseCase } from './application/ProjectConsentUseCase.js';
@@ -78,14 +76,12 @@ import { ErasureOrchestratorConsumer } from './interfaces/consumers/ErasureOrche
 import { EraseSubjectUseCase, type IBrainIdLookup } from './application/EraseSubjectUseCase.js';
 import { ArgoErasureWorkflowSubmitter } from './infrastructure/argo/ArgoErasureWorkflowSubmitter.js';
 import { ErasureRepository } from './infrastructure/pg/ErasureRepository.js';
-import { BackfillOrderConsumer } from './interfaces/consumers/BackfillOrderConsumer.js';
 // MEDALLION REALIGNMENT: ALL PG-ledger write paths are now REMOVED. The revenue recognition ledger
 // is built FROM Bronze by dbt (silver_order_recognition → gold_revenue_ledger). Ad spend likewise
 // flows spend.live.v1 → Bronze (Iceberg, server-trusted) → silver_marketing_spend. The former
 // SpendLedgerConsumer (spend.live.v1 → PG billing.ad_spend_ledger) was a DUAL-WRITE that made PG a
 // second, divergent SoR; it is removed so Bronze is the SOLE spend SoR (dedup = deterministic
 // event_id MERGE in Bronze — no PG/Bronze count drift). PostgreSQL holds operational state only.
-import { BRONZE_BRIDGES, buildBronzeBridges } from './interfaces/consumers/bronzeBridges.js';
 import { startHealthServer } from './infrastructure/health/HealthServer.js';
 import { startSyncRequestClaimer, enumerateConnectedConnectors } from './jobs/sync-request-claimer/run.js';
 import { run as runShopifyBackfill } from './jobs/shopify-backfill/run.js';
@@ -164,7 +160,6 @@ export async function main(): Promise<void> {
   // IMPORTANT: must connect as brain_app to enforce RLS (not superuser 'brain')
   const dbUrl = cfg.BRAIN_APP_DATABASE_URL;
   const topic = cfg.COLLECTOR_TOPIC;
-  const groupId = cfg.CONSUMER_GROUP_ID;
   const identityGroupId = cfg.IDENTITY_CONSUMER_GROUP_ID;
   // Consent-suppressor (feat-d13-consent-cancontact): separate consumer group on the
   // SAME live topic (no new topic, no new deployable — I-E05). Projects the first-class
@@ -195,10 +190,9 @@ export async function main(): Promise<void> {
   // with no AWB-read API — the synthetic logistics model (gokwik.awb_status.v1 → cod_rto_clawback)
   // was removed. Logistics truth is Shiprocket. The ledger consumer itself was already removed in the
   // Medallion realignment (recognition is built from Bronze); this drops the now-dead config read.
-  // Backfill lane (ADR-BF-7 / D-3): separate topic + group → zero live-lane lag impact.
-  // BACKFILL_TOPIC default derives from NODE_ENV inside the config loader.
-  const backfillTopic = cfg.BACKFILL_TOPIC;
-  const backfillGroupId = cfg.BACKFILL_CONSUMER_GROUP_ID;
+  // ADR-0015 WS2: the backfill-lane Bronze consumer is GONE (Kafka Connect lands the backfill
+  // topic directly — it is in the collector sink's `topics` list); BACKFILL_TOPIC remains a
+  // producer-side concern of the backfill jobs (they load config themselves).
 
   const kafka = new Kafka({
     clientId: 'stream-worker',
@@ -218,21 +212,14 @@ export async function main(): Promise<void> {
     log.info('kafka rack-awareness enabled (KIP-392 follower fetching)', { rackId });
   }
 
-  // ── Audit writer (R3/REC-1: pixel.brand_mismatch) ───────────────────────────
-  // audit_log has RLS DISABLED (cross-brand SoR); isolation is the mandatory
-  // WHERE brand_id filter inside DbAuditWriter. brain_app holds INSERT+SELECT on it.
-  const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
+  // ── Worker PG pool (health probe + RLS fail-closed guard) ───────────────────
   // P2.3: every worker pool uses dbUrl (must be brain_app, NOBYPASSRLS). Fail closed at startup if
-  // it points at the superuser 'brain' — the worker writes Bronze/ledgers/consent under per-brand
+  // it points at the superuser 'brain' — the worker writes ledgers/consent under per-brand
   // GUCs and a bypassing role would silently defeat FORCE RLS on those tables (the dev footgun).
+  // (ADR-0015 WS2: the pixel.brand_mismatch audit writer left with the deleted pixel-lane
+  // consumer — brand-mismatch rows are now dropped at the Silver keystone gate.)
+  const auditPool = new Pool({ connectionString: dbUrl, max: 3, idleTimeoutMillis: 30_000 });
   await assertRoleEnforcesRls(auditPool, { label: 'stream-worker pool (dbUrl)' });
-  const auditDbClient: AuditDbClient = {
-    query: async (sql, params) => {
-      const r = await auditPool.query(sql, params);
-      return { rows: r.rows as never[], rowCount: r.rowCount };
-    },
-  };
-  const auditWriter = new DbAuditWriter(auditDbClient);
 
   // ── Durable retry counter (T2-8) ────────────────────────────────────────────
   // ONE shared Redis-backed counter for every consumer. Replaces the per-instance in-memory
@@ -258,44 +245,15 @@ export async function main(): Promise<void> {
     log,
   });
 
-  // ── Bronze pipeline (LIVE collector lane — R2/R3 gate ON) ───────────────────
-  const dedup = new RedisDedupAdapter(redisUrl);
-  const bronze = new BronzeRepository(dbUrl);
-  // Slice 6 (ADR-0002): the PG Bronze write switch — default ENABLED. Set BRONZE_PG_WRITE_ENABLED=false
-  // ONLY to retire the PG write (Spark→Iceberg becomes the sole Bronze SoR). Do NOT flip until readers
-  // are on Iceberg (Slice 5) AND the Spark writer enforces R2/R3 + quarantine (it does not yet) AND a
-  // parity soak is green — see ProcessEventUseCase.pgWriteEnabled.
-  // DB-AUDIT C4: PG bronze write is RETIRED — default OFF (opt-in). Spark→Iceberg is the sole Bronze SoR
-  // and data_plane.bronze_events is dropped (0070). Set BRONZE_PG_WRITE_ENABLED=true only as a legacy escape.
-  const pgWriteEnabled = cfg.BRONZE_PG_WRITE_ENABLED;
-  if (!pgWriteEnabled) log.info('PG bronze_events write RETIRED (default) — Iceberg (Spark) is the sole Bronze SoR');
-  // enforceTenantDerivation defaults TRUE: derive brand_id from install_token, quarantine
-  // on unresolved/mismatch/absent-consent; audit writes pixel.brand_mismatch (R2/R3).
-  const useCase = new ProcessEventUseCase(dedup, bronze, auditWriter, true, pgWriteEnabled);
-  const consumer = new CollectorEventConsumer(kafka, useCase, topic, groupId, retryCounter);
-
-  // ── Bronze bridges (P0 — restore severed server-trusted-event landings) ──────
-  // Shopflo checkout-abandoned + GoKwik RTO-Predict events carry NO install_token; the pixel lane
-  // above quarantines them, so they never reached Bronze and their read seams were permanent
-  // no_data. These separate consumer groups land them in Bronze with enforceTenantDerivation=FALSE
-  // (brand_id is already server-trusted — the webhook/emit derived it from the connector row, MT-1).
-  // One shared ProcessEventUseCase + dedup + bronze (stateless). WIRED: do NOT remove without
-  // updating the corresponding *-bronze-wiring.e2e.test.ts.
-  const bridgeProcessEvent = new ProcessEventUseCase(
-    dedup, bronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
-  );
-  // Registry-driven Bronze bridges (re-platform Phase B). One EventBronzeBridgeConsumer per entry in
-  // BRONZE_BRIDGES (shopflo checkout, gokwik rto-predict, shiprocket shipment,
-  // order.live) — each lands a server-trusted event_name into Bronze on its own consumer group
-  // (enforceTenantDerivation=false). Built, started, and stopped as ONE array below, so a new
-  // connector's Bronze landing is a single registry entry, never three hand-edits (kills the
-  // "wired-to-nothing" anti-pattern). See bronzeBridges.ts + bronzeBridges.test.ts.
-  const bronzeBridgeConsumers = buildBronzeBridges({
-    kafka,
-    processEvent: bridgeProcessEvent,
-    topic,
-    retryCounter,
-  });
+  // ── ADR-0015 WS2: SINGLE BRONZE WRITER — no Bronze pipeline in this process ─────────────
+  // The former CollectorEventConsumer (pixel lane, R2/R3 gate + quarantine) and the registry-driven
+  // EventBronzeBridgeConsumer set (server-trusted lanes) are DELETED. The Kafka Connect Iceberg
+  // sink (ADR-0010) lands the whole collector topic; the Silver keystone
+  // (db/iceberg/duckdb/silver/silver_collector_event.py) enforces the SAME R2 install_token
+  // tenant-derivation + R3 consent gate + server-trusted lane split and MERGEs on
+  // (brand_id, event_id). No re-emit is needed: every server-trusted event is produced to the
+  // collector topic by its origin (core webhook strategies, repull/backfill jobs), so it is
+  // already on the log Connect lands.
 
   // ── Identity bridge (D-7: same process, no new deployable) ──────────────────
   // SaltProvider: dev uses LocalSecretsProvider (env var holds 64-hex salt directly).
@@ -568,23 +526,11 @@ export async function main(): Promise<void> {
     kafka, eraseSubjectUseCase, topic, erasureOrchestratorGroupId, retryCounter,
   );
 
-  // ── Backfill lane (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ────────────────────────
-  // Separate topic (backfillTopic) + separate consumer group (backfillGroupId)
-  // → structurally impossible to lag the live consumer group (SI-3 / D-3).
-  // Bronze write reuses the same ProcessEventUseCase (same code path, different lane).
-  // MEDALLION REALIGNMENT (Epic 1): the backfill→PG-ledger wire is removed; backfilled orders reach
-  // the recognition ledger by landing in Bronze (dbt builds gold_revenue_ledger from there).
-  const backfillDedup = new RedisDedupAdapter(redisUrl);
-  const backfillBronze = new BronzeRepository(dbUrl);
-  // Backfill-order lane: enforceTenantDerivation=FALSE — these events carry NO install_token
-  // (event_name='order.backfill.v1'); their brand_id is already server-trusted (derived from
-  // the authenticated connector). The R2 browser-spoofing gate does not apply (architecture §5).
-  const backfillProcessEvent = new ProcessEventUseCase(
-    backfillDedup, backfillBronze, undefined, /* enforceTenantDerivation */ false, pgWriteEnabled,
-  );
-  const backfillConsumer = new BackfillOrderConsumer(
-    kafka, backfillProcessEvent, backfillTopic, backfillGroupId, retryCounter,
-  );
+  // ── Backfill lane (ADR-0015 WS2): the BackfillOrderConsumer is DELETED ─────
+  // The Kafka Connect collector sink lands the backfill topic ({env}.collector.order.backfill.v1
+  // is in its `topics` list) into the SAME collector_events_connect table, and order.backfill.v1
+  // is in the Silver keystone's SERVER_TRUSTED lane — the lane isolation now lives entirely in
+  // Kafka (separate topic) + Connect (one writer).
 
   // ── Real-time touchpoint cache (SPEC: A.4 — flag identity.tp_cache, DEFAULT OFF) ──────────
   // A NEW consumer group on the SAME live collector topic (touchpoint content) PLUS the
@@ -776,7 +722,6 @@ export async function main(): Promise<void> {
     // consumers down (liveness keeps answering — the process is still alive and draining).
     consumersReady = false;
     await Promise.all([
-      consumer.stop(),
       identityConsumer.stop(),
       identityRecomputeConsumer.stop(),
       restitchDirtyConsumer.stop(),
@@ -785,10 +730,7 @@ export async function main(): Promise<void> {
       consentSuppressorConsumer.stop(),
       capiDeletionConsumer.stop(),
       erasureOrchestratorConsumer.stop(),
-      backfillConsumer.stop(),
       touchpointCacheConsumer.stop(),
-      // All registry-driven Bronze bridges (incl. live-order, which was previously missing a stop).
-      ...bronzeBridgeConsumers.map((c) => c.stop()),
       syncRequestClaimer.stop(),
       backfillClaimerJob.stop(),
       dqChecker.stop(),
@@ -808,11 +750,7 @@ export async function main(): Promise<void> {
     await capiDeletionRepo.end();
     await erasureRepo.end();
     await retryCounter.quit();
-    await dedup.quit();
-    await backfillDedup.quit();
     await tpCacheStore.quit().catch(() => undefined);
-    await bronze.end();
-    await backfillBronze.end();
     await auditPool.end();
     await identityEventProducer.disconnect().catch(() => undefined);
     await cacheEvictionRedis.quit().catch(() => undefined);
@@ -830,9 +768,7 @@ export async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  log.info(`starting — topic=${topic} group=${groupId} brokers=${brokers.join(',')}`);
-  await consumer.start();
-  log.info('bronze consumer running');
+  log.info(`starting — topic=${topic} brokers=${brokers.join(',')} (single Bronze writer = Kafka Connect, ADR-0015 WS2)`);
 
   log.info(`starting identity bridge — topic=${topic} group=${identityGroupId}`);
   await identityConsumer.start();
@@ -894,13 +830,6 @@ export async function main(): Promise<void> {
   await erasureOrchestratorConsumer.start();
   log.info('erasure orchestrator consumer running');
 
-  // ── Backfill lane consumer (ADR-BF-7 / ADR-BF-8 / ADR-BF-9) ───────────────
-  // Separate from live lane: backfillTopic != topic → Redpanda isolation guarantee.
-  // stream-worker-backfill consumer group offset lag is independent of stream-worker-live.
-  log.info(`starting backfill consumer — topic=${backfillTopic} group=${backfillGroupId}`);
-  await backfillConsumer.start();
-  log.info('backfill consumer running');
-
   // ── Touchpoint-cache consumer (SPEC: A.4 MANDATORY WIRE) ──────────────────────
   // New group on the live collector topic + identity.merged.v1. Per-brand gated by
   // identity.tp_cache (DEFAULT OFF). WIRED HERE: do NOT remove without updating
@@ -910,21 +839,12 @@ export async function main(): Promise<void> {
   log.info('touchpoint-cache consumer running');
 
   // ── MEDALLION REALIGNMENT (Epic 1): live-ledger / settlement / gokwik-awb ledger bridges REMOVED.
-  // The recognition ledger is built from Bronze by dbt (recognition-refresh). See the wiring note above.
+  // The recognition ledger is built from Bronze (silver_order_recognition → gold_revenue_ledger).
 
-  // (Spend reaches Bronze via the server-trusted lane in the Spark sink — no PG consumer here.)
-
-  // ── Bronze bridge consumers (registry-driven — re-platform Phase B) ─────────
-  // Start every bridge in BRONZE_BRIDGES on its own consumer group. The loop guarantees every
-  // registry entry is started (no per-bridge hand-wiring to forget). WIRED: the set is asserted by
-  // bronzeBridges.test.ts; the per-source landings are covered by *-bronze-wiring.e2e.test.ts.
-  for (let i = 0; i < bronzeBridgeConsumers.length; i++) {
-    const def = BRONZE_BRIDGES[i]!;
-    // intentional raw: groupIdEnv is a DYNAMIC env-var name from the registry, not a fixed field.
-    log.info(`starting bronze bridge ${def.eventName} — topic=${topic} group=${process.env[def.groupIdEnv] ?? def.defaultGroupId}`);
-    await bronzeBridgeConsumers[i]!.start();
-    log.info(`bronze bridge ${def.eventName} consumer running`);
-  }
+  // ── ADR-0015 WS2: the registry-driven Bronze bridge consumers are REMOVED (see the single-writer
+  // note above) — their event lanes land via Kafka Connect + the Silver keystone's SERVER_TRUSTED
+  // split; the per-source landings stay covered by *-bronze-wiring.e2e.test.ts (produce → Connect →
+  // Iceberg, no stream-worker involvement).
 
   // All consumers are up — flip readiness so the orchestrator routes work to this instance.
   consumersReady = true;

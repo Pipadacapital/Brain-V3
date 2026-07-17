@@ -5,3 +5,6 @@
 # replay-identity CLI: prints the machine-readable JSON replay report to stdout for the
 # operator/pipeline to capture (paired with a structured log.info of the same report).
 apps/stream-worker/src/jobs/identity/replay-identity.ts
+# backfill-identity CLI: same pattern — prints the machine-readable JSON backfill report to
+# stdout for the operator/pipeline (paired with a structured log.info of the same report).
+apps/stream-worker/src/jobs/identity/backfill-identity.ts

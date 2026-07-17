@@ -41,9 +41,9 @@ let repo: SyncRunRepository;
 
 // ── Test fixtures ──────────────────────────────────────────────────────────────
 // Private UUIDs — hex-only, valid UUIDv4 format, never used by any other suite.
-const SR_BRAND_A = 'sr000001-0a00-4a00-8a00-000000000001';
-const SR_BRAND_B = 'sr000002-0b00-4b00-8b00-000000000002';
-const SR_CI_A    = 'sr000003-0c00-4c00-8c00-000000000003';
+const SR_BRAND_A = '5a000001-0a00-4a00-8a00-000000000001';
+const SR_BRAND_B = '5a000002-0b00-4b00-8b00-000000000002';
+const SR_CI_A    = '5a000003-0c00-4c00-8c00-000000000003';
 
 // ── Setup / teardown ──────────────────────────────────────────────────────────
 
@@ -125,7 +125,8 @@ describe('SyncRunRepository — start→succeed lifecycle', () => {
 
     // The terminal row carries rows_ingested.
     const succeededRow = allRows.rows.find((r) => r.status === 'succeeded');
-    expect(succeededRow?.rows_ingested).toBe(42);
+    // rows_ingested is a bigint column → node-postgres returns it as a string; coerce for the compare.
+    expect(Number(succeededRow?.rows_ingested)).toBe(42);
   });
 });
 

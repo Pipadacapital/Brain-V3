@@ -117,3 +117,60 @@ describe('AcceptEventUseCase — disk fallback (log down)', () => {
     await expect(uc.execute({}, 'corr-req')).rejects.toBeInstanceOf(FallbackSaturatedError);
   });
 });
+
+describe('AcceptEventUseCase — micro-batching (M1)', () => {
+  it('coalesces concurrent execute() calls into ONE produceBatch (each still ACKed produced)', async () => {
+    const { producer, produced } = stubProducer();
+    const { fallback } = stubFallback();
+    const uc = new AcceptEventUseCase(producer, fallback, { lingerMs: 5, maxEvents: 500 });
+
+    const results = await Promise.all([
+      uc.execute({ brand_id: 'b-1', event_id: 'e-1' }, 'c1'),
+      uc.execute({ brand_id: 'b-1', event_id: 'e-2' }, 'c2'),
+      uc.execute({ brand_id: 'b-2', event_id: 'e-3' }, 'c3'),
+    ]);
+
+    expect(produced).toHaveLength(1); // ONE broker round-trip for all three accepts
+    expect(produced[0]!.map((m) => m.eventId)).toEqual(['e-1', 'e-2', 'e-3']); // accept order kept
+    for (const r of results) expect(r.durability).toBe('produced');
+  });
+
+  it('a failed coalesced flush routes the WHOLE batch to the WAL in one append (existing path)', async () => {
+    const { producer } = stubProducer({ failProduce: true });
+    const { fallback, appended } = stubFallback();
+    const uc = new AcceptEventUseCase(producer, fallback, { lingerMs: 5, maxEvents: 500 });
+
+    const results = await Promise.all([uc.execute({ event_id: 'e-1' }, 'c1'), uc.execute({ event_id: 'e-2' }, 'c2')]);
+
+    expect(appended).toHaveLength(1); // one fsync'd WAL append for the coalesced batch
+    expect(appended[0]!.map((m) => m.eventId)).toEqual(['e-1', 'e-2']);
+    for (const r of results) expect(r.durability).toBe('fallback');
+  });
+
+  it('lingerMs=0 BYPASSES the batcher — one produceBatch per request (safety valve)', async () => {
+    const { producer, produced } = stubProducer();
+    const { fallback } = stubFallback();
+    const uc = new AcceptEventUseCase(producer, fallback, { lingerMs: 0, maxEvents: 500 });
+
+    await Promise.all([uc.execute({ event_id: 'e-1' }, 'c1'), uc.execute({ event_id: 'e-2' }, 'c2')]);
+
+    expect(produced).toHaveLength(2); // no coalescing — pre-batcher behavior restored
+  });
+
+  it('executeMany routes through the batcher and stays atomic at request granularity', async () => {
+    const { producer, produced } = stubProducer();
+    const { fallback } = stubFallback();
+    const uc = new AcceptEventUseCase(producer, fallback, { lingerMs: 5, maxEvents: 500 });
+
+    const [single, many] = await Promise.all([
+      uc.execute({ event_id: 'e-0' }, 'c0'),
+      uc.executeMany([{ n: 1 }, { n: 2 }], 'c1'),
+    ]);
+
+    expect(produced).toHaveLength(1); // /collect + /batch coalesced into one flush
+    expect(produced[0]).toHaveLength(3);
+    expect(single.durability).toBe('produced');
+    expect(many.accepted).toBe(2);
+    expect(many.durability).toBe('produced');
+  });
+});

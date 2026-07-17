@@ -18,10 +18,14 @@
 import { stampEnvelope, type IngestEnvelope } from '../domain/ingest/value-objects/envelope.js';
 import type { CollectorKafkaProducer, ProduceMessage } from '../infrastructure/kafka-producer.js';
 import type { LocalDiskFallback } from '../infrastructure/local-disk-fallback.js';
+import { ProduceMicroBatcher, type MicroBatcherConfig } from '../infrastructure/produce-micro-batcher.js';
 import { incrementCounter } from '@brain/observability';
 import { log } from '../log.js';
 
 export type AcceptDurability = 'produced' | 'fallback';
+
+/** Default micro-batching (M1): 5ms linger / 500-event trigger — INGEST_LINGER_MS overrides. */
+const DEFAULT_BATCHING: MicroBatcherConfig = { lingerMs: 5, maxEvents: 500 };
 
 export interface AcceptResult {
   receivedAt: string;
@@ -58,17 +62,29 @@ function toProduceMessage(envelope: IngestEnvelope, requestCorrelationId: string
 }
 
 export class AcceptEventUseCase {
+  /**
+   * Micro-batcher (M1): coalesces concurrent accepts into one produceBatch through the SAME
+   * anchor (produce-or-WAL) path — the ACK contract is unchanged, each request awaits its
+   * batch's flush. null when lingerMs=0 (INGEST_LINGER_MS=0 safety valve): every request
+   * anchors directly, restoring the one-produce-per-request behavior.
+   */
+  private readonly batcher: ProduceMicroBatcher<AcceptDurability> | null;
+
   constructor(
     private readonly producer: CollectorKafkaProducer,
     private readonly fallback: LocalDiskFallback,
-  ) {}
+    batching: MicroBatcherConfig = DEFAULT_BATCHING,
+  ) {
+    this.batcher =
+      batching.lingerMs === 0 ? null : new ProduceMicroBatcher((m) => this.anchor(m), batching);
+  }
 
   async execute(rawBody: Record<string, unknown>, correlationId: string): Promise<AcceptResult> {
     // Step 1: stamp received_at (the only transformation allowed pre-ACK).
     const envelope = stampEnvelope(rawBody);
 
     // Step 2: produce-ack or fallback-append — one of them commits before the ACK.
-    const durability = await this.anchor([toProduceMessage(envelope, correlationId)]);
+    const durability = await this.coalescedAnchor([toProduceMessage(envelope, correlationId)]);
 
     return { receivedAt: envelope.receivedAt, durability };
   }
@@ -81,12 +97,17 @@ export class AcceptEventUseCase {
   async executeMany(rawBodies: Record<string, unknown>[], correlationId: string): Promise<AcceptManyResult> {
     const envelopes = rawBodies.map(stampEnvelope);
     const messages = envelopes.map((e) => toProduceMessage(e, correlationId));
-    const durability = await this.anchor(messages);
+    const durability = await this.coalescedAnchor(messages);
     return {
       accepted: envelopes.length,
       receivedAt: envelopes[envelopes.length - 1]?.receivedAt ?? '',
       durability,
     };
+  }
+
+  /** Anchor via the micro-batcher when enabled; direct when bypassed (lingerMs=0). */
+  private coalescedAnchor(messages: ProduceMessage[]): Promise<AcceptDurability> {
+    return this.batcher ? this.batcher.enqueue(messages) : this.anchor(messages);
   }
 
   /** Produce first; on failure fall back to the disk WAL. Throws FallbackSaturatedError at cap. */

@@ -42,6 +42,32 @@ export const CollectorEnvSchema = CommonEnvSchema.extend({
   /** Retry-After (seconds) returned on a 503 INGEST_BACKPRESSURE (log down AND WAL saturated). */
   INGEST_FALLBACK_RETRY_AFTER_SECONDS: z.coerce.number().int().min(1).default(5),
   /**
+   * kafkajs client requestTimeout (ms) for the collector producer. The kafkajs default (30s)
+   * turns a slow/hung broker into 30s-per-attempt request pileup on the accept hot path; 4s
+   * keeps a single broker round-trip bounded while staying far above healthy p99 produce
+   * latency. Retries stay in the client retry config (bounded, preserves idempotence — kafkajs
+   * retries within send() and the idempotent producer dedups broker-side).
+   */
+  INGEST_PRODUCE_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(100).default(4_000),
+  /**
+   * Per-produce hard deadline (ms) on the accept path — a bounded race around producer.send().
+   * Must sit ABOVE INGEST_PRODUCE_REQUEST_TIMEOUT_MS (one full request attempt fits inside)
+   * and below any client-facing fetch timeout. On expiry the batch routes to the disk WAL
+   * exactly like a produce failure; a late duplicate produce after the deadline is absorbed
+   * by Bronze-compaction + Silver dedup (ADR-0015 D2).
+   */
+  INGEST_PRODUCE_DEADLINE_MS: z.coerce.number().int().min(100).default(6_000),
+  /**
+   * Micro-batcher linger (ms): concurrent accepts coalesce into ONE produceBatch flushed every
+   * lingerMs or at INGEST_BATCH_MAX_EVENTS, whichever first. The accept handler awaits its
+   * batch's flush, so the produce-ack-before-HTTP-200 contract is unchanged (latency cost ≤
+   * linger). 0 = bypass the batcher entirely (safety valve: one produceBatch per request,
+   * the pre-batcher behavior).
+   */
+  INGEST_LINGER_MS: z.coerce.number().int().min(0).default(5),
+  /** Micro-batcher size trigger: a pending coalesced batch this large flushes immediately. */
+  INGEST_BATCH_MAX_EVENTS: z.coerce.number().int().min(1).default(500),
+  /**
    * Bounded deadline (ms) for the final WAL flush on SIGTERM/SIGINT (ADR-0015 WAL durability
    * posture: drain+alert, not PVC). On shutdown the collector fails readiness, stops accepting,
    * then attempts ONE flushOnce() bounded by this deadline BEFORE disconnecting the producer.

@@ -197,6 +197,10 @@ export async function main(): Promise<void> {
     // brand keeps plain brand_id keys (zero behavior change until a brand is listed).
     hotBrandIds: cfg.INGEST_HOT_BRAND_IDS,
     hotBrandBuckets: cfg.INGEST_HOT_BRAND_BUCKETS,
+    // H3: bounded broker round-trips + a hard per-produce deadline — a post-boot slow/hung
+    // broker fails fast to the WAL instead of piling requests behind maxInFlightRequests=1.
+    requestTimeoutMs: cfg.INGEST_PRODUCE_REQUEST_TIMEOUT_MS,
+    produceDeadlineMs: cfg.INGEST_PRODUCE_DEADLINE_MS,
     ...(cfg.KAFKA_SASL_USERNAME && cfg.KAFKA_SASL_PASSWORD
       ? {
           sasl: {
@@ -220,7 +224,13 @@ export async function main(): Promise<void> {
   await fallback.init();
 
   // ── 2. Use-cases ─────────────────────────────────────────────────────────────
-  const acceptUseCase = new AcceptEventUseCase(kafkaProducer, fallback);
+  // M1 micro-batching: concurrent accepts coalesce into one produceBatch per linger window
+  // (ACK contract unchanged — each request still awaits its batch's produce-ack/WAL anchor).
+  // INGEST_LINGER_MS=0 bypasses the batcher entirely (one produce per request, safety valve).
+  const acceptUseCase = new AcceptEventUseCase(kafkaProducer, fallback, {
+    lingerMs: cfg.INGEST_LINGER_MS,
+    maxEvents: cfg.INGEST_BATCH_MAX_EVENTS,
+  });
 
   // ── 3. Kafka producer boot connect — bounded retry, NON-fatal ────────────────
   // The accept path must 200 via the WAL even when Kafka is down at boot; the fallback

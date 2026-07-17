@@ -146,16 +146,16 @@ topics:
                             #          store with a 15-day collector-lane row-TTL; the log is
                             #          only a delivery buffer, not the replay window)
     standardMs: 604800000   # 7 days  — canonical + control lanes
-    longMs: 2592000000      # 30 days — DLQ / order-backfill (replay window)
+    longMs: 2592000000      # 30 days — order-backfill (replay window)
 
-  # Collector lane (+ DLQ / order-backfill). retention: short | standard | long.
+  # Collector lane (+ order-backfill). retention: short | standard | long.
   # ADR-0015: collector.event.v1.quarantine is RETIRED — gate-failure quarantine lives in Silver
-  # (silver_quarantine); .dlq stays for the erasure orchestrator (the one consumer group on the
-  # live collector topic).
+  # (silver_quarantine). WS4 completion: collector.event.v1.dlq is RETIRED too — the erasure
+  # orchestrator (the last stream-worker Kafka consumer) is a PG request-driven poll lane
+  # (ops.erasure_request_queue); poison requests park as status='dead' rows.
   collector:
     - { suffix: "collector.event.v1",            retention: "short" }
     - { suffix: "collector.order.backfill.v1",   retention: "long" }
-    - { suffix: "collector.event.v1.dlq",        retention: "long" }
 
   # 9 connector raw lanes (Kafka Connect Iceberg sink — ADR-0010). Suffix -> <lane>.raw.v1
   rawLanes:

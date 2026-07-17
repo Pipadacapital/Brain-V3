@@ -376,12 +376,13 @@ services:
             --config retention.ms="$$3"
         }
         for PFX in dev prod; do
-          # Collector lane (+ DLQ / order-backfill). ADR-0015: the .quarantine topic is RETIRED —
-          # gate-failure quarantine lives in Silver (silver_quarantine); .dlq stays for the
-          # erasure orchestrator (the one consumer group on the live collector topic).
+          # Collector lane (+ order-backfill). ADR-0015: the .quarantine topic is RETIRED —
+          # gate-failure quarantine lives in Silver (silver_quarantine). WS4 completion: the
+          # .dlq topic is RETIRED too — the erasure orchestrator (the last stream-worker Kafka
+          # consumer) is a PG request-driven poll lane (ops.erasure_request_queue); poison
+          # requests park as status='dead' rows. NO stream-worker Kafka consumers remain.
           mk "$$PFX.collector.event.v1"            12 604800000
           mk "$$PFX.collector.order.backfill.v1"   12 2592000000
-          mk "$$PFX.collector.event.v1.dlq"        12 2592000000
           # 9 connector raw lanes (Kafka Connect Iceberg sink raw lanes — ADR-0010)
           for LANE in shopify.orders woocommerce.orders meta.spend google.spend \
                       ga4.rows shiprocket.shipments gokwik.events shopflo.checkout \

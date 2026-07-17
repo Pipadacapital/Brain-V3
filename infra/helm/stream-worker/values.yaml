@@ -99,17 +99,16 @@ autoscaling:
     enabled: false
     cooldownPeriod: 600            # mirrors the HPA scaleDown stabilization (rebalances are disruptive)
     kafka:
-      # Plaintext in-cluster listener (same value the app's KAFKA_BROKERS uses in that env).
+      # VESTIGIAL (ADR-0015 WS4 completion): the stream-worker runs NO Kafka consumers — the
+      # live-lane group 'stream-worker-live' was retired by WS2 (Kafka Connect is the sole
+      # Bronze writer) and the erasure orchestrator group 'stream-worker-erasure-orchestrator'
+      # is gone entirely (the erasure lane is a PG poll over ops.erasure_request_queue). There
+      # is NO consumer group to lag-scale on; keda.enabled must stay false unless a future ADR
+      # reintroduces a consumer (set consumerGroup/topic then). CPU HPA is the only scaler.
       bootstrapServers: ""
-      # ADR-0015: the live-lane group 'stream-worker-live' is RETIRED (CollectorEventConsumer
-      # removed; Kafka Connect is the sole Bronze writer). The one remaining live-topic group
-      # is the erasure orchestrator (packages/config ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID).
-      consumerGroup: stream-worker-erasure-orchestrator
-      # The live collector topic (env-prefixed; strimzi chart `prefix`).
+      consumerGroup: ""
       topic: ""
-      # Scale out when average per-replica lag on the topic exceeds this many messages.
       lagThreshold: "1000"
-      # Never scale past partition count on idle consumers' account (KEDA also caps at maxReplicas).
       allowIdleConsumers: "false"
 
 # ── Wave-2 workload hardening (AUD-OPS-001/002/004, AUD-INFRA-022) ────────────

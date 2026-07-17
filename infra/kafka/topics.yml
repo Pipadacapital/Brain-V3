@@ -43,32 +43,20 @@ topics:
   # RETIRED. Their only writers were the deleted stream-worker Bronze consumers (WS2): the
   # order-backfill lane is landed by the Kafka Connect sink (no consumer left to DLQ it), and the
   # parsed-but-failed-gate quarantine moved to the Silver keystone (silver_collector_event.py →
-  # brain_silver.silver_quarantine, replayable). The .dlq below stays: it serves the erasure
-  # orchestrator — the one sanctioned consumer group on the live collector topic.
-
-  - name: "{env}.collector.event.v1.dlq"
-    lane: dlq
-    partitions: 12
-    replication_factor: 1
-    config:
-      retention.ms: "2592000000"         # 30 days (DLQ — enough for investigation)
-      cleanup.policy: "delete"
-      compression.type: "snappy"
-    description: "Dead-letter queue for the erasure orchestrator (the one remaining consumer group on the live collector topic) — poison messages after MAX_RETRY, replayed via dlq-redrive"
+  # brain_silver.silver_quarantine, replayable).
+  # ADR-0015 WS4 COMPLETION: {env}.collector.event.v1.dlq is RETIRED too — the erasure
+  # orchestrator (the last stream-worker Kafka consumer) is now a PG request-driven poll lane
+  # (ops.erasure_request_queue, migration 0140); poison requests park as status='dead' rows.
+  # No .dlq topics remain.
 
 consumer_groups:
-  # ADR-0015 WS3/WS4 (identity in Silver): the stream-worker's identity/consent/CAPI/ledger/
-  # cache/touchpoint consumer groups are RETIRED — identity resolves in the Silver batch stage
+  # ADR-0015 WS3/WS4 (identity in Silver + PG-driven erasure): ALL stream-worker consumer
+  # groups are RETIRED — identity resolves in the Silver batch stage
   # (apps/stream-worker/src/jobs/silver-identity), which also folds consent projection, CAPI
-  # deletion triggering, the dirty-set writes, and direct serving-cache eviction. The erasure
-  # orchestrator is the ONLY remaining group on the live collector topic.
-  - id: "stream-worker-erasure-orchestrator"
-    topic: "{env}.collector.event.v1"
-    description: "DPDP/PDPL crypto-shred erasure orchestrator (ERASURE_ORCHESTRATOR_CONSUMER_GROUP_ID)"
-
-  - id: "brain.stream-worker.dlq-redrive"
-    topic: "{env}.collector.event.v1.dlq"
-    description: "DLQ redrive — operator CLI replays dead-lettered messages back to origin topic (apps/stream-worker/src/jobs/dlq-redrive)"
+  # deletion triggering, the dirty-set writes, and direct serving-cache eviction; the erasure
+  # orchestrator (formerly group stream-worker-erasure-orchestrator, the last one) drains
+  # ops.erasure_request_queue instead of the log. The stream-worker runs NO Kafka consumers.
+  # Kafka Connect's sink connectors manage their own connect-* groups (not listed here).
 
 schema_registry:
   compatibility: FULL_TRANSITIVE

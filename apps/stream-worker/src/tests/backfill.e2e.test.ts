@@ -87,7 +87,7 @@ let infraUp = false;       // lakehouse reachable? (gates the Bronze-landing tes
 
 /**
  * Build a CollectorEventV1 envelope for an order.backfill.v1 event.
- * Used for direct ProcessEventUseCase testing (bypasses Kafka).
+ * Produced to the backfill topic; Kafka Connect lands it (ADR-0015 WS2 single writer).
  */
 function makeBackfillEventBuffer(params: {
   eventId: string;

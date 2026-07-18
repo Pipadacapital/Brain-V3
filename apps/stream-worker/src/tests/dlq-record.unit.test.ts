@@ -2,36 +2,25 @@
  * dlq-record.unit.test.ts — Unit tests for connector_dlq_record born-secure RLS invariant
  * and idempotent DLQ persistence (migration 0094 / DlqRecordRepository).
  *
- * Two test suites:
+ * Born-secure invariant (static schema assertion):
+ * Verifies that the DlqRecordRepository's INSERT path always sets the brand GUC before
+ * writing, and that a second insert with the same (source_topic, partition, kafka_offset)
+ * returns { inserted: false } (idempotency). Uses a mock pg.Pool that intercepts queries
+ * and asserts the correct SET LOCAL brand-GUC statement precedes every INSERT.
  *
- * 1. Born-secure invariant (static schema assertion):
- *    Verifies that the DlqRecordRepository's INSERT path always sets the brand GUC before
- *    writing, and that a second insert with the same (source_topic, partition, kafka_offset)
- *    returns { inserted: false } (idempotency). Uses a mock pg.Pool that intercepts queries
- *    and asserts the correct SET LOCAL brand-GUC statement precedes every INSERT.
+ * (The former Suite 2 — DlqRedriver persistence wiring — is gone with the Kafka DLQ redrive
+ * machinery: ADR-0015 WS4 removed the last stream-worker Kafka consumer, so no `.dlq` Kafka
+ * topics remain. DlqRecordRepository itself STAYS: it is the PG dead-letter sink of the
+ * generic ingestion-backfill framework — connectors.connector_dlq_record.)
  *
- * 2. DlqRedriver persistence wiring:
- *    Verifies that when DlqRedriver scans a DLQ message, it calls dlqRecordRepo.persist()
- *    with the correct fields — idempotent on the Kafka address triple, errors swallowed.
- *
- * No live database required — all pg and Kafka seams are mocked.
+ * No live database required — the pg seam is mocked.
  */
 
-import { describe, it, expect, vi, type Mock } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Pool, PoolClient, QueryResult } from 'pg';
 import { DlqRecordRepository, deriveDlqId, type DlqRecordInput } from '../infrastructure/pg/DlqRecordRepository.js';
-import {
-  DlqRedriver,
-  H_ORIGINAL_TOPIC,
-  H_DLQ_REASON,
-} from '../infrastructure/kafka/DlqRedriver.js';
-import type { IHeaders } from 'kafkajs';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function h(o: Record<string, string>): IHeaders {
-  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Buffer.from(v)]));
-}
 
 type QueryCall = { sql: string; params: unknown[] };
 
@@ -68,7 +57,7 @@ function buildMockPool(insertRowCount: number): { pool: Pool; calls: QueryCall[]
   return { pool, calls };
 }
 
-// ── Suite 1: DlqRecordRepository — RLS GUC discipline + idempotency ──────────
+// ── DlqRecordRepository — RLS GUC discipline + idempotency ───────────────────
 
 describe('DlqRecordRepository — born-secure RLS + idempotent insert', () => {
   const validInput: DlqRecordInput = {
@@ -177,184 +166,5 @@ describe('DlqRecordRepository — born-secure RLS + idempotent insert', () => {
 
     // ROLLBACK must have been called.
     expect(rollbackSpy).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ── Suite 2: DlqRedriver — persistence wiring ────────────────────────────────
-
-describe('DlqRedriver — dlqRecordRepo persistence wiring', () => {
-  /**
-   * Build a minimal KafkaJS mock that exposes a deliverMessage helper.
-   */
-  function buildKafkaMock() {
-    let messageHandler: ((p: {
-      topic: string;
-      partition: number;
-      message: {
-        offset: string;
-        key: Buffer | null;
-        value: Buffer | null;
-        headers?: IHeaders;
-      };
-    }) => Promise<void>) | null = null;
-
-    const consumer = {
-      connect:     vi.fn().mockResolvedValue(undefined),
-      disconnect:  vi.fn().mockResolvedValue(undefined),
-      subscribe:   vi.fn().mockResolvedValue(undefined),
-      stop:        vi.fn().mockResolvedValue(undefined),
-      commitOffsets: vi.fn().mockResolvedValue(undefined),
-      run: vi.fn().mockImplementation(
-        async (opts: { eachMessage: typeof messageHandler }) => {
-          messageHandler = opts.eachMessage;
-        },
-      ),
-    };
-
-    const producer = {
-      connect:    vi.fn().mockResolvedValue(undefined),
-      disconnect: vi.fn().mockResolvedValue(undefined),
-      send:       vi.fn().mockResolvedValue(undefined),
-    };
-
-    const kafka = {
-      consumer: vi.fn().mockReturnValue(consumer),
-      producer: vi.fn().mockReturnValue(producer),
-    };
-
-    return {
-      kafka: kafka as unknown as import('kafkajs').Kafka,
-      producer: producer as unknown as import('kafkajs').Producer,
-      async deliver(payload: {
-        topic: string;
-        partition: number;
-        message: {
-          offset: string;
-          key: Buffer | null;
-          value: Buffer | null;
-          headers?: IHeaders;
-        };
-      }): Promise<void> {
-        if (!messageHandler) throw new Error('run() not called yet');
-        await messageHandler(payload);
-      },
-    };
-  }
-
-  it('calls dlqRecordRepo.persist() for each scanned message with correct fields', async () => {
-    const persistSpy = vi.fn().mockResolvedValue({ inserted: true });
-    const mockRepo = { persist: persistSpy } as unknown as DlqRecordRepository;
-
-    const { kafka, producer, deliver } = buildKafkaMock();
-    const redriver = new DlqRedriver(
-      kafka,
-      producer,
-      'test-group',
-      () => '2026-06-22T00:00:00.000Z',
-      mockRepo,
-    );
-
-    const dlqTopic = 'dev.collector.event.v1.dlq';
-    const brandId = 'aaaa0001-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const payload = { brand_id: brandId, schema_version: '1', event_type: 'page.viewed' };
-
-    // Start the redrive session (will idle-timeout after 10ms).
-    const redrivePromise = redriver.redrive(dlqTopic, {
-      dryRun: true,
-      idleMs: 10,
-      groupId: 'test-group',
-    });
-
-    // Yield to the microtask queue so redrive()'s async inits (connect/subscribe/run) execute
-    // before we attempt to deliver a message (run() must be called first to register the handler).
-    await new Promise<void>((r) => setTimeout(r, 0));
-
-    // Deliver a synthetic DLQ message.
-    await deliver({
-      topic: dlqTopic,
-      partition: 2,
-      message: {
-        offset: '77',
-        key: null,
-        value: Buffer.from(JSON.stringify(payload)),
-        headers: h({
-          [H_ORIGINAL_TOPIC]: 'dev.collector.event.v1',
-          [H_DLQ_REASON]: 'max_retry_exceeded: ECONNREFUSED',
-        }),
-      },
-    });
-
-    await redrivePromise;
-
-    // persist must have been called exactly once.
-    expect(persistSpy).toHaveBeenCalledTimes(1);
-    const call = persistSpy.mock.calls[0]?.[0] as DlqRecordInput;
-    expect(call.brandId).toBe(brandId);
-    expect(call.sourceTopic).toBe(dlqTopic);
-    expect(call.partition).toBe(2);
-    expect(call.kafkaOffset).toBe(77n);
-    expect(call.errorClass).toBe('max_retry_exceeded');
-  });
-
-  it('does NOT throw when dlqRecordRepo.persist() rejects (fire-and-forget)', async () => {
-    const persistSpy = vi.fn().mockRejectedValue(new Error('DB down'));
-    const mockRepo = { persist: persistSpy } as unknown as DlqRecordRepository;
-
-    const { kafka, producer, deliver } = buildKafkaMock();
-    const redriver = new DlqRedriver(
-      kafka,
-      producer,
-      'test-group',
-      () => '2026-06-22T00:00:00.000Z',
-      mockRepo,
-    );
-
-    const dlqTopic = 'dev.collector.event.v1.dlq';
-
-    const redrivePromise = redriver.redrive(dlqTopic, { dryRun: true, idleMs: 10 });
-
-    // Let async inits run before delivering.
-    await new Promise<void>((r) => setTimeout(r, 0));
-
-    await deliver({
-      topic: dlqTopic,
-      partition: 0,
-      message: {
-        offset: '1',
-        key: null,
-        value: Buffer.from(JSON.stringify({ brand_id: 'bbbb0001-bbbb-4bbb-8bbb-bbbbbbbbbbbb' })),
-        headers: h({ [H_DLQ_REASON]: 'max_retry_exceeded' }),
-      },
-    });
-
-    // Must not throw even though persist() rejected.
-    await expect(redrivePromise).resolves.toBeDefined();
-  });
-
-  it('skips persistence when no dlqRecordRepo is provided (backward compat)', async () => {
-    // No repo supplied — redriver must still work normally.
-    const { kafka, producer, deliver } = buildKafkaMock();
-    const redriver = new DlqRedriver(
-      kafka,
-      producer,
-      'test-group',
-      () => '2026-06-22T00:00:00.000Z',
-      // No repo
-    );
-
-    const dlqTopic = 'dev.collector.event.v1.dlq';
-    const redrivePromise = redriver.redrive(dlqTopic, { dryRun: true, idleMs: 10 });
-
-    // Let async inits run before delivering.
-    await new Promise<void>((r) => setTimeout(r, 0));
-
-    await deliver({
-      topic: dlqTopic,
-      partition: 0,
-      message: { offset: '1', key: null, value: Buffer.from('{}'), headers: {} },
-    });
-
-    const report = await redrivePromise;
-    expect(report.scanned).toBe(1);
   });
 });

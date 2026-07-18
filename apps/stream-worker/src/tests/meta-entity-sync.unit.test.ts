@@ -118,33 +118,12 @@ describe('emitEntities (ad.entity.updated)', () => {
     };
   }
 
-  /**
-   * Fake pg Pool for the ADR-0012 dedup gate: the dedup client answers the SELECT against
-   * data_plane.ingest_dedup with the given already-seen event_ids (default none → all produced),
-   * set_config + INSERT are no-ops. Lets emitEntities run its filter/mark path without a real DB.
-   */
-  function fakePool(seen: Set<string> = new Set<string>()) {
-    const client = {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      query: async (sql: string, params?: any[]) => {
-        if (/FROM data_plane\.ingest_dedup/i.test(sql)) {
-          const ids: string[] = (params?.[1] as string[]) ?? [];
-          return { rows: ids.filter((id) => seen.has(id)).map((event_id) => ({ event_id })) };
-        }
-        return { rows: [] }; // set_config / INSERT … ON CONFLICT / etc.
-      },
-      release: () => undefined,
-    };
-    return { connect: async () => client } as unknown as import('pg').Pool;
-  }
-
   it('emits one ad.entity.updated per entity with the A1 contract property shape', async () => {
     const producer = fakeProducer();
     const n = await emitEntities({
       brandId: BRAND,
       ciId: 'ci-1',
       accountCurrency: 'INR',
-      pool: fakePool(),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       producer: producer as any,
       entities: [
@@ -171,11 +150,11 @@ describe('emitEntities (ad.entity.updated)', () => {
     const base = mkEntity({ level: 'campaign', entity_id: 'c1', campaign_id: 'c1', parent_id: null, name: 'Camp', status: 'ACTIVE', objective: 'X' });
 
     const p1 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: p1 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p1 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     const p2 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: p2 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p2 as any, entities: [{ ...base, entity_updated_at: '2026-06-20T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     const p3 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: p3 as any, entities: [{ ...base, entity_updated_at: '2026-06-25T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p3 as any, entities: [{ ...base, entity_updated_at: '2026-06-25T00:00:00+0000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
 
     const id1 = JSON.parse(p1.sent[0]!.messages[0]!.value.toString()).event_id;
     const id2 = JSON.parse(p2.sent[0]!.messages[0]!.value.toString()).event_id;
@@ -189,11 +168,11 @@ describe('emitEntities (ad.entity.updated)', () => {
     const base = mkEntity({ level: 'campaign', entity_id: 'c1', campaign_id: 'c1', name: 'Camp', status: 'ACTIVE', objective: 'X', daily_budget_minor: '500000' });
 
     const p1 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: p1 as any, entities: [{ ...base }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p1 as any, entities: [{ ...base }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     const p2 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: p2 as any, entities: [{ ...base }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p2 as any, entities: [{ ...base }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     const p3 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: p3 as any, entities: [{ ...base, daily_budget_minor: '600000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p3 as any, entities: [{ ...base, daily_budget_minor: '600000' }] }); // eslint-disable-line @typescript-eslint/no-explicit-any
 
     const idA = JSON.parse(p1.sent[0]!.messages[0]!.value.toString()).event_id;
     const idB = JSON.parse(p2.sent[0]!.messages[0]!.value.toString()).event_id;
@@ -202,22 +181,24 @@ describe('emitEntities (ad.entity.updated)', () => {
     expect(idA).not.toBe(idC); // a real budget change → new id → emitted (no event loss)
   });
 
-  it('ADR-0012 gate DROPS an already-ingested event_id (produce only unseen)', async () => {
+  it('ADR-0015: re-sync produces unconditionally with the SAME event_id (dedup is downstream)', async () => {
     const entity = mkEntity({ level: 'campaign', entity_id: 'c1', campaign_id: 'c1', name: 'Camp', entity_updated_at: '2026-06-20T00:00:00+0000' });
-    // First run: nothing seen → produced. Capture the id.
+    // First run: produced. Capture the id.
     const p1 = fakeProducer();
-    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: p1 as any, entities: [entity] }); // eslint-disable-line @typescript-eslint/no-explicit-any
-    const id = JSON.parse(p1.sent[0]!.messages[0]!.value.toString()).event_id;
-    // Second run: id already in ingest_dedup → gate drops it → nothing produced, returns 0.
+    await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p1 as any, entities: [entity] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    const id1 = JSON.parse(p1.sent[0]!.messages[0]!.value.toString()).event_id;
+    // Second run: no PG gate anymore — the duplicate is produced with the SAME (brand_id, event_id)
+    // and collapses at Bronze compaction / Silver MERGE.
     const p2 = fakeProducer();
-    const n = await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(new Set([id])), producer: p2 as any, entities: [entity] }); // eslint-disable-line @typescript-eslint/no-explicit-any
-    expect(n).toBe(0);
-    expect(p2.sent).toHaveLength(0);
+    const n = await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: p2 as any, entities: [entity] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(n).toBe(1);
+    const id2 = JSON.parse(p2.sent[0]!.messages[0]!.value.toString()).event_id;
+    expect(id2).toBe(id1); // deterministic id — downstream dedup collapses the pair
   });
 
   it('returns 0 and sends nothing for an empty entity list', async () => {
     const producer = fakeProducer();
-    const n = await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', pool: fakePool(), producer: producer as any, entities: [] }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    const n = await emitEntities({ brandId: BRAND, ciId: 'ci-1', accountCurrency: 'INR', producer: producer as any, entities: [] }); // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(n).toBe(0);
     expect(producer.sent).toHaveLength(0);
   });

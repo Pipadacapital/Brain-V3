@@ -23,6 +23,8 @@ import type { Pool } from 'pg';
 // 910_001 was LEADER_LOCK_INGEST_SCHEDULER (loop retired) — keep the key reserved, do not reuse.
 export const LEADER_LOCK_SYNC_CLAIMER = 910_002;
 export const LEADER_LOCK_DQ_CHECKS = 910_003;
+/** ADR-0015 WS3 — the Silver identity stage: one run at a time across invocations/replicas. */
+export const LEADER_LOCK_SILVER_IDENTITY = 910_004;
 
 export type LeaderLockOutcome<T> =
   | { ranAsLeader: true; result: T }

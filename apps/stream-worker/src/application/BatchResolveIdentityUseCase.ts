@@ -118,16 +118,51 @@ export class BatchResolveIdentityUseCase {
    * accounting. Deterministic + idempotent writes make the retry safe.
    */
   async execute(rawValues: Array<Buffer | null>, now: string): Promise<ResolveResult[]> {
+    return (await this.executeWithOutcomes(rawValues, now)).results;
+  }
+
+  /**
+   * ADR-0015 WS3 (Silver identity stage): like execute(), but ALSO returns the committed
+   * BatchOutcomeItem[] (ResolveOutcome + identifiers, in resolve order) so the caller can apply the
+   * post-resolve side effects the removed streaming consumers used to derive from identity.* events
+   * (scoped-recompute + restitch/journey dirty-sets + serving-cache eviction) DIRECTLY. Purely
+   * additive: the resolve/overlay/write path is byte-identical to execute().
+   *
+   * M2 — `onChunkCommitted`: optional per-chunk hook, invoked AFTER each internal chunk's
+   * writeOutcomesBatch has COMMITTED to the graph, with that chunk's results + outcomes. This
+   * gives callers side-effect granularity equal to the graph-write granularity: without it, a
+   * mid-page failure leaves earlier chunks committed in Neo4j but their merge side effects
+   * (scoped-recompute, restitch/journey dirty rows, cache eviction, tp merge-invalidation)
+   * never applied — the re-run re-resolves those events as linked/skipped (never merged again),
+   * so the side effects would be silently lost FOREVER. A throw from the hook propagates
+   * (caller treats it like a chunk failure; committed chunks' side effects are idempotent to
+   * re-apply). The whole-page return shape is unchanged for existing callers.
+   */
+  async executeWithOutcomes(
+    rawValues: Array<Buffer | null>,
+    now: string,
+    onChunkCommitted?: (chunk: {
+      results: ResolveResult[];
+      outcomes: BatchOutcomeItem[];
+    }) => Promise<void>,
+  ): Promise<{ results: ResolveResult[]; outcomes: BatchOutcomeItem[] }> {
     const results: ResolveResult[] = [];
+    const outcomes: BatchOutcomeItem[] = [];
     for (let i = 0; i < rawValues.length; i += this.batchSize) {
       const chunk = rawValues.slice(i, i + this.batchSize);
-      results.push(...(await this.executeOneBatch(chunk, now)));
+      const one = await this.executeOneBatch(chunk, now);
+      if (onChunkCommitted) await onChunkCommitted(one);
+      results.push(...one.results);
+      outcomes.push(...one.outcomes);
     }
-    return results;
+    return { results, outcomes };
   }
 
   /** One batch: extract+hash all → ONE bulk read → sequential resolve over the overlay → ONE bulk write. */
-  private async executeOneBatch(rawValues: Array<Buffer | null>, _now: string): Promise<ResolveResult[]> {
+  private async executeOneBatch(
+    rawValues: Array<Buffer | null>,
+    _now: string,
+  ): Promise<{ results: ResolveResult[]; outcomes: BatchOutcomeItem[] }> {
     // ── 1. Extract + hash every event (the SHARED front-half; byte-identical to execute()) ──────
     type Slot =
       | { kind: 'done'; result: ResolveResult }
@@ -173,7 +208,10 @@ export class BatchResolveIdentityUseCase {
 
     const toResolve = slots.filter((s): s is Extract<Slot, { kind: 'resolve' }> => s.kind === 'resolve');
     if (toResolve.length === 0) {
-      return slots.map((s) => (s as Extract<Slot, { kind: 'done' }>).result);
+      return {
+        results: slots.map((s) => (s as Extract<Slot, { kind: 'done' }>).result),
+        outcomes: [],
+      };
     }
 
     // ── 2. ONE bulk read over the UNION of the batch's identifier hashes ────────────────────────
@@ -224,11 +262,12 @@ export class BatchResolveIdentityUseCase {
     await this.identityRepo.writeOutcomesBatch!(this.brandId, outcomes);
 
     // ── 6. Results in input order ────────────────────────────────────────────────────────────────
-    return slots.map((s) => {
+    const results = slots.map((s) => {
       if (s.kind === 'done') return s.result;
       const outcome = s.outcome!;
       return { outcome: outcome.action, brainId: outcome.brainId, brandId: s.brandId, eventId: s.eventId };
     });
+    return { results, outcomes };
   }
 
   /**

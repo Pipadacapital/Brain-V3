@@ -66,6 +66,12 @@ sinkDefaults:
   "iceberg.control.topic": "control-iceberg"
   "iceberg.control.commit.interval-ms": "30000"
   "iceberg.control.commit.timeout-ms": "60000"
+  # ADR-0015 WS2 (EOS transport, keep in LOCKSTEP with infra/kafka-connect/*.json): the sink's
+  # main consumers never surface aborted transactional writes. The sink itself is exactly-once
+  # by design (KIP-447 commit coordination over the control topic; offsets stored in the Iceberg
+  # snapshot metadata — connect 1.9.2 has no separate EOS toggle). Needs the worker's
+  # CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY=All (deployment.yaml).
+  "consumer.override.isolation.level": "read_committed"
 
 service:
   # Cross-AZ topology-aware routing for the REST Service (REL-4). Empty by default

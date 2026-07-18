@@ -143,8 +143,9 @@ export class DlqRecordRepository {
   }
 
   /**
-   * Increment redrive_count for a specific dead-letter (called by the dlq-redrive job
-   * when a message is successfully republished to its original topic).
+   * Increment redrive_count for a specific dead-letter when it is successfully replayed.
+   * (The Kafka dlq-redrive CLI that called this is retired with the last Kafka consumer —
+   * ADR-0015 WS4; kept as the redrive-accounting API of this PG dead-letter store.)
    *
    * Idempotent enough: if the message has already been successfully redriven, the row
    * simply gets a higher count (which is accurate: it was redriven again).

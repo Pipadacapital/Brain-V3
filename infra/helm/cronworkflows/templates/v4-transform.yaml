@@ -9,19 +9,34 @@ no --py-files/iceberg_base, no JVM). Iceberg (brain_bronze/silver/gold via the R
 system of record; the brain_serving.mv_* duckdb-serving views are thin projections straight over the Gold/Silver
 marts. dbt is GONE; StarRocks is GONE; Spark is GONE.
 
-DEPENDENCY ORDER is enforced by STAGGERED SCHEDULES (this chart's one-container-per-CronWorkflow
-convention — NOT an Argo DAG) + idempotency (every DuckDB MERGE is replay-safe; Forbid +
+DEPENDENCY ORDER is enforced by STAGGERED SCHEDULES (mostly one-container-per-CronWorkflow —
+NOT a cross-cron Argo DAG) + idempotency (every DuckDB MERGE is replay-safe; Forbid +
 startingDeadline make a missed/retried run safe). The full V4 attribution chain — identity →
 order-state → silver → journey-stitch → gold — is split across the node `.Values.jobs`
-(identity-export, journey-stitch-from-identity, journey-stitch-export) and these two crons, which
-mirror tools/dev/duckdb-refresh.sh's ordering EXACTLY:
+(identity-export, journey-stitch-from-identity, journey-stitch-export) and these three crons,
+which mirror tools/dev/duckdb-refresh.sh's ordering EXACTLY (keystone → silver ×2 → IDENTITY →
+gold → cache-bust):
 
-  :05  v4-silver   keystone silver_collector_event.py (the admission gate every silver job reads) →
-                   silver_order_state.py (order_state spine, resolves brain_id) → the rest of Silver,
-                   run TWICE so a job that read a not-yet-produced sibling on pass 1 converges on pass 2.
-  :25  v4-gold     gold_revenue_ledger.py (recognized basis) → gold_attribution_credit.py +
-                   gold_marketing_attribution.py + gold_attribution_paths.py (attribution, read the
-                   stitched silver_touchpoint) → the remaining Gold marts.
+  :00/5  v4-silver    keystone silver_collector_event.py (the admission gate every silver job reads) →
+                      silver_order_state.py (order_state spine, resolves brain_id) → the rest of Silver,
+                      run TWICE so a job that read a not-yet-produced sibling on pass 1 converges on pass 2.
+  :02/5  v4-identity  ADR-0015 WS3 (identity resolves in Silver): (1) the Node silver-identity batch
+                      job (stream-worker image — reads new keystone rows over duckdb-serving, resolves
+                      via IdentityResolver → Neo4j, projects consent/CAPI, dirty-sets, cache primes),
+                      then (2) silver/silver_identity_map.py (duckdb image) so the Iceberg bi-temporal
+                      map re-projects THIS run's graph mutations BEFORE gold reads it. TWO steps in ONE
+                      workflow (an in-workflow Argo steps sequence — the only hard intra-run ordering
+                      here; images differ so a single container can't carry both).
+  :00/5  v4-gold      gold_revenue_ledger.py (recognized basis) → gold_attribution_credit.py +
+                      gold_marketing_attribution.py + gold_attribution_paths.py (attribution, read the
+                      stitched silver_touchpoint) → the remaining Gold marts → the fail-open
+                      serving-cache-bust step (gold-rewritten-publish — direct Redis eviction, the
+                      gold.rewritten.v1 lane is retired).
+
+  At the every-5-min realtime cadence exact cross-cron ordering is impossible (silver/gold share the tick);
+  the established posture applies — Forbid self-throttles, every stage is idempotent + watermark-held,
+  so a stage reading a sibling's previous tick converges on the next one. v4-identity's +2min offset
+  puts it after the (incremental, ~1-2 min) silver pass of the same tick in the common case.
 
 ENABLED by default (.Values.sparkV4.enabled=true): needs the CI-built + digest-pinned brain-duckdb image
 (B3 fail-closed below) + a cluster.
@@ -41,6 +56,18 @@ sparkMaxRetries — those were Spark-submit-only and were removed in the cutover
   {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
 {{- else -}}
   {{- fail "sparkV4.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- /* Stream-worker image (B3 fail-closed, same rule): the v4-identity resolve step and the
+       v4-gold serving-cache-bust step run node entrypoints that ship in the stream-worker
+       deployable — same image/idiom as the .Values.jobs useStreamWorkerImage jobs. */ -}}
+{{- $swImg := .Values.streamWorkerImage -}}
+{{- $swRef := "" -}}
+{{- if $swImg.digest -}}
+  {{- $swRef = printf "%s@%s" $swImg.repository $swImg.digest -}}
+{{- else if and $swImg.tag (ne $swImg.tag "latest") -}}
+  {{- $swRef = printf "%s:%s" $swImg.repository $swImg.tag -}}
+{{- else -}}
+  {{- fail "streamWorkerImage.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
 {{- end -}}
 {{- $envFrom := .Values.envSecretName -}}
 {{- $sa := .Values.serviceAccount.name -}}
@@ -163,6 +190,143 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+{{- /*
+IDENTITY STAGE (ADR-0015 WS3 / C1 2026-07-18): dev's duckdb-refresh.sh runs keystone → silver ×2 →
+IDENTITY → gold; this cron is the prod identity stage that was MISSING (identity resolution never
+ran in prod — silver_identity_map / gold_customer_360 froze at their last manual state). Two
+ordered steps in one workflow (images differ, so this is the chart's one deliberate multi-template
+workflow, same idiom as bronze-maintenance's dedup/maintain split):
+  resolve     stream-worker image — `pnpm exec tsx src/jobs/silver-identity/run.ts` (the exact
+              node-job invocation idiom of .Values.jobs; the dev script's
+              `pnpm --filter @brain/stream-worker run job:silver-identity` is the same entrypoint
+              behind a package script whose --env-file only exists in the repo checkout).
+              Watermark-driven, leader-locked, per-brand idempotent; emits
+              brain_silver_identity_runs_total per clean brand pass (absence-alerted in
+              infra/observe/alerts/brain-slo.rules.yml — BrainSilverIdentityStageStalled).
+  map-export  duckdb image — silver/silver_identity_map.py re-projects the Neo4j graph (the
+              identity SoR, ADR-0004) into the Iceberg bi-temporal map so gold reads THIS run's
+              resolutions, not the previous tick's.
+Dev runs both continue-on-error (converge-next-run); mirrored here with continueOn.failed on
+resolve (map-export still re-projects — the graph may have advanced) + a template-level failed
+counter so a tolerated resolve failure stays alertable (TransformTierRunFailed, tier=v4-identity).
+*/ -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-identity
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-identity
+spec:
+  schedule: {{ .Values.sparkV4.identitySchedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid            # watermark-driven — never overlap with itself (leader lock is the in-job backstop)
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    {{- with .Values.sparkV4.podAnnotations }}
+    podMetadata:
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    # Same per-run telemetry as the sibling tiers (tier=v4-identity). The workflow-level failed
+    # counter covers a map-export failure; the resolve template's own counter (below) covers a
+    # continueOn-tolerated resolve failure.
+    metrics:
+      prometheus:
+        - name: brain_transform_workflow_duration_seconds
+          help: "Realtime wall-clock (s) of the running v4 DuckDB transform workflow"
+          labels:
+            - key: tier
+              value: v4-identity
+          gauge:
+            realtime: true
+            value: {{ `"{{workflow.duration}}"` }}
+        - name: brain_transform_workflow_failed_total
+          help: "v4 DuckDB transform workflow runs that ended Failed (deadline/retries exhausted)"
+          labels:
+            - key: tier
+              value: v4-identity
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    activeDeadlineSeconds: {{ .Values.sparkV4.identity.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        steps:
+          - - name: resolve
+              template: resolve
+              continueOn:
+                failed: true           # dev doctrine: continue-on-error — map-export still re-projects
+          - - name: map-export
+              template: map-export
+      - name: resolve
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # watermark-held + idempotent — retry-safe
+          retryPolicy: OnError
+        metrics:
+          prometheus:
+            - name: brain_transform_workflow_failed_total
+              help: "v4 DuckDB transform workflow runs that ended Failed (deadline/retries exhausted)"
+              labels:
+                - key: tier
+                  value: v4-identity
+              when: {{ `"{{status}} == Failed"` }}
+              counter:
+                value: "1"
+        container:
+          image: {{ $swRef | quote }}
+          imagePullPolicy: {{ $swImg.pullPolicy }}
+          # Reads brain_serving.mv_silver_collector_event over duckdb-serving (DUCKDB_SERVING_HOST
+          # from core-env), resolves via Neo4j (NEO4J_*), watermarks in PG (BRAIN_APP_DATABASE_URL),
+          # caches/evicts via REDIS_URL — all from the core-env secret. A failed brand HOLDS its
+          # watermark; the next tick re-processes the same idempotent window (no loss).
+          command: ["pnpm", "exec", "tsx", "src/jobs/silver-identity/run.ts"]
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.defaults.resources | nindent 12 }}
+      - name: map-export
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent MERGE — retry-safe
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              # Re-project the Neo4j graph → Iceberg silver_identity_map so gold (customer_360 &co)
+              # reads THIS tick's resolutions (Neo4j is the SoR — the map is a projection).
+              {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
+              exec python /opt/brain/duckdb/silver/silver_identity_map.py
+          env:
+            {{- toYaml .Values.sparkV4.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* + NEO4J_*
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -218,7 +382,34 @@ spec:
     podGC:
       strategy: OnWorkflowSuccess
     templates:
+      {{- /* C1 (2026-07-18): gold is now marts → serving-cache-bust, mirroring dev's run_gold_tier
+             (duckdb-refresh.sh): after the Gold marts rewrite, gold-rewritten-publish evicts the
+             brand-scoped serving cache DIRECTLY (ServingCacheEvictor — the gold.rewritten.v1 Kafka
+             lane is retired, ADR-0015 WS3). FAIL-OPEN exactly like dev: continueOn.failed — a bust
+             failure never fails the refresh; the per-metric TTL is the correctness safety net. */}}
       - name: run
+        steps:
+          - - name: gold-marts
+              template: gold-marts
+          - - name: serving-cache-bust
+              template: serving-cache-bust
+              continueOn:
+                failed: true           # fail-open (dev parity): TTL is the safety net
+      - name: serving-cache-bust
+        container:
+          image: {{ $swRef | quote }}
+          imagePullPolicy: {{ $swImg.pullPolicy }}
+          # Whole-brand serving-cache eviction for every active brand (BRAIN_APP_DATABASE_URL +
+          # REDIS_URL from core-env). Idempotent; brand_id leads every evicted key.
+          command: ["pnpm", "exec", "tsx", "src/jobs/gold-rewritten-publish/run.ts"]
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.defaults.resources | nindent 12 }}
+      - name: gold-marts
         retryStrategy:
           limit: {{ .Values.defaults.backoffLimit | quote }}
           retryPolicy: OnError

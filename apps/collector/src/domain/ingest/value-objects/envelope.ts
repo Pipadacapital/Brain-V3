@@ -1,7 +1,7 @@
 /**
  * Envelope value-object — immutable stamped wrapper around a raw ingest body.
  * Stamping (received_at) is the ONLY transformation done in the request path.
- * All validation happens downstream (drainer / stream-worker).
+ * All validation happens downstream (Connect → Bronze → Silver, ADR-0015).
  */
 export interface IngestEnvelope {
   /** Raw body as received — no modification, no validation */

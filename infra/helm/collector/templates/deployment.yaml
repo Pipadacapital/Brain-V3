@@ -17,11 +17,13 @@ spec:
         {{- include "brain.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "brain.fullname" . }}
-      # AUD-OPS-004: explicit, bounded drain window on eviction/rollout. The collector
-      # is the 99.95%-SLA accept-before-validate edge — SIGTERM stops the drainer
-      # (flushing its in-flight batch to Kafka) and closes Fastify; the window must
-      # cover preStop + that flush. Spooled rows are DURABLE in PG (never lost —
-      # surviving replicas drain them), so this bounds request loss, not event loss.
+      # AUD-OPS-004 + ADR-0015 WAL durability posture: explicit, bounded drain window on
+      # eviction/rollout. The collector is the 99.95%-SLA accept-before-validate edge —
+      # SIGTERM fails readiness, closes Fastify, then runs ONE final local-disk-WAL flush
+      # bounded by INGEST_SHUTDOWN_FLUSH_TIMEOUT_MS (default 10s). The window must cover
+      # preStop (15s) + that flush: 60s does with margin. Anything unflushed at the deadline
+      # survives on the pod-local disk for next-boot adoption (crash-safe WAL); the
+      # BrainCollectorWalPendingAge* alerts cover the residual exposure window.
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if .Values.topologySpread.enabled }}
       # AUD-OPS-002: spread replicas across zones/nodes so a single node or AZ loss

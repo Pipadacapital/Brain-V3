@@ -19,10 +19,11 @@
  * ids (brain_anon_id / hashed_session_id) and aggregate counts leave the query.
  * The browser sends no raw PII, and this surface never reconstructs any.
  *
- * QUARANTINE NOTE: quarantined events are routed to the `.quarantine` Kafka topic
- * (Track A), NOT to a Postgres table — there is no per-brand quarantine row store in
- * Phase 1. This read therefore reports accepted-event health only; quarantine volume
- * is a Kafka/metric concern, surfaced as an honest "—" (not a fabricated 0) in the UI.
+ * QUARANTINE NOTE (ADR-0015): quarantined events land in the Silver quarantine ledger
+ * (silver_collector_event.py → brain_silver.silver_quarantine, replayable) — the old
+ * `.quarantine` Kafka topic is retired, and there is no per-brand quarantine row store in
+ * PG. This read therefore reports accepted-event health only; quarantine volume is a
+ * transform-tier concern, surfaced as an honest "—" (not a fabricated 0) in the UI.
  *
  * F-SEC-02: reads are brand-scoped by the withSilverBrand seam (the ADR-0010 connect lift view).
  * Honest-empty: state:'no_data' only when the brand has NO Bronze rows (or StarRocks isn't wired).

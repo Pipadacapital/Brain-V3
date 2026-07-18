@@ -1,9 +1,10 @@
 /**
- * collect.route.test.ts — in-process tests for the collector ingest routes (Phase H /batch focus).
+ * collect.route.test.ts — in-process tests for the collector ingest routes (ADR-0015).
  *
- * Uses fastify.inject with a stub AcceptEventUseCase (no DB) to lock the accept-before-validate
- * contract: /collect (200), /v1/events (202), and the new /batch (200 with per-event spool ids;
- * 400 on a non-array / empty / over-cap envelope). The stub proves each event is spooled exactly once.
+ * Uses fastify.inject with a stub AcceptEventUseCase (no broker, no disk) to lock the
+ * accept-before-validate contract: /collect (200), /v1/events (202), and /batch (200;
+ * 400 on a non-array / empty / over-cap envelope). The stub proves each request anchors
+ * (produce or fallback) exactly once BEFORE the ACK.
  */
 import { describe, it, expect, vi } from 'vitest';
 import Fastify from 'fastify';
@@ -38,26 +39,41 @@ function buildApp(): {
   executeMany: ReturnType<typeof vi.fn>;
 } {
   const app = Fastify();
-  let n = 0;
-  const execute = vi.fn(async () => ({ spoolId: BigInt(++n), receivedAt: '2026-06-22T00:00:00.000Z' }));
-  // Batch accept (AUD-PERF-007): ONE call spools the whole batch — ids stay per-event.
-  const executeMany = vi.fn(async (rawBodies: Record<string, unknown>[]) => ({
-    spoolIds: rawBodies.map(() => BigInt(++n)),
+  const execute = vi.fn(async () => ({
     receivedAt: '2026-06-22T00:00:00.000Z',
+    durability: 'produced' as const,
+  }));
+  // Batch accept: ONE anchor call (produceBatch or WAL append) for the whole batch.
+  const executeMany = vi.fn(async (rawBodies: Record<string, unknown>[]) => ({
+    accepted: rawBodies.length,
+    receivedAt: '2026-06-22T00:00:00.000Z',
+    durability: 'produced' as const,
   }));
   registerCollectRoute(app, { execute, executeMany } as unknown as AcceptEventUseCase);
   return { app, execute, executeMany };
 }
 
 describe('collector ingest routes', () => {
-  it('POST /collect → 200 accepted (spool-first)', async () => {
-    const { app } = buildApp();
+  it('POST /collect → 200 accepted (produce-ack before ACK)', async () => {
+    const { app, execute } = buildApp();
     const res = await app.inject({ method: 'POST', url: '/collect', payload: { event: 'page.viewed' } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ accepted: true });
+    expect(res.headers['x-received-at']).toBe('2026-06-22T00:00:00.000Z');
+    // The accept path anchored exactly once, with the request-scoped correlation id.
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]![1]).toBe('test-corr');
   });
 
-  it('POST /batch → 200 with one spool id per event, spooled in ONE batch insert', async () => {
+  it('POST /v1/events → 202 accepted (contract alias)', async () => {
+    const { app, execute } = buildApp();
+    const res = await app.inject({ method: 'POST', url: '/v1/events', payload: { event: 'page.viewed' } });
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ accepted: true });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /batch → 200 with the accepted count, anchored in ONE batch produce', async () => {
     const { app, execute, executeMany } = buildApp();
     const res = await app.inject({
       method: 'POST',
@@ -67,8 +83,7 @@ describe('collector ingest routes', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.accepted).toBe(3);
-    expect(body.spool_ids).toEqual(['1', '2', '3']);
-    // AUD-PERF-007: one multi-row INSERT for the whole batch — never N per-event round-trips.
+    // ONE anchor for the whole batch — never N per-event produces.
     expect(executeMany).toHaveBeenCalledTimes(1);
     expect(executeMany.mock.calls[0]![0]).toHaveLength(3);
     expect(execute).not.toHaveBeenCalled();

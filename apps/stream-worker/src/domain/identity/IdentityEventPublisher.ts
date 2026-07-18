@@ -98,6 +98,20 @@ export function deterministicUuid(input: string): string {
   ].join('-');
 }
 
+/**
+ * Derive the deterministic identity event_id from the dedupe key set — the SAME scheme the
+ * (removed) KafkaIdentityEventPublisher stamped on the wire: same inputs → same id → replay-safe.
+ * ADR-0015 WS3: the Silver identity stage folds this id into the provenance columns of the
+ * direct dirty-set writes (source_event_id) so causation chains survive the consumer removal.
+ */
+export function deterministicEventId(
+  brandId: string,
+  eventName: string,
+  dedupeKey: string,
+): string {
+  return deterministicUuid(`${brandId}||${eventName}||${dedupeKey}||${RULE_VERSION}`);
+}
+
 /** Tier priority for picking the single "anchor" identifier the singular payload field carries. */
 const TIER_PRIORITY: Record<string, number> = {
   strong: 0,

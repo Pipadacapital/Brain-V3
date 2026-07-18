@@ -1,8 +1,8 @@
 /**
  * edge-guard — per-install_token rate-limit + origin allowlist for /collect (REC-9).
  *
- * REJECT-BEFORE-SPOOL: this is a Fastify preHandler that runs BEFORE the /collect handler
- * inserts into collector_spool. Rejecting abusive traffic here does NOT violate D-1 (the
+ * REJECT-BEFORE-ACCEPT: this is a Fastify preHandler that runs BEFORE the /collect handler
+ * produces to the log (ADR-0015 direct-to-log). Rejecting abusive traffic here does NOT violate D-1 (the
  * accept-before-validate ordering) — D-1 governs the ACCEPT path (no schema validation /
  * Apicurio / Kafka pre-ACK). Abuse protection is an admission gate, not event validation.
  *

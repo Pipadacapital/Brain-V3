@@ -18,8 +18,8 @@
  *                   replaces the old PG-RLS isolation control; there is no PG RLS on the lakehouse.)
  *
  * Uses a SERVER_TRUSTED event type (order.live.v1) so these write/scoping mechanics are exercised
- * without the pixel-lane R2/R3 gate — that gate is covered end-to-end by ingest-hardening.e2e.test.ts
- * (and under ADR-0010 it lives in the Silver admission, not in front of Bronze).
+ * without the pixel-lane R2/R3 gate — under ADR-0010/ADR-0015 that gate lives in the Silver
+ * admission keystone (silver_collector_event.py), not in front of Bronze.
  *
  * REQUIRES the `lakehouse` docker profile (Kafka + kafka-connect + Iceberg REST + MinIO + duckdb-serving).
  */

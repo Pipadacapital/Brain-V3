@@ -112,8 +112,8 @@ import { registerWorkspaceAccess } from './bootstrap/registerWorkspaceAccess.js'
 import { registerConnectors } from './bootstrap/registerConnectors.js';
 import { runReconnectShopifyByoMigration } from './bootstrap/reconnect-shopify-byo.js';
 import { createM1EventPublisher } from './infrastructure/events/M1EventPublisher.js';
-import { createIdentityEventPublisher } from './infrastructure/events/IdentityEventPublisher.js';
 import { createErasureEventPublisher } from './infrastructure/events/ErasureEventPublisher.js';
+import { PgIdentityUnmergeDirtyRepository } from './infrastructure/pg/IdentityUnmergeDirtyRepository.js';
 
 // ── Secrets provider (HIGH-SECRETS-01) ───────────────────────────────────────
 import { AwsSecretsProvider } from './infrastructure/secrets/AwsSecretsProvider.js';
@@ -745,26 +745,26 @@ export async function main(): Promise<void> {
     },
   });
 
-  // SPEC: A.2.4 (WA-19, AMD-08) — identity-lane producer for the admin unmerge (identity.unmerged.v1).
-  // Reuses the same connected webhook producer (ONE per process). Wired into the BFF deps below.
-  const identityEventPublisher = createIdentityEventPublisher({
-    producer: webhookProducer,
-    env: config.kafkaEnv,
-    log: {
-      info: (obj, msg) => app.log.info(obj, msg),
-      warn: (obj, msg) => app.log.warn(obj, msg),
-      error: (obj, msg) => app.log.error(obj, msg),
-    },
+  // SPEC: A.2.4 (WA-19) / ADR-0015 WS3 — the admin unmerge enqueues its restitch + journey-reversion
+  // work DIRECTLY into the PG dirty queues (ops.restitch_pending / ops.journey_reversion_pending) the
+  // Silver identity stage drains. Replaces the retired identity.unmerged.v1 Kafka publish (the
+  // consumers of that topic were removed by ADR-0015). Uses rawPgPool: the queues are cross-brand
+  // trusted-ETL tables (no brand GUC). Wired into the BFF deps below.
+  const identityUnmergeDirty = new PgIdentityUnmergeDirtyRepository(rawPgPool, {
+    info: (obj, msg) => app.log.info(obj, msg),
+    warn: (obj, msg) => app.log.warn(obj, msg),
+    error: (obj, msg) => app.log.error(obj, msg),
   });
 
-  // AUD-OPS-036: the RTBF erasure-trigger bridge — the ONE producer of the canonical
-  // privacy.erasure.requested event on {env}.collector.event.v1, reused by all three RTBF
-  // entry points (consent/withdraw reason=erasure, identity erase route, Shopify
-  // customers/redact). Without it the stream-worker erasure orchestrator is live but
-  // unreachable. Reuses the same connected webhook producer (ONE per process).
+  // AUD-OPS-036 → ADR-0015 WS4: the RTBF erasure-trigger bridge — the ONE producer of the
+  // canonical privacy.erasure.requested trigger, reused by all three RTBF entry points
+  // (consent/withdraw reason=erasure, identity erase route, Shopify customers/redact).
+  // PG REQUEST-DRIVEN: durably INSERTs the trigger envelope into ops.erasure_request_queue
+  // (0140) — the stream-worker erasure poll lane drains it (the Kafka publish + the last
+  // stream-worker consumer group are retired). Uses rawPgPool: the queue is a cross-brand
+  // trusted-ETL table (no brand GUC), same posture as the unmerge dirty queues above.
   const erasureEventPublisher = createErasureEventPublisher({
-    producer: webhookProducer,
-    env: config.kafkaEnv,
+    pool: rawPgPool,
     log: {
       info: (obj, msg) => app.log.info(obj, msg),
       warn: (obj, msg) => app.log.warn(obj, msg),
@@ -901,7 +901,7 @@ export async function main(): Promise<void> {
     onboardingService,
     piiVaultService,
     identityReader,
-    identityEventPublisher,
+    identityUnmergeDirty,
     // AUD-OPS-036: erasure-trigger bridge for the consent-withdraw + identity-erase entry points.
     erasureEventPublisher,
     getCoreSaltHex,

@@ -203,3 +203,14 @@ export function mapIdentityEventToScopedRecompute(
     requested_at:       now,
   };
 }
+
+// ── Repository port (ADR-0015 WS3) ─────────────────────────────────────────────
+// Moved here from the removed IdentityChangeRecomputeConsumer: identity now resolves in the Silver
+// transform stage (jobs/silver-identity), which writes ScopedRecompute requests DIRECTLY instead of
+// publishing identity.* events for a streaming consumer to fold. Type-only — still a pure module.
+
+/** Port for persisting ScopedRecompute requests to ops.scoped_recompute_request.
+ *  Concrete implementation: PgScopedRecomputeRepository (infrastructure/pg/). */
+export interface IScopedRecomputeRepository {
+  upsert(recompute: ScopedRecompute): Promise<void>;
+}

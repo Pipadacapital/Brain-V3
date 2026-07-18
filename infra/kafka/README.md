@@ -19,7 +19,6 @@
 |-------|------|-----------|-----------|---------|
 | `{env}.collector.event.v1` | live | 12 | 7 days (604800000 ms) | Real-time ingest from Pixel/collectors |
 | `{env}.collector.event.v1.backfill` | backfill | 12 | 30 days (2592000000 ms) | Historical replay; separate consumer group from live |
-| `{env}.collector.event.v1.dlq` | DLQ | 12 | 30 days | Dead-letter; parse failures, schema rejections |
 
 ## Partition key strategy
 
@@ -40,7 +39,6 @@ This guarantees:
 |----------------|-------|---------|
 | `brain.stream-worker.live` | `{env}.collector.event.v1` | Live enrichment → Bronze write |
 | `brain.stream-worker.backfill` | `{env}.collector.event.v1.backfill` | Historical Bronze rebuild |
-| `brain.stream-worker.dlq-monitor` | `{env}.collector.event.v1.dlq` | DLQ alerting + quarantine |
 
 Live and backfill lanes are **separate consumer groups** — replay never disturbs live lag metrics.
 

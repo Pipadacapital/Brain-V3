@@ -37,80 +37,26 @@ topics:
       cleanup.policy: "delete"
       compression.type: "snappy"
       min.insync.replicas: "1"
-    description: "Order backfill lane — shopify-backfill worker → BackfillOrderConsumer. Single partition = natural throughput cap (ADR-BF-7 / D-3). Separate topic from live lane ensures zero lag on stream-worker-live consumer group."
+    description: "Order backfill lane — shopify-backfill worker → Kafka Connect Iceberg sink (ADR-0015 WS2 single Bronze writer; the topic is in the collector sink's topics list). Single partition = natural throughput cap (ADR-BF-7 / D-3). Separate topic keeps backfill volume off the live lane."
 
-  - name: "{env}.collector.order.backfill.v1.dlq"
-    lane: dlq
-    partitions: 1
-    replication_factor: 1
-    config:
-      retention.ms: "2592000000"          # 30 days
-      cleanup.policy: "delete"
-      compression.type: "snappy"
-    description: "DLQ for backfill order lane — unrecoverable parse / write errors"
-
-  - name: "{env}.collector.event.v1.dlq"
-    lane: dlq
-    partitions: 12
-    replication_factor: 1
-    config:
-      retention.ms: "2592000000"         # 30 days (DLQ — enough for investigation)
-      cleanup.policy: "delete"
-      compression.type: "snappy"
-    description: "Dead-letter queue — schema rejection, parse failures, unrecoverable errors"
-
-  - name: "{env}.collector.event.v1.quarantine"
-    lane: quarantine
-    partitions: 12
-    replication_factor: 1
-    config:
-      retention.ms: "2592000000"         # 30 days (forensic sink — enough for investigation)
-      cleanup.policy: "delete"
-      compression.type: "snappy"
-    description: "Quarantine sink (R3) — events that PARSED but FAILED a security/compliance gate: unresolved/mismatched install_token → brand (R2 tenant-unresolved / brand_mismatch) or absent consent_flags. Distinct from .dlq (malformed/unparseable). Reuses the shipped DlqProducer with a .quarantine topic suffix — no new producer, no new topic family."
+  # ADR-0015: {env}.collector.order.backfill.v1.dlq and {env}.collector.event.v1.quarantine are
+  # RETIRED. Their only writers were the deleted stream-worker Bronze consumers (WS2): the
+  # order-backfill lane is landed by the Kafka Connect sink (no consumer left to DLQ it), and the
+  # parsed-but-failed-gate quarantine moved to the Silver keystone (silver_collector_event.py →
+  # brain_silver.silver_quarantine, replayable).
+  # ADR-0015 WS4 COMPLETION: {env}.collector.event.v1.dlq is RETIRED too — the erasure
+  # orchestrator (the last stream-worker Kafka consumer) is now a PG request-driven poll lane
+  # (ops.erasure_request_queue, migration 0140); poison requests park as status='dead' rows.
+  # No .dlq topics remain.
 
 consumer_groups:
-  # Reconciled to the code's actual group IDs (apps/stream-worker/src/main.ts defaults).
-  # All bridge groups read the SAME live topic but on independent groups (offset lag is isolated).
-  - id: "stream-worker-live"
-    topic: "{env}.collector.event.v1"
-    description: "Live enrichment → Bronze write (CONSUMER_GROUP_ID)"
-
-  - id: "identity-bridge-live"
-    topic: "{env}.collector.event.v1"
-    description: "Identity-resolution bridge → Neo4j (IDENTITY_CONSUMER_GROUP_ID)"
-
-  - id: "live-ledger-bridge"
-    topic: "{env}.collector.event.v1"
-    description: "order.live.v1 → realized-revenue ledger (LIVE_LEDGER_CONSUMER_GROUP_ID)"
-
-  - id: "settlement-ledger-bridge"
-    topic: "{env}.collector.event.v1"
-    description: "settlement.live.v1 → net-of-fees finalization (SETTLEMENT_LEDGER_CONSUMER_GROUP_ID)"
-
-  - id: "spend-ledger-bridge"
-    topic: "{env}.collector.event.v1"
-    description: "spend.live.v1 → ad_spend_ledger (SPEND_LEDGER_CONSUMER_GROUP_ID)"
-
-  - id: "gokwik-awb-ledger-bridge"
-    topic: "{env}.collector.event.v1"
-    description: "gokwik.awb_status.v1 → cod_rto_clawback ledger (GOKWIK_AWB_LEDGER_CONSUMER_GROUP_ID)"
-
-  - id: "stream-worker-consent-suppressor"
-    topic: "{env}.collector.event.v1"
-    description: "Consent-revocation suppressor (CONSENT_SUPPRESSOR_CONSUMER_GROUP_ID)"
-
-  - id: "stream-worker-capi-deletion"
-    topic: "{env}.collector.event.v1"
-    description: "CAPI deletion bridge (CAPI_DELETION_CONSUMER_GROUP_ID)"
-
-  - id: "stream-worker-backfill"
-    topic: "{env}.collector.order.backfill.v1"
-    description: "Backfill order consumer — isolated from live group; single-partition cap prevents storm lagging live path (ADR-BF-7 / D-3) (BACKFILL_CONSUMER_GROUP_ID)"
-
-  - id: "brain.stream-worker.dlq-redrive"
-    topic: "{env}.collector.event.v1.dlq"
-    description: "DLQ redrive — operator CLI replays dead-lettered messages back to origin topic (apps/stream-worker/src/jobs/dlq-redrive)"
+  # ADR-0015 WS3/WS4 (identity in Silver + PG-driven erasure): ALL stream-worker consumer
+  # groups are RETIRED — identity resolves in the Silver batch stage
+  # (apps/stream-worker/src/jobs/silver-identity), which also folds consent projection, CAPI
+  # deletion triggering, the dirty-set writes, and direct serving-cache eviction; the erasure
+  # orchestrator (formerly group stream-worker-erasure-orchestrator, the last one) drains
+  # ops.erasure_request_queue instead of the log. The stream-worker runs NO Kafka consumers.
+  # Kafka Connect's sink connectors manage their own connect-* groups (not listed here).
 
 schema_registry:
   compatibility: FULL_TRANSITIVE

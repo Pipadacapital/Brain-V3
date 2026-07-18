@@ -18,8 +18,10 @@
  * DDL: db/migrations/0125_journey_reversion_pending.sql.
  */
 import type pg from 'pg';
-import type { JourneyDirtyEntry } from '../../domain/journey/JourneyReversionDirty.js';
-import type { IJourneyReversionDirtyRepository } from '../../interfaces/consumers/JourneyReversionDirtyConsumer.js';
+import type {
+  JourneyDirtyEntry,
+  IJourneyReversionDirtyRepository,
+} from '../../domain/journey/JourneyReversionDirty.js';
 
 export class PgJourneyReversionDirtyRepository implements IJourneyReversionDirtyRepository {
   /**

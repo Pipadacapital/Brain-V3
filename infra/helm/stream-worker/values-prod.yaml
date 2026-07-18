@@ -27,6 +27,16 @@ env:
   # fall back to the registered-DISABLED seam (honest no-op, logged — never a silent success).
   - name: ARGO_SERVER_URL
     value: https://kubernetes.default.svc
+  # AUD-OPS-041 (2026-07-18): throttle the connector ingest scheduler 45s → 1h. The default
+  # 45s cadence re-dispatches every connector's repull run() 80×/hour; each ad-spend run()
+  # re-emits its trailing ~28-day window, and each order run() its recent window — all appended
+  # to APPEND-ONLY Bronze (dedup is Silver's job). At steady state Silver's watermark clips each
+  # tick to the newest slice, but the volume (~135 spend rows/s observed) inflates Bronze and,
+  # after any Silver rebuild-from-empty, makes the cold fold OOM. Ad spend / order state don't
+  # change sub-hourly, so hourly repull loses no freshness that matters. Floor is 15s in code.
+  # Rollback: delete this var (returns to the 45s default).
+  - name: SYNC_SCHEDULER_INTERVAL_MS
+    value: "3600000"
 
 # AUD-LOCAL-016-FUP1: prod kube-prometheus-stack scrapes the worker's /metrics (HealthServer
 # containerPort — headless, so a PodMonitor) as job "brain-stream-worker" (up{job=~"brain-.*"}).

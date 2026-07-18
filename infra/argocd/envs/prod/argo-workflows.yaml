@@ -2,8 +2,8 @@
 # Brain – ArgoCD Application: Argo Workflows (prod) — AUD-COST-005
 # Installs the UPSTREAM workflow-controller + the argoproj.io/v1alpha1
 # CronWorkflow/Workflow CRDs into namespace `argo`. REQUIRED before the
-# cronworkflows chart can sync: every Spark cron (bronze landing, v4-silver /
-# v4-gold, maintenance) and node job in infra/helm/cronworkflows emits
+# cronworkflows chart can sync: every DuckDB transform cron (chained
+# v4-medallion, maintenance) and node job in infra/helm/cronworkflows emits
 # CronWorkflow CRs into ns `argo` — without this controller the sync fails on
 # an unknown CRD and the entire Spark compute tier has no prod execution path.
 #

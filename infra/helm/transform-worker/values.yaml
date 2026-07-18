@@ -1,0 +1,133 @@
+# Default values for the transform-worker chart. Overridden by values-staging.yaml / values-prod.yaml.
+#
+# transform-worker is the ADR-0016 P2.2 RESIDENT WARM MICRO-BATCH WORKER (D3 — "kill cold start"):
+# a single-replica Deployment on the brain-duckdb image running `run_all.py resident`. It holds ONE
+# warm DuckDB connection + attached Iceberg catalog across ticks and loops the chained medallion
+# pipeline every TRANSFORM_TICK_MS (silver → node identity subprocess → silver_identity_map → gold)
+# over incremental deltas, instead of the interim v4-medallion CronWorkflow paying a cold pod +
+# catalog-attach per tick.
+#
+# SINGLE-WRITER: two replicas must NEVER both write the medallion. The worker gates every tick on a
+# Postgres pg_try_advisory_lock (TRANSFORM_WORKER_LOCK_KEY = 910_005, mirroring the 910_00x namespace
+# of apps/stream-worker/src/infrastructure/pg/LeaderLock.ts) — so even a rollout overlap or an
+# accidental replicaCount>1 is safe (only the lock holder writes; the loser idles). 1 replica is the
+# warm baseline (the lock guards correctness; the second replica would just be a hot standby).
+#
+# HEADLESS: like stream-worker, this serves no traffic — there is NO Service. It DOES expose a stdlib
+# /healthz liveness endpoint (run_all.py's daemon HTTP thread) on TRANSFORM_WORKER_HEALTH_PORT so the
+# kubelet can restart a wedged loop. /healthz returns 200 while the loop is alive, 503 once draining.
+#
+# CUTOVER SEAM (WS1): enabling this Deployment (transformWorker.enabled=true in the cronworkflows
+# chart) SUPPRESSES the v4-medallion CronWorkflow — the cron template gates on
+# `and .Values.sparkV4.enabled (not .Values.transformWorker.enabled)`. The two never both write.
+# Default OFF in prod until validated in staging (24h soak, warm-tick p95 < 60s, parity vs the cron).
+
+# Environment name → resource naming brain-<environment>-transform-worker. Set per-env.
+environment: prod
+
+# MASTER CUTOVER GATE (ADR-0016 D3). When false the chart renders NOTHING — the interim
+# v4-medallion CronWorkflow (cronworkflows chart) stays the sole medallion writer. Flipping this
+# true here MUST be done IN LOCKSTEP with `transformWorker.enabled=true` in the cronworkflows chart
+# (which suppresses that cron) so the two never both write — single-writer across the cutover. The
+# pg advisory lock is the belt; this two-flag lockstep is the braces. Default OFF in prod until the
+# resident worker passes the staging validation gate (24h soak, warm-tick p95 < 60s, parity vs cron).
+enabled: false
+
+# Single warm replica is the baseline (the leader-lock guards double-writers). The Deployment omits
+# `replicas` and lets this drive it — there is no HPA (a batch worker with a fixed micro-batch cadence
+# does not scale horizontally; a second writer is blocked by the lock, not welcomed).
+replicaCount: 1
+
+image:
+  # The SAME brain-duckdb image the medallion CronWorkflows run (db/iceberg/duckdb/**) — run_all.py,
+  # the silver/gold marts, and the resident-worker code all ship in it. Per-env values pin the digest.
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb
+  tag: ""              # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Resident-worker command. run_all.py's `resident` argv starts the warm micro-batch loop; the interim
+# CronWorkflow instead passes an explicit tier path (`run_all.py silver|gold`). Kept as a value so the
+# entrypoint override is auditable in one place (the Dockerfile ENTRYPOINT is bronze_maintenance).
+command: ["python", "/opt/brain/duckdb/run_all.py", "resident"]
+
+probes:
+  enabled: true
+  # Liveness only — a headless batch worker has no readiness gate (it owns no Service/traffic). The
+  # kubelet restarts the pod if the resident loop wedges (health thread returns 503 once draining).
+  port: 8092           # must match TRANSFORM_WORKER_HEALTH_PORT in env below + run_all.py default
+  path: /healthz
+
+# Secret (External Secrets ← AWS Secrets Manager) — the SAME catalog-creds secret the cronworkflows
+# medallion steps envFrom (core-env in prod): ICEBERG_REST_URI + ICEBERG_WAREHOUSE + AWS_* (IRSA
+# credential chain) + NEO4J_* (identity mart reads) + the Postgres connection env the leader-lock and
+# the node identity job need (SILVER_PG_* / BRONZE_PG_* / BRAIN_APP_DATABASE_URL). Empty in defaults.
+envSecretName: ""
+
+# ── Resident-worker env contract (db/iceberg/duckdb/run_all.py `resident`) ──────────────────────────
+# These are the SINGLE SOURCE of the knob values wired into the container env, kept in lockstep with
+# both run_all.py's defaults and the cronworkflows chart's `transformWorker.{tickMs,healthPort,lockKey}`
+# documentation block (the code↔chart env contract must not drift across the WS1/WS2/WS3 seam).
+worker:
+  # Micro-batch cadence (TRANSFORM_TICK_MS) — run the chained pipeline once per this interval. A tick
+  # that runs LONGER than the interval simply starts the next immediately (single loop, never overlap).
+  tickMs: 45000
+  # Liveness HTTP port (TRANSFORM_WORKER_HEALTH_PORT) — MUST equal probes.port above.
+  healthPort: 8092
+  # Postgres advisory-lock key (TRANSFORM_WORKER_LOCK_KEY) for the single-writer gate. 910_005 mirrors
+  # apps/stream-worker/.../pg/LeaderLock.ts's 910_00x namespace (910_001 retired / 910_002 sync-claimer
+  # / 910_003 dq-checks / 910_004 silver-identity). Do NOT collide.
+  lockKey: 910005
+  # The NODE silver-identity subprocess run_all.py shells out to BETWEEN the warm silver and gold
+  # stages (the chain crosses languages — the identity resolver ships in the stream-worker deployable,
+  # NOT the brain-duckdb image). IMPORTANT: the brain-duckdb image is a pure-python image with NO node
+  # runtime, so the in-container default (`pnpm --filter …`) is a NO-OP that fails fast and holds the
+  # identity watermark (converge-next-tick — run_all.py's _run_identity_subprocess is continue-on-error).
+  # Until the identity resolve runs in-process/side-car, the identity+map stage still advances via the
+  # interim path; this env documents the seam and lets a future image (node-carrying, or a localhost
+  # side-car exec) override it. Empty ⇒ run_all.py's dev pnpm default (harmless no-op in the container).
+  silverIdentityCmd: ""
+
+# AUD-OBS-2: OTel OTLP export flag — empty (default) keeps run_all.py's stdout-line telemetry the only
+# signal. The authoritative medallion_freshness_seconds gauge is owned by the observability chart's
+# freshness_exporter (it queries duckdb-serving) — the worker only emits a structured stdout tick line.
+otelExporterOtlpEndpoint: ""
+
+serviceAccount:
+  # IRSA: S3 (Iceberg warehouse) + REST catalog + AWS Secrets Manager access. Set per-env (the SAME
+  # brain-<env>-jobs role the cronworkflows medallion steps use — identical catalog/S3 permissions).
+  annotations: {}
+
+# Node placement. Empty by default (staging/kind render unchanged); values-prod pins it to the
+# streaming pool alongside duckdb-serving + the cron transform pods.
+nodeSelector: {}
+tolerations: []
+
+# Right-sized to the medallion transform tier (mirrors the cronworkflows sparkV4.resources shape — the
+# resident worker runs the identical jobs on the identical image, just warm). Tune per-env.
+resources:
+  requests:
+    cpu: "1"
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# AUD-OPS-004: SIGTERM → drain the current tick, release the advisory lock, close the warm DuckDB
+# connection, exit 0 (run_all.py's resident loop is signal-graceful). A generous window lets an
+# in-flight tick finish its MERGE rather than being hard-killed mid-commit (all stages are idempotent
+# watermark+MERGE, so a hard kill is converge-next-run safe too — this just avoids the wasted work).
+terminationGracePeriodSeconds: 90
+
+# PodDisruptionBudget. minAvailable:0 — a gap in the medallion refresh is TOLERABLE (it's a batch
+# worker; the watermark+MERGE stages converge on the next tick, and freshness degrades gracefully, it
+# never corrupts). minAvailable:0 lets node drains / Karpenter consolidation / Spot reclaims evict the
+# single replica without blocking — the replacement resumes the loop from the watermark. (minAvailable:1
+# on a single-replica Deployment would permanently BLOCK every voluntary disruption.)
+pdb:
+  enabled: true
+  minAvailable: 0
+
+# AUD-INFRA-022: read-only root FS. OFF by default until verified against the runtime image (the
+# DuckDB jobs may write spill/scratch under /tmp — an emptyDir is mounted there when enabled).
+readOnlyRootFilesystem: false

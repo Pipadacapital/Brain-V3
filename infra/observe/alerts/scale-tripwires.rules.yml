@@ -47,8 +47,8 @@ groups:
           description: "The {{ $labels.tier }} CronWorkflow is within ~15 min of activeDeadlineSeconds (9000s). If it is killed, Silver/Gold freshness stalls platform-wide (serving reads only brain_serving.mv_* over these marts). Check for a re-bootstrap (lost watermark) or keystone fragmentation before it recurs."
 
       - alert: TransformTierRunFailed
-        # A tier run ended Failed (deadline, OOMKill, retries exhausted) — covers the v4-silver /
-        # v4-identity / v4-gold transform tiers AND the bronze-maintenance workflow + its fail-soft
+        # A tier run ended Failed (deadline, OOMKill, retries exhausted) — covers the chained
+        # v4-medallion transform tier AND the bronze-maintenance workflow + its fail-soft
         # bronze-dedup step (H4: dedup failure no longer aborts compaction/expiry — it surfaces
         # HERE as tier=bronze-dedup instead). Downstream mart staleness is caught by the freshness
         # rules; this points at the CAUSE hours earlier.

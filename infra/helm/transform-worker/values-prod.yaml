@@ -1,0 +1,47 @@
+environment: prod
+
+# ADR-0016 D3 MASTER CUTOVER GATE — OFF in prod until the resident worker passes the staging
+# validation gate (24h soak, warm-tick p95 < 60s, parity vs the v4-medallion cron). While false the
+# chart renders NOTHING and the interim v4-medallion CronWorkflow (cronworkflows chart, still
+# transformWorker.enabled=false there) remains the sole medallion writer. FLIP PROCEDURE (lockstep):
+#   1. set cronworkflows values-prod transformWorker.enabled=true   → suppresses the v4-medallion cron
+#   2. set this enabled=true                                        → starts the resident Deployment
+# Both land in the SAME promotion PR so the two are never both writing across the deploy.
+enabled: false
+
+image:
+  # Same brain-duckdb-prod image + digest the cronworkflows medallion steps run (sparkV4.image /
+  # values-prod). Kept in sync at promote time (deploy.yml build-data-images bumps both).
+  repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
+  tag: ""
+  digest: "sha256:bc865113d9f4a17c87d8a7e19819c8f50fd4796d174d32e48436342f1240d1d8"
+
+# The SAME catalog-creds secret the cronworkflows medallion steps envFrom.
+envSecretName: core-env
+
+serviceAccount:
+  annotations:
+    # The SAME brain-prod-jobs IRSA role the cronworkflows medallion steps assume (S3 warehouse +
+    # REST catalog + Secrets Manager). No new role — identical medallion read/write permissions.
+    eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-jobs
+
+# Ride the untainted `streaming` Spot pool (same pool as duckdb-serving + the cron transform pods).
+# A Spot reclaim just restarts the resident loop on a new node; the watermark makes it converge-safe.
+nodeSelector:
+  karpenter.sh/nodepool: streaming
+
+# Same shape as the cronworkflows sparkV4.resources — identical jobs, identical image, just warm.
+resources:
+  requests:
+    cpu: "1"
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# Resident-worker knobs — prod pins the ADR-0016 defaults explicitly so they don't drift from the base
+# chart / run_all.py / the cronworkflows transformWorker documentation block.
+worker:
+  tickMs: 45000
+  healthPort: 8092
+  lockKey: 910005

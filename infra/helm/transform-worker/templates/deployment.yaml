@@ -1,0 +1,121 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "transform-worker.fullname" . }}
+  labels:
+    {{- include "transform-worker.labels" . | nindent 4 }}
+spec:
+  # Single warm replica — the pg advisory lock (TRANSFORM_WORKER_LOCK_KEY) guards double-writers, so
+  # even a rollout overlap is safe (only the lock holder writes). NO HPA on this chart: a batch worker
+  # on a fixed micro-batch cadence does not scale horizontally.
+  replicas: {{ .Values.replicaCount }}
+  # A resident single-writer must never run two pods at once during a rollout (the leader-lock makes
+  # this correct, but Recreate avoids even the transient hot-standby churn on the warm DuckDB conn).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "transform-worker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "transform-worker.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "transform-worker.fullname" . }}
+      # AUD-OPS-004: bounded drain window on eviction/rollout — SIGTERM lets the resident loop finish
+      # the in-flight tick, release the advisory lock, and close the warm DuckDB connection cleanly.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001       # the brain-duckdb Dockerfile's non-root uid (db/iceberg/duckdb)
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else if and .Values.image.tag (ne .Values.image.tag "latest") }}:{{ .Values.image.tag }}{{ else }}{{ fail "image.digest (preferred) or an immutable, non-':latest' image.tag is required (B3) — refusing to deploy an unpinned/mutable image" }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # run_all.py `resident` — the warm micro-batch loop (overrides the Dockerfile's
+          # bronze_maintenance ENTRYPOINT).
+          command:
+            {{- toYaml .Values.command | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            {{- if .Values.readOnlyRootFilesystem }}
+            readOnlyRootFilesystem: true
+            {{- end }}
+          {{- if .Values.probes.enabled }}
+          # Headless batch worker — the kubelet needs a named containerPort to target the liveness
+          # probe (run_all.py's stdlib /healthz thread). No Service fronts this port.
+          ports:
+            - name: health
+              containerPort: {{ .Values.probes.port }}
+              protocol: TCP
+          {{- end }}
+          {{- if .Values.envSecretName }}
+          # The SAME catalog-creds secret the cronworkflows medallion steps envFrom (core-env in prod):
+          # ICEBERG_REST_URI + ICEBERG_WAREHOUSE + AWS_* + NEO4J_* + the Postgres connection env the
+          # leader-lock (pg_try_advisory_lock) and the node identity subprocess need.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.envSecretName }}
+          {{- end }}
+          env:
+            # ── Resident-worker knobs (db/iceberg/duckdb/run_all.py `resident` env contract) ──
+            - name: TRANSFORM_TICK_MS
+              value: {{ .Values.worker.tickMs | quote }}
+            - name: TRANSFORM_WORKER_HEALTH_PORT
+              value: {{ .Values.worker.healthPort | quote }}
+            - name: TRANSFORM_WORKER_LOCK_KEY
+              value: {{ .Values.worker.lockKey | quote }}
+            {{- if .Values.worker.silverIdentityCmd }}
+            - name: SILVER_IDENTITY_CMD
+              value: {{ .Values.worker.silverIdentityCmd | quote }}
+            {{- end }}
+            {{- if .Values.otelExporterOtlpEndpoint }}
+            # AUD-OBS-2: OTel export ON-switch (empty ⇒ flag OFF; auth headers, if any, come from the
+            # envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS).
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otelExporterOtlpEndpoint | quote }}
+            {{- end }}
+          {{- if .Values.probes.enabled }}
+          # Liveness only (no readiness — headless, owns no Service/traffic). startupProbe tolerates a
+          # cold REST-catalog/S3 attach on boot before the loop's first tick makes /healthz go 200.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: health
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: health
+            periodSeconds: 15
+            failureThreshold: 3
+          {{- end }}
+          {{- if .Values.readOnlyRootFilesystem }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.readOnlyRootFilesystem }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- end }}
+{{- end }}

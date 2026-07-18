@@ -66,6 +66,10 @@ spec:
               value: {{ .Values.freshnessExporter.icebergCatalog | quote }}
             - name: FRESHNESS_GOLD_SCHEMA
               value: {{ .Values.freshnessExporter.goldSchema | quote }}
+            - name: FRESHNESS_SERVING_SCHEMA
+              value: {{ .Values.freshnessExporter.servingSchema | quote }}
+            - name: FRESHNESS_MEDALLION_VIEW
+              value: {{ .Values.freshnessExporter.medallionView | quote }}
             - name: FRESHNESS_LISTEN_PORT
               value: {{ .Values.freshnessExporter.listenPort | quote }}
             - name: FRESHNESS_REFRESH_SEC

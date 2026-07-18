@@ -120,6 +120,19 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
    * the clipped range. Default 7 days.
    */
   SILVER_IDENTITY_MAX_CATCHUP_MS: z.coerce.number().int().positive().default(604_800_000),
+  /**
+   * Per-run FORWARD-SLICE width cap (ms of ingested_at time) — ADR-0015 open item #11. The read
+   * over the unindexed Iceberg-backed mv_silver_collector_event has no upper bound; on a cold
+   * start the floor reaches back the full catch-up gap (up to MAX_CATCHUP = 7d), so a data-heavy
+   * brand's entire backlog is one keyset sweep that exceeds duckdb-serving's HARD 25s statement
+   * watchdog → the read aborts → the watermark is held → the brand is STUCK FOREVER. Bounding the
+   * per-run window to this slice keeps every read well under the 25s ceiling. One slice per run;
+   * the 5-min cron chews a cold-start backlog forward across ticks (a clean pass advances the
+   * watermark to the slice ceiling). Default 6h — a safe slice that reads under the watchdog even
+   * for a dense brand, tunable UP once verified. 7d cold-start backlog at 6h slices ≈ 28 cron
+   * ticks ≈ ~2.3h one-time catch-up, after which steady-state runs are tiny.
+   */
+  SILVER_IDENTITY_MAX_SLICE_MS: z.coerce.number().int().positive().default(21_600_000),
   /** Neo4j bulk read/write batch size (BatchResolveIdentityUseCase). */
   SILVER_IDENTITY_BATCH_SIZE: z.coerce.number().int().positive().default(500),
   /** identifier_hash → brain_id Redis cache TTL (seconds, sliding). Default 7 days. */

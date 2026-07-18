@@ -218,7 +218,14 @@ Beyond the DLQ, `CollectorEventConsumer` routes R3-failed events (consent absent
 
 **File:** `infra/observe/alerts/brain-slo.rules.yml`
 
-All alerts are grounded in actually-emitted metrics. The following table documents every live rule:
+All alerts are grounded in actually-emitted metrics. The following table documents every live rule.
+
+> Note (ADR-0015, 2026-07-18): the Kafka DLQ lane (`.dlq` topics + `DlqProducer` + the redrive CLI) is
+> RETIRED — the poison-message alerts `BrainDlqGrowing`, `BrainDlqRedriveExhausted`, and
+> `BrainDlqRedriveErrors` were DELETED. The erasure lane's poison path is now the PG queue
+> (`ops.erasure_request_queue` status=`dead`), surfaced by `BrainErasureQueueDead`.
+
+The following table documents every live rule:
 
 | Alert | Severity | Metric(s) | Threshold | Window | Meaning |
 |---|---|---|---|---|---|
@@ -226,17 +233,15 @@ All alerts are grounded in actually-emitted metrics. The following table documen
 | `BrainCollectorErrorBudgetFastBurn` | critical | `collector_accept_total`, `collector_spool_full_total` | 14.4× burn rate | 5 min + 1 h | Multi-window SLO burn (fast) |
 | `BrainCollectorErrorBudgetSlowBurn` | warning | same | 6× burn rate | 30 min + 6 h | Multi-window SLO burn (slow) |
 | `BrainCollectorSheddingNow` | critical | `collector_spool_full_total` | > 0 for 2 min | 2 min | Collector spool full → shedding |
-| `BrainDlqGrowing` | warning | `redpanda_kafka_log_size_bytes{topic=~".*\.dlq"}` | increasing for 10 min | 10 min | DLQ backlog accumulating |
-| `BrainConsumerLagHigh` | warning | `redpanda_kafka_consumer_group_lag{group=~"stream-worker.*\|.*-bridge"}` | > 50 000 | 5 min | Consumer falling behind |
-| `BrainIngestStale` | critical | `rate(redpanda_kafka_log_size_bytes[5m])`, `rate(bronze_write_total[5m])` | topic advancing + zero Bronze writes for 10 min | 10 min | Pipeline wedged: events arriving but not written |
+| `BrainErasureQueueDead` | warning | `brain_erasure_queue_dead_total` | > 0 in 15 min | 5 min | RTBF erasure went `status='dead'` in `ops.erasure_request_queue` — crypto-shred did not complete (inspect `WHERE status='dead'`) |
+| `BrainConsumerLagHigh` | warning | `kafka_consumergroup_lag{consumergroup=~"stream-worker-.*\|.*-bridge"}` | > 50 000 | 10 min | Consumer falling behind |
+| `BrainIngestStale` | critical | `kafka_log_log_logendoffset{topic=~".*\.collector\.event\.v1"}`, `kafka_connect_sink_task_sink_record_read_total{connector="iceberg-bronze-collector"}` | collector topic advancing + zero Connect sink reads for 10 min | 10 min | Pipeline wedged: events arriving but the Kafka Connect Iceberg sink (sole Bronze writer, ADR-0010) not landing them |
 | `BrainIngestSchedulerOverrun` | warning | `ingest_scheduler_dispatch_total` | stalled for 5 min | 5 min | Repull scheduler not dispatching |
 | `BrainConnectorDispatchErrors` | warning | connector dispatch metrics | > 25% by provider | 5 min | Provider repull failure spike |
 | `BrainConnectorRateLimited` | warning | `connector_ratelimit_*` | sustained for 5 min | 5 min | Provider rate-limit ceiling hit |
-| `BrainDlqRedriveExhausted` | warning | `dlq_redrive_exhausted_total` | > 0 in 10 min | 10 min | Poison messages exhausting redrive budget |
-| `BrainDlqRedriveErrors` | warning | `dlq_redrive_error_total` | > 0 in 5 min | 5 min | Redrive produce errors |
 | `BrainConnectorAuthRejected` | warning | `connector_auth_rejected_total{provider}` | > 0 for 10 min | 10 min | OAuth token / credential rejected by provider |
 | `BrainMetaTokenRefreshFailing` | warning | `meta_token_refresh_error_total` | > 0 for 15 min | 15 min | Meta proactive token refresh failing |
-| `BrainSilverLag` | warning | `dq_silver_lag_breach_total` | > 0 in 30 min | 30 min | dbt Silver build behind freshness SLO |
+| `BrainSilverLag` | warning | `brain_dq_silver_lag_breach_total` | > 0 in 1 h | 1 h | DuckDB Silver build behind freshness SLO (dbt removed; transform tier is DuckDB-on-Iceberg) |
 | `BrainRevenueOverReversal` | critical | `revenue_over_reversal_total` | > 0 in 5 min | 5 min | Revenue reversal exceeds gross (ledger integrity) |
 
 **Alertmanager routing (existing):** `severity=critical` → PagerDuty + Slack; `severity=warning` → Slack.

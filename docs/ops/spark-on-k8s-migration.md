@@ -26,6 +26,13 @@ the **silver or gold cron runtime exceeds its window** (silver approaching the :
 is **>~5x** today. Until then, local mode + the #312 tuning + the env knobs are cheaper and simpler.
 
 ### 1.1 The DEFINED, alert-backed cutover trigger (AUD-IMPL-027 / AUD-OPS-029)
+
+> **HISTORICAL (note added 2026-07-18):** Spark was REMOVED (Spark→DuckDB cutover, PR #148). The metrics
+> below are now `brain_transform_workflow_duration_seconds` / `_failed_total` and the alerts are
+> `TransformTier*` (renamed from `SparkTier*`; see `infra/observe/alerts/scale-tripwires.rules.yml`).
+> Kept as the original migration rationale — do not treat the `brain_spark_workflow_*` / `SparkTier*`
+> names or `db/iceberg/spark/*` paths as current.
+
 The trigger above is now **measured, not vibes** — per-run wall-time telemetry ships with the crons:
 
 - **Workflow-tier metric:** each v4-silver / v4-gold run emits the realtime gauge

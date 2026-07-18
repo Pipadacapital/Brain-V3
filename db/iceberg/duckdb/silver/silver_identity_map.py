@@ -21,6 +21,21 @@ WRITE = BI-TEMPORAL APPEND-PER-MUTATION (AMD-07 R1): never rewrite validity colu
   new version of changed PKs (an unchanged open row blocks the insert). Idempotent: an unchanged projection
   appends nothing. Plus the ONE-TIME legacy _backfill_system_time (runs first; a no-op on a fresh table).
 
+INCREMENTAL DIRTY-SET (ADR-0016 P1.2 — the ~20 min → seconds win): the full Neo4j projection is O(whole
+  graph) even when a single merge moved one brain_id. IDENTITY_MAP_DIRTY_ONLY (DEFAULT ON) scopes the staged
+  projection to ONLY the brain_ids the Silver identity job mutated this tick — it already records them in the
+  PG dirty tables it writes per committed chunk: ops.scoped_recompute_request.brain_ids (jsonb; the
+  {canonical, merged} pair of EVERY merge — UNGATED), ops.journey_reversion_pending.brain_id (linked/merged,
+  journey.engine flag) and ops.restitch_pending.dirty_key WHERE dirty_kind='brain_id' (merged/unmerged,
+  stitch.v2 flag). We filter the stage on `brain_id IN dirty ∨ replaced_by_brain_id IN dirty` so BOTH sides
+  of a bi-temporal supersede pair for a mutated brain are re-projected together. Filtering to a SUPERSET is
+  always SAFE — the append-per-mutation MERGE is idempotent, so re-projecting an unchanged brain_id appends
+  nothing; only UNDER-coverage would drop a version. FULL_REFRESH=1 forces the full rebuild (recovery /
+  schema-widen / a cold dirty table). No NEO4J_URI → data-thin empty path (unchanged). No PG reach → the job
+  falls back to the FULL projection (fail-OPEN, never silently drops rows). PARITY: the incremental output
+  MUST equal a full rebuild over the touched brain_ids — validated pre-merge by db/iceberg/duckdb/parity_check.py
+  and by the sibling test_silver_identity_map_dirty.py pure-logic gate.
+
 PII: identifier_hash is a 64-hex HASH only. brand_id first. MONEY: none. STAGE-1 GATE: N/A (trusted
   projection). DATA-THIN DEV PATH: NEO4J_URI unset → EMPTY table (+ backfill runs regardless).
 """
@@ -41,6 +56,40 @@ TARGET = f"{CATALOG}.{SILVER_NAMESPACE}.{TABLE}{os.environ.get('MIGRATION_TABLE_
 NEO4J_URI = os.environ.get("NEO4J_URI", "").strip()
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "brain_neo4j")
+
+# ── Incremental dirty-set gate (ADR-0016 P1.2) ────────────────────────────────────────────────────────
+# IDENTITY_MAP_DIRTY_ONLY (DEFAULT ON): scope the projection to the brain_ids the identity job mutated this
+# tick (read from the PG ops.* dirty tables). FULL_REFRESH=1 forces the full rebuild (recovery / schema-widen).
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "no")
+
+
+IDENTITY_MAP_DIRTY_ONLY = _flag("IDENTITY_MAP_DIRTY_ONLY", True)
+FULL_REFRESH = _flag("FULL_REFRESH", False)
+
+# PG (ops schema) — same DuckDB postgres-ATTACH idiom as silver_session_identity.py.
+PG_HOST = os.environ.get("SILVER_PG_HOST", "localhost")
+PG_PORT = os.environ.get("SILVER_PG_PORT", "5432")
+PG_DB = os.environ.get("SILVER_PG_DB", "brain")
+PG_USER = os.environ.get("SILVER_PG_USER", "brain")
+PG_PASSWORD = os.environ.get("SILVER_PG_PASSWORD", "brain")
+
+# The dirty brain_ids of ONE tick = the union across the three PG dirty tables the identity job writes.
+# UNGATED merges always land in scoped_recompute_request; the flag-gated lanes add linked/minted/unmerged.
+# A brain_id cast to text so it compares to the map's string brain_id / replaced_by_brain_id columns.
+_DIRTY_BRAIN_IDS_SQL = """
+  SELECT DISTINCT bid FROM (
+    SELECT jsonb_array_elements_text(brain_ids) AS bid FROM ops.scoped_recompute_request
+     WHERE brain_ids IS NOT NULL
+    UNION
+    SELECT brain_id::text AS bid FROM ops.journey_reversion_pending
+    UNION
+    SELECT dirty_key AS bid FROM ops.restitch_pending WHERE dirty_kind = 'brain_id'
+  ) d WHERE bid IS NOT NULL AND bid <> ''
+""".strip("\n")
 
 # Connector-safe flat MATCH … UNWIND — byte-identical to the Spark IDENTITY_MAP_CYPHER.
 IDENTITY_MAP_CYPHER = (
@@ -122,6 +171,49 @@ def _backfill_system_time(con):
     con.execute(f"UPDATE {TARGET} SET system_from = updated_at WHERE system_from IS NULL;")
 
 
+def _dirty_stage_predicate(dirty: list[str]) -> str:
+    """Pure: the WHERE fragment that keeps ONLY staged rows touching a dirty brain_id, on either side of a
+    bi-temporal supersede pair (`brain_id` = current/canonical, `replaced_by_brain_id` = the moved-away id).
+
+    - dirty == []  → '1=0' : no brain_id mutated this tick → the stage is empty (append-per-mutation no-op).
+    - dirty is None handling lives in the caller (None ⇒ full projection, no filter at all).
+    Emits a literal IN-list of single-quoted, quote-escaped brain_id strings (brain_ids are UUID/opaque ids,
+    never PII — I-S02). Keeping BOTH sides is what preserves the AMD-07 validity invariant: a merge that moves
+    hash H from brain B onto A must re-project A's new CURRENT row AND B's SUPERSEDED ('S') closed interval
+    (whose replaced_by_brain_id = A) in the same pass, or the two-MERGE supersede+insert would split."""
+    if not dirty:
+        return "1=0"
+    quoted = ", ".join("'" + b.replace("'", "''") + "'" for b in dirty)
+    return f"(brain_id IN ({quoted}) OR replaced_by_brain_id IN ({quoted}))"
+
+
+def _read_dirty_brain_ids(con) -> list[str] | None:
+    """Read the DISTINCT brain_ids the identity job dirtied this tick from the PG ops.* tables via the DuckDB
+    postgres scanner. Returns a (possibly empty) list on success, or None when PG is unreachable — the caller
+    treats None as 'fall back to the FULL projection' (fail-OPEN: never silently drop rows on a PG blip)."""
+    try:
+        con.execute("INSTALL postgres; LOAD postgres;")
+        con.execute(
+            f"ATTACH 'host={PG_HOST} port={PG_PORT} dbname={PG_DB} user={PG_USER} "
+            f"password={PG_PASSWORD}' AS _pgdirty (TYPE postgres, READ_ONLY);"
+        )
+        rows = con.execute(
+            f"SELECT bid FROM postgres_query('_pgdirty', $q${_DIRTY_BRAIN_IDS_SQL}$q$)"
+        ).fetchall()
+        return [str(r[0]) for r in rows if r[0] is not None]
+    except Exception as exc:  # noqa: BLE001 — PG unreachable / ops.* absent → full projection (fail-open)
+        print(
+            f"[silver-identity-map] dirty-set unavailable ({str(exc)[:120]}); full projection this run",
+            flush=True,
+        )
+        return None
+    finally:
+        try:
+            con.execute("DETACH _pgdirty;")
+        except Exception:  # noqa: BLE001 — attach never succeeded
+            pass
+
+
 def _read_edges() -> list[dict]:
     from neo4j import GraphDatabase
 
@@ -180,6 +272,21 @@ def build(con):
         print("[silver-identity-map] NEO4J_URI not set — created EMPTY table (data-thin path).", flush=True)
         return con.execute(f"SELECT count(*) FROM {TARGET}").fetchone()[0]
 
+    # Dirty-set gate: scope the projection to the mutated brain_ids unless FULL_REFRESH forces the full
+    # rebuild. None ⇒ full projection (flag off, or PG unreachable → fail-open). A non-None list (even []) is
+    # applied as a stage filter; [] ⇒ nothing mutated ⇒ empty stage ⇒ append-per-mutation no-op.
+    dirty: list[str] | None = None
+    if IDENTITY_MAP_DIRTY_ONLY and not FULL_REFRESH:
+        dirty = _read_dirty_brain_ids(con)
+        if dirty is not None:
+            print(
+                f"[silver-identity-map] incremental dirty-set: {len(dirty)} mutated brain_id(s)",
+                flush=True,
+            )
+    elif FULL_REFRESH:
+        print("[silver-identity-map] FULL_REFRESH=1 — full projection (dirty-set bypassed)", flush=True)
+    stage_filter = "TRUE" if dirty is None else _dirty_stage_predicate(dirty)
+
     rows = _read_edges()
     con.execute("DROP TABLE IF EXISTS _idm_raw;")
     con.execute(
@@ -232,7 +339,8 @@ def build(con):
           CAST(NULL AS TIMESTAMP)          AS system_to,
           now()                            AS updated_at
         FROM _idm_raw
-        WHERE brand_id IS NOT NULL AND identifier_hash IS NOT NULL AND brain_id IS NOT NULL;
+        WHERE brand_id IS NOT NULL AND identifier_hash IS NOT NULL AND brain_id IS NOT NULL
+          AND ({stage_filter});
         """
     )
 

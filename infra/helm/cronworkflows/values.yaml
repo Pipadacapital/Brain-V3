@@ -185,16 +185,17 @@ sparkV4:
   # Forbid self-throttles: a long run skips the next tick (never overlaps a second medallion writer), so
   # freshness degrades gracefully to whatever the whole chain can sustain warm.
   medallionSchedule: "*/5 * * * *"   # every 5 min — the WHOLE chain (keystone → silver ×2 → identity → map → gold → cache-bust)
-  # activeDeadlineSeconds stays HIGH (9000s / 2.5h): the FIRST run after SILVER_INCREMENTAL is enabled has
-  # no watermark → a full-scan BOOTSTRAP (~75 min, the old runtime) that MUST complete to seed the
-  # watermark. A low cap would kill the bootstrap before it writes the watermark → every run re-bootstraps
-  # and never progresses. After the bootstrap, incremental runs finish in minutes and Forbid skips ticks
-  # until each completes. Leave this ceiling as-is.
+  # activeDeadlineSeconds stays HIGH (9000s / 2.5h) as a generous ceiling. With WATERMARK_MAX_SLICE_SECONDS
+  # set (below), the first run no longer does a single unbounded full-scan bootstrap — it walks the backlog
+  # in bounded [oldest, oldest+slice] chunks over successive ticks, each seeding the watermark forward — so
+  # a large accumulated Bronze backlog (e.g. after a flush/outage) can never OOM the keystone in one pass.
+  # Each sliced run finishes in minutes; Forbid skips ticks until each completes. Leave this ceiling as-is.
   activeDeadlineSeconds: 9000
   # Non-secret config. Secrets (ICEBERG_REST_URI, AWS_*, NEO4J_*) come from envSecretName.
   # SILVER_INCREMENTAL=1 activates the flag-gated incremental reads shipped in #193/#194 (default OFF).
-  # First run bootstraps (full scan) then windows [watermark, now). WATERMARK_LOOKBACK_SECONDS re-scans a
-  # trailing margin (idempotent MERGE dedups it) so a slightly out-of-order Kafka arrival is never skipped.
+  # The first run bootstrap-walks from the oldest row in WATERMARK_MAX_SLICE_SECONDS-wide chunks, then
+  # windows [watermark, min(now, watermark+slice)). WATERMARK_LOOKBACK_SECONDS re-scans a trailing margin
+  # (idempotent MERGE dedups it) so a slightly out-of-order Kafka arrival is never skipped.
   env:
     - { name: ICEBERG_CATALOG, value: "rest" }
     - { name: SILVER_INCREMENTAL, value: "1" }
@@ -210,6 +211,13 @@ sparkV4:
     # recovery escape (forces a full pass on any tier).
     - { name: GOLD_INCREMENTAL, value: "0" }
     - { name: WATERMARK_LOOKBACK_SECONDS, value: "600" }
+    # WATERMARK_MAX_SLICE_SECONDS (ADR-0016) — forward-slice cap: one run advances the watermark at most
+    # this many seconds, so a watermark-less first run (or a watermark left far behind after a flush/outage)
+    # walks the backlog in bounded chunks instead of one full-scan fold that OOMs the DuckDB keystone. 1h @
+    # the observed collector rate is a safe per-slice row count well under the fold's memory ceiling; steady
+    # state (a batch smaller than the slice) is a no-op, so this is invisible once caught up. 0 disables it
+    # (reverts to the unbounded full-scan bootstrap). Converges to now over successive */5 ticks.
+    - { name: WATERMARK_MAX_SLICE_SECONDS, value: "3600" }
   # Workflow-pod placement (AUD-PROD-006) — shared by v4-medallion / v4-maintenance. Empty by
   # default; values-prod pins to the streaming pool (the batch pool is gone).
   nodeSelector: {}

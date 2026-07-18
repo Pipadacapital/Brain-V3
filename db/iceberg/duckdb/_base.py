@@ -206,6 +206,16 @@ FULL_REFRESH = _flag("FULL_REFRESH")
 # lost or doubled rows. Default 10 min; 0 disables the margin.
 LOOKBACK_SECONDS = int(os.environ.get("WATERMARK_LOOKBACK_SECONDS", "600") or "600")
 
+# Forward-slice cap (seconds). Bounds ONE run's window width so a watermark-less first run — or a watermark
+# left far behind after an outage/flush/backlog — walks the source in bounded [wm, wm+slice] chunks over
+# successive ticks instead of a single full-scan fold that OOMs the transform (the 4.27M-row Bronze
+# bootstrap incident). 0 (default) = OFF = exact prior behavior (unbounded window; full-scan bootstrap),
+# preserving byte-parity. When >0: a first run bootstraps from min(ts_col) and each run advances at most
+# `slice` seconds, converging to now over multiple ticks — the same forward-slice discipline the Silver
+# identity job's watermark-window uses. run_job advances the watermark to the SAME capped hi that was read,
+# so the walk never skips a below-cap row.
+WATERMARK_MAX_SLICE_SECONDS = int(os.environ.get("WATERMARK_MAX_SLICE_SECONDS", "0") or "0")
+
 # The batch hi pinned by run_job for the duration of one job process (race-safe read/advance bound).
 _CURRENT_HI = None
 
@@ -227,22 +237,31 @@ def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ing
     either tier.
 
     Full scan (returns None, None) when: the tier gate is off, FULL_REFRESH is on, the source is missing, OR
-    this job has no prior watermark (first run → full-scan bootstrap). Otherwise lo = (last committed
-    watermark − LOOKBACK_SECONDS) and hi = the batch max `ts_col` pinned by run_job, a half-open [lo, hi)
-    window (the lookback re-admits a trailing margin; the idempotent MERGE dedups it). `ts_col` is
-    `ingested_at` for entity jobs reading the gated keystone, but `kafka_timestamp` for the keystone job
-    reading Bronze collector_events_connect (which has no lifted ingested_at column).
+    this job has no prior watermark AND WATERMARK_MAX_SLICE_SECONDS is 0 (first run → full-scan bootstrap).
+    Otherwise lo = (last committed watermark − LOOKBACK_SECONDS) and hi = the batch max `ts_col` pinned by
+    run_job, a half-open [lo, hi) window (the lookback re-admits a trailing margin; the idempotent MERGE
+    dedups it). `ts_col` is `ingested_at` for entity jobs reading the gated keystone, but `kafka_timestamp`
+    for the keystone job reading Bronze collector_events_connect (which has no lifted ingested_at column).
+
+    FORWARD-SLICE CAP (WATERMARK_MAX_SLICE_SECONDS > 0): one run advances at most `slice` seconds. A
+    watermark-less first run bootstraps from min(`ts_col`) with hi = min(batch max, oldest + slice); an
+    established watermark clamps hi = min(batch max, watermark + slice). Either way the capped hi overwrites
+    `_CURRENT_HI`, so run_job advances the watermark to exactly the slice that was read — the walk converges
+    to now over successive runs and never OOMs on a large accumulated backlog. Steady-state batches (smaller
+    than the slice) clamp to the batch max → a no-op, byte-identical to the uncapped window.
 
     Per-event jobs pass (lo, hi) straight into their source WHERE. Entity-fold jobs use the window only to
     discover CHANGED entity ids, then re-fold each changed entity's full history (never window the fold
     input directly — that would drop below-watermark rows).
     """
+    global _CURRENT_HI
     active = INCREMENTAL if enabled is None else enabled
     if not active or FULL_REFRESH:
         return None, None
-    lo = read_watermark(con, job_name)
-    if lo is None:
-        return None, None  # first run → full-scan bootstrap (run_job still advances the watermark)
+    cap = WATERMARK_MAX_SLICE_SECONDS
+    wm = read_watermark(con, job_name)
+    if wm is None and cap <= 0:
+        return None, None  # first run, no slice cap → full-scan bootstrap (run_job still advances the wm)
     # run_job pins the batch's hi ONCE (before build) so the read bound and the watermark advance are the
     # SAME value — a row landing mid-run is captured by the NEXT window, never skipped. Fall back to a live
     # max() when called outside run_job (e.g. a unit harness).
@@ -252,8 +271,27 @@ def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ing
             hi = con.execute(f"SELECT max({ts_col}) FROM {source_table}").fetchone()[0]
         except Exception:  # noqa: BLE001 — source not created yet
             return None, None
-    if LOOKBACK_SECONDS > 0:
-        lo = lo - timedelta(seconds=LOOKBACK_SECONDS)
+    if hi is None:
+        return None, None  # empty source → nothing to window
+    if wm is None:
+        # First run WITH a slice cap: bootstrap-walk from the OLDEST row in a bounded [oldest, oldest+slice]
+        # window so a large backlog folds in chunks, never one OOM-prone full pass. Successive ticks advance.
+        try:
+            lo = con.execute(f"SELECT min({ts_col}) FROM {source_table}").fetchone()[0]
+        except Exception:  # noqa: BLE001 — source not created yet
+            return None, None
+        if lo is None:
+            return None, None
+        hi = min(hi, lo + timedelta(seconds=cap))
+        _CURRENT_HI = hi  # run_job advances the watermark to the SAME capped hi the build read up to
+        return lo, hi
+    # Established watermark → half-open [wm - lookback, min(hi, wm + slice)). The cap bounds catch-up after a
+    # gap (steady state: wm + slice > hi, so min == hi == a no-op); the lookback re-admits a trailing
+    # out-of-order margin (the idempotent MERGE dedups the overlap — extra CPU, never lost/doubled rows).
+    if cap > 0:
+        hi = min(hi, wm + timedelta(seconds=cap))
+        _CURRENT_HI = hi
+    lo = wm - timedelta(seconds=LOOKBACK_SECONDS) if LOOKBACK_SECONDS > 0 else wm
     return lo, hi
 
 

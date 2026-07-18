@@ -212,20 +212,24 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
     let servingCacheDirty = false;
 
     const storedWm = (await watermarkRepo.get(JOB_NAME, brandId)) ?? EPOCH_ISO;
-    // SELF-HEALING trailing lookback (ADR-0015 edge case #2): the keystone's ingested_at is the
-    // envelope ingest clock, not the Silver commit clock — rows land late. The window re-covers
-    // everything since the last committed watermark PLUS the configured margin, so a stalled
-    // landing (Connect outage, paused cron) auto-catches-up on the next run instead of skipping
-    // rows forever. Re-processing the overlap is SAFE — the whole stage is idempotent/replay-safe
-    // (deterministic resolve, ON CONFLICT dirty-set writes, sliding-TTL cache primes).
+    // BOUNDED FORWARD-SLICE window (ADR-0015 open item #11): the keystone read over the unindexed
+    // Iceberg-backed mv_silver_collector_event has NO upper bound, so a cold-start floor reaching
+    // back the full catch-up gap (up to maxCatchup = 7d) makes a data-heavy brand's entire backlog
+    // one keyset sweep that blows the 25s serving watchdog → watermark held → STUCK FOREVER. The
+    // window now reads at most a maxSlice-wide slice `(from, to]` per run with a BOUNDED lookback
+    // floor; on a clean pass the watermark advances to the slice CEILING, so the next run's floor
+    // moves FORWARD and the 5-min cron chews any backlog across ticks. Re-processing the slice
+    // overlap is SAFE — the whole stage is idempotent/replay-safe (deterministic resolve,
+    // ON CONFLICT dirty-set writes, sliding-TTL cache primes).
     const window = computeWatermarkWindow({
       nowMs: Date.now(),
       storedWatermarkMs: Date.parse(storedWm),
       lookbackMs: cfg.SILVER_IDENTITY_LOOKBACK_MS,
       maxCatchupMs: cfg.SILVER_IDENTITY_MAX_CATCHUP_MS,
+      maxSliceMs: cfg.SILVER_IDENTITY_MAX_SLICE_MS,
     });
     if (window.clipped) {
-      // The cap bounded the scan: rows below the clipped floor are NOT covered by this run.
+      // The cap bounded the floor: rows below the clipped floor are NOT covered by this run.
       incrementCounter('silver_identity_catchup_clipped_total', { brand_id: brandId });
       log.warn(
         '[silver-identity] catch-up window CLIPPED by SILVER_IDENTITY_MAX_CATCHUP_MS — rows with ' +
@@ -234,14 +238,25 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
           brand_id: brandId,
           stored_watermark: storedWm,
           catchup_gap_ms: window.catchupGapMs,
-          effective_lookback_ms: window.effectiveLookbackMs,
           max_catchup_ms: cfg.SILVER_IDENTITY_MAX_CATCHUP_MS,
           clipped_floor: window.fromIso,
         },
       );
     }
+    if (window.sliced) {
+      // The backlog extends beyond this run's slice ceiling — the cron chews it forward across
+      // ticks (one slice per run keeps every read bounded under the 25s serving watchdog). Log so
+      // ops sees the brand progressing, not stuck.
+      log.info('[silver-identity] catch-up in progress — reading a bounded slice this run', {
+        brand_id: brandId,
+        from: window.fromIso,
+        to: window.toIso,
+        catchup_gap_ms: window.catchupGapMs,
+        max_slice_ms: cfg.SILVER_IDENTITY_MAX_SLICE_MS,
+      });
+    }
     const fromIso = window.fromIso;
-    let maxSeenIso = storedWm;
+    const toIso = window.toIso;
 
     const batchResolve = new BatchResolveIdentityUseCase(saltProvider, identityRepo, brandId, {
       batchSize: cfg.SILVER_IDENTITY_BATCH_SIZE,
@@ -262,10 +277,11 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
              FROM brain_serving.mv_silver_collector_event
             WHERE (ingested_at > CAST(? AS TIMESTAMP)
                    OR (ingested_at = CAST(? AS TIMESTAMP) AND event_id > ?))
+              AND ingested_at <= CAST(? AS TIMESTAMP)
               AND ${BRAND_PREDICATE}
             ORDER BY ingested_at, event_id
             LIMIT ${pageSize}`,
-          [cursorTs, cursorTs, cursorEventId],
+          [cursorTs, cursorTs, cursorEventId, toIso],
         );
       } catch (err) {
         brandErrors += 1;
@@ -282,7 +298,6 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
       for (const row of rows) {
         cursorTs = row.ingested_at;
         cursorEventId = row.event_id;
-        if (row.ingested_at > maxSeenIso) maxSeenIso = row.ingested_at;
 
         const buf = Buffer.from(row.payload, 'utf8');
 
@@ -408,9 +423,12 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
     }
 
     // Advance the watermark ONLY on a clean brand pass — a held watermark makes the next run
-    // re-process the same (idempotent) window, converging without loss.
-    if (brandErrors === 0 && maxSeenIso > storedWm) {
-      await watermarkRepo.set(JOB_NAME, brandId, maxSeenIso);
+    // re-process the same (idempotent) window, converging without loss. Advance to the slice
+    // CEILING (window.toIso), NOT the max ingested_at seen: the WHOLE (from, to] slice was fully
+    // processed (INCLUDING an empty slice), so the next run's floor moves FORWARD. Advancing to
+    // maxSeen would stall on a sparse/empty slice and never move past it — the stuck-reset trap.
+    if (brandErrors === 0 && toIso > storedWm) {
+      await watermarkRepo.set(JOB_NAME, brandId, toIso);
       result.watermarksAdvanced += 1;
     }
     if (brandErrors === 0) incrementCounter('silver_identity_runs_total', { brand_id: brandId });
@@ -424,6 +442,7 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
         brands: brands.rows.length, page_size: pageSize,
         lookback_ms: cfg.SILVER_IDENTITY_LOOKBACK_MS,
         max_catchup_ms: cfg.SILVER_IDENTITY_MAX_CATCHUP_MS,
+        max_slice_ms: cfg.SILVER_IDENTITY_MAX_SLICE_MS,
       });
       for (const brand of brands.rows) {
         try {

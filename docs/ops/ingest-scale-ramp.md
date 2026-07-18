@@ -5,9 +5,15 @@ by month-8), never ahead of it. This runbook records WHAT to change, WHEN (measu
 and the rough cost step — so each scale-up is a deliberate, auditable values/tfvars change.
 
 Baseline (today): partitions 12 · Strimzi 3 brokers · collector HPA 2→24 · stream-worker 1→3
-(job-runner) · collector-lane log retention 48 h · Bronze collector TTL 15 d · Intelligent-Tiering
+(job-runner) · collector-lane log retention 48 h · Bronze collector TTL 15 d · **producer batch
+compression ON (gzip, ~4x — `INGEST_PRODUCE_COMPRESSION`, 'none' escape hatch)** · Intelligent-Tiering
 on the warehouse (day-0 transition; NEVER add Glacier lifecycle tiers — async restore breaks
 catalog-referenced reads, see `infra/terraform/modules/s3-iceberg/main.tf`).
+
+Compression note: every broker disk/network number below assumes the gzip ~4x ratio (40 MB/s raw
+→ ~10 MB/s on the wire). zstd is deliberately NOT used — kafkajs has no built-in zstd and the only
+community codec (@kafkajs/zstd 0.1.x) is an immature native-binding dep; revisit ONLY if CPU
+profiling at ≥20K ev/s shows material gzip cost on the collector fleet.
 
 | Lever | Change | Trigger (measured, sustained) | Notes |
 |---|---|---|---|

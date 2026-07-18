@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Capture client + producer construction options and every send() payload.
 const kafkaConfigs: Array<Record<string, unknown>> = [];
 const producerOptions: Array<Record<string, unknown>> = [];
-const sends: Array<{ acks?: number; messages: Array<{ key?: string; value: string; headers: Record<string, string> }> }> = [];
+const sends: Array<{ acks?: number; compression?: number; messages: Array<{ key?: string; value: string; headers: Record<string, string> }> }> = [];
 /** Instrumentation listeners registered via producer.on() — tests fire them directly. */
 const eventListeners = new Map<string, Array<() => void>>();
 
@@ -118,6 +118,20 @@ describe('CollectorKafkaProducer idempotent hot-path config (ADR-0015 D1/D2a)', 
     await p.connect();
     expect(fakeProducer.connect).toHaveBeenCalledTimes(1);
     expect(p.isConnected()).toBe(true);
+  });
+
+  it('compresses batches with GZIP by default (ramp lever 0: ~4x broker disk/network)', async () => {
+    const p = newProducer();
+    await p.connect();
+    await p.produce(msg());
+    expect(sends[0]!.compression).toBe(1); // CompressionTypes.GZIP
+  });
+
+  it("compression: 'none' is the escape hatch — sends uncompressed", async () => {
+    const p = newProducer({ compression: 'none' });
+    await p.connect();
+    await p.produce(msg());
+    expect(sends[0]!.compression).toBe(0); // CompressionTypes.None
   });
 });
 

@@ -58,6 +58,15 @@ export const CollectorEnvSchema = CommonEnvSchema.extend({
    */
   INGEST_PRODUCE_DEADLINE_MS: z.coerce.number().int().min(100).default(6_000),
   /**
+   * Producer batch compression. Default 'gzip' (~4x on JSON envelopes) — this is what sizes
+   * broker disk/network for the 40K/s ramp (docs/ops/ingest-scale-ramp.md). 'none' is the
+   * escape hatch (broker CPU / codec regression). zstd is deliberately NOT an option:
+   * kafkajs has no built-in zstd and the only community codec (@kafkajs/zstd 0.1.x) is an
+   * immature native-binding dep that does not belong on the ingest hot path — revisit only
+   * if CPU profiling at ≥20K events/s shows gzip cost.
+   */
+  INGEST_PRODUCE_COMPRESSION: z.enum(['gzip', 'none']).default('gzip'),
+  /**
    * Micro-batcher linger (ms): concurrent accepts coalesce into ONE produceBatch flushed every
    * lingerMs or at INGEST_BATCH_MAX_EVENTS, whichever first. The accept handler awaits its
    * batch's flush, so the produce-ack-before-HTTP-200 contract is unchanged (latency cost ≤

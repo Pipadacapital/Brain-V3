@@ -25,6 +25,9 @@ export const LEADER_LOCK_SYNC_CLAIMER = 910_002;
 export const LEADER_LOCK_DQ_CHECKS = 910_003;
 /** ADR-0015 WS3 — the Silver identity stage: one run at a time across invocations/replicas. */
 export const LEADER_LOCK_SILVER_IDENTITY = 910_004;
+// 910_005 is LEADER_LOCK_TRANSFORM_WORKER — the ADR-0016 P2.2 resident warm transform worker's per-tick
+// single-writer gate, held by the PYTHON worker (db/iceberg/duckdb/run_all.py resident), not this
+// process. Reserved here so the 910_00x namespace stays collision-free across languages; do not reuse.
 
 export type LeaderLockOutcome<T> =
   | { ranAsLeader: true; result: T }

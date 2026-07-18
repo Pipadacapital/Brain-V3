@@ -142,6 +142,16 @@ sparkBronze:
 # chart + flips this true. The Deployment itself is out of scope for P2.1.
 transformWorker:
   enabled: false
+  # ADR-0016 P2.2 — the resident worker's env contract (db/iceberg/duckdb/run_all.py resident). WS3
+  # wires these into the Deployment's container env; they are documented here as the single source of
+  # the knob defaults so the code (run_all.py) and the chart never drift.
+  #   tickMs        micro-batch cadence — run the chained pipeline once per this interval (worker default 45s)
+  #   healthPort    stdlib /healthz liveness port the k8s livenessProbe hits (worker default 8092)
+  #   lockKey       pg_try_advisory_lock key for the single-writer gate — 910_005, mirrors the 910_00x
+  #                 namespace of apps/stream-worker/src/infrastructure/pg/LeaderLock.ts (do NOT collide)
+  tickMs: 45000
+  healthPort: 8092
+  lockKey: 910005
 
 # Brain V4 DuckDB medallion transform (templates/v4-transform.yaml). DuckDB is the transform compute
 # now (Spark removed — Spark→DuckDB cutover); dbt/StarRocks were already gone. ADR-0016 P2.1 chains the

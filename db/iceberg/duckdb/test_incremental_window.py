@@ -141,6 +141,30 @@ def test_slice_cap_bootstrap_walks_from_oldest():
     assert _base._CURRENT_HI == oldest + timedelta(seconds=7200), "_CURRENT_HI = capped hi for the advance"
 
 
+def test_slice_cap_tz_mixed_watermark_and_hi_no_typeerror():
+    # Real prod shape: silver_job_watermark stores a NAIVE timestamp, but max(ts_col) on a timestamptz
+    # source column is tz-AWARE. The cap's min(hi, wm+slice) must align awareness, not raise
+    # "can't compare offset-naive and offset-aware datetimes" (caught by local cold-start repro 2026-07-18).
+    from datetime import timezone
+    aware_hi = datetime(2026, 7, 16, 10, 5, 0, tzinfo=timezone.utc)
+    naive_wm = datetime(2026, 7, 16, 10, 0, 0)  # 300s before hi; a 120s cap clamps to wm + 120s
+    _base.INCREMENTAL = True
+    _base.FULL_REFRESH = False
+    _base.LOOKBACK_SECONDS = 600
+    _base.WATERMARK_MAX_SLICE_SECONDS = 120
+    _base._CURRENT_HI = aware_hi
+    orig = _base.read_watermark
+    _base.read_watermark = lambda con, job: naive_wm
+    try:
+        lo, hi = _base.incremental_window(None, "job-x", "src.tbl", ts_col="kafka_timestamp")
+    finally:
+        _base.read_watermark = orig
+        _base.WATERMARK_MAX_SLICE_SECONDS = 0
+        _base._CURRENT_HI = None
+    assert hi == datetime(2026, 7, 16, 10, 2, 0, tzinfo=timezone.utc), "clamp to wm+slice across tz-awareness"
+    assert lo == naive_wm - timedelta(seconds=600), "lo keeps the naive watermark minus lookback"
+
+
 if __name__ == "__main__":
     test_default_off_is_full_scan()
     test_on_first_run_no_watermark_is_full_scan()
@@ -152,4 +176,5 @@ if __name__ == "__main__":
     test_slice_cap_clamps_established_watermark_to_wm_plus_slice()
     test_slice_cap_noop_when_batch_smaller_than_slice()
     test_slice_cap_bootstrap_walks_from_oldest()
-    print("PASS: incremental_window window arithmetic (10/10)")
+    test_slice_cap_tz_mixed_watermark_and_hi_no_typeerror()
+    print("PASS: incremental_window window arithmetic (11/11)")

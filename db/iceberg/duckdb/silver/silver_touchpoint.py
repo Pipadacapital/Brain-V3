@@ -228,10 +228,19 @@ def _attach_stitch(con):
     False (stitch → NULL, dbt parity when 0 stitch rows) when the export is absent/unreachable."""
     try:
         con.execute("INSTALL postgres; LOAD postgres;")
-        con.execute(
-            f"ATTACH 'host={PG_HOST} port={PG_PORT} dbname={PG_DB} user={PG_USER} "
-            f"password={PG_PASSWORD}' AS _pg (TYPE postgres, READ_ONLY);"
-        )
+        # On the shared warm connection (run_all single-process / resident tick) a sibling silver job may
+        # already have ATTACHed _pg to the SAME operational Postgres. A second ATTACH raises "database _pg
+        # already exists" — which the except below would misread as "PG unreachable" and wrongly degrade
+        # stitch to NULL (dropping the journey-stitch join every single-process run). Attach only when the
+        # alias is absent; otherwise reuse the live handle (same host/db, READ_ONLY read either way).
+        attached = con.execute(
+            "SELECT count(*) FROM duckdb_databases() WHERE database_name = '_pg'"
+        ).fetchone()[0]
+        if not attached:
+            con.execute(
+                f"ATTACH 'host={PG_HOST} port={PG_PORT} dbname={PG_DB} user={PG_USER} "
+                f"password={PG_PASSWORD}' AS _pg (TYPE postgres, READ_ONLY);"
+            )
         # Deterministic 1-row-per-(brand_id, stitched_anon_id) pick (created_at ASC, order_id ASC) —
         # the exact stitch_one dedup the Spark build() registers once.
         con.execute(

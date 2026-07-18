@@ -22,7 +22,7 @@ WRITE = BI-TEMPORAL APPEND-PER-MUTATION (AMD-07 R1): never rewrite validity colu
   appends nothing. Plus the ONE-TIME legacy _backfill_system_time (runs first; a no-op on a fresh table).
 
 INCREMENTAL DIRTY-SET (ADR-0016 P1.2 — the ~20 min → seconds win): the full Neo4j projection is O(whole
-  graph) even when a single merge moved one brain_id. IDENTITY_MAP_DIRTY_ONLY (DEFAULT ON) scopes the staged
+  graph) even when a single merge moved one brain_id. IDENTITY_MAP_DIRTY_ONLY (DEFAULT OFF; DE parity gate) scopes the staged
   projection to ONLY the brain_ids the Silver identity job mutated this tick — it already records them in the
   PG dirty tables it writes per committed chunk: ops.scoped_recompute_request.brain_ids (jsonb; the
   {canonical, merged} pair of EVERY merge — UNGATED), ops.journey_reversion_pending.brain_id (linked/merged,
@@ -58,8 +58,17 @@ NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "brain_neo4j")
 
 # ── Incremental dirty-set gate (ADR-0016 P1.2) ────────────────────────────────────────────────────────
-# IDENTITY_MAP_DIRTY_ONLY (DEFAULT ON): scope the projection to the brain_ids the identity job mutated this
-# tick (read from the PG ops.* dirty tables). FULL_REFRESH=1 forces the full rebuild (recovery / schema-widen).
+# IDENTITY_MAP_DIRTY_ONLY scopes the projection to the brain_ids the identity job mutated this tick (read
+# from the PG ops.* dirty tables); FULL_REFRESH=1 forces the full rebuild (recovery / schema-widen).
+#
+# DEFAULT OFF (DE parity discipline — ADR-0016): the dirty-set is the union of the three ops.* dirty tables,
+# and ops.scoped_recompute_request captures every MERGE (map mutation), BUT a pure minted/linked brain_id
+# (a new identifier onto an existing brain, no merge) only lands a dirty row when the stitch.v2 /
+# journey.engine flags are ON — and those DEFAULT OFF. So with dirty-only ON today, incremental could
+# UNDER-cover minted/linked map rows vs a full rebuild → a new identifier's map row could be missed.
+# It must NOT go default-on until that gap is closed: either the identity job stamps EVERY committed
+# brain_id into a dirty table ungated (recommended follow-up), or the stitch/journey flags are on. Flip
+# this env on ONLY after parity_check.py confirms incremental == full on a minted/linked-heavy window.
 def _flag(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -67,7 +76,7 @@ def _flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in ("0", "false", "no")
 
 
-IDENTITY_MAP_DIRTY_ONLY = _flag("IDENTITY_MAP_DIRTY_ONLY", True)
+IDENTITY_MAP_DIRTY_ONLY = _flag("IDENTITY_MAP_DIRTY_ONLY", False)
 FULL_REFRESH = _flag("FULL_REFRESH", False)
 
 # PG (ops schema) — same DuckDB postgres-ATTACH idiom as silver_session_identity.py.

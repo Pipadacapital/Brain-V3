@@ -20,19 +20,20 @@ run never double-applies and never piles up. Schedules are IST (`Asia/Kolkata`).
 
 ### The attribution chain (Brain V4)
 
-Ordered by **staggered schedule + idempotency**, not an Argo DAG (matching this chart's
-one-container-per-CronWorkflow convention). The time gaps sequence the steps; each is idempotent so a
-missed/retried run is safe (`concurrencyPolicy: Forbid` + `startingDeadlineSeconds`). Under Brain V4 the
-recognition + attribution-gold rebuilds are **DuckDB** jobs (the `v4-silver`/`v4-gold` CronWorkflows
-below), not dbt — dbt and StarRocks are removed:
+The core medallion (keystone → Silver → identity → Gold → cache-bust) is now ONE chained CronWorkflow
+(`v4-medallion`, ADR-0016 P2.1 — see below); the node `.Values.jobs` around it are still ordered by
+**staggered schedule + idempotency**. Each is idempotent so a missed/retried run is safe
+(`concurrencyPolicy: Forbid` + `startingDeadlineSeconds`). Under Brain V4 the recognition +
+attribution-gold rebuilds are **DuckDB** jobs (inside the `v4-medallion` chain below), not dbt — dbt and
+StarRocks are removed:
 
 1. **identity-export** (:02) — Neo4j identity graph → `silver_identity_link`, so the DuckDB Silver order
-   spine resolves order `brain_id`. Runs BEFORE `v4-silver`.
-2. **v4-silver** (:05, DuckDB) — Bronze → `silver_order_state` (recognition incl. prepaid finalization
-   after horizon + COD delivery/RTO) + the rest of Silver.
+   spine resolves order `brain_id`. Runs BEFORE the `v4-medallion` tick.
+2. **v4-medallion** (`*/5`, DuckDB, chained) — Bronze → `silver_order_state` (recognition incl. prepaid
+   finalization after horizon + COD delivery/RTO) + the rest of Silver → identity → Gold, all in one run.
 3. **journey-stitch-from-identity** (:15) — `silver_touchpoint` anon → `identity_link(anon_id)`→brain_id
    ∩ the recognized order ledger, unambiguous-only → `connector_journey_stitch_map`.
-4. **v4-gold** (:25, DuckDB) — `gold_revenue_ledger` → `gold_attribution_credit` →
+4. **v4-medallion** Gold stage — `gold_revenue_ledger` → `gold_attribution_credit` →
    `gold_marketing_attribution` (incl. the data_driven model) + customer/gap/executive marts, served by
    the `brain_serving.mv_*` duckdb-serving views over Iceberg.
 5. **attribution-reconcile** (:30) — credit recognized orders (`finalization ∪ cod_delivery_confirmed`)
@@ -43,33 +44,46 @@ below), not dbt — dbt and StarRocks are removed:
 **Spark→DuckDB cutover** (`feat/spark-to-duckdb-cutover`): the transform tier is DuckDB-on-Iceberg now
 (Spark is removed; dbt/StarRocks were already gone). The Iceberg medallion
 (`brain_bronze`/`brain_silver`/`brain_gold`) is built by the DuckDB jobs and is the system of record; the
-`brain_serving.mv_*` duckdb-serving views are thin projections straight over the Iceberg Gold/Silver marts. These
-CronWorkflows invoke `python /opt/brain/duckdb/<layer>/<job>.py` — the mart jobs the `brain-duckdb` image
-**carries** (`db/iceberg/duckdb/{silver,gold}/*.py`, COPYed into `/opt/brain/duckdb` by the Dockerfile).
-Each job self-imports its `_base`/`_catalog` via `sys.path.insert` (no `--py-files`). One python pod per
-cron, no JVM.
+`brain_serving.mv_*` duckdb-serving views are thin projections straight over the Iceberg Gold/Silver marts. The
+mart jobs (`python /opt/brain/duckdb/<layer>/<job>.py`) are **carried** by the `brain-duckdb` image
+(`db/iceberg/duckdb/{silver,gold}/*.py`, COPYed into `/opt/brain/duckdb` by the Dockerfile). Each job
+self-imports its `_base`/`_catalog` via `sys.path.insert` (no `--py-files`), no JVM.
 
-| Job | Schedule (IST) | Image | Purpose |
-|---|---|---|---|
-| v4-silver | `5 * * * *` hourly :05 | brain-duckdb | keystone `silver_collector_event` + `silver_order_state` (brain_id spine) + the rest of Silver (×2 convergence passes) |
-| v4-gold | `25 * * * *` hourly :25 | brain-duckdb | `gold_revenue_ledger` → attribution → customer/gap/executive marts |
+**ADR-0016 P2.1 — ONE CHAINED cron (`v4-medallion`).** Was three staggered crons (`v4-silver` +
+`v4-identity` + `v4-gold`) whose only cross-stage sequencing was a ~2-min schedule offset — so
+end-to-end latency stacked the whole ~15-min scheduling wait. They are collapsed into ONE CronWorkflow
+that walks the whole chain **back-to-back with no inter-stage cron wait**, as an in-workflow Argo
+`steps` sequence (the chain crosses images — Silver / map-export / Gold on `brain-duckdb`, identity
+resolve + serving-cache-bust on `brain-stream-worker` — so a single container can't carry it):
 
-There is **no `v4-mv-refresh` leg**: once a DuckDB job commits the new Iceberg snapshot, the serving `mv_*`
-views resolve it directly. The dev mirror that runs the same keystone→Silver→Gold sequence is
-`tools/dev/duckdb-refresh.sh` (`pnpm dev:v4-refresh`).
+| CronWorkflow | Schedule (IST) | Chained steps (in order) |
+|---|---|---|
+| v4-medallion | `*/5 * * * *` | **silver** (keystone `silver_collector_event` + `silver_order_state` spine + the rest of Silver, ×2 convergence passes) → **identity-resolve** (`silver-identity` node job, Neo4j) → **map-export** (`silver_identity_map.py`) → **gold-marts** (`gold_revenue_ledger` → attribution → customer/gap/executive marts) → **serving-cache-bust** (`gold-rewritten-publish`, fail-open) |
 
-**Dependency order** is enforced by staggered schedule + idempotency (not an Argo DAG), and interleaves
-with the node `.Values.jobs`: `identity-export` (:02) → **v4-silver** (:05) → `journey-stitch-from-identity`
-+ `journey-stitch-export` (:15/:16) → **v4-gold** (:25). That is the full V4 attribution chain — identity
-→ order-state → silver → stitch → gold — so the customer + attribution marts populate instead of
-computing 0. The v4-silver cron runs the keystone first, then the order_state spine, then the rest of
-Silver twice (a pass-1 sibling miss converges on pass 2), mirroring `duckdb-refresh.sh`.
+`concurrencyPolicy: Forbid` — one writer; a long run skips the next tick (never overlaps a second
+medallion writer). `continueOn.failed` only on **identity-resolve** (map-export still re-projects the
+graph, which may have advanced) and the fail-open **serving-cache-bust** (per-metric TTL is the safety
+net). The chain mirrors `tools/dev/duckdb-refresh.sh` (`pnpm dev:v4-refresh`) EXACTLY. Dirty-set /
+watermark behavior is unchanged — `SILVER_INCREMENTAL` / `GOLD_INCREMENTAL` / `IDENTITY_MAP_DIRTY_ONLY`
+still gate each stage's incremental reads; chaining only removes the scheduling wait.
 
-**ENABLED** (`sparkV4.enabled: true`, value block kept for chart compatibility): the V4 crons run the
-medallion refresh. They need the CI-built, digest-pinned `brain-duckdb` image (the template fail-closes on
-a missing digest, B3) and a cluster. Each job is an idempotent Iceberg MERGE, wrapped in the Argo
-`backoffLimit` — a transient blip is safe to re-run. Placement: the **streaming** Karpenter pool
-(values-prod; the dedicated Spark `batch` pool was removed — DuckDB crons are lightweight python).
+There is **no `v4-mv-refresh` leg**: once a DuckDB job commits the new Iceberg snapshot, the serving
+`mv_*` views resolve it directly. The node `.Values.jobs` around it still interleave by schedule:
+`identity-export` (:02) → the `v4-medallion` tick → `journey-stitch-from-identity` + `journey-stitch-export`
+(:15/:16). That is the full V4 attribution chain — identity → order-state → silver → stitch → gold — so
+the customer + attribution marts populate instead of computing 0.
+
+**INTERIM before the resident warm worker (ADR-0016 D3 / WS2).** `v4-medallion` is still a CronWorkflow
+— it pays a cold pod + catalog-attach per tick. WS2 supersedes it with a resident Deployment holding a
+warm DuckDB connection looping the same chain. The seam is `.Values.transformWorker.enabled`: when the
+resident worker is on, `v4-medallion` is suppressed (`and sparkV4.enabled (not transformWorker.enabled)`)
+so the two never both write — single-writer is preserved across the cutover. Default OFF.
+
+**ENABLED** (`sparkV4.enabled: true`, value block kept for chart compatibility): the chained cron runs
+the medallion refresh. It needs the CI-built, digest-pinned `brain-duckdb` (+ `brain-stream-worker`)
+image (the template fail-closes on a missing digest, B3) and a cluster. Every step is an idempotent
+Iceberg MERGE, wrapped in the Argo `backoffLimit` — a transient blip is safe to re-run. Placement: the
+**streaming** Karpenter pool (values-prod; the dedicated Spark `batch` pool was removed).
 
 ## Bronze/medallion maintenance (`templates/bronze-maintenance.yaml`, `templates/v4-maintenance.yaml`)
 

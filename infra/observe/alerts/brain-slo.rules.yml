@@ -304,10 +304,10 @@ groups:
           severity: warning
         annotations:
           summary: "Silver tier lagging Bronze ({{ $labels.reason }})"
-          description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the DuckDB Silver CronWorkflows (v4-silver, db/iceberg/duckdb/silver) and duckdb-serving health. Analytics reads over Silver are behind."
+          description: "The Bronze↔Silver reconciliation has breached for 30m ({{ $labels.reason }}). Silver (silver_order_state) is stale vs Bronze — check the chained v4-medallion CronWorkflow's silver step (db/iceberg/duckdb/silver) and duckdb-serving health. Analytics reads over Silver are behind."
 
-      # Silver identity stage (ADR-0015 WS3 / C1 2026-07-18) — the v4-identity CronWorkflow
-      # (infra/helm/cronworkflows/templates/v4-transform.yaml, every 5 min at :02/:07/…).
+      # Silver identity stage (ADR-0015 WS3 / C1 2026-07-18) — the identity step of the chained
+      # v4-medallion CronWorkflow (infra/helm/cronworkflows/templates/v4-transform.yaml, every 5 min).
       # brain_silver_identity_runs_total: stream-worker counter (silver-identity batch job), +1 per
       # CLEAN per-brand pass — including a no-op empty window, so a healthy-but-quiet brand still
       # ticks. absent() ⇒ the job has never run (the C1 failure mode: stage not scheduled) or its
@@ -325,7 +325,7 @@ groups:
           severity: warning
         annotations:
           summary: "Silver identity stage has not completed a clean brand pass in >15m"
-          description: "brain_silver_identity_runs_total is absent or flat for over 15m (cadence: every 5 min). Identity resolution is stalled — new events are not resolving to brain_id and the identity map / customer marts are going stale. Check the v4-identity CronWorkflow (argo -n argo list | grep v4-identity), duckdb-serving (the job's read path), Neo4j, and per-brand errors in the job logs (watermarks are held on error and converge on the next clean run)."
+          description: "brain_silver_identity_runs_total is absent or flat for over 15m (cadence: every 5 min). Identity resolution is stalled — new events are not resolving to brain_id and the identity map / customer marts are going stale. Check the chained v4-medallion CronWorkflow (argo -n argo list | grep v4-medallion) — its identity-resolve step, duckdb-serving (the job's read path), Neo4j, and per-brand errors in the job logs (watermarks are held on error and converge on the next clean run)."
 
   # ── Revenue truth integrity ─────────────────────────────────────────────────
   - name: brain-revenue-integrity

@@ -1,273 +1,112 @@
 #!/usr/bin/env bash
 #
-# duckdb-refresh.sh — the DuckDB analogue of tools/dev/v4-refresh-loop.sh.
+# duckdb-refresh.sh — THIN DEV SHIM over db/iceberg/duckdb/run_all.py (ADR-0016 P2 cleanup).
 #
-# Runs the full DuckDB transform tier (db/iceberg/duckdb/{silver,gold}/*.py) against the LIVE
-# dev Iceberg catalog IN DEPENDENCY ORDER, so the derived customer/attribution/journey marts
-# actually populate. This is the Spark→DuckDB cutover orchestrator: unlike the parity harness it
-# writes the LIVE tables (NO MIGRATION_TABLE_SUFFIX).
+# WAS the 90-spawn bash orchestrator (45 silver jobs × 2 passes + gold, each a fresh `python …` process
+# paying ~85s of fixed Python+DuckDB+catalog-attach overhead → a full run took ~130 min). That loop is
+# RETIRED: run_all.py is the single-process runner — it attaches the Iceberg catalog ONCE and runs every
+# job's existing `__main__` against ONE shared warm connection (and, in `resident` mode, is the warm
+# micro-batch worker the CronWorkflow/Deployment run). This shim just chains run_all.py for LOCAL DEV
+# (`pnpm dev:v4-refresh`) so there is ONE transform runner, not two.
 #
-# WHY an explicit order (same rationale as v4-refresh-loop.sh):
-#   (a) silver_collector_event  — THE KEYSTONE / admission gate. Every other silver_* job reads
-#       brain_silver.silver_collector_event, so it must build FIRST.
-#   (b) the rest of silver/*.py — entity jobs + the sibling-reading jobs (order_line / sessions /
-#       touchpoint / customer / journey / session_identity). Because every job is an idempotent
-#       MERGE, a SECOND full pass over all of silver guarantees convergence: a job that read a
-#       not-yet-produced sibling on pass 1 folds it in on pass 2.
-#   (c) all gold/*.py — read the resolved silver spine (+ sibling gold). Idempotent MERGE.
+# THE CHAIN (identical ordering to the v4-medallion CronWorkflow):
+#   run_all.py silver   → keystone silver_collector_event + spine silver_order_state (required), then the
+#                         rest of Silver ×2 (a job that read a not-yet-produced sibling converges on pass 2)
+#   node silver-identity → the Node identity batch job (ADR-0015 WS3: identity resolves in Silver) —
+#                         resolves via IdentityResolver → Neo4j (the identity SoR, ADR-0004); continue-on-error
+#   silver_identity_map → re-project the graph → the Iceberg bi-temporal map so gold reads THIS run's resolutions
+#   run_all.py gold      → gold_revenue_ledger (required) + the ordered attribution chain, then the rest (1 pass)
+#   serving-cache-bust   → direct Redis eviction of the brand-scoped serving cache (fail-open; TTL is the net)
 #
-# Identity jobs (silver_identity_* / silver_customer_identity / snap_identity_link) read Neo4j.
-# We RUN them; if Neo4j is empty they no-op / take their data-thin skip — that is fine, not a fail.
+# The identity + map + cache-bust cross LANGUAGES/IMAGES exactly as the CronWorkflow does — the Python
+# silver/gold tiers run via run_all.py; the node identity + cache-bust steps shell out. (run_all.py's
+# `resident` mode folds the same chain into one warm loop; this shim is the SINGLE-SHOT dev equivalent.)
 #
-# Files starting with `_` are shared framework modules (_base/_catalog/_platform_flags/…), NOT
-# jobs — they are excluded. parity_check.py / phase0_capability_probe.py live in the duckdb root
-# (not silver/ or gold/) so they are never globbed here.
-#
-# CONTINUE-ON-ERROR: a failing job is logged and COUNTED but never aborts the run (idempotent →
-# a transient/ordering failure is expected to clear on the next pass). Every job's result line is
-# printed. Exit code = total distinct failures on the FINAL silver pass + gold pass.
-#
-# IDENTITY STAGE (ADR-0015 WS3 — identity resolves in Silver): between the silver passes and
-# gold we run
-#   (1) the Node silver-identity batch job (apps/stream-worker/src/jobs/silver-identity/run.ts,
-#       via `pnpm --filter @brain/stream-worker run job:silver-identity`) — reads new canonical
-#       keystone rows since its watermark over duckdb-serving, resolves via the preserved
-#       IdentityResolver → Neo4j (the identity SoR, ADR-0004), writes dirty-sets/consent/CAPI,
-#       then
-#   (2) silver/silver_identity_map.py AGAIN — the Neo4j graph is the SoR; the map job projects it
-#       into the Iceberg bi-temporal map, so a re-run AFTER the identity job guarantees gold
-#       (gold_customer_360 etc.) reads a map that reflects THIS run's resolutions.
-# Both are continue-on-error like every other job (the next pass converges); failures count
-# toward the exit code. Override the node invocation with SILVER_IDENTITY_CMD=… (e.g. a built
-# dist path in a container: `node dist/jobs/silver-identity/run.js`).
+# Identity jobs read Neo4j; if Neo4j is empty they no-op — that is fine, not a fail. FULL_REFRESH=1 (env)
+# still forces a full rebuild of the incremental jobs (read straight through to run_all.py's job env).
 #
 # Usage:
-#   tools/dev/duckdb-refresh.sh                 # full run: keystone → silver ×2 → identity → gold
-#   STAGE=keystone  tools/dev/duckdb-refresh.sh # just the keystone (silver_collector_event)
-#   STAGE=silver1   tools/dev/duckdb-refresh.sh # silver pass 1 only
-#   STAGE=silver2   tools/dev/duckdb-refresh.sh # silver pass 2 only
+#   tools/dev/duckdb-refresh.sh                 # full run: silver (keystone + ×2) → identity → gold → cache-bust
+#   STAGE=keystone  tools/dev/duckdb-refresh.sh # just the keystone (silver_collector_event) — golden-baseline seed
+#   STAGE=silver    tools/dev/duckdb-refresh.sh # silver only (run_all.py silver)
 #   STAGE=identity  tools/dev/duckdb-refresh.sh # identity stage only (node job + map re-project)
-#   STAGE=gold      tools/dev/duckdb-refresh.sh # gold only
-#   SILVER_PASSES=1 tools/dev/duckdb-refresh.sh # single silver pass (default 2)
+#   STAGE=gold      tools/dev/duckdb-refresh.sh # gold only (run_all.py gold)
 #
-# The env (S3_ENDPOINT / ICEBERG_* / AWS_* / NEO4J_URI) must be exported by the caller, exactly
-# like the DuckDB job invocation contract. NOTE: MIGRATION_TABLE_SUFFIX must NOT be set — this
-# writes the LIVE tables.
+# The env (S3_ENDPOINT / ICEBERG_* / AWS_* / NEO4J_URI) must be exported by the caller, exactly like the
+# DuckDB job invocation contract. NOTE: MIGRATION_TABLE_SUFFIX must NOT be set — this writes the LIVE
+# tables. ONESHOT is accepted + ignored (call-site compatibility with the retired v4-refresh-loop.sh).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DUCK_DIR="$ROOT/db/iceberg/duckdb"
-SILVER_DIR="$DUCK_DIR/silver"
-GOLD_DIR="$DUCK_DIR/gold"
 
-# The DuckDB interpreter. The migration venv (/tmp/duckvenv) carries duckdb 1.5.4 + splink + neo4j
-# + pyiceberg; a caller can override with PYTHON=… (e.g. a container python).
+# The DuckDB interpreter. The migration venv (/tmp/duckvenv) carries duckdb 1.5.4 + splink + neo4j +
+# pyiceberg; a caller can override with PYTHON=… (e.g. a container python).
 PYTHON="${PYTHON:-/tmp/duckvenv/bin/python}"
 command -v "$PYTHON" >/dev/null 2>&1 || PYTHON="python3"
 
-SILVER_PASSES="${SILVER_PASSES:-2}"
 STAGE="${STAGE:-all}"
 
-KEYSTONE="silver_collector_event.py"
+# The Node silver-identity batch job (Neo4j writes via the preserved resolver). Same default idiom
+# run_all.py's resident mode uses; a container overrides with a built dist path.
+SILVER_IDENTITY_CMD="${SILVER_IDENTITY_CMD:-pnpm --filter @brain/stream-worker run job:silver-identity}"
 
 ts() { printf '%(%H:%M:%S)T' -1 2>/dev/null || date +%H:%M:%S; }
 
-# List the runnable jobs in a tier dir (basename), excluding `_`-prefixed framework modules.
-# For silver we also peel off the keystone (run as its own ordered step).
-list_jobs() {  # $1 = dir  $2 = (optional) basename to exclude
-  local dir="$1" excl="${2:-}"
-  local f b
-  for f in "$dir"/*.py; do
-    [ -e "$f" ] || continue
-    b="$(basename "$f")"
-    case "$b" in
-      _*) continue ;;                       # shared framework module, not a job
-      "$excl") continue ;;                  # explicitly-excluded (keystone)
-    esac
-    echo "$b"
-  done
-}
-
-# Run one job. Streams its JSON result line to stdout, mirrors full output to a per-job log, and
-# returns the job's exit code (never aborts the caller).
-run_job() {  # $1 = tier(silver|gold)  $2 = basename
-  local tier="$1" job="$2"
-  local path="$DUCK_DIR/$tier/$job"
-  local logf="/tmp/duckdb-refresh-${tier}-${job%.py}.log"
-  local out rc
-  out="$("$PYTHON" "$path" 2>&1)"; rc=$?
-  printf '%s\n' "$out" > "$logf"
-  if [ "$rc" -eq 0 ]; then
-    # Surface the job's own {"job":…,"upserted":…} result line (last JSON line), else a terse ok.
-    local rline
-    rline="$(printf '%s\n' "$out" | grep -E '^\{"job"' | tail -1)"
-    echo "[$(ts)] ✓ ${tier}/${job}  ${rline:-ok}"
-  else
-    echo "[$(ts)] ✗ ${tier}/${job} FAILED (rc=${rc}) — $(printf '%s' "$out" | tail -1 | cut -c1-160)  [see ${logf}]"
-  fi
-  return "$rc"
-}
-
-# Run every job in a list; echo a tier summary; return the failure count.
-run_tier() {  # $1 = tier  $2 = label  $3.. = job basenames
-  local tier="$1" label="$2"; shift 2
-  local ok=0 fail=0 j
-  echo "[$(ts)] ── ${label} (${#} jobs) ──"
-  for j in "$@"; do
-    if run_job "$tier" "$j"; then ok=$((ok+1)); else fail=$((fail+1)); fi
-  done
-  echo "[$(ts)] ${label}: ${ok} ok, ${fail} failed"
-  return "$fail"
-}
-
-# Collect the job lists once (bash 3.2-compatible — macOS ships bash 3.2, no `mapfile`).
-SILVER_JOBS=()
-while IFS= read -r _j; do [ -n "$_j" ] && SILVER_JOBS+=("$_j"); done < <(list_jobs "$SILVER_DIR" "$KEYSTONE")
-
-# GOLD DEPENDENCY PRELIST (2026-07-17) — gold is single-pass, so gold→gold reads MUST run producer-first.
-# The old plain-alphabetical order broke several edges every refresh (a consumer folded the PREVIOUS run's
-# producer state): gold_order_economics (o) ran ~90s BEFORE gold_revenue_ledger (r) and reconciled against
-# the STALE ledger (verified live 2026-07-17: 14 missing AED orders Δ−332,950 minor + retained orphans),
-# and likewise attribution_credit←revenue_ledger, campaign_attribution←campaign_performance,
-# cohort_member←customer_360, customer_360←customer_{health,scores}, measurement_costs←product_costs,
-# product_economics←order_economics, snap_attribution_credit←marketing_attribution.
-# The prelist is a topological order of every gold→gold edge (grep 'GOLD_NAMESPACE}\.' in gold/*.py);
-# jobs NOT listed have no gold-table reads and follow alphabetically. A prelist entry that doesn't exist
-# on disk is skipped (rename-safe); a NEW gold→gold edge must be added here.
-GOLD_PRIORITY=(
-  gold_product_costs.py
-  gold_customer_health.py
-  gold_customer_scores.py
-  gold_revenue_ledger.py
-  gold_measurement_costs.py
-  gold_measurement_fees.py
-  gold_attribution_credit.py
-  gold_customer_360.py
-  gold_campaign_performance.py
-  gold_marketing_attribution.py
-  gold_order_economics.py
-)
-GOLD_JOBS=()
-for _j in "${GOLD_PRIORITY[@]}"; do [ -e "$GOLD_DIR/$_j" ] && GOLD_JOBS+=("$_j"); done
-while IFS= read -r _j; do
-  [ -n "$_j" ] || continue
-  case " ${GOLD_PRIORITY[*]} " in *" $_j "*) continue ;; esac
-  GOLD_JOBS+=("$_j")
-done < <(list_jobs "$GOLD_DIR")
-
-TOTAL_FAIL=0
-
+run_silver()   { echo "[$(ts)] ── silver (run_all.py, single-process) ──"; "$PYTHON" "$DUCK_DIR/run_all.py" silver; }
+run_gold()     { echo "[$(ts)] ── gold (run_all.py, single-process) ──";   "$PYTHON" "$DUCK_DIR/run_all.py" gold; }
 run_keystone() {
   echo "[$(ts)] ── keystone: silver_collector_event (the admission gate every silver job reads) ──"
-  run_job silver "$KEYSTONE" || return 1
-  return 0
+  "$PYTHON" "$DUCK_DIR/silver/silver_collector_event.py"
 }
 
-run_silver_passes() {
-  local p=1 rc=0
-  while [ "$p" -le "$SILVER_PASSES" ]; do
-    run_tier silver "silver pass ${p}/${SILVER_PASSES}" "${SILVER_JOBS[@]}"; rc=$?
-    # Only the FINAL pass's failures count toward the exit code (earlier-pass ordering misses are
-    # expected to clear on the converging re-run).
-    if [ "$p" -eq "$SILVER_PASSES" ]; then TOTAL_FAIL=$((TOTAL_FAIL+rc)); fi
-    p=$((p+1))
-  done
-}
-
-# ── IDENTITY STAGE (ADR-0015 WS3): keystone → silver → IDENTITY → gold ──────────────────────────
-# (1) the Node silver-identity batch job (Neo4j writes via the preserved resolver; flag
-#     IDENTITY_IN_SILVER default ON makes it a no-op kill-switchable), then
-# (2) silver_identity_map.py RE-RUN so the Iceberg map reflects this run's graph mutations
-#     BEFORE gold reads it. Both continue-on-error; failures count toward the exit code.
-SILVER_IDENTITY_CMD="${SILVER_IDENTITY_CMD:-pnpm --filter @brain/stream-worker run job:silver-identity}"
-
-# duckdb-serving endpoint the identity job reads through (host-side default; container overrides).
-DUCKDB_SERVING_URL="${DUCKDB_SERVING_URL:-http://localhost:8091}"
-# Bounded wait for brain_serving.mv_silver_collector_event to be queryable (default 120s).
-# COLD-START ORDERING: duckdb-serving applies its views at startup and on each epoch rotation —
-# on a cold catalog the startup pass ran BEFORE this refresh built the keystone table, so the
-# view lands only on the NEXT rotation (compose pins DUCKDB_SERVING_CATALOG_REFRESH_S=60 locally).
-# Waiting here makes the FIRST cold refresh's identity stage deterministic instead of failing
-# once and converging a run later. A timeout falls through to the job (which fails loudly and
-# holds its watermark — the established converge-next-run posture).
-IDENTITY_VIEW_WAIT_S="${IDENTITY_VIEW_WAIT_S:-120}"
-
-wait_for_identity_view() {
-  local deadline=$((SECONDS + IDENTITY_VIEW_WAIT_S))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if curl -sf -X POST "$DUCKDB_SERVING_URL/v1/query" \
-         -H 'content-type: application/json' \
-         -d '{"sql":"SELECT 1 FROM brain_serving.mv_silver_collector_event LIMIT 1"}' \
-         >/dev/null 2>&1; then
-      echo "[$(ts)] identity: mv_silver_collector_event is live on duckdb-serving"
-      return 0
-    fi
-    sleep 5
-  done
-  echo "[$(ts)] ⚠ identity: mv_silver_collector_event still absent after ${IDENTITY_VIEW_WAIT_S}s — running the job anyway (it fails loudly + holds its watermark)"
-  return 0
-}
-
-run_identity_stage() {
+# Identity stage (ADR-0015 WS3): the Node resolver job, then re-project the Neo4j graph → Iceberg map so
+# gold reads THIS run's resolutions. Both continue-on-error (the map job re-projects even if the node job
+# advanced the graph; a failure holds a watermark and converges next run).
+run_identity() {
   local fail=0
   echo "[$(ts)] ── identity stage (ADR-0015 WS3: resolve in Silver → refresh the Iceberg identity map) ──"
-  wait_for_identity_view
-  local logf="/tmp/duckdb-refresh-identity-silver-identity.log"
-  local out rc
-  out="$(cd "$ROOT" && eval "$SILVER_IDENTITY_CMD" 2>&1)"; rc=$?
-  printf '%s\n' "$out" > "$logf"
-  if [ "$rc" -eq 0 ]; then
-    local rline
-    rline="$(printf '%s\n' "$out" | grep -E '^\{"job"' | tail -1)"
-    echo "[$(ts)] ✓ identity/silver-identity  ${rline:-ok}"
-  else
-    fail=$((fail+1))
-    echo "[$(ts)] ✗ identity/silver-identity FAILED (rc=${rc}) — $(printf '%s' "$out" | tail -1 | cut -c1-160)  [see ${logf}]"
+  ( cd "$ROOT" && eval "$SILVER_IDENTITY_CMD" ) \
+    && echo "[$(ts)] ✓ identity/silver-identity" \
+    || { fail=$((fail+1)); echo "[$(ts)] ✗ identity/silver-identity FAILED — converge next run"; }
+  if [ -e "$DUCK_DIR/silver/silver_identity_map.py" ]; then
+    "$PYTHON" "$DUCK_DIR/silver/silver_identity_map.py" \
+      && echo "[$(ts)] ✓ silver/silver_identity_map" \
+      || { fail=$((fail+1)); echo "[$(ts)] ✗ silver/silver_identity_map FAILED — converge next run"; }
   fi
-  # Re-project the graph → Iceberg map so gold reads THIS run's resolutions (Neo4j is the SoR).
-  if [ -e "$SILVER_DIR/silver_identity_map.py" ]; then
-    run_job silver "silver_identity_map.py" || fail=$((fail+1))
-  fi
-  echo "[$(ts)] identity stage: $((2-fail))/2 ok, ${fail} failed"
   return "$fail"
 }
 
-run_gold_tier() {
-  run_tier gold "gold" "${GOLD_JOBS[@]}"; TOTAL_FAIL=$((TOTAL_FAIL+$?))
-  # Post-gold serving-cache bust (direct Redis eviction — the gold.rewritten.v1 lane is retired,
-  # ADR-0015 WS3). FAIL-OPEN: cache busting is an optimization; a failure never fails the refresh.
-  if [ "${SKIP_GOLD_CACHE_BUST:-0}" != "1" ]; then
-    ( cd "$ROOT" && eval "${GOLD_CACHE_BUST_CMD:-pnpm --filter @brain/stream-worker exec tsx src/jobs/gold-rewritten-publish/run.ts}" ) \
-      > /tmp/duckdb-refresh-gold-cache-bust.log 2>&1 \
-      && echo "[$(ts)] ✓ gold/serving-cache-bust" \
-      || echo "[$(ts)] ⚠ gold/serving-cache-bust failed (fail-open — TTL is the safety net) [see /tmp/duckdb-refresh-gold-cache-bust.log]"
-  fi
+# Post-gold serving-cache bust (direct Redis eviction — the gold.rewritten.v1 lane is retired, ADR-0015
+# WS3). FAIL-OPEN: cache busting is an optimization; a failure never fails the refresh (TTL is the net).
+run_cache_bust() {
+  [ "${SKIP_GOLD_CACHE_BUST:-0}" = "1" ] && return 0
+  ( cd "$ROOT" && eval "${GOLD_CACHE_BUST_CMD:-pnpm --filter @brain/stream-worker exec tsx src/jobs/gold-rewritten-publish/run.ts}" ) \
+    > /tmp/duckdb-refresh-gold-cache-bust.log 2>&1 \
+    && echo "[$(ts)] ✓ gold/serving-cache-bust" \
+    || echo "[$(ts)] ⚠ gold/serving-cache-bust failed (fail-open — TTL is the safety net) [see /tmp/duckdb-refresh-gold-cache-bust.log]"
 }
 
-echo "▶ DuckDB refresh (LIVE catalog cutover) — python=${PYTHON}, stage=${STAGE}, silver_passes=${SILVER_PASSES}"
-echo "  silver jobs: ${#SILVER_JOBS[@]} (+ keystone)   gold jobs: ${#GOLD_JOBS[@]}"
+echo "▶ DuckDB refresh (LIVE catalog cutover, thin shim over run_all.py) — python=${PYTHON}, stage=${STAGE}"
 
+RC=0
 case "$STAGE" in
-  keystone) run_keystone || TOTAL_FAIL=$((TOTAL_FAIL+1)) ;;
-  silver1)  run_tier silver "silver pass 1" "${SILVER_JOBS[@]}"; TOTAL_FAIL=$((TOTAL_FAIL+$?)) ;;
-  silver2)  run_tier silver "silver pass 2" "${SILVER_JOBS[@]}"; TOTAL_FAIL=$((TOTAL_FAIL+$?)) ;;
-  silver)   run_silver_passes ;;
-  identity) run_identity_stage; TOTAL_FAIL=$((TOTAL_FAIL+$?)) ;;
-  gold)     run_gold_tier ;;
+  keystone) run_keystone || RC=$? ;;
+  silver)   run_silver   || RC=$? ;;
+  identity) run_identity || RC=$? ;;
+  gold)     run_gold     || RC=$? ;;
   all)
-    run_keystone || TOTAL_FAIL=$((TOTAL_FAIL+1))
-    run_silver_passes
-    # ADR-0015 WS3: identity BETWEEN silver and gold — keystone → silver → IDENTITY → gold —
-    # so gold_customer_360 (and every brain_id-reading mart) sees a fresh silver_identity_map.
-    run_identity_stage; TOTAL_FAIL=$((TOTAL_FAIL+$?))
-    run_gold_tier
+    run_silver   || RC=$?
+    run_identity || RC=$?
+    run_gold     || RC=$?
+    run_cache_bust
     ;;
-  *) echo "✗ unknown STAGE '$STAGE' (keystone|silver1|silver2|silver|identity|gold|all)" >&2; exit 2 ;;
+  *) echo "✗ unknown STAGE '$STAGE' (keystone|silver|identity|gold|all)" >&2; exit 2 ;;
 esac
 
-if [ "$TOTAL_FAIL" -eq 0 ]; then
-  echo "[$(ts)] ✓ DuckDB refresh complete (0 failures)"
+if [ "$RC" -eq 0 ]; then
+  echo "[$(ts)] ✓ DuckDB refresh complete"
 else
-  echo "[$(ts)] ⚠ DuckDB refresh complete with ${TOTAL_FAIL} failed job(s) — see /tmp/duckdb-refresh-*.log"
+  echo "[$(ts)] ⚠ DuckDB refresh completed with failures (rc=${RC}) — see run_all.py stdout above"
 fi
-exit "$TOTAL_FAIL"
+exit "$RC"

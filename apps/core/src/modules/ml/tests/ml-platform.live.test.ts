@@ -253,6 +253,23 @@ describe('ml platform (live)', () => {
     }
 
     // has_data: serve for the brand that owns the score; exactly one lakehouse prediction row is appended.
+    //
+    // IDEMPOTENCY GOTCHA (root cause of the chronic 1/6 failure): serveCustomerScore's prediction_id is
+    // DETERMINISTIC over (brand, model, subject, scored_on), and the log is INSERT-new-only. cleanup()
+    // only clears BRAND_A/BRAND_B — never `scoredBrand` (a real refresh-produced brand). So on the 2nd
+    // run (nightly + promotion, or a retry) the deterministic id already exists → the append is suppressed
+    // → `+ 1` never lands → the assertion failed. Serve ONCE (to resolve the deterministic id), delete
+    // exactly that row for `scoredBrand`, THEN assert the exactly-one-append from a clean baseline — the
+    // invariant under test (one row per served score) holds deterministically across reruns.
+    const warm = await serveCustomerScore(scoredBrand, scoredBrainId, CORR, { pool: dbPool, srPool });
+    if (warm.state === 'has_data') {
+      await superPool
+        .query(`DELETE FROM ops.ops_ml_prediction_log WHERE brand_id = $1 AND prediction_id = $2`, [
+          scoredBrand,
+          warm.prediction_id,
+        ])
+        .catch(() => {});
+    }
     const before = await predictionCount(scoredBrand);
     const res = await serveCustomerScore(scoredBrand, scoredBrainId, CORR, { pool: dbPool, srPool });
     expect(res.state).toBe('has_data');

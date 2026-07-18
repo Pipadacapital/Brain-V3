@@ -133,15 +133,26 @@ sparkBronze:
       serviceAccountName: stream-worker
       serviceAccountNamespace: stream-worker
 
-# Brain V4 DuckDB Silver/Gold transform (templates/v4-transform.yaml). DuckDB is the transform compute
-# now (Spark removed — Spark→DuckDB cutover); dbt/StarRocks were already gone. Two staggered
-# CronWorkflows — v4-silver (:05) → v4-gold (:25) — that `python /opt/brain/duckdb/<layer>/<job>.py` the mart
-# jobs the brain-duckdb image CARRIES (db/iceberg/duckdb/{silver,gold}/*.py via the Dockerfile). The serving
-# brain_serving.mv_* views (duckdb-serving) resolve straight over the Iceberg Gold/Silver marts (thin
-# projections) — there is no separate REFRESH leg. The identity-export + journey-stitch node jobs (.Values.jobs)
-# sequence around them by schedule to complete the attribution chain (identity → order-state → silver →
-# stitch → gold). ENABLED: the V4 crons run the medallion refresh. Requires the CI-built+digest-pinned
-# brain-duckdb image (B3 fail-closed) + a cluster.
+# ── ADR-0016 D3 / WS2 seam: resident warm transform worker ─────────────────────────────────────
+# When `transformWorker.enabled` is true, the resident Deployment (a warm DuckDB process looping the
+# chained pipeline every TRANSFORM_TICK_MS) SUPERSEDES the v4-medallion CronWorkflow below, which is
+# then suppressed (the template gates on `and sparkV4.enabled (not transformWorker.enabled)`). This
+# keeps the medallion SINGLE-WRITER across the WS2 cutover — the cron and the resident worker never
+# both write. Default OFF here (the interim CronWorkflow owns the medallion); WS2 ships the Deployment
+# chart + flips this true. The Deployment itself is out of scope for P2.1.
+transformWorker:
+  enabled: false
+
+# Brain V4 DuckDB medallion transform (templates/v4-transform.yaml). DuckDB is the transform compute
+# now (Spark removed — Spark→DuckDB cutover); dbt/StarRocks were already gone. ADR-0016 P2.1 chains the
+# whole medallion into ONE CronWorkflow — v4-medallion — that runs keystone → silver ×2 → identity →
+# silver_identity_map → gold → serving-cache-bust BACK-TO-BACK (an in-workflow Argo `steps` sequence,
+# images differ so a single container can't carry both) with NO inter-stage cron wait, mirroring
+# tools/dev/duckdb-refresh.sh EXACTLY. Was three staggered crons (v4-silver / v4-identity / v4-gold);
+# that scheduling stack is gone. The serving brain_serving.mv_* views (duckdb-serving) resolve straight
+# over the Iceberg Gold/Silver marts (thin projections) — no separate REFRESH leg. The journey-stitch
+# node jobs (.Values.jobs) still sequence around it by schedule. ENABLED: the chained cron runs the
+# medallion refresh. Requires the CI-built+digest-pinned brain-duckdb image (B3 fail-closed) + a cluster.
 sparkV4:
   enabled: true
   # Phase 1d (realtime): run each tier as ONE process (attach the Iceberg catalog once, run all 45 jobs on
@@ -158,24 +169,14 @@ sparkV4:
     tag: ""            # B3: digest preferred; CI populates at deploy (fail-closed in the template)
     digest: ""
     pullPolicy: IfNotPresent
-  # REALTIME PHASE 1 (2026-07-16): every 5 min, incremental. This is ONLY safe because SILVER_INCREMENTAL
-  # is ON below — each run then reads only the [watermark, now) window (seconds/low-minutes), not the full
-  # ~75-min Bronze re-scan. concurrencyPolicy: Forbid self-throttles: if a run runs long it just skips the
-  # next tick (never overlaps), so freshness degrades gracefully to whatever the tier can sustain.
-  silverSchedule: "*/5 * * * *"   # every 5 min — keystone + order_state spine + the rest of Silver (incremental)
-  goldSchedule: "*/5 * * * *"     # every 5 min — reads the latest committed Silver (Gold is still full-scan; Forbid throttles)
-  # ── Identity stage (ADR-0015 WS3; templates/v4-transform.yaml v4-identity) ─────────────────────
-  # Mirrors tools/dev/duckdb-refresh.sh's keystone → silver ×2 → IDENTITY → gold ordering: the Node
-  # silver-identity batch job (stream-worker image — resolves new keystone rows via Neo4j) then
-  # silver_identity_map.py (duckdb image — re-projects the graph into the Iceberg map) as TWO
-  # ordered steps in ONE workflow. +2min offset from the silver tick so the (incremental, ~1-2 min)
-  # silver pass usually commits first; watermark + idempotency make any miss converge next tick.
-  identitySchedule: "2-57/5 * * * *"   # every 5 min at :02/:07/… — after silver's :00/:05/… tick
-  identity:
-    # The resolve step is watermark-windowed (fast steady state); the FIRST run folds everything
-    # since epoch (bounded by SILVER_IDENTITY_MAX_CATCHUP_MS) — give it a 30-min ceiling; Forbid
-    # skips ticks until a long catch-up completes (established converge posture).
-    activeDeadlineSeconds: 1800
+  # ADR-0016 P2.1 — ONE CHAINED SCHEDULE. Was three staggered crons (silverSchedule / identitySchedule /
+  # goldSchedule); collapsed into a SINGLE v4-medallion CronWorkflow that walks keystone → silver ×2 →
+  # identity → map → gold → cache-bust back-to-back with NO inter-stage cron wait (kills the ~15-min
+  # scheduling stack). Every 5 min, incremental — ONLY safe because SILVER_INCREMENTAL is ON below (each
+  # run reads only the [watermark, now) window, not the full ~75-min Bronze re-scan). concurrencyPolicy:
+  # Forbid self-throttles: a long run skips the next tick (never overlaps a second medallion writer), so
+  # freshness degrades gracefully to whatever the whole chain can sustain warm.
+  medallionSchedule: "*/5 * * * *"   # every 5 min — the WHOLE chain (keystone → silver ×2 → identity → map → gold → cache-bust)
   # activeDeadlineSeconds stays HIGH (9000s / 2.5h): the FIRST run after SILVER_INCREMENTAL is enabled has
   # no watermark → a full-scan BOOTSTRAP (~75 min, the old runtime) that MUST complete to seed the
   # watermark. A low cap would kill the bootstrap before it writes the watermark → every run re-bootstraps
@@ -201,11 +202,11 @@ sparkV4:
     # recovery escape (forces a full pass on any tier).
     - { name: GOLD_INCREMENTAL, value: "0" }
     - { name: WATERMARK_LOOKBACK_SECONDS, value: "600" }
-  # Workflow-pod placement (AUD-PROD-006) — shared by v4-silver / v4-gold /
-  # v4-maintenance. Empty by default; values-prod pins to the streaming pool (the batch pool is gone).
+  # Workflow-pod placement (AUD-PROD-006) — shared by v4-medallion / v4-maintenance. Empty by
+  # default; values-prod pins to the streaming pool (the batch pool is gone).
   nodeSelector: {}
   tolerations: []
-  # Annotations stamped on the v4-silver/v4-gold run pods. Empty by default; values-prod sets
+  # Annotations stamped on the v4-medallion run pods. Empty by default; values-prod sets
   # karpenter.sh/do-not-disrupt to stop Karpenter voluntarily draining the node mid-run.
   podAnnotations: {}
   resources:

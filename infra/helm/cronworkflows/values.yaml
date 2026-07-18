@@ -189,6 +189,17 @@ sparkV4:
   env:
     - { name: ICEBERG_CATALOG, value: "rest" }
     - { name: SILVER_INCREMENTAL, value: "1" }
+    # GOLD_INCREMENTAL (ADR-0016 P1.1) gates the Gold tier's watermark-windowed reads INDEPENDENTLY of
+    # SILVER_INCREMENTAL. The env is shared by v4-silver and v4-gold, but ONLY the Gold marts read it
+    # (each passes enabled=GOLD_INCREMENTAL to incremental_window; Silver jobs use the SILVER_INCREMENTAL
+    # default and ignore this var). Default "0" (full-scan, byte-identical to the pre-incremental path).
+    # GO DEFAULT-ON ("1") IN values-prod ONLY AFTER db/iceberg/duckdb/parity_check.py's Gold
+    # incremental-vs-full harness passes in CI/staging (money byte-exact, no orphan drift). The
+    # full-recompute money marts stay full-scan regardless: gold_revenue_ledger / gold_cac /
+    # gold_contribution_margin do NOT pass enabled=GOLD_INCREMENTAL (delete_orphans / multi-source
+    # money-safety), so flipping this flag never touches their orphan-shed path. FULL_REFRESH=1 is the
+    # recovery escape (forces a full pass on any tier).
+    - { name: GOLD_INCREMENTAL, value: "0" }
     - { name: WATERMARK_LOOKBACK_SECONDS, value: "600" }
   # Workflow-pod placement (AUD-PROD-006) — shared by v4-silver / v4-gold /
   # v4-maintenance. Empty by default; values-prod pins to the streaming pool (the batch pool is gone).

@@ -559,6 +559,36 @@ additionalPrometheusRulesMap:
               summary: "Mart {{ $labels.mart }} has no Gold snapshot"
               description: "The freshness exporter could not read a snapshot for iceberg.{{ $labels.schema }}.{{ $labels.mart }} for 30m (table missing or never written). It cannot be evaluated against its SLA — verify the Spark Gold job for this mart has ever run."
 
+          # ── ADR-0016 near-real-time serving SLO (end-to-end medallion freshness) ──
+          - alert: MedallionFreshnessStale
+            # The objective guardrail for the ADR-0016 NRT improvement: the newest data a dashboard
+            # can read (now - max(ingested_at) over the Silver spine) must be ≤ 5m. If this fires, the
+            # whole Bronze→Silver→serving path has regressed past the near-real-time target — check the
+            # chained transform pipeline / warm worker (TRANSFORM_TICK_MS), incremental map-export
+            # (IDENTITY_DIRTY_ONLY), and duckdb-serving catalog refresh (DUCKDB_SERVING_CATALOG_REFRESH_S).
+            expr: medallion_freshness_seconds > 300
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Medallion end-to-end freshness stale (> 5m)"
+              description: "The newest data visible in serving is {{ $value | humanizeDuration }} old (ADR-0016 SLO 5m). The Bronze→Silver→serving path has regressed past near-real-time — check the chained transform pipeline / warm transform worker, the incremental map-export, and the duckdb-serving catalog refresh cadence."
+
+          - alert: MedallionFreshnessProbeFailing
+            # Anti-fantasy (C2 doctrine): if medallion_freshness_seconds silently stops being emitted
+            # (serving unreachable or the spine view empty/never-written), MedallionFreshnessStale can
+            # never fire and the NRT SLO goes unverified. This surfaces that blind spot explicitly.
+            expr: |
+              (medallion_freshness_query_success == 0)
+              or
+              (absent(medallion_freshness_query_success) == 1)
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Medallion freshness probe not reporting"
+              description: "medallion_freshness_query_success is 0 or absent for 15m — the exporter could not read max(ingested_at) from the Silver spine serving view (duckdb-serving unreachable, or the view is empty/never written). The ADR-0016 near-real-time SLO is unverified until it recovers."
+
           - alert: BrainFreshnessExporterDown
             # The exporter cannot reach duckdb-serving at all (or is not scraped). If this fires, the
             # staleness alerts above are blind — treat the freshness SLO as unverified until it recovers.

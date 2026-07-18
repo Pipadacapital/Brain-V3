@@ -10,7 +10,20 @@
  *
  * SCOPE: every active brand, whole-brand bust — a refresh-loop Phase-2 pass rewrites the brand's
  * whole BI Gold surface, so the honest scope is "everything for this brand" (exactly the
- * affected_scope.all=true the retired wire event carried).
+ * affected_scope.all=true the retired wire event carried). This is brand-scoped, NOT over-scoped:
+ * every eviction pattern leads with `${brandId}:` (tenant guard in ServingCacheEvictor), and it is
+ * NOT under-scoped either — evicting per-mart would MISS marts the batch rewrote, since one
+ * `run_gold_tier` pass (tools/dev/duckdb-refresh.sh) rewrites ALL BI Gold marts for the brand. The
+ * serving-cache key is `${brandId}:${metricId}:…` (packages/metric-engine/serving-cache.ts) — it is
+ * keyed on the BFF metricId, not on a Gold mart name, so there is no per-mart key subset to target;
+ * "affected mart keys" for a whole-Gold-tier rewrite === the whole brand keyspace. If the transform
+ * tier ever moves to per-mart incremental commits (ADR-0016 D1/D2), narrow this to the mutated
+ * marts then — until then whole-brand IS the affected-mart set.
+ *
+ * ADR-0016 P1.3 (near-real-time serving): this direct evict is the commit-driven half of the ≤60s
+ * freshness SLO — it removes the Redis serving-cache TTL lag the instant Gold commits, so a fresh
+ * commit is visible in mv_* on the next read (serving re-warms lazily) WITHOUT waiting a cache TTL
+ * or a catalog epoch. The other half is DUCKDB_SERVING_CATALOG_REFRESH_S=60 (view-reapply cadence).
  *
  * FAIL-OPEN: cache busting is an optimization. The caller treats a non-zero exit as a warning,
  * never a refresh-cycle failure; the per-metric TTL remains the correctness safety net. Tenant

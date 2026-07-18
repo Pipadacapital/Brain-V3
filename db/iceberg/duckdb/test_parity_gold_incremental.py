@@ -60,7 +60,7 @@ def _harness(full_rows, incr_rows):
     return a zero-arg runner that calls the SHIPPED parity() in strict mode."""
     con = duckdb.connect(":memory:")
     orig_cat, orig_connect = pc.CATALOG, pc.connect
-    pc.CATALOG = "memory"  # in-memory DB name → memory.brain_gold.gold_probe*
+    pc.CATALOG = "memory"  # in-memory DB name → the FQTN resolves to memory's gold namespace
     pc.connect = lambda: con
     _seed(con, "_full", full_rows)
     _seed(con, "_incr", incr_rows)

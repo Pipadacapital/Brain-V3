@@ -157,17 +157,10 @@ topics:
     - { suffix: "collector.event.v1",            retention: "short" }
     - { suffix: "collector.order.backfill.v1",   retention: "long" }
 
-  # 9 connector raw lanes (Kafka Connect Iceberg sink — ADR-0010). Suffix -> <lane>.raw.v1
-  rawLanes:
-    - shopify.orders
-    - woocommerce.orders
-    - meta.spend
-    - google.spend
-    - ga4.rows
-    - shiprocket.shipments
-    - gokwik.events
-    - shopflo.checkout
-    - razorpay.settlement
+  # ADR-0016 (2026-07-18): the 9 connector <lane>.raw.v1 lanes + their Kafka Connect
+  # <lane>_raw_connect Iceberg sinks are RETIRED — connectors emit canonical events to the
+  # collector lane, so the raw lanes never received data (their shadow-parity normalize jobs
+  # were dead-ends). Only the collector sink (collector_events_connect) remains a Bronze writer.
 
   # Intelligence control/event topics.
   # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,unmerged,suppressed,

@@ -1,7 +1,9 @@
 # brain-kafka-connect — the ADR-0010 Bronze landing writer.
 #
-# This chart is the SOLE Bronze landing writer (collector_events_connect + the <lane>_raw_connect
-# tables). The cronworkflows sparkBronze block now runs ONLY bronze-maintenance (compaction/
+# This chart is the SOLE Bronze landing writer (collector_events_connect). The 9 <lane>_raw_connect
+# raw-lane sinks were RETIRED by ADR-0016 (2026-07-18) — connectors emit canonical events to the
+# collector lane, so the raw lanes never received data.
+# The cronworkflows sparkBronze block now runs ONLY bronze-maintenance (compaction/
 # snapshot-expiry) — the Spark-SS landing path was removed 2026-07-05 (rollback = git revert).
 # See docs/runbooks/adr-0010-kafka-connect-bronze.md.
 enabled: true
@@ -109,11 +111,10 @@ metrics:
     jobLabel: kafka-connect-jmx
     interval: 15s
 
-# The 10 Bronze lanes — keep in LOCKSTEP with infra/kafka-connect/*.json (the local-dev copies).
-# `config` carries only the per-connector fields; icebergCatalog + sinkDefaults are merged in by the
-# template. Collector: raw payload preserved verbatim (StringConverter + HoistField) + kafka coords.
-# Raw lanes: schemaless JsonConverter → exploded envelope into a FRESH <lane>_raw_connect table
-# (never a Spark-written *_raw — its required columns NPE the Parquet writer; ADR-0010).
+# The collector Bronze lane — keep in LOCKSTEP with infra/kafka-connect/iceberg-bronze-collector.json
+# (the local-dev copy). `config` carries only the per-connector fields; icebergCatalog + sinkDefaults
+# are merged in by the template. Collector: raw payload preserved verbatim (StringConverter +
+# HoistField) + kafka coords. (ADR-0016: the 9 <lane>_raw_connect raw-lane sinks were retired.)
 connectors:
   iceberg-bronze-collector:
     connector.class: org.apache.iceberg.connect.IcebergSinkConnector
@@ -137,120 +138,6 @@ connectors:
     # (metadata-only ALTER + parity check; runbook-gated). Collector-lane only — the raw lanes carry
     # NO kafka_timestamp (no InsertField transform), a default-partition-by would break their creates.
     iceberg.table.brain_bronze.collector_events_connect.partition-by: "day(kafka_timestamp)"
-  iceberg-bronze-shopify-orders:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.shopify.orders.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.shopify_orders_raw_connect
-  iceberg-bronze-woocommerce-orders:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.woocommerce.orders.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.woocommerce_orders_raw_connect
-  iceberg-bronze-meta-spend:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.meta.spend.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.meta_spend_raw_connect
-  iceberg-bronze-google-spend:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.google.spend.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.google_spend_raw_connect
-  iceberg-bronze-ga4-rows:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.ga4.rows.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.ga4_rows_raw_connect
-  iceberg-bronze-shiprocket-shipments:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.shiprocket.shipments.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.shiprocket_shipments_raw_connect
-  iceberg-bronze-gokwik-events:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.gokwik.events.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.gokwik_events_raw_connect
-  iceberg-bronze-shopflo-checkout:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.shopflo.checkout.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.shopflo_checkout_raw_connect
-  iceberg-bronze-razorpay-settlement:
-    connector.class: org.apache.iceberg.connect.IcebergSinkConnector
-    tasks.max: "1"
-    topics: "prod.razorpay.settlement.raw.v1"
-    key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
-    transforms: "coords"
-    transforms.coords.type: org.apache.kafka.connect.transforms.InsertField$Value
-    transforms.coords.topic.field: kafka_topic
-    transforms.coords.partition.field: kafka_partition
-    transforms.coords.offset.field: kafka_offset
-    iceberg.tables: brain_bronze.razorpay_settlement_raw_connect
+  # ADR-0016 (2026-07-18): the 9 <lane>_raw_connect sink connectors are RETIRED — connectors emit
+  # canonical events to the collector lane, so the <lane>.raw.v1 topics never received data and
+  # their shadow-parity normalize jobs were dead-ends. Only the collector sink remains.

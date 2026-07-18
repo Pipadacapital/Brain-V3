@@ -54,8 +54,8 @@ Ship these *with* the phase that supersedes them, so no parallel dead paths ling
 
 | Remove | When | Why dead |
 |---|---|---|
-| The 90-spawn **bash orchestrator loop** in `tools/dev/duckdb-refresh.sh` (keep a thin dev shim) | after PR 2.2 warm worker validated | replaced by the resident single-process worker |
-| `sparkV4.singleProcess` **feature flag** + the dual-path branch | after PR 2.2 default-on | single-process becomes the only path |
+| ✅ The 90-spawn **bash orchestrator loop** in `tools/dev/duckdb-refresh.sh` (kept a thin dev shim over `run_all.py`) | DONE (P2 cleanup) | replaced by the resident single-process worker |
+| ✅ `sparkV4.singleProcess` **feature flag** + the dual-path branch | DONE (P2 cleanup) | single-process is now the only path |
 | Full-recompute branches guarded by `if not INCREMENTAL` in Gold jobs | after PR 1.1 default-on (keep `FULL_REFRESH` recovery) | superseded by incremental + `FULL_REFRESH` covers recovery |
 | **9 raw-lane Connect sinks** (`infra/kafka-connect/iceberg-bronze-{meta-spend,google-spend,ga4-rows,shopify-orders,woocommerce-orders,shopflo-checkout,shiprocket-shipments,gokwik-events,razorpay-settlement}.json`) + their topics | this program (independent) | verified dead 2026-07-18 — connectors emit canonical events to the collector lane; raw lanes never receive data |
 | `db/iceberg/duckdb/silver/silver_ad_spend_normalize.py` (shadow normalize reading the empty raw lanes) | with the raw-lane removal | redundant — `silver_marketing_spend`/`silver_keyword_spend` read `spend.live.v1` from the keystone directly |

@@ -19,11 +19,12 @@ Connection-state hygiene (the one thing a shared connection changes): jobs regis
 jobs). We wrap `create_function` to be idempotent (first registration wins). Temp views already use
 `CREATE OR REPLACE`, so they are safe.
 
-FLAG: invoked only when the template's single-process path is enabled (values `sparkV4.singleProcess`);
-the old 90-spawn bash loop remains the default until this is validated on one prod run. Usage:
+RUNNER: this is the SOLE transform runner (ADR-0016 P2 retired the old 90-spawn bash loop + its
+`sparkV4.singleProcess` dual-path flag — the v4-medallion CronWorkflow and tools/dev/duckdb-refresh.sh
+both call this). Usage:
     python run_all.py silver     # keystone+spine required, then 2 passes over the rest
     python run_all.py gold        # revenue_ledger required, attribution chain, then the rest (1 pass)
-Exit 1 if any non-required job failed (best-effort, matches the bash runner); a required job aborts hard.
+Exit 1 if any non-required job failed (best-effort); a required job aborts hard.
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────
 ADR-0016 P2.2 — RESIDENT WARM MICRO-BATCH WORKER (kills per-tick cold start).

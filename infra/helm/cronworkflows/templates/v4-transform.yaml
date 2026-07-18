@@ -169,31 +169,12 @@ spec:
               # Derive BRONZE/SILVER/GOLD PG env from core-env (DATABASE_URL_DIRECT) — else the PG-reading
               # jobs fall back to localhost and silently drop the pixel-lane R2 install→brand resolution.
               {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
-              {{- if .Values.sparkV4.singleProcess }}
-              # Phase 1d (AUD-2026-07-16): ONE process — attach the Iceberg catalog once, run all 45 jobs
-              # against a single connection. Kills the ~85s/job process+attach overhead that made a 90-spawn
-              # run take ~130 min. run_all.py preserves each job's run_job discipline + the 2-pass converge.
-              echo "── silver: single-process runner (Phase 1d) ──"
+              # ONE process — attach the Iceberg catalog once, run all 45 silver jobs against a single
+              # connection. Kills the ~85s/job process+attach overhead that made the retired 90-spawn loop
+              # take ~130 min. run_all.py preserves each job's run_job discipline + the 2-pass converge, and
+              # is the SAME runner the resident warm worker (transformWorker) loops (ADR-0016 P2).
+              echo "── silver: single-process runner ──"
               python /opt/brain/duckdb/run_all.py silver
-              {{- else }}
-              fails=0
-              # keystone + spine are HARD deps (every other job reads them) — abort if they fail.
-              for req in silver_collector_event.py silver_order_state.py; do
-                echo "▶ ${req} (required)"
-                python "/opt/brain/duckdb/silver/${req}" || { echo "✗ REQUIRED ${req} failed — aborting run"; exit 1; }
-              done
-              run_job() { echo "▶ $1"; if ! python "/opt/brain/duckdb/silver/$1"; then echo "✗ FAILED: $1"; fails=$((fails+1)); fi; }
-              for pass in 1 2; do
-                echo "── silver pass ${pass}/2 ──"
-                for j in /opt/brain/duckdb/silver/silver_*.py; do
-                  b="$(basename "$j")"
-                  case "$b" in silver_collector_event.py|silver_order_state.py) continue;; esac
-                  case "$b" in _*) continue;; esac
-                  run_job "$b"
-                done
-              done
-              [ "$fails" -eq 0 ] || { echo "── ${fails} silver job(s) failed (rest refreshed) ──"; exit 1; }
-              {{- end }}
           env:
             # ADR-0010: the silver jobs read the Kafka Connect Bronze tables (collector_events_connect
             # + <lane>_raw_connect) — fixed, no BRONZE_SOURCE switch (rollback = git revert).
@@ -287,28 +268,11 @@ spec:
               # Derive BRONZE/SILVER/GOLD PG env from core-env (DATABASE_URL_DIRECT) — the cost/margin
               # Gold marts read PG (gold_measurement_costs/contribution_margin/product_costs).
               {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
-              {{- if .Values.sparkV4.singleProcess }}
-              # Phase 1d: ONE process (attach once, run all 45 gold jobs) — run_all.py keeps the required
+              # ONE process (attach once, run all 45 gold jobs) — run_all.py keeps the required
               # gold_revenue_ledger + the ordered attribution chain (credit → marketing → paths) first.
-              echo "── gold: single-process runner (Phase 1d) ──"
+              # SAME runner the resident warm worker (transformWorker) loops (ADR-0016 P2).
+              echo "── gold: single-process runner ──"
               python /opt/brain/duckdb/run_all.py gold
-              {{- else }}
-              fails=0
-              # gold_revenue_ledger is the revenue basis many marts read — hard-fail if it breaks.
-              echo "▶ gold_revenue_ledger.py (required)"
-              python "/opt/brain/duckdb/gold/gold_revenue_ledger.py" || { echo "✗ REQUIRED gold_revenue_ledger failed — aborting run"; exit 1; }
-              run_job() { echo "▶ $1"; if ! python "/opt/brain/duckdb/gold/$1"; then echo "✗ FAILED: $1"; fails=$((fails+1)); fi; }
-              run_job gold_attribution_credit.py
-              run_job gold_marketing_attribution.py
-              run_job gold_attribution_paths.py
-              for j in /opt/brain/duckdb/gold/gold_*.py /opt/brain/duckdb/gold/snap_*.py; do
-                b="$(basename "$j")"
-                case "$b" in gold_revenue_ledger.py|gold_attribution_credit.py|gold_marketing_attribution.py|gold_attribution_paths.py) continue;; esac
-                case "$b" in _*) continue;; esac
-                run_job "$b"
-              done
-              [ "$fails" -eq 0 ] || { echo "── ${fails} gold job(s) failed (rest refreshed) ──"; exit 1; }
-              {{- end }}
           env:
             # ADR-0010: the gold jobs' Silver inputs derive from the Kafka Connect Bronze tables —
             # fixed, no BRONZE_SOURCE switch (rollback = git revert).

@@ -13,8 +13,8 @@
 #
 # These names match the Prometheus scrape jobs (`kafka-jmx-exporter` / `kafka-exporter`
 # in infra/observe/prometheus.yml) and the series read by
-# infra/observe/alerts/brain-slo.rules.yml (BrainDlqGrowing / BrainIngestStale /
-# BrainConsumerLagHigh). Annotation-based discovery is used (no Prometheus-Operator
+# infra/observe/alerts/brain-slo.rules.yml (BrainIngestStale / BrainConsumerLagHigh;
+# BrainDlqGrowing REMOVED — ADR-0015 retired the Kafka DLQ lane). Annotation-based discovery is used (no Prometheus-Operator
 # CRD dependency); if you run kube-prometheus-stack, swap to the ServiceMonitor at the
 # bottom of this file instead.
 #

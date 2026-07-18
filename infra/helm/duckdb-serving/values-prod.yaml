@@ -53,6 +53,16 @@ serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-duckdb-serving
 
+# ADR-0016 P1.3 (near-real-time serving): pin the epoch rotation to 60s in prod so a brand-NEW
+# Gold mart's view is reapplied within the ≤60s freshness SLO. This is the re-attach/view-reapply
+# cadence, NOT commit frequency — data for already-applied views is fresh on re-query regardless,
+# and the commit-driven serving-cache evict (gold-rewritten-publish) removes the Redis-TTL lag on
+# top. Iceberg small-file/commit pressure is a function of the TRANSFORM tick (not this knob); the
+# maintenance lane (db/iceberg/duckdb/maintenance/**) compacts it. Explicit here so prod is pinned
+# even if the base chart default drifts. Configurable.
+serving:
+  catalogRefreshSeconds: 60
+
 # Scrape the sole serving engine (native /metrics + PodMonitor, job "duckdb-serving") — lights up
 # DuckDBServingDown / DuckDBServingQueryFailureRateHigh in kube-prometheus-stack values-prod.
 metrics:

@@ -68,8 +68,11 @@ serving:
   statementTimeoutMs: 25000
   # Epoch rotation period (re-attach catalog + re-apply views, atomic swap). Live attaches see new
   # Iceberg commits WITHOUT re-attach (Phase-0 spike b), so rotation is self-heal/view-reapply
-  # only — 900s, not a freshness knob.
-  catalogRefreshSeconds: 900
+  # only. ADR-0016 P1.3: 60s so a brand-NEW mart's view is reapplied within the ≤60s freshness SLO
+  # (data for already-applied views is fresh on re-query regardless). TRADEOFF: this is the
+  # re-attach cadence, NOT commit frequency — Iceberg small-file pressure comes from the transform
+  # tick, and the maintenance lane (db/iceberg/duckdb/maintenance/**) compacts it. Still tunable.
+  catalogRefreshSeconds: 60
   # Spill: DuckDB temp_directory + max_temp_directory_size, backed by the pod's emptyDir below.
   # maxTempDirectorySize MUST stay under tmpSizeLimit — DuckDB stops spilling (clean query error)
   # before the kubelet evicts the pod.

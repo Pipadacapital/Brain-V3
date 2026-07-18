@@ -8,13 +8,20 @@ cursor shares the parent's attached catalog AND its local views, and concurrent 
 safe (spike gate a) — behind an admission semaphore, with a threading.Timer→cur.interrupt()
 watchdog so a pathological query degrades to a clean timeout error, never an OOM-killed pod.
 
-EPOCH ROTATION (self-heal, NOT freshness): a live attach already sees new Iceberg commits on
-plain re-query — no re-attach needed (spike gate b) — so rotation exists only to (1) re-apply
-views that were skipped because their Gold mart didn't exist yet (continue-on-error parity
-with run-trino-views.sh) and (2) recover from a poisoned attach. Hence the LONG default,
-DUCKDB_SERVING_CATALOG_REFRESH_S=900. Rotation builds a NEW epoch, atomically swaps it in,
-and retires the old one once its in-flight cursors drain. While no epoch is live (cold start
-with the catalog down), the rotation thread retries on a short 15s cadence instead.
+EPOCH ROTATION (self-heal + view-reapply, NOT the primary freshness path): a live attach
+already sees new Iceberg commits on plain re-query — no re-attach needed (spike gate b) — so
+rotation exists only to (1) re-apply views that were skipped because their Gold mart didn't
+exist yet (continue-on-error parity with run-trino-views.sh) and (2) recover from a poisoned
+attach. ADR-0016 P1.3 lowers the default to DUCKDB_SERVING_CATALOG_REFRESH_S=60 so a brand-new
+Gold mart's view is reapplied within ≤60s (the near-real-time freshness SLO); commit-visible
+data for ALREADY-applied views is fresh on re-query regardless of this knob (the commit-driven
+serving-cache evict in gold-rewritten-publish removes the Redis-TTL lag on top of that).
+TRADEOFF: 60s rotation ≠ 60s commit frequency — Iceberg small-file/commit pressure comes from
+the TRANSFORM tick cadence, not from serving rotation (rotation only re-attaches, it never
+commits); the maintenance lane (db/iceberg/duckdb/maintenance/**) compacts on its own schedule.
+Rotation builds a NEW epoch, atomically swaps it in, and retires the old one once its in-flight
+cursors drain. While no epoch is live (cold start with the catalog down), the rotation thread
+retries on a short 15s cadence instead.
 
 STATEMENT GUARD: only SELECT/WITH statements are accepted (single statement — no `;` chains),
 scanned with string-literal/comment awareness. Defense-in-depth beneath it: the catalog attach
@@ -27,7 +34,7 @@ Env (plan §A):
   DUCKDB_SERVING_MAX_TEMP_DIRECTORY_SIZE spill cap                           (default 5GB)
   DUCKDB_SERVING_MAX_CONCURRENT          admission semaphore width           (default 8)
   STATEMENT_TIMEOUT_MS                   interrupt watchdog (< the TS adapter's 30s abort) (default 25000)
-  DUCKDB_SERVING_CATALOG_REFRESH_S       epoch rotation period               (default 900 — spike gate b)
+  DUCKDB_SERVING_CATALOG_REFRESH_S       epoch rotation period               (default 60 — ADR-0016 P1.3; view-reapply cadence, not commit freq)
   + the _catalog.py family (ICEBERG_CATALOG/ICEBERG_REST_URI/ICEBERG_WAREHOUSE/S3_ENDPOINT/…)
 """
 from __future__ import annotations
@@ -49,7 +56,10 @@ TEMP_DIRECTORY = os.environ.get("DUCKDB_SERVING_TEMP_DIRECTORY", "/tmp/duckdb-se
 MAX_TEMP_DIRECTORY_SIZE = os.environ.get("DUCKDB_SERVING_MAX_TEMP_DIRECTORY_SIZE", "5GB")
 MAX_CONCURRENT = int(os.environ.get("DUCKDB_SERVING_MAX_CONCURRENT", "8") or "8")
 STATEMENT_TIMEOUT_MS = int(os.environ.get("STATEMENT_TIMEOUT_MS", "25000") or "25000")
-CATALOG_REFRESH_S = int(os.environ.get("DUCKDB_SERVING_CATALOG_REFRESH_S", "900") or "900")
+# ADR-0016 P1.3: 60s so a brand-new mart's view is reapplied within the ≤60s freshness SLO.
+# This is the view-reapply/self-heal cadence, NOT commit frequency — small-file pressure is a
+# function of the transform tick, and the maintenance lane handles compaction. Still configurable.
+CATALOG_REFRESH_S = int(os.environ.get("DUCKDB_SERVING_CATALOG_REFRESH_S", "60") or "60")
 # Admission wait: a request queues briefly for a semaphore slot, then 503s — the TS adapter
 # aborts at 30s, so queueing long merely converts saturation into timeouts. Short and fixed.
 ADMISSION_WAIT_S = 2.0

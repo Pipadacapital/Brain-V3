@@ -189,18 +189,35 @@ def _brain_id_v2_join_sql(con, stg_sql: str) -> str:
     return resolve_brain_id_v2_sql(IDENTITY_MAP, orders_cte, on_brands)
 
 
-def _identity_link_sql() -> str:
+def _identity_link_sql(con) -> str:
     """hashed-email → canonical brain_id, reproducing the Spark _read_identity_link PG query over the
     Iceberg siblings (silver_identity_alias = ops.silver_identity_link; silver_customer_identity 1:1).
     MIN(COALESCE(c.merged_into, l.brain_id)) per (brand_id, identifier_value) — the F2 single-hop net that
     rolls a merged (dead) brain_id onto its survivor before the aggregate; a non-merged customer's
-    merged_into IS NULL → COALESCE = the original brain_id (parity-exact no-op)."""
+    merged_into IS NULL → COALESCE = the original brain_id (parity-exact no-op).
+
+    COLD-START SAFETY: order_state is a REQUIRED (hard-fail) keystone job, but the identity-projection
+    siblings it reads are produced LATER in the silver tier (silver_identity_alias / silver_customer_identity
+    ensure_table only when their glob-pass runs). On a flushed/first-run medallion those tables don't exist
+    yet → an unguarded FROM aborts the whole silver tier (prod 2026-07-18). Fail-closed to an EMPTY link set
+    (LEFT JOIN → NULL brain_id on every order — correct for a fresh system; converges next tick once the
+    alias is produced), matching the _table_exists guard on IDENTITY_MAP above. When BOTH tables exist (the
+    warm steady state) the emitted SQL is byte-identical to the pre-guard version — parity preserved."""
+    if not _table_exists(con, IDENTITY_ALIAS):
+        return ("SELECT NULL::VARCHAR AS brand_id, NULL::VARCHAR AS hashed_customer_email, "
+                "NULL::VARCHAR AS brain_id WHERE FALSE")
+    # CUSTOMER_IDENTITY supplies only the merged_into (dead→survivor) rollup via a LEFT JOIN; if it is not
+    # built yet, degrade to alias-only (brain_id = l.brain_id) rather than crash — a non-merged system is
+    # byte-identical anyway (merged_into IS NULL → COALESCE is a no-op).
+    has_customer = _table_exists(con, CUSTOMER_IDENTITY)
+    brain_id_expr = "MIN(COALESCE(c.merged_into, l.brain_id))" if has_customer else "MIN(l.brain_id)"
+    customer_join = (f"LEFT JOIN {CUSTOMER_IDENTITY} c\n        "
+                     "ON c.brand_id = l.brand_id AND c.brain_id = l.brain_id" if has_customer else "")
     return f"""
       SELECT l.brand_id, l.identifier_value AS hashed_customer_email,
-             MIN(COALESCE(c.merged_into, l.brain_id)) AS brain_id
+             {brain_id_expr} AS brain_id
       FROM {IDENTITY_ALIAS} l
-      LEFT JOIN {CUSTOMER_IDENTITY} c
-        ON c.brand_id = l.brand_id AND c.brain_id = l.brain_id
+      {customer_join}
       WHERE l.identifier_type = 'pre_hashed_email'
         AND l.is_active = true
         AND l.brain_id IS NOT NULL
@@ -319,7 +336,7 @@ def build(con):
              CAST({DEFAULT_PREPAID_HORIZON} AS INTEGER) AS prepaid_horizon,
              a.terminal_class AS awb_terminal_class
       FROM ({stg}) o
-      LEFT JOIN ({_identity_link_sql()}) b
+      LEFT JOIN ({_identity_link_sql(con)}) b
         ON b.brand_id = o.brand_id AND b.hashed_customer_email = o.hashed_customer_email
       LEFT JOIN ({awb_latest}) a
         ON a.brand_id = o.brand_id AND a.order_id = o.order_id

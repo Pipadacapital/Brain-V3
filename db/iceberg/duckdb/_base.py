@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from _catalog import CATALOG, SILVER_NAMESPACE, connect, fqtn  # noqa: F401
 
@@ -163,15 +163,25 @@ def merge_on_pk(con, target: str, staged_sql: str, columns: list[str], pk: list[
     on_clause = " AND ".join(f"t.{c} = s.{c}" for c in pk)
     ins_vals = ", ".join(f"s.{c}" for c in columns)
     n = con.execute(f"SELECT count(*) FROM ({deduped})").fetchone()[0]
-    con.execute(
-        f"""
-        MERGE INTO {target} t
-        USING ({deduped}) s
-        ON {on_clause}
-        WHEN MATCHED THEN UPDATE SET {set_clause}
-        WHEN NOT MATCHED THEN INSERT ({collist}) VALUES ({ins_vals});
-        """
-    )
+    # COLD-START / EMPTY-TARGET guard: DuckDB 1.5.x's Iceberg MERGE always instantiates the copy-on-write
+    # update sink (IcebergMergeUpdate.Finalize → IcebergDelete.FlushDeletes) and, on a freshly-created target
+    # holding ZERO data files, that sink's multi_file_list is NULL → an INTERNAL fatal that ALSO invalidates
+    # the shared warm connection, cascading the whole tier (prod cold-rebuild hazard — gold_measurement_costs
+    # 2026-07-18, caught in local flush repro). An empty target cannot match any staged row, so a MERGE there
+    # is a pure INSERT — do exactly that, sidestepping the delete path. Every subsequent run (target now holds
+    # ≥1 data file) takes the normal MERGE unchanged, so the warm-path output is byte-identical.
+    if con.execute(f"SELECT count(*) FROM {target}").fetchone()[0] == 0:
+        con.execute(f"INSERT INTO {target} ({collist}) SELECT {collist} FROM ({deduped})")
+    else:
+        con.execute(
+            f"""
+            MERGE INTO {target} t
+            USING ({deduped}) s
+            ON {on_clause}
+            WHEN MATCHED THEN UPDATE SET {set_clause}
+            WHEN NOT MATCHED THEN INSERT ({collist}) VALUES ({ins_vals});
+            """
+        )
     if delete_orphans and n > 0:
         # PK columns are NOT NULL by mart contract, so the row-value NOT IN anti-join is null-safe.
         shed = con.execute(
@@ -218,6 +228,20 @@ WATERMARK_MAX_SLICE_SECONDS = int(os.environ.get("WATERMARK_MAX_SLICE_SECONDS", 
 
 # The batch hi pinned by run_job for the duration of one job process (race-safe read/advance bound).
 _CURRENT_HI = None
+
+
+def _align_tz(value, ref):
+    """Return `value` with its tz-awareness matched to `ref` so a min()/comparison of the two never raises
+    "can't compare offset-naive and offset-aware datetimes". DuckDB returns tz-AWARE datetimes for a
+    timestamptz source column (max/min ts_col), but the silver_job_watermark table stores a NAIVE TIMESTAMP
+    — so the forward-slice cap's `min(hi, wm + slice)` mixes the two. Every timestamp in this pipeline is
+    UTC (Kafka epoch-millis arrival clock; the watermark is stored naive-UTC), so aligning awareness is
+    value-preserving. Only the cap comparison uses this — the returned bounds keep their original types."""
+    if value is None or ref is None or (ref.tzinfo is None) == (value.tzinfo is None):
+        return value
+    if ref.tzinfo is None:
+        return value.replace(tzinfo=None)          # ref naive → drop value's UTC tzinfo
+    return value.replace(tzinfo=timezone.utc)      # ref aware → value is naive-UTC → stamp UTC
 
 
 def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ingested_at",
@@ -282,14 +306,14 @@ def incremental_window(con, job_name: str, source_table: str, ts_col: str = "ing
             return None, None
         if lo is None:
             return None, None
-        hi = min(hi, lo + timedelta(seconds=cap))
+        hi = min(hi, _align_tz(lo + timedelta(seconds=cap), hi))
         _CURRENT_HI = hi  # run_job advances the watermark to the SAME capped hi the build read up to
         return lo, hi
     # Established watermark → half-open [wm - lookback, min(hi, wm + slice)). The cap bounds catch-up after a
     # gap (steady state: wm + slice > hi, so min == hi == a no-op); the lookback re-admits a trailing
     # out-of-order margin (the idempotent MERGE dedups the overlap — extra CPU, never lost/doubled rows).
     if cap > 0:
-        hi = min(hi, wm + timedelta(seconds=cap))
+        hi = min(hi, _align_tz(wm + timedelta(seconds=cap), hi))
         _CURRENT_HI = hi
     lo = wm - timedelta(seconds=LOOKBACK_SECONDS) if LOOKBACK_SECONDS > 0 else wm
     return lo, hi

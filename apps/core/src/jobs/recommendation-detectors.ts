@@ -26,6 +26,22 @@ const DB_URL =
   'postgres://brain_app:brain_app@localhost:5432/brain';
 
 /**
+ * A brand id must be a real UUID before it is bound into any uuid-typed serving/PG param. Under
+ * thin/empty data a brand enumeration can surface a degenerate id (empty string / malformed) —
+ * binding `""` into the detectors' first `WHERE id = $1::uuid` read (registry.fetchCm2CostParts)
+ * makes Postgres raise `invalid input syntax for type uuid: ""`, which previously crashed that
+ * brand's whole run. An unusable brand id is a DATA-QUALITY skip, not a detector failure: we skip
+ * it (counted + logged honestly) so the run completes with raised=0 for empty brands rather than
+ * throwing. @brain/db already maps an empty brand GUC to the nil-uuid, so this only guards the
+ * BOUND-PARAM path the guard-lint does not cover.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidBrandId(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+/**
  * Silver/Gold SERVING pool — Brain V4 reads the lakehouse over duckdb-serving (Trino removed,
  * ADR-0014); the detector REVENUE signals read the brain_serving.mv_* views (Epic 1 / B).
  * createDuckDbServingPool is the stateless HTTP adapter — the two-part `brain_serving.mv_*`
@@ -45,6 +61,8 @@ export interface RecommendationJobResult {
   expired: number;
   measured: number;
   errors: number;
+  /** brands skipped because their enumerated id was empty/not a valid uuid (data-quality skip). */
+  skipped: number;
 }
 
 export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?: SilverPool }): Promise<RecommendationJobResult> {
@@ -56,6 +74,7 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
   let expired = 0;
   let measured = 0;
   let errors = 0;
+  let skipped = 0;
 
   try {
     const ctx: QueryContext = { correlationId: `reco-job-${randomUUID()}` };
@@ -70,6 +89,14 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
 
     log.info('recommendation detectors starting', { brands: brandIds.length });
     for (const brandId of brandIds) {
+      // Thin-data resilience: an empty/invalid brand id would bind `""` into a uuid param
+      // (registry: `WHERE id = $1::uuid`) → Postgres `invalid input syntax for type uuid: ""`,
+      // crashing this brand's run. Skip it honestly (counted, not an error) so the run completes.
+      if (!isValidBrandId(brandId)) {
+        skipped += 1;
+        log.warn('skipping brand with empty/invalid uuid', { brand_id: brandId });
+        continue;
+      }
       brands += 1;
       try {
         const r = await generateRecommendations(brandId, `reco-job-${randomUUID()}`, { pool, srPool });
@@ -88,8 +115,8 @@ export async function runRecommendationDetectors(deps?: { pool?: DbPool; srPool?
         log.error('detector run failed for brand', { brand_id: brandId, err });
       }
     }
-    log.info('recommendation detectors complete', { brands, raised, expired, measured, errors });
-    return { brands, raised, expired, measured, errors };
+    log.info('recommendation detectors complete', { brands, raised, expired, measured, errors, skipped });
+    return { brands, raised, expired, measured, errors, skipped };
   } finally {
     if (ownsPool) await pool.end();
     // srPool is the stateless serving HTTP adapter (createDuckDbServingPool) — no connection pool to tear down.

@@ -43,11 +43,22 @@ interface OutcomeRow {
   measured: string;
 }
 
+/** A brand id must be a valid uuid before it is bound into `WHERE brand_id = $1` (uuid column). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidBrandId(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
 export async function measureRecommendationOutcomes(
   brandId: string,
   correlationId: string,
   deps: MeasureDeps,
 ): Promise<MeasureResult> {
+  // Thin-data guard: an empty/invalid brand id would raise `invalid input syntax for type uuid`.
+  if (!isValidBrandId(brandId)) {
+    return { measured: 0 };
+  }
   const ctx: QueryContext = { brandId, correlationId };
   const client = await deps.pool.connect();
   let measured = 0;

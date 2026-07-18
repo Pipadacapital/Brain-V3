@@ -20,7 +20,8 @@ lowercaseOutputLabelNames: true
 # Drop the high-cardinality per-request-version label noise; keep the SLO-relevant series.
 rules:
   # Log end offset (high watermark) per topic-partition.
-  # Replaces redpanda_kafka_max_offset — drives BrainDlqGrowing + BrainIngestStale.
+  # Replaces redpanda_kafka_max_offset — drives BrainIngestStale.
+  # (BrainDlqGrowing REMOVED — ADR-0015 retired the Kafka DLQ lane.)
   - pattern: 'kafka.log<type=Log, name=LogEndOffset, topic=(.+), partition=(.+)><>Value'
     name: kafka_log_log_logendoffset
     type: GAUGE

@@ -16,6 +16,15 @@ Status date: 2026-06-28. EXTEND-not-rebuild. No code was edited.
 
 ## 1. Verdict
 
+> **HISTORICAL (note added 2026-07-18):** This review predates two cutovers. (a) Spark is REMOVED
+> (Spark→DuckDB, PR #148) — the Spark-SS landers below are gone (see the 2026-07-05 WRITER NOTE above).
+> (b) The Kafka DLQ lane is RETIRED (ADR-0015): `BrainDlqGrowing` / `BrainDlqRedrive*` and the
+> `DlqProducer` / `DlqRedriver` / `.dlq` machinery no longer exist — the poison path is now the PG
+> `ops.erasure_request_queue` (status=`dead`), alerted by `BrainErasureQueueDead`. Gap #1's alert re-key
+> for the surviving alerts (`BrainConsumerLagHigh` / `BrainIngestStale`) was subsequently shipped off
+> `redpanda_kafka_*` onto the Kafka JMX/exporter series. Read the punch-list below as the then-current
+> audit, not the present state.
+
 **Phase 0 is ~85% built and architecturally sound — enterprise-grade where it counts.** The connector kernel (`@brain/connector-core`), the webhook security pipeline, the durable-spool collector, the two Spark-SS landers with offset-after-Iceberg-commit no-loss, idempotent MERGE dedup, append-only RAW Bronze, compaction/expiry, and crypto-shred erasure are all genuinely complete and well-reasoned. The CARDINAL RULE is honored in both landers (only receipt-lineage metadata is stamped; payload is verbatim). **Three headline gaps dominate the punch-list, all buildable-now, none requiring a redesign:**
 
 1. **The KRaft swap (#286) orphaned the Kafka-broker half of the alert set** — `BrainDlqGrowing` / `BrainConsumerLagHigh` / `BrainIngestStale` still key off `redpanda_kafka_*` metrics that no longer emit. These are now false-safety fantasy alerts. *Release-gating regression of the no-event-loss observability contract.*

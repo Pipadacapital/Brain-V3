@@ -80,11 +80,28 @@ async function fetchSignals(
   return signals;
 }
 
+/**
+ * A brand id must be a valid uuid before it is bound into any uuid-typed param (the detectors' first
+ * read is `SELECT ... FROM brand WHERE id = $1::uuid`). An empty/malformed id would make Postgres
+ * raise `invalid input syntax for type uuid: ""` and abort the pipeline. Under thin/empty data this
+ * is a data-quality condition, not a failure: treat an unusable brand id as "no recommendations"
+ * (raised=0/expired=0) so both the cron job and the request-time serving path degrade cleanly.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidBrandId(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
 export async function generateRecommendations(
   brandId: string,
   correlationId: string,
   deps: GenerateDeps,
 ): Promise<GenerateResult> {
+  // Thin-data guard: never bind an empty/invalid brand id into a uuid param — return the empty set.
+  if (!isValidBrandId(brandId)) {
+    return { raised: 0, expired: 0, signals: new Map<string, unknown>() };
+  }
   const ctx: QueryContext = { brandId, correlationId };
   const client = await deps.pool.connect();
   let raised = 0;

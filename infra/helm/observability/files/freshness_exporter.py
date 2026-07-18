@@ -32,6 +32,16 @@ never fires is worse than no metric. So when a mart's snapshot query FAILS or re
 `brain_data_freshness_query_success{mart=...} 0`, and freshness.rules.yml alerts on that
 too. The exporter's own liveness is `up` (Prometheus scrape) + `brain_data_freshness_up`.
 
+MEDALLION FRESHNESS (ADR-0016 — the near-real-time serving SLO):
+Beyond the per-mart snapshot age above (which measures when a Gold batch last COMMITTED), the
+NRT program (ADR-0016) needs the objective *end-to-end* freshness proof: how old is the newest
+DATA a dashboard can actually read? That is `now − max(ingested_at)` over the freshest thing
+serving exposes — the Silver spine view `mv_silver_collector_event` (its `ingested_at` is the
+Bronze-landing timestamp, so this gauge spans the whole Bronze→Silver→serving path). We emit it
+as `medallion_freshness_seconds` (single, unlabelled gauge) with a matching
+`medallion_freshness_query_success` so a missing/empty spine surfaces the same anti-fantasy way
+as the mart series. The alert threshold (5 min, ADR-0016) lives in freshness.rules.yml, not here.
+
 Env config (all optional, dev defaults shown):
   FRESHNESS_SERVING_URL     duckdb-serving base URL             (default http://duckdb-serving:8091)
   FRESHNESS_ICEBERG_CATALOG attached Iceberg catalog name       (default iceberg)
@@ -41,6 +51,8 @@ Env config (all optional, dev defaults shown):
   FRESHNESS_REFRESH_SEC     background refresh interval seconds  (default 60)
   FRESHNESS_QUERY_TIMEOUT_SEC  per-HTTP-request timeout          (default 20)
   FRESHNESS_MARTS_FILE      path to a JSON registry override    (default: built-in DEFAULT_MARTS)
+  FRESHNESS_MEDALLION_VIEW  serving view for end-to-end freshness (default mv_silver_collector_event)
+  FRESHNESS_SERVING_SCHEMA  serving-views schema (holds the view) (default brain_serving)
 
 JSON registry override format (FRESHNESS_MARTS_FILE):
   [ {"mart": "gold_executive_metrics", "sla_class": "executive"},
@@ -96,6 +108,10 @@ LISTEN_ADDR = _env("FRESHNESS_LISTEN_ADDR", "0.0.0.0")
 LISTEN_PORT = int(_env("FRESHNESS_LISTEN_PORT", "9095"))
 REFRESH_SEC = int(_env("FRESHNESS_REFRESH_SEC", "60"))
 QUERY_TIMEOUT_SEC = int(_env("FRESHNESS_QUERY_TIMEOUT_SEC", "20"))
+# ADR-0016 end-to-end (medallion) freshness probe: the Silver spine serving view whose
+# ingested_at is the Bronze-landing timestamp of the newest data visible in serving.
+MEDALLION_VIEW = _env("FRESHNESS_MEDALLION_VIEW", "mv_silver_collector_event")
+SERVING_SCHEMA = _env("FRESHNESS_SERVING_SCHEMA", "brain_serving")
 
 
 def _load_marts() -> list[dict[str, str]]:
@@ -161,6 +177,22 @@ def fetch_latest_snapshot_epoch(schema: str, mart: str) -> Optional[float]:
     return serving_query_scalar(sql)
 
 
+def fetch_medallion_ingested_epoch() -> Optional[float]:
+    """Epoch seconds of the newest ingested_at visible in serving (ADR-0016 end-to-end SLO).
+
+    Reads the Silver spine serving view (default brain_serving.mv_silver_collector_event) exactly
+    the way the BFF reads marts — a single POST /v1/query over duckdb-serving. `ingested_at` is the
+    Bronze-landing timestamp, so `now − max(ingested_at)` (computed in render_metrics) is the whole
+    Bronze→Silver→serving latency. epoch() is UTC-safe (the serving session is pinned to UTC).
+    View/schema come from config, never user input. NULL/empty view → None (anti-fantasy: no
+    fabricated freshness, only medallion_freshness_query_success=0)."""
+    sql = (
+        f'SELECT epoch(max(ingested_at)) '
+        f'FROM {SERVING_SCHEMA}."{MEDALLION_VIEW}"'
+    )
+    return serving_query_scalar(sql)
+
+
 # ── Metric state ──────────────────────────────────────────────────────────────────
 class State:
     def __init__(self) -> None:
@@ -171,6 +203,9 @@ class State:
         self.last_scrape_unixtime = 0.0
         self.scrape_total = 0
         self.exporter_up = 0
+        # ADR-0016 end-to-end medallion freshness (single, unlabelled).
+        self.medallion_ingested_epoch: Optional[float] = None
+        self.medallion_ok = False
 
 
 STATE = State()
@@ -205,12 +240,27 @@ def refresh_once(marts: list[dict[str, str]]) -> None:
             rec["error"] = str(exc)[:200]
         results[mart] = rec
 
+    # ── ADR-0016 end-to-end medallion freshness ──────────────────────────────
+    # Independent of the per-mart snapshot ages above: age of the newest DATA visible in serving.
+    medallion_epoch: Optional[float] = None
+    medallion_ok = False
+    try:
+        medallion_epoch = fetch_medallion_ingested_epoch()
+        if medallion_epoch is not None:
+            medallion_ok = True
+            any_ok = True
+        # None → view empty/never-written: leave medallion_ok False (query_success=0), no fake age.
+    except (urllib.error.URLError, urllib.error.HTTPError, RuntimeError, OSError, ValueError) as exc:
+        sys.stderr.write(f"[freshness-exporter] medallion probe error: {str(exc)[:200]}\n")
+
     with STATE.lock:
         STATE.results = results
+        STATE.medallion_ingested_epoch = medallion_epoch
+        STATE.medallion_ok = medallion_ok
         STATE.last_scrape_duration = time.time() - start
         STATE.last_scrape_unixtime = time.time()
         STATE.scrape_total += 1
-        # exporter_up reflects duckdb-serving reachability: at least one mart query succeeded.
+        # exporter_up reflects duckdb-serving reachability: at least one query succeeded.
         STATE.exporter_up = 1 if any_ok else 0
 
 
@@ -255,6 +305,8 @@ def render_metrics() -> str:
 
     with STATE.lock:
         results = dict(STATE.results)
+        medallion_epoch = STATE.medallion_ingested_epoch
+        medallion_ok = STATE.medallion_ok
         scrape_dur = STATE.last_scrape_duration
         scrape_unix = STATE.last_scrape_unixtime
         scrape_total = STATE.scrape_total
@@ -273,6 +325,26 @@ def render_metrics() -> str:
         else:
             # No fabricated freshness value — only the failure signal (anti-fantasy).
             lines.append(f"brain_data_freshness_query_success{{{lbl}}} 0")
+
+    # ── ADR-0016 end-to-end medallion freshness ──────────────────────────────
+    lines.append(
+        "# HELP medallion_freshness_seconds Age in seconds of the newest data visible in "
+        "serving (now - max(ingested_at) over the Silver spine serving view) — the whole "
+        "Bronze->Silver->serving latency (ADR-0016 near-real-time SLO)."
+    )
+    lines.append("# TYPE medallion_freshness_seconds gauge")
+    lines.append(
+        "# HELP medallion_freshness_query_success 1 if the end-to-end freshness query "
+        "returned a max(ingested_at), else 0 (serving unreachable or spine view empty)."
+    )
+    lines.append("# TYPE medallion_freshness_query_success gauge")
+    if medallion_ok and medallion_epoch is not None:
+        age = max(0.0, now - float(medallion_epoch))
+        lines.append(f"medallion_freshness_seconds {age:.3f}")
+        lines.append("medallion_freshness_query_success 1")
+    else:
+        # Anti-fantasy: emit no fabricated freshness number, only the failure signal.
+        lines.append("medallion_freshness_query_success 0")
 
     lines.append(
         "# HELP brain_data_freshness_scrape_duration_seconds Wall time of the last "

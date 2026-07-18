@@ -16,6 +16,8 @@ engine (ADR-0014) — via the same `iceberg` catalog attach the app uses.
 | `brain_data_freshness_seconds` | gauge | `mart,schema,sla_class` | age (s) since the latest successful Gold snapshot |
 | `brain_data_freshness_last_snapshot_timestamp_seconds` | gauge | `mart,schema,sla_class` | unix time of that snapshot |
 | `brain_data_freshness_query_success` | gauge | `mart,schema,sla_class` | 1 if a snapshot was read, 0 if the mart is unreachable/empty |
+| `medallion_freshness_seconds` | gauge | — | end-to-end freshness: `now − max(ingested_at)` over the Silver spine serving view — the whole Bronze→Silver→serving latency (ADR-0016 NRT SLO) |
+| `medallion_freshness_query_success` | gauge | — | 1 if the end-to-end query returned a value, 0 if serving unreachable / spine empty |
 | `brain_data_freshness_scrape_duration_seconds` | gauge | — | wall time of the last background scrape |
 | `brain_data_freshness_last_scrape_timestamp_seconds` | gauge | — | unix time of the last scrape |
 | `brain_data_freshness_scrape_total` | counter | — | completed scrapes |

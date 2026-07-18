@@ -43,6 +43,19 @@ sparkV4:
   resources:
     requests: {cpu: "2", memory: 6Gi}
     limits: {cpu: "3", memory: 8Gi}
+  # GOLD_INCREMENTAL default-on gate (ADR-0016 P1.1). prod inherits the base values.yaml env
+  # (GOLD_INCREMENTAL="0" → Gold full-scan). To flip Gold to incremental in prod, uncomment the block
+  # below (it REPLACES the base env list, so it must re-declare ICEBERG_CATALOG / SILVER_INCREMENTAL /
+  # WATERMARK_LOOKBACK_SECONDS) — but ONLY after db/iceberg/duckdb/parity_check.py's Gold
+  # incremental-vs-full harness passes in CI/staging: money byte-exact, zero orphan drift. The
+  # first incremental Gold run bootstraps (no watermark → full scan) then windows [watermark, now).
+  # gold_revenue_ledger / gold_cac / gold_contribution_margin stay full-scan regardless (they never
+  # pass enabled=GOLD_INCREMENTAL — delete_orphans / multi-source money-safety). FULL_REFRESH=1 recovers.
+  # env:
+  #   - { name: ICEBERG_CATALOG, value: "rest" }
+  #   - { name: SILVER_INCREMENTAL, value: "1" }
+  #   - { name: GOLD_INCREMENTAL, value: "1" }   # ← default-on ONLY after parity_check.py Gold gate passes
+  #   - { name: WATERMARK_LOOKBACK_SECONDS, value: "600" }
   # MAINTENANCE LANE SPLIT (2026-07-17 fragmentation incident). The single both-namespaces sweep
   # processed Silver first (alphabetically) and burned its whole deadline on Silver's heavy tables
   # (silver_job_watermark ~7.3k tiny files) → Gold never compacted → gold_customer_360 fragmented to

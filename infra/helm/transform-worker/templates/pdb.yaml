@@ -1,0 +1,20 @@
+{{- /*
+PodDisruptionBudget for the resident transform worker. minAvailable:0 (default) — a gap in the
+medallion refresh is TOLERABLE (batch worker; watermark+MERGE stages converge on the next tick), so
+node drains / Karpenter consolidation / Spot reclaims may evict the single replica WITHOUT being
+blocked. The replacement resumes the loop from the watermark. NOTE: minAvailable:1 on a single-replica
+Deployment would permanently BLOCK every voluntary disruption — never set it here while replicaCount=1.
+*/ -}}
+{{- if and .Values.enabled .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "transform-worker.fullname" . }}
+  labels:
+    {{- include "transform-worker.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "transform-worker.selectorLabels" . | nindent 6 }}
+{{- end }}

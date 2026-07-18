@@ -169,6 +169,9 @@ work needed to actually pay off in freshness.
 **Rollout:** merge → promote → flip `singleProcess=true` → validate one run produces identical
 marts (money parity) in a fraction of the time → the medallion is realtime.
 
+> **Update (ADR-0016 P2):** `run_all.py` is now the SOLE transform runner; the `sparkV4.singleProcess`
+> dual-path flag and the 90-spawn bash loop have been RETIRED (validated → default-on → flag removed).
+
 ### Phase 2 — request-time detector serving (DONE; flag-gated, default OFF)
 Even a 5-min Silver cadence has a floor. `GET /api/v1/recommendations` now computes the
 detector set **at request time** from the freshest Silver/Gold (Trino) when the per-brand

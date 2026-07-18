@@ -383,12 +383,9 @@ services:
           # requests park as status='dead' rows. NO stream-worker Kafka consumers remain.
           mk "$$PFX.collector.event.v1"            12 604800000
           mk "$$PFX.collector.order.backfill.v1"   12 2592000000
-          # 9 connector raw lanes (Kafka Connect Iceberg sink raw lanes — ADR-0010)
-          for LANE in shopify.orders woocommerce.orders meta.spend google.spend \
-                      ga4.rows shiprocket.shipments gokwik.events shopflo.checkout \
-                      razorpay.settlement; do
-            mk "$$PFX.$$LANE.raw.v1" 12 604800000
-          done
+          # ADR-0016 (2026-07-18): the 9 connector <lane>.raw.v1 lanes + their <lane>_raw_connect
+          # Kafka Connect sinks are RETIRED — connectors emit canonical events to the collector
+          # lane, so the raw lanes never received data (their shadow normalize jobs were dead-ends).
           # Intelligence control/event topics.
           # ADR-0015 WS3 (identity in Silver): the identity.{minted,linked,merged,unmerged,
           # suppressed,review_queued}.v1 + intelligence.cache.invalidate.v1 +
@@ -660,9 +657,10 @@ services:
   # ────────────────────────────────────────────────────────────────────────────
   # NOTE: the container-side Bronze sinks (spark-bronze-sink + spark-bronze-raw-sink) were REMOVED
   # here (blueprint §4.3 / Deliverable B), and the host-run Spark Structured Streaming replacement
-  # was ALSO removed (ADR-0010, 2026-07-05). Bronze landing — collector.event.v1 + the nine
-  # connector *.raw.v1 lanes → Iceberg Bronze — is the `kafka-connect` service above; it is the
-  # SOLE landing writer. The now-orphaned `brain-spark-ivy` / `brain-spark-checkpoint` named
+  # was ALSO removed (ADR-0010, 2026-07-05). Bronze landing — collector.event.v1 → Iceberg Bronze —
+  # is the `kafka-connect` service above; it is the SOLE landing writer. (ADR-0016, 2026-07-18: the
+  # nine connector *.raw.v1 lanes + their <lane>_raw_connect sinks were retired — never received
+  # data.) The now-orphaned `brain-spark-ivy` / `brain-spark-checkpoint` named
   # volumes were dropped from the `volumes:` block below.
   # ────────────────────────────────────────────────────────────────────────────
 

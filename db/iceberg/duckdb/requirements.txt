@@ -12,3 +12,8 @@ pyarrow>=17            # the arrow seam of the COW rewrites (DuckDB read → pyi
 neo4j>=5.0             # identity-tier reads (silver_customer_identity / _identity_map / _identity_alias /
                        # _session_identity) — the bolt driver. Its ABSENCE broke every v4-silver run at
                        # silver_customer_identity (ModuleNotFoundError, prod 2026-07-14).
+psycopg[binary]>=3.1   # ADR-0016 P2.2 resident warm worker ONLY (run_all.py resident): the single-writer
+                       # leader lock holds a dedicated libpq SESSION connection for pg_try_advisory_lock
+                       # (a SESSION advisory lock must live on a persistent conn — the DuckDB postgres
+                       # extension's pooled conns can't guarantee that). The single-shot silver/gold paths
+                       # never import it. [binary] ships the libpq wheel so no system libpq is needed.

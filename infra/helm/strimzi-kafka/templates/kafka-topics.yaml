@@ -36,24 +36,9 @@ spec:
     retention.ms: "{{ include "strimziKafka.retentionMs" (dict "tier" .retention "root" $root) }}"
 {{- end }}
 
-{{- /* 9 connector raw lanes -> <lane>.raw.v1, standard 7-day retention. */ -}}
-{{- range $t.rawLanes }}
-{{- $name := printf "%s.%s.raw.v1" $root.Values.topics.prefix . }}
----
-apiVersion: kafka.strimzi.io/v1beta2
-kind: KafkaTopic
-metadata:
-  name: {{ include "strimziKafka.topicResourceName" $name }}
-  labels:
-    strimzi.io/cluster: {{ $cluster }}
-    {{- include "strimziKafka.labels" $root | nindent 4 }}
-spec:
-  topicName: {{ $name | quote }}
-  partitions: {{ $partitions }}
-  replicas: {{ $t.replicas }}
-  config:
-    retention.ms: "{{ $t.retention.standardMs | int64 }}"
-{{- end }}
+{{- /* ADR-0016 (2026-07-18): the 9 connector <lane>.raw.v1 lanes are RETIRED — connectors emit
+      canonical events to the collector lane, so the raw lanes never received data and their
+      Kafka Connect <lane>_raw_connect sinks + shadow normalize jobs are gone. */ -}}
 
 {{- /* Identity + intelligence control/event topics, standard 7-day retention. */ -}}
 {{- range $t.control }}

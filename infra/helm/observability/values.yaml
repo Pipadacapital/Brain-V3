@@ -18,6 +18,11 @@ freshnessExporter:
   servingUrl: "http://duckdb-serving:8091"
   icebergCatalog: iceberg
   goldSchema: brain_gold
+  # ADR-0016 end-to-end (medallion) freshness probe: the Silver spine serving view whose
+  # ingested_at is the newest data visible in serving. Emits medallion_freshness_seconds
+  # (now - max(ingested_at)) → alerted > 300s by MedallionFreshnessStale in freshness.rules.yml.
+  servingSchema: brain_serving
+  medallionView: mv_silver_collector_event
   listenPort: 9095
   refreshSeconds: 60
   serviceMonitor:

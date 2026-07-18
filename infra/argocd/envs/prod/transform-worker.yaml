@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: transform-worker-prod
+  namespace: argocd
+  annotations:
+    # Selective deploy: only syncs when transform-worker manifests change
+    argocd.argoproj.io/manifest-generate-paths: /infra/helm/transform-worker
+  labels:
+    project: brain
+    environment: prod
+    service: transform-worker
+spec:
+  project: brain-prod
+  source:
+    repoURL: https://github.com/Pipadacapital/Brain-V3.git
+    targetRevision: master
+    path: infra/helm/transform-worker
+    helm:
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: transform-worker
+  # ADR-0016 P2.2 cutover gate: values-prod.yaml `enabled: false` means this app renders EMPTY today —
+  # the interim v4-medallion CronWorkflow stays the sole medallion writer until the resident worker
+  # passes the staging validation gate. Flipping `enabled: true` (in LOCKSTEP with the cronworkflows
+  # transformWorker.enabled seam that suppresses the cron) starts the resident Deployment. Automated
+  # sync (mirrors stream-worker-prod): merge→build→prod-promote lands the digest and ArgoCD applies it;
+  # selfHeal reverts drift, prune removes the resources the instant `enabled` is flipped back to false
+  # (the rollback path — the single-writer worker must be able to fully disappear on a revert).
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

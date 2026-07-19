@@ -28,7 +28,12 @@ sparkV4:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
     digest: "sha256:65f1d0026e0d926e08bea369d02c557cf2132271451b318158e548054dde490e"
-  # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance pods → the streaming pool (batch pool removed).
+  # CORE↔IDENTITY re-split (2026-07-19): prod inherits `identity.enabled: true` + `identitySchedule:
+  # */5` + the 1h SILVER_IDENTITY_MAX_SLICE_MS from base values.yaml. The v4-identity cron reuses this
+  # sparkV4 image (map-export, duckdb) + streamWorkerImage (identity-resolve) + the nodeSelector /
+  # podAnnotations / resources / activeDeadlineSeconds declared here, so no prod-specific block is
+  # needed. Slow identity catch-up now runs on its OWN Forbid schedule → can't block the core medallion.
+  # AUD-PROD-006: v4-silver / v4-gold / v4-maintenance / v4-identity pods → the streaming pool (batch pool removed).
   # Every Silver/Gold MERGE is idempotent — a consolidation bounce is retry-safe.
   nodeSelector:
     brain.platform/pool: streaming

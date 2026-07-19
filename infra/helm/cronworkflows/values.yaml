@@ -184,7 +184,22 @@ sparkV4:
   # run reads only the [watermark, now) window, not the full ~75-min Bronze re-scan). concurrencyPolicy:
   # Forbid self-throttles: a long run skips the next tick (never overlaps a second medallion writer), so
   # freshness degrades gracefully to whatever the whole chain can sustain warm.
-  medallionSchedule: "*/5 * * * *"   # every 5 min — the WHOLE chain (keystone → silver ×2 → identity → map → gold → cache-bust)
+  medallionSchedule: "*/5 * * * *"   # every 5 min — the CORE chain (keystone → silver ×2 → gold → cache-bust)
+  # ── CORE↔IDENTITY re-split (2026-07-19 freshness incident; templates/v4-identity.yaml) ──────────
+  # The SLOW identity(resolve) → map-export pair used to be two steps INSIDE the v4-medallion chain
+  # (ADR-0016 D2). A data-heavy brand's identity watermark ran ~6 DAYS behind (each 6h slice ~2h), so
+  # with Forbid the whole */5 medallion tick was skipped underneath → core revenue/orders/spend barely
+  # advanced → fresh Bronze never reached serving. Identity is now its OWN v4-identity CronWorkflow on
+  # its OWN */5 Forbid schedule: a slow identity run skips its OWN tick but NEVER blocks core freshness.
+  # gold-marts reads the LAST-written silver_identity_map (persistent Iceberg — slightly stale, converges).
+  # Gated on `identity.enabled` so it can be toggled independently; suppressed with v4-medallion when the
+  # resident transformWorker is on (that worker loops identity in-process).
+  identity:
+    enabled: true
+  # Same */5 cadence as the core medallion, but on an INDEPENDENT Forbid schedule (the two crons never
+  # block each other). The identity lane's per-run forward slice is capped to 1h (SILVER_IDENTITY_MAX_SLICE_MS
+  # in the template) so each slice finishes fast and the backlog drains over more, shorter ticks.
+  identitySchedule: "*/5 * * * *"    # every 5 min — the identity lane (identity-resolve → map-export)
   # activeDeadlineSeconds stays HIGH (9000s / 2.5h) as a generous ceiling. With WATERMARK_MAX_SLICE_SECONDS
   # set (below), the first run no longer does a single unbounded full-scan bootstrap — it walks the backlog
   # in bounded [oldest, oldest+slice] chunks over successive ticks, each seeding the watermark forward — so

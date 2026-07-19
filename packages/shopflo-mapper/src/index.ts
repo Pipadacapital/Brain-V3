@@ -397,10 +397,24 @@ function resolveCurrency(rec: Record<string, unknown>): string {
   return (firstField(rec, CURRENCY_KEYS) ?? 'INR').toUpperCase();
 }
 
+/**
+ * Resolve the payload's own timestamp — FAIL CLOSED when absent/unparseable.
+ *
+ * occurred_at feeds the DETERMINISTIC event_id seed (order/payment/checkout-funnel), so a
+ * wall-clock fallback here would mint a DIFFERENT event_id on every at-least-once webhook
+ * redelivery → a permanent TRUE duplicate in Bronze/Silver. A payload carrying none of the
+ * OCCURRED_KEYS is therefore unmappable: throw — the same fail-closed posture the frozen
+ * abandoned lane already takes (ShopfloWebhookStrategy rejects a missing occurred_at with a
+ * clear reason instead of minting time; the pipeline's payloadMap catch turns this into a
+ * logged 400 skip, never a 500 retry loop).
+ */
 function resolveOccurredAt(rec: Record<string, unknown>): string {
   const raw = firstField(rec, OCCURRED_KEYS);
   if (raw && !Number.isNaN(Date.parse(raw))) return new Date(raw).toISOString();
-  return new Date().toISOString();
+  throw new Error(
+    `[shopflo-mapper] record missing a usable timestamp (${OCCURRED_KEYS.join('/')}) — ` +
+    'refusing to mint wall-clock occurred_at (the deterministic event_id would change on redelivery)',
+  );
 }
 
 /** Normalize a Shopflo payment method to the closed set; default 'prepaid' (Shopflo is online-checkout-first). */
@@ -877,6 +891,14 @@ export function mapShopfloPayment(
   const paymentIdHash = rawPaymentId ? hashPaymentId(rawPaymentId, saltHex) : null;
   const amountMinor = firstMoneyMinor(record, AMOUNT_KEYS);
 
+  // Null-payment-id discriminator (audit fix): with a bare 'na' key, two DISTINCT payment signals
+  // for the same order at the same occurred_at (e.g. an 'initiated' and a 'failed' attempt — both
+  // payment.attempted.v1) collapsed to ONE event_id → under-count. Fold the normalized
+  // payment_status (a stable payload-derived field — never random/wall-clock) into the seed for
+  // the null case. Two payloads identical in status+time with no payment id ARE the same logical
+  // event → same id (collapsing stays correct). A present payment id keeps the legacy seed.
+  const paymentKey = rawPaymentId ?? `na:${paymentStatus}`;
+
   const properties: ShopfloPaymentProperties = {
     source: 'shopflo',
     data_source: dataSource,
@@ -890,7 +912,7 @@ export function mapShopfloPayment(
 
   return {
     event_name: eventName,
-    event_id: uuidV5FromShopfloPayment(brandId, orderId, rawPaymentId ?? 'na', occurredAtMs, eventName),
+    event_id: uuidV5FromShopfloPayment(brandId, orderId, paymentKey, occurredAtMs, eventName),
     occurred_at: occurredAt,
     properties,
   };

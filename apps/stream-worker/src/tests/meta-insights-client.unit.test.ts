@@ -354,6 +354,20 @@ function windowAwareFetch(maxDays: number, seenUrls?: string[]): FetchStub {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// CURSOR-STALL SAFETY CONTRACT (documents the meta-spend-repull backfillConnector invariant):
+// the backfill chunk loop (meta-spend-repull/run.ts backfillConnector) HOLDS its chunk cursor
+// whenever a (breakdown,level) pass THROWS out of fetchInsightsForWindow for a transient reason,
+// so the next run re-attempts the SAME chunk (audit LOSS fix — a skipped >28-day-old window is
+// never re-fetched by any other lane). What prevents that hold from becoming an infinite re-run
+// loop is the SPLITTER'S NO-THROW CONTRACT proven by the two describe blocks below: UNSERVABLE
+// windows — Graph code 2637 "too much data" and raw HTTP 5xx on too-large windows — are handled
+// INSIDE fetchInsightsForWindow by recursive window-halving down to the 1-day floor, where a
+// persistent 5xx is SKIPPED (returns [], a NORMAL return, never a throw). A pass therefore only
+// throws on genuinely transient conditions (async-report timeout, network failure, retryable 2637
+// at the floor, unknown errors) which eventually clear. If the skip-at-floor behaviour proven
+// below is ever changed to rethrow, the backfill chunk cursor CAN wedge — keep both in sync.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 describe('MetaInsightsClient.fetchInsightsForWindow — adaptive halving on code 2637', () => {
   it('halves a too-large window and returns rows from every in-limit sub-window', async () => {
     const seenUrls: string[] = [];
@@ -455,6 +469,95 @@ describe('MetaInsightsClient.fetchInsightsForWindow — adaptive halving on raw 
     const client = makeClient(windowAware5xxFetch(0), { asyncMode: false, maxRetries: 0 });
 
     const rows = await client.fetchInsightsForWindow('ad', '2026-06-01', '2026-06-02', 'demographic');
+
+    expect(rows).toEqual([]);
+  });
+});
+
+// ── 4e. fetchInsightsForWindow driving the ASYNC ad_report_run path + splitting ──
+//
+// Locks down the meta-backfill infinite-loop fix (PART A): the backfill lane routes through
+// fetchInsightsForWindow with { asyncMode: true } so it uses the async ad_report_run path (POST → poll
+// → GET result). The 2637/5xx window-halving + 1-day-floor skip must apply on that async path too, and
+// the recursive split must thread asyncMode down (each sub-window is fetched async as well).
+
+/**
+ * A window-aware ASYNC fetch stub. Parses [since, until] from the POST /insights `time_range` param and
+ * mints a per-window report_run_id; the POST 5xx's (raw HTTP 500 — the ad-level-breakdown "too much
+ * data" signal) for any window spanning MORE than `maxDays`. Otherwise: POST → { report_run_id }, GET
+ * /{id} → 100% complete, GET /{id}/insights → one window-tagged row. Records every POST window for
+ * assertions on the split shape.
+ */
+function windowAwareAsyncFetch(maxDays: number, seenWindows?: string[]): FetchStub {
+  const idToWindow = new Map<string, { since: string; until: string }>();
+  let seq = 0;
+  return async (input: unknown, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const method = (init?.method ?? (typeof input === 'string' ? 'GET' : (input as Request).method)) || 'GET';
+    // POST /insights → create the async job (or 5xx if the window is too wide).
+    if (method === 'POST' && url.includes('/insights')) {
+      const m = /time_range=([^&]+)/.exec(url);
+      const { since, until } = JSON.parse(decodeURIComponent(m![1]!)) as { since: string; until: string };
+      seenWindows?.push(`${since}..${until}`);
+      if (daySpanInclusive(since, until) > maxDays) {
+        return makeResponse(500, { error: { message: 'server could not build this report' } });
+      }
+      const id = `RUN-${++seq}`;
+      idToWindow.set(id, { since, until });
+      return makeResponse(200, { report_run_id: id });
+    }
+    // GET /{id}/insights → the completed report's result page.
+    const resultsMatch = /\/(RUN-\d+)\/insights/.exec(url);
+    if (resultsMatch) {
+      const win = idToWindow.get(resultsMatch[1]!)!;
+      return makeResponse(200, {
+        data: [{ campaign_id: `c_${win.since}_${win.until}`, spend: '1.00', date_start: win.since }],
+        paging: {},
+      });
+    }
+    // GET /{id} → poll status (complete immediately).
+    if (/\/RUN-\d+(\?|$)/.test(url)) {
+      return makeResponse(200, { async_percent_completion: 100, async_status: 'Job Complete' });
+    }
+    return makeResponse(200, {});
+  };
+}
+
+describe('MetaInsightsClient.fetchInsightsForWindow — asyncMode drives the async report path', () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: false }));
+  afterEach(() => vi.useRealTimers());
+
+  it('splits a too-large window on the async path and returns rows from every in-limit sub-window', async () => {
+    const seenWindows: string[] = [];
+    // Account tolerates ≤15-day windows; a 30-day async POST 500s and must be split — each sub-window is
+    // also fetched via the async path (asyncMode threaded down the recursion).
+    const client = makeClient(windowAwareAsyncFetch(15, seenWindows), { asyncMode: false, maxRetries: 0 });
+
+    const pending = client.fetchInsightsForWindow('ad', '2026-06-01', '2026-06-30', 'demographic', {
+      asyncMode: true,
+    });
+    await vi.runAllTimersAsync();
+    const rows = await pending;
+
+    // 30d → 500 → split into [06-01..06-15] + [06-16..06-30], each 15d and in-limit → one row each.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.campaign_id).sort()).toEqual(
+      ['c_2026-06-01_2026-06-15', 'c_2026-06-16_2026-06-30'],
+    );
+    // The 30d POST 500s; the two 15d POSTs succeed → the async path was exercised on all three windows.
+    expect(seenWindows).toEqual(['2026-06-01..2026-06-30', '2026-06-01..2026-06-15', '2026-06-16..2026-06-30']);
+  });
+
+  it('SKIPS (returns []) when a 5xx persists to the 1-day floor on the async path', async () => {
+    // Every window — even one day — async-POST 500s: the walk splits to a day, then returns [] so one
+    // unservable window never fails the pass (identical floor behaviour to the sync path).
+    const client = makeClient(windowAwareAsyncFetch(0), { asyncMode: false, maxRetries: 0 });
+
+    const pending = client.fetchInsightsForWindow('ad', '2026-06-01', '2026-06-02', 'demographic', {
+      asyncMode: true,
+    });
+    await vi.runAllTimersAsync();
+    const rows = await pending;
 
     expect(rows).toEqual([]);
   });

@@ -112,10 +112,22 @@ function resolveCurrency(rec: Record<string, unknown>): string {
   return (firstField(rec, CURRENCY_KEYS) ?? DEFAULT_CURRENCY).toUpperCase();
 }
 
+/**
+ * Resolve the payload's own timestamp — FAIL CLOSED when absent/unparseable.
+ *
+ * occurred_at feeds the DETERMINISTIC event_id seed (order/checkout/payment), so a wall-clock
+ * fallback here would mint a DIFFERENT event_id on every at-least-once webhook redelivery →
+ * a permanent TRUE duplicate in Bronze/Silver. A payload carrying none of the OCCURRED_KEYS is
+ * therefore unmappable: throw (same contract as a missing order_id/checkout_id — the webhook
+ * pipeline's payloadMap catch turns this into a logged 400 skip, never a 500 retry loop).
+ */
 function resolveOccurredAt(rec: Record<string, unknown>): string {
   const raw = firstField(rec, OCCURRED_KEYS);
   if (raw && !Number.isNaN(Date.parse(raw))) return new Date(raw).toISOString();
-  return new Date().toISOString();
+  throw new Error(
+    `[gokwik-mapper] record missing a usable timestamp (${OCCURRED_KEYS.join('/')}) — ` +
+    'refusing to mint wall-clock occurred_at (the deterministic event_id would change on redelivery)',
+  );
 }
 
 /** Normalize a payment method to the closed set; default 'prepaid' (GoKwik orders are mostly online). */
@@ -640,6 +652,14 @@ export function mapGokwikPayment(
   const paymentIdHash = rawPaymentId ? hashPaymentId(rawPaymentId, saltHex) : null;
   const amountMinor = tryDecimalToMinor(firstField(record, AMOUNT_KEYS));
 
+  // Null-payment-id discriminator (audit fix): with a bare 'na' key, two DISTINCT payment signals
+  // for the same order at the same occurred_at (e.g. an 'initiated' and a 'failed' attempt — both
+  // payment.attempted.v1) collapsed to ONE event_id → under-count. Fold the normalized
+  // payment_status (a stable payload-derived field — never random/wall-clock) into the seed for
+  // the null case. Two payloads identical in status+time with no payment id ARE the same logical
+  // event → same id (collapsing stays correct). A present payment id keeps the legacy seed.
+  const paymentKey = rawPaymentId ?? `na:${paymentStatus}`;
+
   const properties: GokwikPaymentProperties = {
     source: 'gokwik',
     data_source: dataSource,
@@ -653,7 +673,7 @@ export function mapGokwikPayment(
 
   return {
     event_name: eventName,
-    event_id: uuidV5FromPayment(brandId, orderId, rawPaymentId ?? 'na', occurredAtMs, eventName),
+    event_id: uuidV5FromPayment(brandId, orderId, paymentKey, occurredAtMs, eventName),
     occurred_at: occurredAt,
     properties,
   };
@@ -674,6 +694,19 @@ export function mapGokwikRtoPredict(
   const orderId = String(record.order_id ?? '').trim();
   if (!orderId) {
     throw new Error('[gokwik-mapper] RTO-Predict record missing order_id');
+  }
+
+  // Fail-closed guard (same class as resolveOccurredAt): the strategy seeds the dedup event_id with
+  // `requestId ?? occurred_at`. With a request_id the seed never touches occurred_at (idempotent on
+  // redelivery regardless), so a missing occurred_at may fall back to receipt time for the envelope
+  // only. With NEITHER request_id NOR occurred_at, the wall-clock would enter the id seed — a
+  // redelivered webhook would mint a DIFFERENT event_id → a permanent Bronze/Silver duplicate. Refuse.
+  const requestIdRaw = record.request_id != null ? String(record.request_id).trim() : '';
+  if (!requestIdRaw && record.occurred_at == null) {
+    throw new Error(
+      '[gokwik-mapper] RTO-Predict record missing BOTH request_id and occurred_at — refusing to mint '
+      + 'a wall-clock event_id seed (redelivery would duplicate)',
+    );
   }
 
   const occurredAt = new Date(record.occurred_at ?? new Date().toISOString()).toISOString();

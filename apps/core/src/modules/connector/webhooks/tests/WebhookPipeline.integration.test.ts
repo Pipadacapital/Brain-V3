@@ -41,6 +41,10 @@ class InMemoryRedis {
     return 'OK';
   }
 
+  async del(key: string): Promise<number> {
+    return this.store.delete(key) ? 1 : 0;
+  }
+
   pipeline() {
     const ops: Array<() => unknown> = [];
     const results: Array<[null, unknown]> = [];
@@ -382,6 +386,54 @@ describe('WebhookPipeline — integration tests', () => {
 
     expect(response.statusCode).toBe(500);
     expect(counters['webhook_produce_failed_total']).toBe(1);
+    await app.close();
+  });
+
+  it('6b. Kafka produce failure RELEASES the dedup key — the provider retry produces (not 409)', async () => {
+    // LOSS fix: isDuplicate() marks the key seen (SET NX EX) BEFORE the produce. Without the
+    // release-on-failure, the provider's retry of the SAME delivery would 409 against a key for an
+    // event that was never produced — permanently lost. This test: first delivery fails the produce
+    // (500 + key released) → identical redelivery succeeds (200, one message on the live lane).
+    const redis = new InMemoryRedis();
+    const strategy = new TestWebhookStrategy();
+    // Fixed dedup key so both deliveries collide on the same key.
+    const originalPayloadMap = strategy.payloadMap.bind(strategy);
+    strategy.payloadMap = async (ctx: WebhookStrategyContext): Promise<PayloadMapResult> => {
+      const result = await originalPayloadMap(ctx);
+      return { ...result, dedupKey: 'dedup-key-006b' };
+    };
+
+    const messages: string[] = [];
+    let failNext = true;
+    const producer = {
+      send: vi.fn(async (opts: { messages: Array<{ value?: Buffer | null }> }) => {
+        if (failNext) { failNext = false; throw new Error('Kafka unavailable'); }
+        for (const msg of opts.messages) messages.push(msg.value ? msg.value.toString() : '');
+        return [];
+      }),
+      connect: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Producer;
+
+    const app = await buildTestApp(strategy, producer, redis);
+    const body = JSON.stringify({ event: 'test.event', id: 'evt006b' });
+    const sig = signBody(body, TEST_SECRET);
+    const headers = { 'content-type': 'application/json', 'x-test-signature': sig };
+
+    // Delivery 1: produce fails → 500 (provider will retry) + dedup key released.
+    const first = await app.inject({ method: 'POST', url: '/api/v1/webhooks/test', headers, body });
+    expect(first.statusCode).toBe(500);
+    expect(messages).toHaveLength(0);
+
+    // Delivery 2 (the provider retry, identical payload): must PRODUCE, not 409.
+    const second = await app.inject({ method: 'POST', url: '/api/v1/webhooks/test', headers, body });
+    expect(second.statusCode).toBe(200);
+    expect(messages).toHaveLength(1);
+
+    // Delivery 3 (a genuine duplicate of the SUCCESSFUL produce): 409 semantics preserved.
+    const third = await app.inject({ method: 'POST', url: '/api/v1/webhooks/test', headers, body });
+    expect(third.statusCode).toBe(409);
+    expect(messages).toHaveLength(1);
     await app.close();
   });
 

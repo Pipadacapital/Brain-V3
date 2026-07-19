@@ -15,7 +15,6 @@
     "test:e2e": "vitest run --no-file-parallelism src/tests/bronze.e2e.test.ts src/tests/ingest-scheduler.e2e.test.ts"
   },
   "dependencies": {
-    "@opentelemetry/api": "^1.9.0",
     "@brain/ad-spend-mapper": "workspace:*",
     "@brain/ga4-mapper": "workspace:*",
     "@brain/attribution-writer": "workspace:*",

@@ -25,8 +25,8 @@ export interface GaugeSample {
 
 const METRIC_PREFIX = 'brain_';
 
-/** Render gauge samples in Prometheus text exposition format (brain_ prefix, TYPE gauge). */
-export function renderGaugeText(samples: GaugeSample[]): string {
+/** Render gauge samples in Prometheus text exposition format (brain_ prefix, TYPE gauge). Module-local. */
+function renderGaugeText(samples: GaugeSample[]): string {
   const lines: string[] = [];
   for (const { name, value } of samples) {
     if (!Number.isFinite(value)) continue;

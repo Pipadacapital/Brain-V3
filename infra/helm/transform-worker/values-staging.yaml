@@ -1,28 +1,22 @@
 environment: staging
-
 # ADR-0016 D3 — the resident worker is VALIDATED in staging first (this is where the 24h soak +
 # warm-tick p95 < 60s + parity-vs-cron gate runs). ON in staging; the cronworkflows staging values
 # must set transformWorker.enabled=true IN LOCKSTEP so the v4-medallion cron is suppressed and the
 # two never both write. Rollback = flip both back to false.
 enabled: true
-
 image:
   # Same brain-duckdb image + digest the cronworkflows staging medallion steps run.
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
   tag: ""
-  digest: "sha256:1d3c5b2fb0df6ed4d21deeb17d72d72c4f13c9e7f2a99076cb505612a6ba1333"
-
+  digest: "sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8"
 # Same catalog-creds secret the cronworkflows staging medallion steps envFrom.
 envSecretName: core-env
-
 serviceAccount:
   annotations:
     # The staging brain-jobs IRSA role (same one the cronworkflows staging medallion steps assume).
     eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-jobs
-
 nodeSelector:
   karpenter.sh/nodepool: streaming
-
 resources:
   requests:
     cpu: "1"
@@ -30,7 +24,6 @@ resources:
   limits:
     cpu: "2"
     memory: 4Gi
-
 worker:
   tickMs: 45000
   healthPort: 8092

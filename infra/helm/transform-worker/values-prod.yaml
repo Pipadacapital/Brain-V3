@@ -1,5 +1,4 @@
 environment: prod
-
 # ADR-0016 D3 MASTER CUTOVER GATE — OFF in prod until the resident worker passes the staging
 # validation gate (24h soak, warm-tick p95 < 60s, parity vs the v4-medallion cron). While false the
 # chart renders NOTHING and the interim v4-medallion CronWorkflow (cronworkflows chart, still
@@ -14,7 +13,6 @@ environment: prod
 # (TRANSFORM_CORE_ONLY=1, worker.coreOnly below) so it never double-writes those tables. Resident lock
 # 910_005 (core) vs v4-identity lock 910_004 (identity) — two tables, two locks, single-writer each.
 enabled: true
-
 image:
   # Same brain-duckdb-prod image the cronworkflows medallion steps run (sparkV4.image in
   # cronworkflows/values-prod). MUST be an image whose db/iceberg/duckdb/run_all.py carries the
@@ -24,22 +22,18 @@ image:
   # sha256:bc865113… pre-resident pin CrashLooped prod for 3h, 2026-07-19).
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
   tag: ""
-  digest: "sha256:1d3c5b2fb0df6ed4d21deeb17d72d72c4f13c9e7f2a99076cb505612a6ba1333"
-
+  digest: "sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8"
 # The SAME catalog-creds secret the cronworkflows medallion steps envFrom.
 envSecretName: core-env
-
 serviceAccount:
   annotations:
     # The SAME brain-prod-jobs IRSA role the cronworkflows medallion steps assume (S3 warehouse +
     # REST catalog + Secrets Manager). No new role — identical medallion read/write permissions.
     eks.amazonaws.com/role-arn: arn:aws:iam::380254378136:role/brain-prod-jobs
-
 # Ride the untainted `streaming` Spot pool (same pool as duckdb-serving + the cron transform pods).
 # A Spot reclaim just restarts the resident loop on a new node; the watermark makes it converge-safe.
 nodeSelector:
   karpenter.sh/nodepool: streaming
-
 # MATCH the cronworkflows sparkV4.resources (values-prod: req 2CPU/6Gi, lim 3CPU/8Gi) — the resident runs
 # the IDENTICAL DuckDB silver/gold jobs on the IDENTICAL image, and it holds the catalog WARM across ticks
 # with the same WATERMARK_MAX_SLICE_SECONDS=3600 slice folds. A lower ceiling than the cron's would OOM
@@ -52,7 +46,6 @@ resources:
   limits:
     cpu: "3"
     memory: 8Gi
-
 # Resident-worker knobs — prod pins the ADR-0016 defaults explicitly so they don't drift from the base
 # chart / run_all.py / the cronworkflows transformWorker documentation block.
 worker:
@@ -61,7 +54,6 @@ worker:
   lockKey: 910005
   # CORE-ONLY: the resident is the CORE writer only; the v4-identity cron owns the identity tables.
   coreOnly: true
-
 # Incremental-read / OOM-safety env — mirrors the cronworkflows sparkV4.env (values.yaml). The resident
 # chart does NOT inherit that env, so pin it here: SILVER_INCREMENTAL=1 (watermark-windowed reads, prod-on)
 # + WATERMARK_MAX_SLICE_SECONDS=3600 (the OOM-safe 1h forward-slice cap — a resident tick with cap=0 does

@@ -6,7 +6,7 @@ image:
   # PLACEHOLDER — the first master build of brain-duckdb-serving-prod (deploy.yml
   # build-data-images) promotes the real digest here; until then the template fails-closed on the
   # unpullable all-zeros digest (same posture as the cronworkflows brain-duckdb-prod bootstrap).
-  digest: "sha256:fad440b465d4a6111cad8fd62ee94a39b67f15a4ee5f53aa99ee9eec1ed52bbf"
+  digest: "sha256:5d38897dcfd839890ca4a7ba7ac6eba1124d373b70871a0c250001940b8b5f41"
 
 # Replicas ride the untainted `streaming` Spot pool (infra/helm/karpenter) — no dedicated pool:
 # the `trino` Karpenter pool is retired with the trino chart (ADR-0014), and at ≥2 replicas a Spot

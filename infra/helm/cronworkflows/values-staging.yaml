@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:fae61d89738de6eb3edf95f643ab5497b9292770d3b59f21cc232d2bfe5e78a8"
+  digest: "sha256:74cf9f918d4e0739345210575a0286fbf42929277e2a41f9d0ea936a4fb3c76c"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:48d2e26090fe52669341348b58758522891dade644471a55eedb74ac831996a7"
+  digest: "sha256:58e888bb5bf97abe491291aaecb6a98e5875b201c2688c1fd9171a6f4f824394"
 # duckdb image (db/iceberg/duckdb/Dockerfile) — runs the bronze/medallion maintenance + erasure (via the
 # PyIceberg maintenance client it carries) AND the V4 Silver/Gold transform crons (.sparkV4.image — CI digest-pins both,
 # one image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover replaces

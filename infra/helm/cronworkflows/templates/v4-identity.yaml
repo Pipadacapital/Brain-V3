@@ -1,0 +1,201 @@
+{{- /*
+Brain V4 identity lane — the v4-identity CronWorkflow (CORE↔IDENTITY re-split, 2026-07-19).
+
+WAS a pair of steps (identity-resolve → map-export) INSIDE the chained v4-medallion CronWorkflow
+(templates/v4-transform.yaml, ADR-0016 D2). That chaining meant the SLOW identity-resolve step
+(stream-worker Neo4j resolution — a data-heavy brand's identity watermark ran ~6 DAYS behind, each
+6h slice ~2h) blocked the WHOLE medallion run: with `concurrencyPolicy: Forbid`, every 5-min tick was
+skipped underneath, so keystone/Silver/Gold (revenue/orders/spend) barely advanced and fresh Bronze
+never reached serving.
+
+This template LIFTS identity-resolve → map-export into their OWN CronWorkflow on their OWN every-5-min
+Forbid schedule. A slow identity run now skips its OWN next tick but can NEVER block the core v4-medallion
+lane. Core Gold does NOT need THIS run's identity — its customer marts read the LAST-written
+silver_identity_map (a persistent Iceberg bi-temporal table, slightly stale, converges). This
+DELIBERATELY re-splits what ADR-0016 D2 collapsed into one run; the trade-off is intentional (core
+serving latency wins over one-shot identity co-scheduling). See the header of v4-transform.yaml.
+
+The two template bodies below are the EXACT identity-resolve + map-export bodies that were in
+v4-transform.yaml (image, command, env, envFrom, volumes, resources) — moved, not rewritten. The one
+material change is FIX 1: the identity-resolve step now pins SILVER_IDENTITY_MAX_SLICE_MS=3600000 (1h,
+down from the code default 6h) so each per-run forward slice reads faster and the 6-day backlog drains
+over more, shorter ticks. SILVER_IDENTITY_MAX_CATCHUP_MS (7d) is left at its code default.
+
+No serving-cache-bust here: the existing cache-bust in v4-medallion is GOLD-specific (it evicts the
+brand serving cache after the Gold marts rewrite). A map-export refreshing silver_identity_map does
+not itself change any served mart until Gold re-reads it — the NEXT v4-medallion run's gold-marts +
+its own cache-bust cover that. So the identity lane needs no cache-bust of its own.
+
+Same suppression seam as v4-medallion: when the resident warm transform worker is on
+(`transformWorker.enabled`, ADR-0016 WS2) this whole cron is suppressed — the resident worker loops
+identity in-process (single-writer preserved across the cutover). Images MUST be digest-pinned (B3).
+*/ -}}
+{{- if and .Values.sparkV4.enabled .Values.sparkV4.identity.enabled (not .Values.transformWorker.enabled) }}
+{{- $img := .Values.sparkV4.image -}}
+{{- $ref := "" -}}
+{{- if $img.digest -}}
+  {{- $ref = printf "%s@%s" $img.repository $img.digest -}}
+{{- else if and $img.tag (ne $img.tag "latest") -}}
+  {{- $ref = printf "%s:%s" $img.repository $img.tag -}}
+{{- else -}}
+  {{- fail "sparkV4.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- /* Stream-worker image (B3 fail-closed, same rule): the identity-resolve step runs a node
+       entrypoint that ships in the stream-worker deployable. */ -}}
+{{- $swImg := .Values.streamWorkerImage -}}
+{{- $swRef := "" -}}
+{{- if $swImg.digest -}}
+  {{- $swRef = printf "%s@%s" $swImg.repository $swImg.digest -}}
+{{- else if and $swImg.tag (ne $swImg.tag "latest") -}}
+  {{- $swRef = printf "%s:%s" $swImg.repository $swImg.tag -}}
+{{- else -}}
+  {{- fail "streamWorkerImage.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
+{{- end -}}
+{{- $envFrom := .Values.envSecretName -}}
+{{- $sa := .Values.serviceAccount.name -}}
+{{- $tz := .Values.timezone -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-identity
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-identity
+spec:
+  schedule: {{ .Values.sparkV4.identitySchedule | quote }}
+  timezone: {{ $tz | quote }}
+  # ONE identity writer: a long run skips the identity lane's OWN next tick (never overlaps a second
+  # identity writer) — but it NEVER blocks the separate v4-medallion (core) cron. That decoupling is
+  # the whole point of this split.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}      # IRSA: S3 (Iceberg warehouse) + REST catalog access
+    entrypoint: run
+    {{- with .Values.sparkV4.podAnnotations }}
+    podMetadata:
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    # ── Per-run wall-time telemetry (own tier so the scale-tripwire rules don't fold identity's slow
+    #    catch-up into the CORE v4-medallion tier). The tripwire rules aggregate `max by (tier)` /
+    #    `sum by (tier)` (infra/observe/alerts/scale-tripwires.rules.yml) — a distinct tier=v4-identity
+    #    gives identity its own row so a long identity run never false-trips the core-freshness alerts.
+    metrics:
+      prometheus:
+        - name: brain_transform_workflow_duration_seconds
+          help: "Realtime wall-clock (s) of the running v4 identity (resolve → map-export) workflow"
+          labels:
+            - key: tier
+              value: v4-identity
+          gauge:
+            realtime: true
+            value: {{ `"{{workflow.duration}}"` }}
+        - name: brain_transform_workflow_failed_total
+          help: "v4 identity workflow runs that ended Failed (deadline/retries exhausted)"
+          labels:
+            - key: tier
+              value: v4-identity
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    # The identity lane can run long during a cold-start / backlog drain (6-day catch-up in 1h slices).
+    # Reuse the same generous ceiling as the core medallion; Forbid skips the identity lane's own ticks
+    # until each run completes. The tightened 1h SILVER_IDENTITY_MAX_SLICE_MS keeps each slice fast.
+    activeDeadlineSeconds: {{ .Values.sparkV4.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      # ── THE IDENTITY CHAIN ────────────────────────────────────────────────────────────────────────
+      # identity(resolve) → silver_identity_map (map-export). continueOn.failed on the resolve (dev
+      # parity: map-export still re-projects the graph, which may have advanced).
+      - name: run
+        steps:
+          - - name: identity-resolve
+              template: identity-resolve
+              continueOn:
+                failed: true           # dev parity: map-export still re-projects (graph may have advanced)
+          - - name: map-export
+              template: map-export
+
+      # ── IDENTITY RESOLVE (ADR-0015 WS3: identity resolves in Silver) — stream-worker image ─────────
+      # `pnpm exec tsx src/jobs/silver-identity/run.ts` (the exact node-job invocation idiom of
+      # .Values.jobs; the dev script's `pnpm --filter @brain/stream-worker run job:silver-identity` is
+      # the same entrypoint behind a package script whose --env-file only exists in the repo checkout).
+      # Reads new keystone rows over duckdb-serving, resolves via IdentityResolver → Neo4j (the identity
+      # SoR, ADR-0004), writes dirty-sets/consent/CAPI. Watermark-driven, leader-locked, per-brand
+      # idempotent; emits brain_silver_identity_runs_total per clean brand pass (absence-alerted in
+      # infra/observe/alerts/brain-slo.rules.yml — BrainSilverIdentityStageStalled). A failed brand
+      # HOLDS its watermark; the next run re-processes the same idempotent window (no loss).
+      - name: identity-resolve
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # watermark-held + idempotent — retry-safe
+          retryPolicy: OnError
+        metrics:
+          prometheus:
+            - name: brain_transform_workflow_failed_total
+              help: "v4 identity workflow runs that ended Failed (deadline/retries exhausted)"
+              labels:
+                - key: tier
+                  value: v4-identity
+              when: {{ `"{{status}} == Failed"` }}
+              counter:
+                value: "1"
+        container:
+          image: {{ $swRef | quote }}
+          imagePullPolicy: {{ $swImg.pullPolicy }}
+          command: ["pnpm", "exec", "tsx", "src/jobs/silver-identity/run.ts"]
+          env:
+            # FIX 1 (2026-07-19): tighten the per-run FORWARD-SLICE cap 6h → 1h so each identity slice
+            # reads faster (well under duckdb-serving's 25s watchdog even for a dense brand) and the
+            # ~6-day catch-up backlog drains over more, shorter */5 ticks. SILVER_IDENTITY_MAX_CATCHUP_MS
+            # (7d) is LEFT at its code default (packages/config/src/stream-worker.ts). This was a code
+            # default only (not previously set as cron env) — pinned explicitly here for auditability.
+            - { name: SILVER_IDENTITY_MAX_SLICE_MS, value: "3600000" }
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.defaults.resources | nindent 12 }}
+
+      # ── MAP-EXPORT — duckdb image ─────────────────────────────────────────────────────────────────
+      # silver/silver_identity_map.py re-projects the Neo4j graph (the identity SoR, ADR-0004) into the
+      # Iceberg bi-temporal map so gold (customer_360 &co) reads the freshest resolutions on its next
+      # run. IDENTITY_MAP_DIRTY_ONLY (default OFF, DE parity gate) scopes the re-export to only the
+      # brain_ids mutated this tick when validated — dirty-set-driven.
+      - name: map-export
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent MERGE — retry-safe
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
+              exec python /opt/brain/duckdb/silver/silver_identity_map.py
+          env:
+            {{- toYaml .Values.sparkV4.env | nindent 12 }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* + NEO4J_*
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+{{- end }}

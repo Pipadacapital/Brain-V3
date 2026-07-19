@@ -156,6 +156,40 @@ describe('CircuitBreaker — state machine', () => {
 
     expect(cb.getState()).toBe('OPEN');
   });
+
+  it('isFailure=false errors do NOT trip the breaker (re-thrown, counted as success)', async () => {
+    const cb = new CircuitBreaker({
+      name: 'filter-test',
+      failureThreshold: 2,
+      openMs: 10_000,
+      isFailure: (err) => !String(err).includes('EXPECTED_SIGNAL'),
+    });
+    for (let i = 0; i < 10; i++) {
+      await expect(
+        cb.fire(() => Promise.reject(new Error('EXPECTED_SIGNAL: reduce data'))),
+      ).rejects.toThrow(/EXPECTED_SIGNAL/);
+    }
+    expect(cb.getState()).toBe('CLOSED');
+    expect(cb.getFailures()).toBe(0);
+    // A genuine fault still counts → threshold 2 → OPEN.
+    await expect(cb.fire(() => Promise.reject(new Error('network down')))).rejects.toThrow();
+    await expect(cb.fire(() => Promise.reject(new Error('network down')))).rejects.toThrow();
+    expect(cb.getState()).toBe('OPEN');
+  });
+
+  it('a non-failure error closes a HALF_OPEN probe (service reachable)', async () => {
+    const cb = new CircuitBreaker({
+      name: 'halfopen-filter',
+      failureThreshold: 1,
+      openMs: 1,
+      isFailure: (err) => !String(err).includes('OK_SIGNAL'),
+    });
+    await expect(cb.fire(() => Promise.reject(new Error('fault')))).rejects.toThrow();
+    expect(cb.getState()).toBe('OPEN');
+    await new Promise((r) => setTimeout(r, 5));
+    await expect(cb.fire(() => Promise.reject(new Error('OK_SIGNAL')))).rejects.toThrow(/OK_SIGNAL/);
+    expect(cb.getState()).toBe('CLOSED');
+  });
 });
 
 // Restore the original counter sink after the full suite.

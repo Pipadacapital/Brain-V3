@@ -1,0 +1,74 @@
+# DR-001 hygiene wave — Iceberg catalog cleanup. One-off Job.
+# Runbook: docs/data-platform/design-review-001-hygiene-wave.md (owner-approved "go 1+2").
+#
+# Data is disposable (owner: re-fetchable via connectors) → drops are UNCONDITIONAL + purge-free,
+# no row-count guard, no backup, no rename-to-preserve. Just remove the dead objects:
+#   - 6 shadow tables brain_silver.silver_collector_event_<lane>_shadow
+#   - the old orphan brain_gold.journey_events (the live mart is brain_gold.gold_journey_events,
+#     which the resident transform writes + serving reads — that one is KEPT and untouched).
+# Idempotent (try/except per drop). Reuses the resident SA (IRSA brain-prod-jobs, catalog RW) + core-env.
+#
+# RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/dr001-catalog-hygiene.job.yaml
+# WATCH: kubectl --context brain-prod-ssm -n transform-worker logs -f job/dr001-catalog-hygiene
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dr001-catalog-hygiene
+  namespace: transform-worker
+  labels:
+    app.kubernetes.io/part-of: brain
+    brain.ops/runbook: design-review-001-hygiene-wave
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      serviceAccountName: brain-prod-transform-worker   # IRSA brain-prod-jobs — medallion catalog RW
+      restartPolicy: Never
+      nodeSelector:
+        karpenter.sh/nodepool: streaming
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dr001-hygiene
+          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:1d3c5b2fb0df6ed4d21deeb17d72d72c4f13c9e7f2a99076cb505612a6ba1333
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: core-env
+          command: ["python", "-c"]
+          args:
+            - |
+              import sys
+              sys.path.insert(0, "/opt/brain/duckdb")
+              sys.path.insert(0, "/opt/brain/duckdb/maintenance")
+              from _maintenance_base import pyiceberg_catalog
+              cat = pyiceberg_catalog()
+
+              def drop(fqn):
+                  try:
+                      cat.drop_table(fqn)
+                      print(f"  DROPPED {fqn}", flush=True)
+                  except Exception as e:
+                      print(f"  skip {fqn} ({type(e).__name__})", flush=True)
+
+              print("=== drop 6 shadow tables ===", flush=True)
+              for s in ["shopify", "woocommerce", "ga4", "shiprocket", "shopflo", "razorpay"]:
+                  drop(f"brain_silver.silver_collector_event_{s}_shadow")
+
+              print("=== drop old orphan journey_events (keep the live gold_journey_events) ===", flush=True)
+              drop("brain_gold.journey_events")
+
+              print("=== DR-001 catalog hygiene complete ===", flush=True)

@@ -55,7 +55,13 @@ tags:
 # streaming just gets a much longer consolidateAfter so live consumers aren't thrashed.
 #
 # ── AUD-OPS-033: the INTENDED aggregate ceiling + spot instance diversity ──────────────────────
-# Aggregate pool limits = streaming 20 + ondemand 8 = 28 vCPU / 112Gi.
+# Aggregate pool limits = streaming 24 + ondemand 8 = 32 vCPU / 132Gi.
+# (ADR-0016 resident worker, 2026-07-19: streaming raised 20→24 vCPU / 80→100Gi to fit the NEW
+# PERMANENT brain-prod-transform-worker Deployment — a warm DuckDB core-only micro-batch worker,
+# 2 vCPU / req 6Gi-limit 8Gi, that needs an m7g.xlarge/t4g.xlarge held continuously. Before this,
+# the streaming pool was full at 20/80 and Karpenter could not provision its node → the pod sat
+# Pending and the transformWorker cutover could not complete. Raised limits + the workload's maxima
+# together, per the rule below.)
 # (The `batch` pool — 12 vCPU / 48Gi — was REMOVED in the Spark→DuckDB cutover: the Spark
 # transforms that needed a dedicated 4vCPU/16Gi batch node are gone; the lightweight DuckDB crons
 # run on the streaming pool. The `trino` pool — 8 vCPU / 32Gi — was REMOVED in the Trino→
@@ -96,8 +102,8 @@ nodePools:
     expireAfter: 720h                # 30d node rotation for patching
     weight: 30                       # prefer the smaller streaming node for general pods
     limits:                          # upper bound (no fixed minimum → Karpenter has no idle floor)
-      cpu: "20"
-      memory: 80Gi
+      cpu: "24"                       # 20→24 (ADR-0016 resident transform-worker node, +1 xlarge)
+      memory: 100Gi                   # 80→100Gi (fits the resident's 8Gi limit on an xlarge)
     taints: []                       # untainted: existing untainted workloads can land here today
     # ADR-0003: integer disruption budget. The streaming pool hosts the live ingest
     # front (collector), the Kafka consumers (stream-worker) AND the on-demand-pinned

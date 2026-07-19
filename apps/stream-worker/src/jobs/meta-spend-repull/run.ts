@@ -534,6 +534,44 @@ export async function setSyncState(
   }
 }
 
+/**
+ * Reset a connector's sync-state row if it is stuck at 'syncing' beyond `thresholdMs`. A repull killed
+ * by a pod termination (or the ingest-scheduler dispatch deadline) never runs its closing
+ * setSyncState('connected'), so the row wedges at 'syncing' forever ("Already syncing — please wait")
+ * with no auto-recovery. This is the self-heal (mirror of the backfill claimer's requeueStaleRunning):
+ * a periodic reaper calls this per connected connector; a genuinely-active repull holds a fresher
+ * updated_at (setSyncState('syncing') stamps NOW()) so it is never reset out from under itself.
+ *
+ * Runs under the SAME brain_app pool + per-brand GUC idiom as setSyncState (buildContextGucSql) so RLS
+ * FORCE / grants match. Brand-scoped (RLS + the explicit brand_id predicate). Returns the rowCount reset.
+ */
+export async function resetStaleSyncing(
+  pool: Pool, connectorInstanceId: string, brandId: string, thresholdMs: number,
+): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(buildContextGucSql({ brandId, correlationId: '' }));
+    const res = await client.query(
+      `UPDATE connector_sync_status
+          SET state = 'error', last_error = 'stale syncing — auto-reset', updated_at = NOW()
+        WHERE connector_instance_id = $1
+          AND brand_id = $2
+          AND state = 'syncing'
+          AND updated_at < NOW() - make_interval(secs => $3 / 1000.0)`,
+      [connectorInstanceId, brandId, thresholdMs],
+    );
+    await client.query('COMMIT');
+    return res.rowCount ?? 0;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    log.error(`resetStaleSyncing failed (non-fatal) connector=${connectorInstanceId}`, { err });
+    return 0;
+  } finally {
+    client.release();
+  }
+}
+
 // ── Credentials resolver (dev: dev_secret JSON bundle; never logged — I-S09) ──
 
 export async function resolveMetaCredentials(

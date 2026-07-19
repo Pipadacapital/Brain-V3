@@ -83,7 +83,7 @@ import { ConnectorRateLimiter } from './infrastructure/redis/ConnectorRateLimite
 // runBackfill() lanes walk back 730 days resumably (safe to re-trigger; instant no-op at the floor).
 import { run as runMetaEntitySync } from './jobs/meta-entity-sync/run.js';
 import { run as runGoogleEntitySync } from './jobs/google-entity-sync/run.js';
-import { runBackfill as runMetaSpendBackfill } from './jobs/meta-spend-repull/run.js';
+import { runBackfill as runMetaSpendBackfill, resetStaleSyncing } from './jobs/meta-spend-repull/run.js';
 import {
   runBackfill as runGoogleSpendBackfill,
   enumerateGoogleConnectors,
@@ -446,6 +446,35 @@ export async function main(): Promise<void> {
   const backfillClaimerJob = startPeriodicJob('backfill-claimer', backfillClaimerIntervalMs, runBackfillClaim);
   log.info(`backfill claimer running — interval=${backfillClaimerIntervalMs}ms (drains queued jobs.backfill_job: shopify bespoke + meta/google_ads/razorpay/shiprocket/ga4/woocommerce generic)`);
 
+  // ── Stale-'syncing' reaper ───────────────────────────────────────────────────────────────────────
+  // Self-heal connectors wedged at sync-state 'syncing'. A repull killed by a pod termination (SIGKILL,
+  // OOM) or the ingest-scheduler dispatch deadline never runs its closing setSyncState('connected'), so
+  // the row sticks at 'syncing' forever ("Already syncing — please wait") with no auto-recovery. Mirrors
+  // the backfill claimer's stale-'running' requeue: enumerate CONNECTED connectors (SECURITY DEFINER,
+  // GUC-less) then reset any 'syncing' row older than the threshold (a genuinely-active repull stamps a
+  // fresher updated_at, so it is never reset under itself). resetStaleSyncing sets its own per-brand GUC
+  // internally (MT-1) — this pool holds NO brand context. Fail-isolated; the loop never dies.
+  const syncReaperPool = new PgPool({ connectionString: dbUrl, max: 2 });
+  const syncReaperIntervalMs = Number(process.env['SYNC_STALE_REAPER_INTERVAL_MS'] ?? 5 * 60 * 1000);
+  const syncStaleThresholdMs = Number(process.env['SYNC_STALE_THRESHOLD_MS'] ?? 15 * 60 * 1000);
+  const runSyncStatusReaper = async (): Promise<void> => {
+    const connectors = await enumerateConnectedConnectors(syncReaperPool);
+    for (const c of connectors) {
+      try {
+        const reset = await resetStaleSyncing(
+          syncReaperPool, c.connector_instance_id, c.brand_id, syncStaleThresholdMs,
+        );
+        if (reset > 0) {
+          log.warn(`[periodic:sync-status-reaper] reset ${reset} stale 'syncing' row(s) for connector=${c.connector_instance_id}`);
+        }
+      } catch (err) {
+        log.error(`[periodic:sync-status-reaper] connector=${c.connector_instance_id} failed (non-fatal)`, { err });
+      }
+    }
+  };
+  const syncStatusReaperJob = startPeriodicJob('sync-status-reaper', syncReaperIntervalMs, runSyncStatusReaper);
+  log.info(`sync-status reaper running — interval=${syncReaperIntervalMs}ms threshold=${syncStaleThresholdMs}ms (resets connectors wedged at state='syncing')`);
+
   const metaEntitySyncJob = startPeriodicJob('meta-entity-sync', adEntitySyncIntervalMs, () => runMetaEntitySync());
   const googleEntitySyncJob = startPeriodicJob('google-entity-sync', adEntitySyncIntervalMs, () => runGoogleEntitySync());
   const metaSpendBackfillJob = startPeriodicJob('meta-spend-backfill', adSpendBackfillIntervalMs, () => runMetaSpendBackfill());
@@ -462,6 +491,7 @@ export async function main(): Promise<void> {
       erasureOrchestrator.stop(),
       syncRequestClaimer.stop(),
       backfillClaimerJob.stop(),
+      syncStatusReaperJob.stop(),
       dqChecker.stop(),
       ingestScheduler.stop(),
       // A2/A3 ad-connector schedulers (entity-sync + 2-year spend backfill, meta + google).
@@ -474,6 +504,7 @@ export async function main(): Promise<void> {
     await dqPool.end();
     await ingestSchedulerPool.end();
     await googleBackfillPool.end().catch(() => undefined);
+    await syncReaperPool.end().catch(() => undefined);
     await connectorRateLimiter.quit().catch(() => undefined);
     await capiDeletionRepo.end();
     await erasureRepo.end();

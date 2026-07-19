@@ -91,6 +91,15 @@ export const META_TOO_MUCH_DATA = 'META_TOO_MUCH_DATA';
  * (token expired → reconnect) and from throttle 400s (backoff).
  */
 export const META_ACCESS_FORBIDDEN = 'META_ACCESS_FORBIDDEN';
+/**
+ * Thrown on an HTTP 5xx from Meta Insights. Meta returns a raw HTTP 500 (NOT Graph code 2637) on
+ * heavy ad-level breakdown windows (e.g. demographic) — an undocumented "too much data / server
+ * couldn't build this report" signal. A callable sentinel (detected via String(err).includes(...),
+ * the same convention as the other META_* sentinels) so the window walker halves the date window and
+ * retries instead of failing the whole resource/run. At the single-day floor a persistent 5xx is a
+ * window Meta simply cannot serve → skip it (return []), NOT fail the run (unlike 2637 which re-throws).
+ */
+export const META_SERVER_ERROR = 'META_SERVER_ERROR';
 
 export interface MetaApiCredentials {
   accessToken: string;   // NEVER logged (I-S09)
@@ -613,15 +622,29 @@ export class MetaInsightsClient {
       }
       return rows;
     } catch (err) {
-      // Only split on the "too much data" signal, and only while the window is still splittable
-      // (> 1 day). A single-day window that 2637s cannot shrink further → re-throw. Every other error
-      // (throttle, auth, async-timeout) propagates unchanged.
-      if (!String(err).includes(META_TOO_MUCH_DATA) || since >= until) {
+      // Two splittable signals: Graph code 2637 (META_TOO_MUCH_DATA) and a raw HTTP 5xx
+      // (META_SERVER_ERROR — Meta 500s on heavy ad-level breakdowns like demographic, a hidden
+      // "too much data"). Halve the window and retry each half — but only while it's still splittable
+      // (> 1 day). Every other error (throttle, auth, async-timeout, non-5xx hard error) propagates.
+      const isTooMuchData = String(err).includes(META_TOO_MUCH_DATA);
+      const isServerError = String(err).includes(META_SERVER_ERROR);
+      if ((!isTooMuchData && !isServerError) || since >= until) {
+        // At the 1-day floor a persistent 5xx is a single window Meta simply cannot serve — skip it
+        // gracefully (return []) so one unservable window doesn't fail the whole resource/run. A 2637
+        // (or any non-5xx error) at the floor is still a genuine hard error → re-throw.
+        if (since >= until && isServerError && !isTooMuchData) {
+          log.warn(
+            `[meta-insights-client] window ${since}..${until} still 5xx at the 1-day floor ` +
+            `(META_SERVER_ERROR, level=${level}) — skipping this single window (returns no rows)`,
+          );
+          return [];
+        }
         throw err;
       }
       const mid = isoMidpoint(since, until);
+      const reason = isTooMuchData ? `code ${META_REDUCE_DATA_CODE}` : 'HTTP 5xx';
       log.info(
-        `[meta-insights-client] window ${since}..${until} too large (code ${META_REDUCE_DATA_CODE}) ` +
+        `[meta-insights-client] window ${since}..${until} too large (${reason}) ` +
         `— splitting at ${mid} and retrying each half (level=${level})`,
       );
       const left = await this.fetchInsightsForWindow(level, since, mid, breakdown);
@@ -660,6 +683,10 @@ export class MetaInsightsClient {
         }
 
         if (!res.ok) {
+          // 5xx → same "server couldn't build this report" signal as getJson (see META_SERVER_ERROR).
+          if (res.status >= 500) {
+            throw new Error(`${META_SERVER_ERROR}: HTTP ${res.status} from Meta Insights POST`);
+          }
           throw new Error(`[meta-insights-client] HTTP ${res.status} from Meta Insights POST`);
         }
 
@@ -702,6 +729,12 @@ export class MetaInsightsClient {
         }
 
         if (!res.ok) {
+          // 5xx → Meta couldn't build this report (heavy ad-level breakdowns raw-500 like a hidden
+          // 2637). Tag it META_SERVER_ERROR so fetchInsightsForWindow can halve the window / skip a
+          // single unservable day rather than fail the whole resource. Non-5xx keeps the plain message.
+          if (res.status >= 500) {
+            throw new Error(`${META_SERVER_ERROR}: HTTP ${res.status} from Meta Insights`);
+          }
           throw new Error(`[meta-insights-client] HTTP ${res.status} from Meta Insights`);
         }
 

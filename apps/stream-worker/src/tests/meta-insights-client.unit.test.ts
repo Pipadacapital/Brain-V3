@@ -398,6 +398,68 @@ describe('MetaInsightsClient.fetchInsightsForWindow — adaptive halving on code
   });
 });
 
+// ── 4d. Adaptive window-halving on a raw HTTP 5xx (fetchInsightsForWindow) ─────
+//
+// Locks down the meta-spend-repull firehose fix: Meta returns a raw HTTP 500 (NOT Graph code 2637)
+// on heavy ad-level breakdowns (demographic) — a hidden "too much data" signal. getJson tags a 5xx
+// with META_SERVER_ERROR, and fetchInsightsForWindow treats it the SAME as 2637 while the window is
+// splittable — BUT at the 1-day floor a persistent 5xx SKIPS the window (returns []) rather than
+// failing the whole resource (unlike 2637, which re-throws at the floor).
+
+/**
+ * A window-aware SYNC-GET fetch stub that returns a raw HTTP 500 for any window spanning MORE than
+ * `maxDays`, and one window-tagged row (single page, no nextUrl) for anything ≤ maxDays. Records every
+ * GET URL for assertions.
+ */
+function windowAware5xxFetch(maxDays: number, seenUrls?: string[]): FetchStub {
+  return async (input: unknown) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const m = /time_range=([^&]+)/.exec(url);
+    if (url.includes('/insights') && m) {
+      seenUrls?.push(url);
+      const { since, until } = JSON.parse(decodeURIComponent(m[1]!)) as { since: string; until: string };
+      if (daySpanInclusive(since, until) > maxDays) {
+        // Raw 500 — the ad-level-breakdown "server couldn't build this report" signal (no Graph code).
+        return makeResponse(500, { error: { message: 'An unexpected error occurred' } });
+      }
+      return makeResponse(200, {
+        data: [{ campaign_id: `c_${since}_${until}`, spend: '1.00', date_start: since }],
+        paging: {},
+      });
+    }
+    return makeResponse(200, {});
+  };
+}
+
+describe('MetaInsightsClient.fetchInsightsForWindow — adaptive halving on raw HTTP 5xx', () => {
+  it('halves a too-large window on a 5xx and returns rows from every in-limit sub-window', async () => {
+    const seenUrls: string[] = [];
+    // Account tolerates ≤15-day windows; a 30-day pull 500s (not 2637) and must still be split.
+    const client = makeClient(windowAware5xxFetch(15, seenUrls), { asyncMode: false, maxRetries: 0 });
+
+    const rows = await client.fetchInsightsForWindow('ad', '2026-06-01', '2026-06-30', 'demographic');
+
+    // 30d → 500 → split into [06-01..06-15] + [06-16..06-30], each 15d and in-limit → one row each.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.campaign_id).sort()).toEqual(
+      ['c_2026-06-01_2026-06-15', 'c_2026-06-16_2026-06-30'],
+    );
+    // The first (30d) GET 500s; the two 15d GETs succeed → 3 insights GETs total.
+    expect(seenUrls).toHaveLength(3);
+  });
+
+  it('SKIPS (returns []) — never throws — when a 5xx persists down to the 1-day floor', async () => {
+    // Every window — even one day — 500s. Unlike 2637 (which re-throws at the floor), a persistent
+    // 5xx is a single window Meta cannot serve: the walk splits to a day, then returns [] so the one
+    // unservable window doesn't fail the whole resource/run.
+    const client = makeClient(windowAware5xxFetch(0), { asyncMode: false, maxRetries: 0 });
+
+    const rows = await client.fetchInsightsForWindow('ad', '2026-06-01', '2026-06-02', 'demographic');
+
+    expect(rows).toEqual([]);
+  });
+});
+
 // ── 5. Throttle code 80000 triggers backoff ───────────────────────────────────
 
 describe('MetaInsightsClient throttle code 80000 backoff', () => {

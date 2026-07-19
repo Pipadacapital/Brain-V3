@@ -98,8 +98,11 @@ export const META_ACCESS_FORBIDDEN = 'META_ACCESS_FORBIDDEN';
  * the same convention as the other META_* sentinels) so the window walker halves the date window and
  * retries instead of failing the whole resource/run. At the single-day floor a persistent 5xx is a
  * window Meta simply cannot serve → skip it (return []), NOT fail the run (unlike 2637 which re-throws).
+ * Module-local: the 5xx→split/floor-skip handling lives entirely in this client (fetchInsightsForWindow),
+ * so — unlike META_AUTH_ERROR/RATE_LIMITED/ACCESS_FORBIDDEN/TOO_MUCH_DATA which run.ts classifies — it
+ * is never imported. The literal string is still thrown/matched, so string-includes detection is intact.
  */
-export const META_SERVER_ERROR = 'META_SERVER_ERROR';
+const META_SERVER_ERROR = 'META_SERVER_ERROR';
 
 export interface MetaApiCredentials {
   accessToken: string;   // NEVER logged (I-S09)

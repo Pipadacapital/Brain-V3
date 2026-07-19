@@ -246,7 +246,12 @@ function TerminalState({
     <div data-testid="backfill-progress" className="space-y-2 mt-2" aria-live="polite">
       <BackfillStatusBadge status={job.status} />
 
-      {/* Records imported */}
+      {/* Records imported — the ACTUAL count. On a terminal job, records_processed IS the total, so we
+          do NOT append estimated_total: it is a pre-pull estimate from Shopify's orders/count.json
+          (approximate + eventually-consistent), which the real paged count legitimately exceeds when an
+          order lands mid-pull — rendering it as "(N total)" made a completed job read "15,319 imported
+          (15,318 total)", i.e. imported > total (D-8 honesty). The estimate belongs only in the running
+          progress denominator (ActiveProgress "X / Y"), never as the completed total. */}
       {job.records_processed > 0 && (
         <p className="text-sm text-muted-foreground">
           <span
@@ -256,15 +261,6 @@ function TerminalState({
             {formatCount(job.records_processed)}
           </span>{' '}
           orders imported
-          {job.estimated_total !== null && (
-            <>
-              {' '}(
-              <span data-testid="backfill-estimated">
-                {formatCount(job.estimated_total)} total
-              </span>
-              )
-            </>
-          )}
         </p>
       )}
 

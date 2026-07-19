@@ -21,6 +21,19 @@ spec:
     metadata:
       labels:
         {{- include "transform-worker.selectorLabels" . | nindent 8 }}
+      annotations:
+        # DR-007 GAP 10 / AUD-OPS-004: a warm SINGLE-replica worker must NOT be voluntarily evicted
+        # mid-tick. Karpenter consolidation/drift-disruption on the Spot streaming pool recycled this pod
+        # every few minutes (nights, outside the 09:00-18:00 IST freeze), SIGTERM-draining it; a full
+        # silver→gold tick (~15-20m) NEVER completed and core Gold starved (Silver stayed fresh — those
+        # jobs complete across restarts). do-not-disrupt is the SAME protection the cron / v4-identity
+        # transform pods carry (cronworkflows sparkV4.podAnnotations) — it blocks VOLUNTARY disruption
+        # (consolidation/drift). Involuntary Spot reclaims can still preempt, but the watermark makes the
+        # restart converge-safe and they are rare vs the every-few-minutes consolidation churn this stops.
+        karpenter.sh/do-not-disrupt: "true"
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "transform-worker.fullname" . }}
       # AUD-OPS-004: bounded drain window on eviction/rollout — SIGTERM lets the resident loop finish

@@ -39,8 +39,9 @@ Everything `run_all.py resident` needs, diffed chart-vs-cron-lane against live p
 | **derive-pg-env.sh single-source doctrine** | one copy | two byte-copies, **no CI drift-check** (the #296 comment claims one; it does not exist) | **GAP 7 (open)** |
 | **Staging validates the resident before prod promote** | n/a | **✗ — staging had the same broken digest; no soak gate exists** | **GAP 8 (process)** |
 | Boot-time dependency verification | n/a (short-lived jobs fail loudly per-step) | **✗ — failures surface one-per-tick, serially** | **GAP 9 (the meta-gap)** |
+| **Karpenter voluntary-disruption protection (`karpenter.sh/do-not-disrupt`)** | ✓ (cron/v4-identity pods carry it via sparkV4.podAnnotations) | **✗ — omitted; Karpenter consolidation/drift evicts the pod every few minutes** | **GAP 10 (added post-review — the actual Gold-starvation cause)** |
 
-Current live state: resident pod is **mid-tick running the silver tier** (lock acquired, S3 reads working) — acts 1–4 are confirmed closed. The orphan `v4-medallion` still exists and must go once the first clean tick lands (two core writers otherwise contend on the advisory lock; correct but wasteful and confusing).
+Current live state: resident pod acquires the lock, reads S3, and completes the **silver** tier — acts 1–4 closed. BUT it **never reaches gold**: lacking `karpenter.sh/do-not-disrupt`, Karpenter voluntarily disrupts (consolidation/drift) its Spot node every few minutes (nights, outside the 09:00–18:00 IST freeze), SIGTERM-draining it before a full ~15–20m silver→gold tick completes → core Gold starves. This is **GAP 10**, discovered during the post-cutover cron-prune: the "confirm first clean tick" precondition of the ops sequence below can NEVER be met until it is fixed. The orphan `v4-medallion` was therefore **re-instated as the safety writer** (Gold stays fresh) and must NOT be pruned until GAP 10 is deployed and the resident is observed completing full ticks.
 
 ## 3. The permanent fix — ONE implementation PR + ONE ops sequence + TWO process changes
 
@@ -54,7 +55,9 @@ Current live state: resident pod is **mid-tick running the silver tier** (lock a
 
 **P4 — drift-check CI (GAP 7).** `tools/lint/derive-pg-env-drift.sh` (byte-diff of the two copies, blocking in pr.yml) — makes the "keep in sync" comment enforceable instead of aspirational.
 
-**P5 — orphan hygiene.** Delete the `v4-medallion` CronWorkflow in the same ops sequence (below); add a `prune: true` decision item for the cronworkflows app to the PR description (recommend: enable — the orphan class is exactly what prune exists for; risk is bounded because everything the chart renders is declaratively owned).
+**P5 — orphan hygiene.** Delete the `v4-medallion` CronWorkflow in the same ops sequence (below); add a `prune: true` decision item for the cronworkflows app to the PR description (recommend: enable — the orphan class is exactly what prune exists for; risk is bounded because everything the chart renders is declaratively owned). **GATED ON P6:** do NOT prune the orphan until GAP 10 is deployed and the resident is observed completing full silver→gold ticks — otherwise the prune re-starves Gold (the resident thrashes without do-not-disrupt).
+
+**P6 — Karpenter disruption protection (GAP 10, added post-review).** Add `karpenter.sh/do-not-disrupt: "true"` to the resident pod template (`infra/helm/transform-worker/templates/deployment.yaml`), mirroring the cron/v4-identity transform pods (cronworkflows `sparkV4.podAnnotations`). This is the ACTUAL cause of the Gold starvation: without it, Karpenter voluntarily evicts the single-replica warm worker every few minutes so no full tick completes. Blocks voluntary consolidation/drift; involuntary Spot reclaims still preempt but the watermark makes the restart converge-safe. `podAnnotations` value added for extras; do-not-disrupt is non-optional (rendered unconditionally). Belongs in THIS consolidated PR — P1's boot-preflight cannot catch a runtime scheduling eviction.
 
 ### Ops sequence (once, after the PR promotes — no further PRs)
 1. Confirm resident's clean tick (in flight now) → delete orphan `v4-medallion`.

@@ -45,6 +45,7 @@ import {
   META_AUTH_ERROR,
   META_RATE_LIMITED,
   META_ACCESS_FORBIDDEN,
+  META_TOO_MUCH_DATA,
   type MetaApiCredentials,
   type MetaBreakdownName,
 } from './meta-insights-client.js';
@@ -444,14 +445,18 @@ async function backfillConnector(params: RepullParams): Promise<void> {
     // Each (breakdown,level) is its OWN non-fatal unit (mirrors the live repull loop ~239-282): a failing
     // pass is logged and the remaining passes still run (emit what we can this run).
     // fetchInsightsForWindow does all the window-halving + paging internally (asyncMode forces the async
-    // ad_report_run path — historical month-wide pulls are large) and, at the 1-day floor, a persistent
-    // 5xx is skipped (returns []) so one unservable window never fails the pass.
+    // ad_report_run path — historical month-wide pulls are large; lightProjection:true drops the video +
+    // engagement tiers so the large-account async result read stops 2637-ing on projection width) and, at
+    // the 1-day floor, a persistent 5xx is skipped (returns []) so one unservable window never fails the
+    // pass.
     //
     // CURSOR-ADVANCE RULE (audit LOSS fix): this lane walks windows OLDER than the 28-day trailing
     // repull, so a (breakdown,level) window skipped here is never re-fetched by any other lane. A pass
     // that throws for a TRANSIENT reason must therefore HOLD the chunk cursor (latch below) so the next
     // run re-attempts the SAME chunk — already-emitted passes re-emit the SAME deterministic event_ids
-    // (uuidV5FromSpendRow) and MERGE-dedup, so re-running a chunk is loss-free and double-count-free.
+    // (uuidV5FromSpendRow) and MERGE-dedup, so re-running a chunk is loss-free and double-count-free. A
+    // FLOOR-2637 is the exception: it's UNSERVABLE (identical retry → identical 2637), so it's skipped
+    // WITHOUT latching (cursor advances) — an explicit, logged data gap rather than an infinite hold.
     let transientFailure = false;
     for (const breakdown of META_BREAKDOWN_PASSES) {
       for (const level of META_LEVELS) {
@@ -459,6 +464,10 @@ async function backfillConnector(params: RepullParams): Promise<void> {
         try {
           const rows = await client.fetchInsightsForWindow(level, chunkSince, chunkUntil, breakdown, {
             asyncMode: true,
+            // LIGHT projection: drop the VIDEO + ENGAGEMENT_RANKING tiers so the large-account async
+            // result read stops 2637-ing on projection WIDTH (spend + all action/conversion metrics
+            // are retained). The live repull is untouched — it keeps the FULL field set.
+            lightProjection: true,
           });
           const { emitted } = await emitPage({
             rows,
@@ -495,11 +504,25 @@ async function backfillConnector(params: RepullParams): Promise<void> {
             );
             continue;
           }
+          if (String(err).includes(META_TOO_MUCH_DATA)) {
+            // UNSERVABLE for this window (NOT transient): a 2637 can only reach this catch as a FLOOR
+            // 2637 — above-floor 2637s are window-split internally by fetchInsightsForWindow and never
+            // throw. At the 1-day floor the window can't shrink further and the light projection (Fix
+            // A) is already applied, so retrying the identical request yields the identical 2637. Skip
+            // this window WITHOUT latching transientFailure → the chunk cursor advances (the data gap
+            // is explicit + logged, not an infinite hold). With the light projection most windows now
+            // serve; a residual floor-2637 is rare.
+            log.warn(
+              `[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] level=${level} ` +
+                `breakdown=${breakdown ?? 'base'} UNSERVABLE at 1-day floor even with light projection ` +
+                `(code ${2637}) — skipping this window, cursor advances`,
+            );
+            continue;
+          }
           // TRANSIENT (anything else that THROWS out of fetchInsightsForWindow): async-report
-          // timeout (META_ASYNC_TIMEOUT / "did not poll to completion"), network failure, a 2637
-          // rethrown at the 1-day floor, unknown errors. Latch transientFailure so the chunk
-          // cursor is HELD below, but continue to the remaining passes (emit what we can — safe,
-          // deterministic event_ids dedup on the re-run).
+          // timeout (META_ASYNC_TIMEOUT / "did not poll to completion"), network failure, unknown
+          // errors. Latch transientFailure so the chunk cursor is HELD below, but continue to the
+          // remaining passes (emit what we can — safe, deterministic event_ids dedup on the re-run).
           transientFailure = true;
           log.warn(
             `[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] level=${level} ` +
@@ -515,12 +538,14 @@ async function backfillConnector(params: RepullParams): Promise<void> {
       // this SAME chunk (already-emitted passes are idempotent via deterministic event_ids).
       // Advancing here would permanently skip a >28-day-old breakdown×level window (loss).
       //
-      // INFINITE-LOOP SAFETY (the wedge previously fixed in 114cf3c8): UNSERVABLE windows — Graph
-      // code 2637 "too much data" and raw 5xx on too-large windows — are handled INSIDE
-      // fetchInsightsForWindow by window-halving down to the 1-day floor, where a persistent 5xx
-      // is SKIPPED (returns [], a NORMAL return, not a throw). So an unservable window can never
-      // latch transientFailure; a pass only throws on genuinely transient conditions (timeout,
-      // network, throttle-shaped unknowns) which eventually clear — this chunk cannot re-run forever.
+      // INFINITE-LOOP SAFETY (the wedge previously fixed in 114cf3c8): UNSERVABLE windows never latch
+      // transientFailure. A raw 5xx on too-large windows is window-halved INSIDE fetchInsightsForWindow
+      // down to the 1-day floor where a persistent 5xx is SKIPPED (returns [], a NORMAL return). A
+      // floor-2637 ("too much data" that survives to 1 day even with the light projection) DOES throw
+      // out of fetchInsightsForWindow, but the per-pass catch above classifies it as UNSERVABLE and
+      // `continue`s WITHOUT latching (retrying the identical request would 2637 identically). So a pass
+      // only latches on genuinely transient conditions (async-report timeout, network, throttle-shaped
+      // unknowns) which eventually clear — this chunk cannot re-run forever.
       log.warn(
         `[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] had transient pass ` +
           `failure(s) — cursor HELD at reached=${reached}; will re-attempt this chunk next run`,

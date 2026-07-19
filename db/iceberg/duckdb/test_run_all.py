@@ -205,6 +205,7 @@ def test_loop_state_stop_and_liveness():
 
 
 def test_sigterm_drains_then_exits(monkeypatch):
+    monkeypatch.setenv("TRANSFORM_PREFLIGHT", "0")  # DR-007: loop test, not a dependency test
     # Leader on every tick; the stop is tripped just before the 3rd acquire → exactly 2 ticks run, the
     # in-flight one is never interrupted, and the loop marks itself dead + closes the lock on exit.
     leader = _FakeLeader([True] * 10)
@@ -215,6 +216,7 @@ def test_sigterm_drains_then_exits(monkeypatch):
 
 
 def test_leader_lock_gates_a_tick(monkeypatch):
+    monkeypatch.setenv("TRANSFORM_PREFLIGHT", "0")  # DR-007: loop test, not a dependency test
     # Iter 1: NOT leader (skip — no tick, no release). Iter 2: leader (run + release). Then stop.
     leader = _FakeLeader([False, True])
     _state, ticks, _fresh = _drive_loop(monkeypatch, leader=leader, stop_after_iters=2)
@@ -315,3 +317,59 @@ if __name__ == "__main__":
     test_healthz_handler_state_machine()
     test_leader_lock_dsn_from_jdbc_env_smoke()
     print("PASS: run_all runner hygiene + resident control loop (seam-free subset)")
+
+
+# ── DR-007 P1: boot-time preflight (pure-logic — probes stubbed, no live deps) ──────────────────────
+
+def test_preflight_aggregates_all_failures(monkeypatch):
+    """Every broken dependency lands in ONE report (the 2026-07-19 serial-discovery fix)."""
+    import run_all
+    monkeypatch.setenv("TRANSFORM_PREFLIGHT", "1")
+    monkeypatch.delenv("TRANSFORM_PREFLIGHT_SKIP", raising=False)
+    monkeypatch.setattr(run_all, "_probe_env", lambda: ["env: broken"])
+    monkeypatch.setattr(run_all, "_probe_pg", lambda: ["pg: broken"])
+    monkeypatch.setattr(run_all, "_probe_rest", lambda: ["rest: broken"])
+    monkeypatch.setattr(run_all, "_probe_warehouse", lambda shared: ["warehouse: broken"])
+    assert run_all._run_preflight(shared=object()) == 4
+
+
+def test_preflight_skip_flags(monkeypatch):
+    """TRANSFORM_PREFLIGHT_SKIP skips individual probes; TRANSFORM_PREFLIGHT=0 skips everything."""
+    import run_all
+    monkeypatch.setenv("TRANSFORM_PREFLIGHT_SKIP", "pg,warehouse")
+    monkeypatch.setattr(run_all, "_probe_env", lambda: [])
+    monkeypatch.setattr(run_all, "_probe_rest", lambda: [])
+    monkeypatch.setattr(run_all, "_probe_pg", lambda: (_ for _ in ()).throw(AssertionError("must be skipped")))
+    monkeypatch.setattr(run_all, "_probe_warehouse",
+                        lambda shared: (_ for _ in ()).throw(AssertionError("must be skipped")))
+    assert run_all._run_preflight(shared=object()) == 0
+    monkeypatch.setenv("TRANSFORM_PREFLIGHT", "0")
+    monkeypatch.setattr(run_all, "_probe_env", lambda: ["env: broken"])
+    assert run_all._run_preflight(shared=object()) == 0
+
+
+def test_preflight_warehouse_tolerates_absent_table():
+    """A fresh env's absent probe table is a PASS (the catalog answered); auth errors are failures."""
+    import run_all
+
+    class _AbsentConn:
+        def execute(self, _sql):
+            raise RuntimeError("Catalog Error: Table collector_events_connect does not exist")
+
+    class _ForbiddenConn:
+        def execute(self, _sql):
+            raise RuntimeError("HTTP Error: HTTP GET error (HTTP 403)")
+
+    assert run_all._probe_warehouse(_AbsentConn()) == []
+    assert len(run_all._probe_warehouse(_ForbiddenConn())) == 1
+
+
+def test_preflight_env_probe(monkeypatch):
+    import run_all
+    for var in ("ICEBERG_REST_URI", "SILVER_PG_JDBC_URL", "DATABASE_URL", "DATABASE_URL_DIRECT"):
+        monkeypatch.delenv(var, raising=False)
+    fails = run_all._probe_env()
+    assert len(fails) == 2  # no catalog URI + no PG source
+    monkeypatch.setenv("ICEBERG_REST_URI", "http://iceberg-rest:8181")
+    monkeypatch.setenv("DATABASE_URL", "postgres://u:p@h:5432/brain")
+    assert run_all._probe_env() == []

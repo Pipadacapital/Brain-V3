@@ -38,6 +38,11 @@ enabled: false
 # does not scale horizontally; a second writer is blocked by the lock, not welcomed).
 replicaCount: 1
 
+# Extra pod annotations, merged AFTER the mandatory karpenter.sh/do-not-disrupt=true the template
+# always sets (DR-007 GAP 10 — see deployment.yaml). Leave empty; do-not-disrupt is not optional for
+# a warm single-replica worker that must complete a multi-minute tick without voluntary eviction.
+podAnnotations: {}
+
 image:
   # The SAME brain-duckdb image the medallion CronWorkflows run (db/iceberg/duckdb/**) — run_all.py,
   # the silver/gold marts, and the resident-worker code all ship in it. Per-env values pin the digest.
@@ -50,6 +55,13 @@ image:
 # CronWorkflow instead passes an explicit tier path (`run_all.py silver|gold`). Kept as a value so the
 # entrypoint override is auditable in one place (the Dockerfile ENTRYPOINT is bronze_maintenance).
 command: ["python", "/opt/brain/duckdb/run_all.py", "resident"]
+
+# ── Serving-cache posture (DR-007 GAP 5, DECIDED 2026-07-19) ────────────────────────────────────
+# The retired v4-gold cron ended each run with a direct Redis eviction of the brand-scoped serving
+# cache (stream-worker image step). The resident loop has NO bust step — deliberately: the
+# per-dataset TTL tiers (serving-layer design, PR #341 era) are the staleness bound, and a bust
+# runner would add a second image/moving part to this chart for a window the TTLs already cap.
+# Revisit ONLY with evidence (a dashboard-staleness complaint traced to a tick-vs-TTL gap).
 
 probes:
   enabled: true

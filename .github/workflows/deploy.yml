@@ -361,6 +361,13 @@ jobs:
           # template). Both are pinned from the same `duckdb` imgref.
           bump duckdb .sparkBronze.image
           bump duckdb .sparkV4.image
+          # transform-worker chart (resident worker) runs the SAME duckdb image — bump IN LOCKSTEP
+          # (a stale pin here CrashLooped prod: `unknown tier 'resident'`, 2026-07-19).
+          if [ -f /tmp/imgref/duckdb ]; then
+            REF="$(cat /tmp/imgref/duckdb)"; REPO="${REF%@*}"; DIGEST="${REF#*@}"
+            REPO="$REPO" DIGEST="$DIGEST" yq -i '.image.repository = strenv(REPO) | .image.digest = strenv(DIGEST)' infra/helm/transform-worker/values-staging.yaml
+            echo "transform-worker bumped: ${REPO}@${DIGEST}"
+          fi
 
       - name: Commit + push staging values bump
         run: |
@@ -451,6 +458,15 @@ jobs:
           promote .streamWorkerImage
           promote .sparkBronze.image
           promote .sparkV4.image
+          # transform-worker chart promotes IN LOCKSTEP with sparkV4 (same duckdb artifact).
+          tstg="infra/helm/transform-worker/values-staging.yaml"
+          tprd="infra/helm/transform-worker/values-prod.yaml"
+          TSREPO="$(yq '.image.repository' "$tstg")"; TSDIGEST="$(yq '.image.digest' "$tstg")"
+          if [ -n "$TSDIGEST" ] && [ "$TSDIGEST" != "null" ]; then
+            TPREPO="${TSREPO/-staging/-prod}"
+            TPREPO="$TPREPO" TSDIGEST="$TSDIGEST" yq -i '.image.repository = strenv(TPREPO) | .image.digest = strenv(TSDIGEST)' "$tprd"
+            echo "transform-worker promoted: ${TPREPO}@${TSDIGEST}"
+          fi
 
       # AUD-COST-007 STRICT gate: a prod promotion must never be committed while
       # rendered prod values / deployed ArgoCD prod manifests still carry

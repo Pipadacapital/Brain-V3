@@ -44,6 +44,7 @@ import { getDataHealth, freshnessFromIngest, type FoundationSignals } from '../.
 import { getMetricTrust } from '../../data-quality/index.js';
 import { CONNECTOR_CATALOG } from '../../connector/catalog/registry.js';
 import type { IdentityReader, ContactPiiVaultService } from '../../identity/index.js';
+import type { Neo4jPipelineCounts } from '../../data-quality/index.js';
 import type { SilverPool, ServingCacheReader, TouchpointZsetClient, SemanticServingRouter } from '@brain/metric-engine';
 
 import {
@@ -106,6 +107,8 @@ export function registerBffRoutes(
   semanticRouter?: SemanticServingRouter,
   /** AUD-OPS-036 — RTBF erasure-trigger bridge (identity erase route). Trailing-optional. */
   erasureEventPublisher?: ErasureEventPublisher,
+  /** V4-pipeline observability — the medallion-journey Neo4j identity-tier count port (brand-agnostic). Trailing-optional. */
+  neo4jPipelineCounts?: Neo4jPipelineCounts,
 ): void {
   const sessionPreHandler = validateSessionPreHandler(authService);
 
@@ -263,6 +266,7 @@ export function registerBffRoutes(
     flagService,
     vaultService,
     identityReader,
+    neo4jPipelineCounts,
     identityUnmergeDirty,
     erasureEventPublisher,
     getCoreSaltHex,

@@ -67,6 +67,7 @@ import {
   Route,
   Coins,
   Ruler,
+  Workflow,
 } from 'lucide-react';
 import { UserMenu } from '@/components/dashboard/user-menu';
 import { RequireSession } from '@/components/dashboard/require-session';
@@ -169,6 +170,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Data & Ops',
     items: [
       { href: '/data', label: 'Data', icon: Database },
+      { href: '/data/medallion', label: 'Data Journey', icon: Workflow },
       { href: '/data/health', label: 'Data Health', icon: HeartPulse },
       { href: '/data/quality', label: 'Data Quality', icon: ShieldCheck },
       { href: '/operations', label: 'Operations', icon: Activity },

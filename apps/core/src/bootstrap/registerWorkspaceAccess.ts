@@ -33,6 +33,7 @@ import { registerBffRoutes } from '../modules/frontend-api/index.js';
 import { registerDevRoutes, registerConsentRoutes } from '../modules/notification/index.js';
 import type { ContactPiiVaultService } from '../modules/identity/index.js';
 import type { Neo4jIdentityReader } from '../modules/identity/internal/infrastructure/neo4j-identity-reader.js';
+import type { Neo4jPipelineCounts } from '../modules/data-quality/index.js';
 import type { IdentityUnmergeDirtyWriter } from '../infrastructure/pg/IdentityUnmergeDirtyRepository.js';
 import type { ErasureEventPublisher } from '../infrastructure/events/ErasureEventPublisher.js';
 
@@ -55,6 +56,8 @@ export interface RegisterWorkspaceAccessDeps {
   onboardingService: OnboardingService;
   piiVaultService: ContactPiiVaultService;
   identityReader: Neo4jIdentityReader;
+  /** V4-pipeline observability — the medallion-journey Neo4j identity-tier count port (brand-agnostic). Optional. */
+  neo4jPipelineCounts?: Neo4jPipelineCounts;
   /** D13: per-brand salt resolver for the consent gate. */
   getCoreSaltHex: (brandId: string) => Promise<string>;
   /** SPEC: 0.5 — per-brand feature flags (Redis-backed, DEFAULT OFF, fail-closed). */
@@ -89,6 +92,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     onboardingService,
     piiVaultService,
     identityReader,
+    neo4jPipelineCounts,
     getCoreSaltHex,
     flagService,
     identityUnmergeDirty,
@@ -101,7 +105,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
   registerWorkspaceRoutes(app, authService, workspaceService);
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
-  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityUnmergeDirty, touchpointCacheReader, semanticRouter, erasureEventPublisher);
+  registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityUnmergeDirty, touchpointCacheReader, semanticRouter, erasureEventPublisher, neo4jPipelineCounts);
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   registerConsentRoutes(app, {

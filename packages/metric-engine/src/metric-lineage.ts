@@ -62,14 +62,17 @@ const FACTS = {
     jobVersionColumn: 'job_version', producerVersion: 'c3.product_economics.v1',
     role: 'daily per-product economics rollup',
   },
+  // DR-002: the gold_measurement_refunds / gold_measurement_settlements re-projections were retired;
+  // lineage now audits the CANONICAL Silver facts they projected — same rows, one hop less, and the
+  // counted tables are the populated sources of truth rather than empty gold copies.
   refunds: {
-    schema: 'brain_gold', table: 'gold_measurement_refunds', dateColumn: 'occurred_at',
-    jobVersionColumn: null, producerVersion: 'gold_measurement_refunds.py',
+    schema: 'brain_silver', table: 'silver_refund', dateColumn: 'occurred_at',
+    jobVersionColumn: null, producerVersion: 'silver_refund.py',
     role: 'refund/return/RTO value reversal to customer (reason_code taxonomy)',
   },
   settlements: {
-    schema: 'brain_gold', table: 'gold_measurement_settlements', dateColumn: 'occurred_at',
-    jobVersionColumn: null, producerVersion: 'gold_measurement_settlements.py',
+    schema: 'brain_silver', table: 'silver_settlement', dateColumn: 'occurred_at',
+    jobVersionColumn: null, producerVersion: 'silver_settlement.py',
     role: 'gateway settlements (gross/fees/net) reconciled vs ledger recognition',
   },
   fees: {

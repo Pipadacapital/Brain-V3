@@ -491,7 +491,7 @@ export interface InventoryLevelProperties {
 /**
  * Map a raw inventory_levels/update webhook → inventory.level.v1 (a point-in-time stock
  * observation at the inventory-item×location grain). It deliberately does NOT emit
- * product.upsert.v1: silver_inventory_level requires properties.product_id, which this payload
+ * product.upsert.v1: the inventory grain requires properties.product_id, which this payload
  * cannot provide — restating the product grain from here would fabricate identity. The webhook's
  * updated_at is folded into the dedup identity (like the product/customer state model) so each
  * stock state is a distinct Bronze row while a Shopify retry of the same state dedups.

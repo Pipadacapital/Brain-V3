@@ -71,21 +71,11 @@ COLLECTOR_RETENTION_HOURS = int(os.environ.get("COLLECTOR_RETENTION_HOURS", "360
 DURABLE_SNAPSHOT_TTL_MS = int(os.environ.get("DURABLE_SNAPSHOT_TTL_MS", str(1_209_600_000)))  # 14 days
 COLLECTOR_TABLE = "collector_events_connect"
 
-# Every RAW Bronze table — the *_raw_connect lanes the ADR-0010 Kafka Connect Iceberg sink writes.
-# Each is auto-created on the lane's FIRST record, so a not-yet-existing table is skipped by the
-# _exists guard and joins the sweep once its first record lands. collector_events_connect is NOT in
-# this list — it is swept on its OWN COLLECTOR_RETENTION_HOURS window (see _lanes(); ADR-0015 D7).
-RAW_TABLES = [
-    "shopify_orders_raw_connect",
-    "woocommerce_orders_raw_connect",
-    "meta_spend_raw_connect",
-    "google_spend_raw_connect",
-    "ga4_rows_raw_connect",
-    "shiprocket_shipments_raw_connect",
-    "gokwik_events_raw_connect",
-    "shopflo_checkout_raw_connect",
-    "razorpay_settlement_raw_connect",
-]
+# The 9 `*_raw_connect` raw lanes were RETIRED by ADR-0016 (2026-07-18) — sinks/topics removed, tables
+# never populated — so the raw half of this sweep is empty (DR-001 hygiene). The constant stays so the
+# sweep structure (and any future ADR-sanctioned raw lane) needs no rework. collector_events_connect is
+# NOT in this list — it is swept on its OWN COLLECTOR_RETENTION_HOURS window (see _lanes(); ADR-0015 D7).
+RAW_TABLES: "list[str]" = []
 
 # Candidate ingest-time columns for the row-TTL cutoff, in preference order. The Connect-written
 # *_raw_connect tables carry NO written_at / kafka_timestamp — their ingest clock is the raw

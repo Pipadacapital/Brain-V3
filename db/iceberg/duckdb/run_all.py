@@ -6,11 +6,11 @@ WHY: prod telemetry (2026-07-16) showed every DuckDB job costs ~85s of FIXED per
 Bronze and the leaf that reads a tiny slice and upserts ZERO both take ~85-92s. The old runner spawns 90
 processes per run (45 jobs × 2 passes), so a `*/5` run takes ~130 min — the scan/rows were never the
 bottleneck, the process count was. This runner attaches the catalog ONCE and runs every job's existing
-`__main__` (its `run_job`/`run_normalize_job` call) against ONE shared connection, collapsing ~90 attaches
+`__main__` (its `run_job` call) against ONE shared connection, collapsing ~90 attaches
 into one. Expected: ~130 min → ~single-digit minutes, so the `*/5` schedule finally delivers realtime.
 
 HOW: we do NOT rewrite the 90 jobs. We reuse each job file verbatim by executing its `__main__` via runpy,
-after patching `_base.connect` / `_normalize_base.connect` to hand every `run_job` the SAME connection
+after patching `_base.connect` to hand every `run_job` the SAME connection
 (close-proofed so a job's `con.close()` is a no-op). The per-job discipline (pin `_CURRENT_HI`, window,
 MERGE, advance watermark) is unchanged — only the connection is shared.
 
@@ -71,7 +71,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "silver"))  # _normalize_base lives under silver/
+sys.path.insert(0, os.path.join(HERE, "silver"))  # silver-side shared modules (_silver_technical etc.)
 
 import _base  # noqa: E402
 import _catalog  # noqa: E402
@@ -136,7 +136,7 @@ class _SharedConn:
 
 
 def _run_job_file(job_path: str) -> None:
-    """Execute a job file's __main__ (its run_job/run_normalize_job call) against the shared connection."""
+    """Execute a job file's __main__ (its run_job call) against the shared connection."""
     runpy.run_path(job_path, run_name="__main__")
 
 
@@ -151,14 +151,9 @@ TIERS = {
 
 
 def _patch_connect(shared: "_SharedConn") -> None:
-    """Route every job's `_base.connect()` (and `_normalize_base.connect()` when present) at the shared
-    warm connection. Idempotent — safe to call once per single-shot run or once at resident startup."""
+    """Route every job's `_base.connect()` at the shared warm connection. Idempotent — safe to call
+    once per single-shot run or once at resident startup."""
     _base.connect = lambda: shared
-    try:  # _normalize_base is optional (silver-only); patch its connect too when present
-        import _normalize_base  # noqa: E402
-        _normalize_base.connect = lambda: shared
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def run_tier(shared: "_SharedConn", tier: str) -> int:

@@ -67,6 +67,7 @@ import {
 } from './modules/identity/index.js';
 import type { BrandSaltSource } from './modules/identity/index.js';
 import { Neo4jIdentityReader } from './modules/identity/internal/infrastructure/neo4j-identity-reader.js';
+import { Neo4jPipelineCountsReader } from './modules/data-quality/index.js';
 import { createMcpDispatch } from './modules/ai/index.js';
 import {
   initObservability,
@@ -608,6 +609,14 @@ export async function main(): Promise<void> {
     cfg.NEO4J_PASSWORD,
     rawPgPool,
   );
+  // V4-pipeline observability: the CHEAP, brand-agnostic Neo4j identity-tier count port for the
+  // medallion-journey read (Customer/Identifier node counts + IDENTIFIES/ALIAS_OF edge count). Its own
+  // driver — brand-agnostic pipeline totals, not the tenant-scoped identityReader. Fail-soft downstream.
+  const neo4jPipelineCounts = new Neo4jPipelineCountsReader(
+    cfg.NEO4J_URI,
+    cfg.NEO4J_USER,
+    cfg.NEO4J_PASSWORD,
+  );
   const piiVaultService = new ContactPiiVaultService(
     new ContactPiiVaultRepository(rawPgPool, identityReader),
     vaultKeyProvider,
@@ -901,6 +910,8 @@ export async function main(): Promise<void> {
     onboardingService,
     piiVaultService,
     identityReader,
+    // V4-pipeline observability: the medallion-journey identity-tier count port (brand-agnostic).
+    neo4jPipelineCounts,
     identityUnmergeDirty,
     // AUD-OPS-036: erasure-trigger bridge for the consent-withdraw + identity-erase entry points.
     erasureEventPublisher,

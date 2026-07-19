@@ -52,6 +52,7 @@ import type {
   FoundationHealthResponse,
   EntitlementsResponse,
   DataQualitySummaryResponse,
+  MedallionJourney,
   AnalyticsSettlementsResponse,
   AnalyticsTrackingHealthResponse,
   AnalyticsRecentEventsResponse,
@@ -266,6 +267,23 @@ export const analyticsApi = {
       `/v1/data-quality/summary`,
     );
     return parseData(DataQualitySummarySchema, env);
+  },
+
+  /**
+   * GET /api/v1/data-quality/medallion-journey — the Data Journey observability roll-up.
+   * One payload tracing the brand's data through the pipeline stages
+   * Bronze → Silver → Identity → Gold → Serving (row counts, freshness, per-stage state).
+   * BFF-only, brand-scoped from session (D-1). D-10: unwrap { request_id, data }.
+   *
+   * NOTE: no zod schema at the seam yet — the endpoint is being built in parallel; typed against
+   * the shared MedallionJourney contract. Swap to parseData(MedallionJourneySchema, env) once the
+   * contract package publishes the schema, mirroring getDataQualitySummary.
+   */
+  getMedallionJourney: async (): Promise<MedallionJourney> => {
+    const { data } = await bffFetch<BffEnvelope<MedallionJourney>>(
+      `/v1/data-quality/medallion-journey`,
+    );
+    return data;
   },
 
   /**

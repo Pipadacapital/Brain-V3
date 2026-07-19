@@ -317,6 +317,67 @@ describe('MetaInsightsClient A2 insights request fields', () => {
   });
 });
 
+// ── 4b-light. lightProjection drops the VIDEO + ENGAGEMENT_RANKING tiers ──────
+//
+// Backfill async-result-read 2637 fix: the backfill passes lightProjection:true so the built request
+// carries only IDENTITY + CORE + ACTION fields (drop video + engagement rankings) — a large ad account
+// 2637s on the async RESULT READ purely on projection WIDTH, even at the 1-day floor. The live repull
+// leaves lightProjection default false → the FULL field set is unchanged.
+
+describe('MetaInsightsClient lightProjection field selection', () => {
+  it('lightProjection:true drops video + engagement fields, keeps identity + core + action', async () => {
+    let seenUrl = '';
+    const fetchStub: FetchStub = async (input) => {
+      seenUrl = typeof input === 'string' ? input : (input as Request).url;
+      return makeResponse(200, { data: [], paging: {} });
+    };
+    const client = makeClient(fetchStub, { asyncMode: false });
+    // Route through fetchInsightsForWindow so the lightProjection opt threads down to the URL builder.
+    await client.fetchInsightsForWindow('campaign', '2026-06-01', '2026-06-01', null, {
+      lightProjection: true,
+    });
+
+    const fieldsParam = /[?&]fields=([^&]+)/.exec(seenUrl)?.[1] ?? '';
+    const fields = decodeURIComponent(fieldsParam).split(',');
+    // Kept: identity + core + action tiers.
+    expect(fields).toContain('campaign_id');       // IDENTITY
+    expect(fields).toContain('spend');             // CORE
+    expect(fields).toContain('cpc');               // CORE
+    expect(fields).toContain('actions');           // ACTION
+    expect(fields).toContain('action_values');     // ACTION
+    expect(fields).toContain('purchase_roas');     // ACTION (ROAS retained at base grain)
+    // Dropped: video + engagement/ranking tiers.
+    expect(fields).not.toContain('video_play_actions');
+    expect(fields).not.toContain('video_thruplay_watched_actions');
+    expect(fields).not.toContain('inline_post_engagement');
+    expect(fields).not.toContain('quality_ranking');
+    expect(fields).not.toContain('engagement_rate_ranking');
+    expect(fields).not.toContain('conversion_rate_ranking');
+  });
+
+  it('lightProjection:false (default) keeps the FULL field set — video + engagement present', async () => {
+    let seenUrl = '';
+    const fetchStub: FetchStub = async (input) => {
+      seenUrl = typeof input === 'string' ? input : (input as Request).url;
+      return makeResponse(200, { data: [], paging: {} });
+    };
+    const client = makeClient(fetchStub, { asyncMode: false });
+    // Default path (the live repull) — no lightProjection flag.
+    await client.fetchInsightsFirstPage('campaign', '2026-06-01', '2026-06-21');
+
+    const fieldsParam = /[?&]fields=([^&]+)/.exec(seenUrl)?.[1] ?? '';
+    const fields = decodeURIComponent(fieldsParam).split(',');
+    // Full set: identity + core + action + video + engagement all present.
+    expect(fields).toContain('spend');
+    expect(fields).toContain('actions');
+    expect(fields).toContain('video_play_actions');
+    expect(fields).toContain('video_thruplay_watched_actions');
+    expect(fields).toContain('inline_post_engagement');
+    expect(fields).toContain('quality_ranking');
+    expect(fields).toContain('conversion_rate_ranking');
+  });
+});
+
 // ── 4c. Adaptive window-halving on code 2637 (fetchInsightsForWindow) ─────────
 //
 // Locks down the meta-backfill fix: Meta code 2637 ("reduce the amount of data") on a too-large
@@ -357,16 +418,22 @@ function windowAwareFetch(maxDays: number, seenUrls?: string[]): FetchStub {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // CURSOR-STALL SAFETY CONTRACT (documents the meta-spend-repull backfillConnector invariant):
 // the backfill chunk loop (meta-spend-repull/run.ts backfillConnector) HOLDS its chunk cursor
-// whenever a (breakdown,level) pass THROWS out of fetchInsightsForWindow for a transient reason,
+// whenever a (breakdown,level) pass THROWS out of fetchInsightsForWindow for a TRANSIENT reason,
 // so the next run re-attempts the SAME chunk (audit LOSS fix — a skipped >28-day-old window is
-// never re-fetched by any other lane). What prevents that hold from becoming an infinite re-run
-// loop is the SPLITTER'S NO-THROW CONTRACT proven by the two describe blocks below: UNSERVABLE
-// windows — Graph code 2637 "too much data" and raw HTTP 5xx on too-large windows — are handled
-// INSIDE fetchInsightsForWindow by recursive window-halving down to the 1-day floor, where a
-// persistent 5xx is SKIPPED (returns [], a NORMAL return, never a throw). A pass therefore only
-// throws on genuinely transient conditions (async-report timeout, network failure, retryable 2637
-// at the floor, unknown errors) which eventually clear. If the skip-at-floor behaviour proven
-// below is ever changed to rethrow, the backfill chunk cursor CAN wedge — keep both in sync.
+// never re-fetched by any other lane). Two things prevent that hold from becoming an infinite
+// re-run loop:
+//   (1) The SPLITTER'S NO-THROW CONTRACT for raw HTTP 5xx (proven by the describe blocks below):
+//       a 5xx on too-large windows is recursively window-halved down to the 1-day floor, where a
+//       persistent 5xx is SKIPPED (returns [], a NORMAL return, never a throw).
+//   (2) The FLOOR-2637 UNSERVABLE classification in the backfill catch: an above-floor 2637 is
+//       window-split internally (never throws); a floor-2637 (1-day window that still 2637s even
+//       with the light projection) DOES throw, but the per-pass catch classifies it as UNSERVABLE
+//       and `continue`s WITHOUT latching transientFailure — the identical retry would 2637
+//       identically, so the cursor advances (explicit, logged data gap) rather than wedging.
+// A pass therefore only latches on genuinely transient conditions (async-report timeout, network
+// failure, unknown errors) which eventually clear. If the skip-at-floor 5xx behaviour proven below
+// is ever changed to rethrow, OR the floor-2637 catch is reclassified as transient, the backfill
+// chunk cursor CAN wedge — keep all three in sync.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 describe('MetaInsightsClient.fetchInsightsForWindow — adaptive halving on code 2637', () => {
   it('halves a too-large window and returns rows from every in-limit sub-window', async () => {

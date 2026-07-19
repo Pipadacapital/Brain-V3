@@ -68,7 +68,7 @@ describe('UT-1: mapGokwikOrder → order.live.v1 (OrderProperties-shaped)', () =
   });
 
   it('defaults currency to INR when absent', () => {
-    const ev = mapGokwikOrder({ moid: 'X', total: '100' }, BRAND_A, SALT_A, 'IN');
+    const ev = mapGokwikOrder({ moid: 'X', total: '100', updated_at: '2026-05-05T16:00:00Z' }, BRAND_A, SALT_A, 'IN');
     expect(ev.properties.currency_code).toBe('INR');
     expect(ev.properties.amount_minor).toBe('10000');
   });
@@ -131,14 +131,14 @@ describe('UT-2: mapGokwikCheckout → checkout signals', () => {
   });
 
   it('started → gokwik.checkout_started.v1', () => {
-    const ev = mapGokwikCheckout({ checkout_id: 'CHK-2' }, BRAND_A, SALT_A, 'IN', 'started');
+    const ev = mapGokwikCheckout({ checkout_id: 'CHK-2', updated_at: '2026-05-05T16:00:00Z' }, BRAND_A, SALT_A, 'IN', 'started');
     expect(ev.event_name).toBe(GOKWIK_CHECKOUT_STARTED_V1_EVENT_NAME);
     expect(ev.properties.total_price_minor).toBeUndefined(); // no money → omitted (no phantom currency row)
     expect(ev.properties.has_address).toBe(false);
   });
 
   it('step → gokwik.checkout_step.v1 with step_name', () => {
-    const ev = mapGokwikCheckout({ checkout_id: 'CHK-3', step: 'address' }, BRAND_A, SALT_A, 'IN', 'step');
+    const ev = mapGokwikCheckout({ checkout_id: 'CHK-3', step: 'address', updated_at: '2026-05-05T16:00:00Z' }, BRAND_A, SALT_A, 'IN', 'step');
     expect(ev.event_name).toBe(GOKWIK_CHECKOUT_STEP_V1_EVENT_NAME);
     expect(ev.properties.step_name).toBe('address');
   });
@@ -203,16 +203,81 @@ describe('UT-4/UT-5: RTO-Predict categorical (never a fabricated number)', () =>
     expect(uuidV5FromRtoPredict(BRAND_A, 'ord_1', 'req_1')).toBe(uuidV5FromRtoPredict(BRAND_A, 'ord_1', 'req_1'));
     expect(uuidV5FromRtoPredict(BRAND_B, 'ord_1', 'req_1')).not.toBe(uuidV5FromRtoPredict(BRAND_A, 'ord_1', 'req_1'));
   });
+  // UT-7 companion: the strategy seeds the id with `requestId ?? occurred_at`. With NEITHER present,
+  // the old wall-clock occurred_at fallback would enter the seed → a redelivered webhook mints a
+  // DIFFERENT event_id → permanent duplicate. The mapper must refuse that combination — and ONLY that
+  // combination (a request_id alone keeps the seed idempotent, so occurred_at may fall back for the
+  // envelope without duplicate risk).
+  it('missing BOTH request_id and occurred_at → throws (no wall-clock id seed)', () => {
+    expect(() => mapGokwikRtoPredict({ order_id: 'ord_nt', risk_flag: 'Low' }, BRAND_A)).toThrow(/request_id and occurred_at/);
+  });
+  it('request_id present, occurred_at absent → still maps (seed never touches occurred_at)', () => {
+    const ev = mapGokwikRtoPredict({ order_id: 'ord_ri', request_id: 'req_only', risk_flag: 'Low' }, BRAND_A);
+    expect(ev.event_name).toBe(GOKWIK_RTO_PREDICT_V1_EVENT_NAME);
+    expect(ev.properties.request_id).toBe('req_only');
+  });
 });
 
 describe('UT-6: data_source stamped (DEV-HONESTY) + per-brand distinct hashes', () => {
   it('order / checkout / payment / rto carry data_source', () => {
-    expect(mapGokwikOrder({ moid: 'o', total: '1' }, BRAND_A, SALT_A, 'IN', 'synthetic').properties.data_source).toBe('synthetic');
-    expect(mapGokwikCheckout({ checkout_id: 'c' }, BRAND_A, SALT_A, 'IN', 'started', 'synthetic').properties.data_source).toBe('synthetic');
-    expect(mapGokwikPayment({ order_id: 'o' }, BRAND_A, SALT_A, 'IN', 'attempted', 'synthetic').properties.data_source).toBe('synthetic');
-    expect(mapGokwikRtoPredict({ order_id: 'o', risk_flag: 'Low' }, BRAND_A, 'synthetic').properties.data_source).toBe('synthetic');
+    const ts = { updated_at: '2026-05-05T16:00:00Z' };
+    expect(mapGokwikOrder({ moid: 'o', total: '1', ...ts }, BRAND_A, SALT_A, 'IN', 'synthetic').properties.data_source).toBe('synthetic');
+    expect(mapGokwikCheckout({ checkout_id: 'c', ...ts }, BRAND_A, SALT_A, 'IN', 'started', 'synthetic').properties.data_source).toBe('synthetic');
+    expect(mapGokwikPayment({ order_id: 'o', ...ts }, BRAND_A, SALT_A, 'IN', 'attempted', 'synthetic').properties.data_source).toBe('synthetic');
+    expect(mapGokwikRtoPredict({ order_id: 'o', request_id: 'req_ds', risk_flag: 'Low' }, BRAND_A, 'synthetic').properties.data_source).toBe('synthetic');
   });
   it('per-brand distinct payment_id hashes', () => {
     expect(hashPaymentId('pay_1', SALT_A)).not.toBe(hashPaymentId('pay_1', SALT_B));
+  });
+});
+
+describe('UT-7: missing payload timestamp FAILS CLOSED (no wall-clock event_id minting)', () => {
+  // occurred_at feeds the DETERMINISTIC event_id seed. A wall-clock fallback would mint a
+  // DIFFERENT id on every at-least-once webhook redelivery → permanent TRUE duplicates in
+  // Bronze/Silver. So a record with none of updated_at/event_time/created_at/timestamp is
+  // unmappable: the mapper throws (pipeline surfaces it as a logged 400 skip).
+  it('order: no timestamp → throws (no event emitted, no wall-clock id)', () => {
+    expect(() => mapGokwikOrder({ moid: 'GK-NT-1', total: '10' }, BRAND_A, SALT_A, 'IN')).toThrow(/timestamp/);
+  });
+  it('checkout: no timestamp → throws', () => {
+    expect(() => mapGokwikCheckout({ checkout_id: 'CHK-NT' }, BRAND_A, SALT_A, 'IN', 'started')).toThrow(/timestamp/);
+  });
+  it('payment: no timestamp → throws', () => {
+    expect(() => mapGokwikPayment({ order_id: 'GK-NT-2', payment_id: 'p1' }, BRAND_A, SALT_A, 'IN', 'attempted')).toThrow(/timestamp/);
+  });
+  it('unparseable timestamp → throws (never silently falls back to now)', () => {
+    expect(() => mapGokwikOrder({ moid: 'GK-NT-3', total: '10', updated_at: 'not-a-date' }, BRAND_A, SALT_A, 'IN')).toThrow(/timestamp/);
+  });
+  it('same-payload redelivery → byte-identical event_id (order / checkout / payment)', () => {
+    const order = { moid: 'GK-RD-1', total: '99.00', updated_at: '2026-05-05T16:00:00Z' };
+    expect(mapGokwikOrder(order, BRAND_A, SALT_A, 'IN').event_id)
+      .toBe(mapGokwikOrder(order, BRAND_A, SALT_A, 'IN').event_id);
+    const checkout = { checkout_id: 'CHK-RD-1', updated_at: '2026-05-05T16:00:00Z' };
+    expect(mapGokwikCheckout(checkout, BRAND_A, SALT_A, 'IN', 'started').event_id)
+      .toBe(mapGokwikCheckout(checkout, BRAND_A, SALT_A, 'IN', 'started').event_id);
+    const payment = { order_id: 'GK-RD-2', updated_at: '2026-05-05T16:00:00Z' };
+    expect(mapGokwikPayment(payment, BRAND_A, SALT_A, 'IN', 'attempted').event_id)
+      .toBe(mapGokwikPayment(payment, BRAND_A, SALT_A, 'IN', 'attempted').event_id);
+  });
+});
+
+describe('UT-8: null-payment-id event_id discriminator (payment_status folded into seed)', () => {
+  const AT = '2026-05-05T16:05:00Z';
+  it('distinct signals (initiated vs failed) with NO payment id at the same occurred_at → DISTINCT ids', () => {
+    const initiated = mapGokwikPayment({ order_id: 'GK-P-1', updated_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    const failed = mapGokwikPayment({ order_id: 'GK-P-1', payment_status: 'failed', updated_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    expect(initiated.properties.payment_status).toBe('initiated');
+    expect(failed.properties.payment_status).toBe('failed');
+    expect(initiated.event_id).not.toBe(failed.event_id);
+  });
+  it('truly identical null-payment payloads still collapse to ONE id (same logical event)', () => {
+    const a = mapGokwikPayment({ order_id: 'GK-P-2', updated_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    const b = mapGokwikPayment({ order_id: 'GK-P-2', updated_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    expect(a.event_id).toBe(b.event_id);
+  });
+  it('a present payment_id keeps the payment-id-keyed seed (distinct from the null-case seed)', () => {
+    const withId = mapGokwikPayment({ order_id: 'GK-P-3', payment_id: 'pay_x', updated_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    const withoutId = mapGokwikPayment({ order_id: 'GK-P-3', updated_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    expect(withId.event_id).not.toBe(withoutId.event_id);
   });
 });

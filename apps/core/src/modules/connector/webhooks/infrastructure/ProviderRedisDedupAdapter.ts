@@ -59,6 +59,28 @@ export class ProviderRedisDedupAdapter {
   }
 
   /**
+   * Release (un-mark) a dedup key previously claimed by isDuplicate().
+   *
+   * isDuplicate() atomically marks the key seen BEFORE the pipeline's Kafka produce; if that
+   * produce then FAILS, the provider's retry would hit the already-set key → 409 → the event is
+   * NEVER produced (permanent loss). The pipeline calls release() on produce failure so the
+   * retry re-produces. Fail-open on Redis error (same posture as isDuplicate): worst case the
+   * retry 409s until the key TTLs out — never worse than the pre-release behaviour.
+   */
+  async release(eventId: string): Promise<void> {
+    const key = `${this.keyPrefix}${eventId}`;
+    try {
+      await this.redis.del(key);
+    } catch (err) {
+      log.error('webhook_dedup_release_failed', {
+        event: 'redis_unavailable_fail_open',
+        prefix: this.keyPrefix,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * Age check: is this event within the allowed replay window?
    * @param createdAtUnixSeconds Unix timestamp in seconds from the provider payload.
    * @returns true = within window (allow); false = too old (reject with 400).

@@ -354,6 +354,20 @@ function windowAwareFetch(maxDays: number, seenUrls?: string[]): FetchStub {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// CURSOR-STALL SAFETY CONTRACT (documents the meta-spend-repull backfillConnector invariant):
+// the backfill chunk loop (meta-spend-repull/run.ts backfillConnector) HOLDS its chunk cursor
+// whenever a (breakdown,level) pass THROWS out of fetchInsightsForWindow for a transient reason,
+// so the next run re-attempts the SAME chunk (audit LOSS fix — a skipped >28-day-old window is
+// never re-fetched by any other lane). What prevents that hold from becoming an infinite re-run
+// loop is the SPLITTER'S NO-THROW CONTRACT proven by the two describe blocks below: UNSERVABLE
+// windows — Graph code 2637 "too much data" and raw HTTP 5xx on too-large windows — are handled
+// INSIDE fetchInsightsForWindow by recursive window-halving down to the 1-day floor, where a
+// persistent 5xx is SKIPPED (returns [], a NORMAL return, never a throw). A pass therefore only
+// throws on genuinely transient conditions (async-report timeout, network failure, retryable 2637
+// at the floor, unknown errors) which eventually clear. If the skip-at-floor behaviour proven
+// below is ever changed to rethrow, the backfill chunk cursor CAN wedge — keep both in sync.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 describe('MetaInsightsClient.fetchInsightsForWindow — adaptive halving on code 2637', () => {
   it('halves a too-large window and returns rows from every in-limit sub-window', async () => {
     const seenUrls: string[] = [];

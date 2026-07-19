@@ -182,6 +182,22 @@ describe('ingestion framework — multi-resource onboarding via the generic driv
     expect(WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES).not.toContain('orders');
   });
 
+  it('GUARD: WooCommerce ORDERS must NEVER enter the generic backfill framework (double-count)', () => {
+    // DO NOT add 'orders' to WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES.
+    //
+    // The live/repull lane ids a Woo order as
+    //     uuidV5FromOrderLive(brandId, orderId, date_modifiedMs)
+    // while the generic ingestion-backfill framework would derive its Bronze event_id from
+    //     providerId = `${orderId}:${stateMs}`
+    // — a DIFFERENT deterministic id for the SAME order state. Bronze dedups on (brand_id,
+    // event_id), so the two namespaces never collapse: every backfilled order would land a SECOND
+    // time and the revenue ledger would double-count. The ONLY thing preventing that today is this
+    // exclusion (see WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES + the runIngestionBackfillFromQueue
+    // docstring in ingestion-backfill/run.ts). If deeper Woo order history is needed, extend the
+    // live-lane woocommerce-orders-repull window — never route orders through the framework.
+    expect(WOOCOMMERCE_SCHEDULED_BACKFILL_RESOURCES).not.toContain('orders');
+  });
+
   it('the SHOPIFY scheduled set drives the 4 never-before-scheduled resources and EXCLUDES orders', () => {
     expect([...SHOPIFY_SCHEDULED_BACKFILL_RESOURCES].sort()).toEqual(
       ['customers', 'fulfillments', 'products', 'refunds'],

@@ -44,6 +44,7 @@ import {
   MetaInsightsClient,
   META_AUTH_ERROR,
   META_RATE_LIMITED,
+  META_ACCESS_FORBIDDEN,
   type MetaApiCredentials,
   type MetaBreakdownName,
 } from './meta-insights-client.js';
@@ -440,13 +441,18 @@ async function backfillConnector(params: RepullParams): Promise<void> {
     const chunkSince = candidateSince < floor ? floor : candidateSince;
 
     // FIREHOSE: backfill covers base + every breakdown pass identically to the live repull (extra loop).
-    // Each (breakdown,level) is its OWN non-fatal unit (mirrors the live repull loop ~239-282): a single
-    // unservable pass (e.g. ad-level demographic, which Meta answers with code 2637 / a raw 5xx) is
-    // SKIPPED, the chunk still completes, its cursor advances, and the backfill PROGRESSES to the next
-    // 30-day chunk instead of aborting the whole run and looping forever on the same first chunk.
+    // Each (breakdown,level) is its OWN non-fatal unit (mirrors the live repull loop ~239-282): a failing
+    // pass is logged and the remaining passes still run (emit what we can this run).
     // fetchInsightsForWindow does all the window-halving + paging internally (asyncMode forces the async
     // ad_report_run path — historical month-wide pulls are large) and, at the 1-day floor, a persistent
     // 5xx is skipped (returns []) so one unservable window never fails the pass.
+    //
+    // CURSOR-ADVANCE RULE (audit LOSS fix): this lane walks windows OLDER than the 28-day trailing
+    // repull, so a (breakdown,level) window skipped here is never re-fetched by any other lane. A pass
+    // that throws for a TRANSIENT reason must therefore HOLD the chunk cursor (latch below) so the next
+    // run re-attempts the SAME chunk — already-emitted passes re-emit the SAME deterministic event_ids
+    // (uuidV5FromSpendRow) and MERGE-dedup, so re-running a chunk is loss-free and double-count-free.
+    let transientFailure = false;
     for (const breakdown of META_BREAKDOWN_PASSES) {
       for (const level of META_LEVELS) {
         const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
@@ -476,18 +482,53 @@ async function backfillConnector(params: RepullParams): Promise<void> {
             log.error(`[meta-backfill] connector=${ciId} auth error — RECONNECT_REQUIRED`);
             return;
           }
-          // ANY OTHER error (2637 at the 1-day floor, non-5xx hard error, access-forbidden, async timeout,
-          // …) is NON-FATAL for this pass — log + continue so the chunk still completes and advances.
+          if (String(err).includes(META_ACCESS_FORBIDDEN)) {
+            // PERMANENT for this window: Meta 403 while walking OLDER windows is the
+            // accessible-history boundary (the live lane reads recent data fine — not a token
+            // problem; see meta-resource-fetchers.ts, which completes the framework backfill
+            // gracefully at achieved depth on the same signal). Re-attempting would 403 forever,
+            // so this pass is skipped WITHOUT latching transientFailure — the chunk may still
+            // advance (= completion-at-achieved-depth semantics for that breakdown×level).
+            log.warn(
+              `[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] level=${level} ` +
+                `breakdown=${breakdown ?? 'base'} 403 accessible-history boundary — skipping pass (permanent for this window)`,
+            );
+            continue;
+          }
+          // TRANSIENT (anything else that THROWS out of fetchInsightsForWindow): async-report
+          // timeout (META_ASYNC_TIMEOUT / "did not poll to completion"), network failure, a 2637
+          // rethrown at the 1-day floor, unknown errors. Latch transientFailure so the chunk
+          // cursor is HELD below, but continue to the remaining passes (emit what we can — safe,
+          // deterministic event_ids dedup on the re-run).
+          transientFailure = true;
           log.warn(
             `[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] level=${level} ` +
-              `breakdown=${breakdown ?? 'base'} pass error (non-fatal) — continuing`,
+              `breakdown=${breakdown ?? 'base'} TRANSIENT pass error — chunk cursor will be held for re-attempt`,
             { err },
           );
         }
       }
     }
 
-    // Chunk complete → advance the floor and checkpoint (resumable).
+    if (transientFailure) {
+      // HOLD the chunk cursor: do NOT advance `reached` / upsert — the next backfill run re-attempts
+      // this SAME chunk (already-emitted passes are idempotent via deterministic event_ids).
+      // Advancing here would permanently skip a >28-day-old breakdown×level window (loss).
+      //
+      // INFINITE-LOOP SAFETY (the wedge previously fixed in 114cf3c8): UNSERVABLE windows — Graph
+      // code 2637 "too much data" and raw 5xx on too-large windows — are handled INSIDE
+      // fetchInsightsForWindow by window-halving down to the 1-day floor, where a persistent 5xx
+      // is SKIPPED (returns [], a NORMAL return, not a throw). So an unservable window can never
+      // latch transientFailure; a pass only throws on genuinely transient conditions (timeout,
+      // network, throttle-shaped unknowns) which eventually clear — this chunk cannot re-run forever.
+      log.warn(
+        `[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] had transient pass ` +
+          `failure(s) — cursor HELD at reached=${reached}; will re-attempt this chunk next run`,
+      );
+      return;
+    }
+
+    // Chunk complete (no transient failures) → advance the floor and checkpoint (resumable).
     reached = chunkSince;
     await upsertCursorValue(pool, brandId, ciId, BACKFILL_CURSOR_RESOURCE, reached);
     chunksDone += 1;

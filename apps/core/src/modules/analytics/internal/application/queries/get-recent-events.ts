@@ -22,7 +22,7 @@
  */
 
 import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
-import { type BronzeReadDeps, ICEBERG_BRONZE, BRONZE_COLLECTOR_PREDICATE, hasSilver } from './_bronze-source.js';
+import { type BronzeReadDeps, COLLECTOR_EVENTS_VIEW, COLLECTOR_PREDICATE, hasSilver } from './_bronze-source.js';
 import { PIXEL_EVENT_IN } from './_pixel-events.js';
 
 export interface RecentEventRow {
@@ -125,8 +125,8 @@ export async function getRecentEvents(
                 json_extract_string(payload, '$.hashed_session_id')        AS session_id,
                 CASE WHEN json_extract_string(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent,
                 json_extract(payload, '$.properties')                      AS properties_json
-           FROM ${ICEBERG_BRONZE}
-          WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
+           FROM ${COLLECTOR_EVENTS_VIEW}
+          WHERE ${COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
             AND event_type IN (${PIXEL_EVENT_IN})
           ORDER BY occurred_at DESC
           LIMIT ${safeLimit}`,

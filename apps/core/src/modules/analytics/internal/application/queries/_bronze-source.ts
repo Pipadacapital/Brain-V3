@@ -1,43 +1,37 @@
 /**
- * _bronze-source.ts — shared helper for the operational-read Bronze source (ADR-0010).
+ * _bronze-source.ts — shared helper for the operational-read collector-events source.
  *
- * Operational reads (data/tracking health, recent events, orders) read raw Bronze events. Under
- * ADR-0010 the Kafka Connect Iceberg sink is the ONLY Bronze landing writer: the collector lane
- * lands in `iceberg.brain_bronze.collector_events_connect` (truly raw — payload + kafka coords only),
- * and these column-shaped reads go through the LIFT VIEW
- * `brain_bronze.collector_events_connect_lifted` (exposes event_id/brand_id/event_type/
- * occurred_at/ingested_at/correlation_id/payload). Bronze is APPEND-ONLY — dedup lives in Silver
- * (silver_collector_event MERGE on brand_id/event_id). Historical rows in the retired
- * brain_bronze.events / collector_events tables still exist as DATA but are NOT served here.
- * The read path goes through the metric-engine withSilverBrand seam, which injects the tenant
- * predicate at ${BRAND_PREDICATE} — so a query cannot omit brand isolation (the SAME mechanism the
- * Silver reads use; verified non-inert by the isolation-fuzz mutation test). When the serving tier
- * isn't wired (srPool absent), the reads return an honest no_data shape.
+ * REPOINTED Bronze → Silver (2026-07-20): these operational reads (data/tracking health, recent
+ * events) used to scan the RAW Bronze lift view `brain_bronze.collector_events_connect_lifted` —
+ * a full-table scan of the high-churn Kafka-Connect table with per-row JSON parsing. At scale that
+ * blew past the 25s serving timeout (504s). They now read the COMPACTED, deduped Silver serving view
+ * `brain_serving.mv_silver_collector_event` (canonicalized: event_id/event_type/occurred_at/
+ * ingested_at/payload + anonymous_id/device_id, MERGE-deduped on brand_id/event_id) — fast, and the
+ * canonical truth. The medallion-journey page keeps its own cheap Bronze *probe* (it must show the
+ * Bronze stage); it does NOT use this seam. The read path goes through the metric-engine
+ * withSilverBrand seam, which injects the tenant predicate at ${BRAND_PREDICATE} — so a query cannot
+ * omit brand isolation. When the serving tier isn't wired (srPool absent), reads return honest no_data.
  */
 
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 
-/** Deps for an operational read that sources Bronze from the serving tier (duckdb-serving). */
+/** Deps for an operational read that sources collector events from the serving tier (duckdb-serving). */
 export interface BronzeReadDeps extends EngineDeps {
-  /** Serving pool — required to read the Bronze lift view. Absent → honest no_data. */
+  /** Serving pool — required to read the collector-events view. Absent → honest no_data. */
   readonly srPool?: SilverPool;
 }
 
 /**
- * The Bronze collector source over duckdb-serving: the ADR-0010 lift view over the Kafka Connect
- * collector table. TWO-PART name — the lift view lives in the replica-LOCAL brain_bronze schema
- * (which shadows the same-named catalog namespace — the local-views-shadow-catalog resolution);
- * a 3-part iceberg.* name would bypass it and hit the raw (unlifted) catalog table. CONSTANT —
- * the legacy BRONZE_SOURCE env switch is REMOVED (connect is the only writer; there is nothing
- * to roll back to).
+ * The collector-events source over duckdb-serving: the COMPACTED Silver serving view (repointed off
+ * the slow raw-Bronze lift view). Standard brain_serving.mv_* serving name — the metric-engine seam
+ * injects ${BRAND_PREDICATE} for tenant isolation.
  */
-export const ICEBERG_BRONZE = 'brain_bronze.collector_events_connect_lifted';
+export const COLLECTOR_EVENTS_VIEW = 'brain_serving.mv_silver_collector_event';
 /**
- * Collector-lane predicate — the lift view is SINGLE-LANE (collector only), so this is a constant
- * no-op `TRUE`. Kept as an export so the callers' `AND ${BRONZE_COLLECTOR_PREDICATE}` SQL shape
- * stays uniform (`WHERE TRUE AND brand_id = ?`).
+ * Collector-lane predicate — the view is SINGLE-LANE (collector only), so this is a constant no-op
+ * `TRUE`. Kept as an export so the callers' `AND ${COLLECTOR_PREDICATE}` SQL shape stays uniform.
  */
-export const BRONZE_COLLECTOR_PREDICATE = 'TRUE';
+export const COLLECTOR_PREDICATE = 'TRUE';
 
 /**
  * True when the serving pool is wired (the only Bronze source now). Guards srPool presence so

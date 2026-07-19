@@ -95,6 +95,11 @@ namespaces:
   - name: stream-worker
     # No inbound flows besides monitoring (:8090 PodMonitor) — headless worker.
     allows: []
+  - name: transform-worker
+    # DR-007 GAP 6: the resident batch worker's namespace joined WITHOUT the AUD-INFRA-021
+    # default-deny posture. Headless — no inbound flows besides monitoring; kubelet liveness
+    # probes are node-originated (not cut by ingress-deny); Aurora/iceberg-rest/S3 are egress-side.
+    allows: []
   - name: pgbouncer
     allows:
       - name: app-db-clients

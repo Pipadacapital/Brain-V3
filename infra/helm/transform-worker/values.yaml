@@ -51,6 +51,13 @@ image:
 # entrypoint override is auditable in one place (the Dockerfile ENTRYPOINT is bronze_maintenance).
 command: ["python", "/opt/brain/duckdb/run_all.py", "resident"]
 
+# ── Serving-cache posture (DR-007 GAP 5, DECIDED 2026-07-19) ────────────────────────────────────
+# The retired v4-gold cron ended each run with a direct Redis eviction of the brand-scoped serving
+# cache (stream-worker image step). The resident loop has NO bust step — deliberately: the
+# per-dataset TTL tiers (serving-layer design, PR #341 era) are the staleness bound, and a bust
+# runner would add a second image/moving part to this chart for a window the TTLs already cap.
+# Revisit ONLY with evidence (a dashboard-staleness complaint traced to a tick-vs-TTL gap).
+
 probes:
   enabled: true
   # Liveness only — a headless batch worker has no readiness gate (it owns no Service/traffic). The

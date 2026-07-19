@@ -39,6 +39,10 @@ spec:
     # All other workload/platform prod apps stay manual-sync by design.
     automated:
       selfHeal: true
+      # DR-007: prune orphans. A template that stops rendering a CronWorkflow (e.g. the
+      # transformWorker.enabled suppression of v4-medallion) must DELETE it — the unpruned
+      # orphan kept an OLD-image core writer running for hours after the resident cutover.
+      prune: true
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

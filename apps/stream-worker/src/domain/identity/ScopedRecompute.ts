@@ -35,6 +35,9 @@ import { createHash } from 'node:crypto';
 //
 // NOTE: kept in sync with _gold_registry.py customer-grained entries. If a new customer-
 // grained mart is added to the registry, add its name here too.
+// DR-005: gold_customer_scores / gold_customer_health are RETIRED as physical marts (their columns
+// live on gold_customer_360; the mv_* views project it). The keys stay — they map to the serving
+// VIEW cache entries below, which remain live invalidation targets on identity change.
 export const CUSTOMER_GRAINED_MARTS = [
   'gold_customer_360',
   'gold_customer_scores',

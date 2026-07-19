@@ -22,8 +22,15 @@
  *               records_processed / estimated_total  (or "Collecting your data…")
  *               cursor_date "Data back to <date>"
  *   completed → count + achieved_depth_label
- *   partial   → count + failure_reason + retry button
- *   failed    → failure_reason + retry button
+ *   partial   → count + failure_reason
+ *   failed    → failure_reason
+ *
+ * Re-trigger (0127+): the depth-picker + trigger button is available whenever the caller
+ * is brand_admin+ and there is NO actively-running job — i.e. in the idle state AND in every
+ * TERMINAL state (completed / partial / failed). The single trigger control re-labels itself
+ * ("Retry Import" for partial/failed, "Import History" otherwise) so a user can always pick a
+ * new period and (re-)run a backfill. The server permits this: the overlap-lock only rejects
+ * when a job is queued/running, never for a terminal job.
  *
  * Error states:
  *   RECONNECT_REQUIRED      → alert with data-testid backfill-reconnect-required
@@ -59,6 +66,10 @@ import {
   providerMaxBackfillMonths,
   requestedWindowMsForValue,
 } from '@/components/connectors/backfill-depth';
+import {
+  triggerLabel,
+  shouldShowTriggerControl,
+} from '@/components/connectors/backfill-control-logic';
 import { useSessionRole } from '@/lib/hooks/use-session-role';
 import { BffApiError } from '@/lib/api/client';
 import { cn } from '@/lib/utils';
@@ -219,15 +230,14 @@ function ActiveProgress({ job }: { job: BackfillJobProgress }) {
 
 /**
  * TerminalState — renders completed / partial / failed with honest counts and labels.
+ *
+ * Status + failure-reason DISPLAY only. The re-trigger control is the depth-picker block in
+ * the main component (shown in terminal states too), so there is a single re-trigger button.
  */
 function TerminalState({
   job,
-  onRetry,
-  isRetrying,
 }: {
   job: BackfillJobProgress;
-  onRetry: () => void;
-  isRetrying: boolean;
 }) {
   const isCompleted = job.status === 'completed';
   const isFailed = job.status === 'failed';
@@ -288,23 +298,6 @@ function TerminalState({
           <span className="font-medium">{job.failure_reason}</span>
         </p>
       )}
-
-      {/* Retry for partial / failed (brand_admin only — handled by caller hiding the button) */}
-      {(job.status === 'partial' || job.status === 'failed') && (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onRetry}
-          disabled={isRetrying}
-          data-testid="backfill-trigger"
-          aria-label="Retry backfill import"
-        >
-          {isRetrying && (
-            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-          )}
-          {isRetrying ? 'Starting…' : 'Retry Import'}
-        </Button>
-      )}
     </div>
   );
 }
@@ -357,22 +350,12 @@ export function BackfillControl({ connectorId, provider = 'shopify', className }
     job && (job.status === 'queued' || job.status === 'running');
   const hasTerminalJob =
     job && (job.status === 'completed' || job.status === 'partial' || job.status === 'failed');
+  // The trigger control (picker + button) is visible in idle AND every terminal state.
+  const showTriggerControl = shouldShowTriggerControl(canTrigger, job?.status);
 
   function handleTrigger() {
     setTriggerError(null);
     // 'max' resolves to undefined → body-less POST → provider max (pre-picker behaviour).
-    trigger(requestedWindowMsForValue(provider, depthValue), {
-      onError: (err) => {
-        if (err instanceof BffApiError) {
-          setTriggerError(err);
-        }
-      },
-    });
-  }
-
-  function handleRetry() {
-    setTriggerError(null);
-    // Retry re-uses the last picked depth (state persists across the failed attempt).
     trigger(requestedWindowMsForValue(provider, depthValue), {
       onError: (err) => {
         if (err instanceof BffApiError) {
@@ -455,14 +438,8 @@ export function BackfillControl({ connectorId, provider = 'shopify', className }
         </div>
       )}
 
-      {/* ── Terminal job: completed / partial / failed ───────────────────── */}
-      {hasTerminalJob && canTrigger && (
-        <TerminalState
-          job={job}
-          onRetry={handleRetry}
-          isRetrying={isTriggering}
-        />
-      )}
+      {/* ── Terminal job: completed / partial / failed (status display only) ─ */}
+      {hasTerminalJob && canTrigger && <TerminalState job={job} />}
 
       {/* Terminal job visible to non-admins (read-only) */}
       {hasTerminalJob && !canTrigger && (
@@ -484,8 +461,9 @@ export function BackfillControl({ connectorId, provider = 'shopify', className }
         </div>
       )}
 
-      {/* ── Trigger button + depth picker (brand_admin+ only, idle or no job yet) ──────── */}
-      {canTrigger && !hasActiveJob && !hasTerminalJob && (
+      {/* ── Trigger button + depth picker (brand_admin+; idle OR terminal — hidden only
+             while a job is actively running so the user can always re-pick a period). ── */}
+      {showTriggerControl && (
         <div className="flex items-center gap-2">
           <label htmlFor="backfill-depth-picker" className="sr-only">
             History depth
@@ -512,7 +490,7 @@ export function BackfillControl({ connectorId, provider = 'shopify', className }
           onClick={handleTrigger}
           disabled={isTriggering}
           data-testid="backfill-trigger"
-          aria-label="Import order history"
+          aria-label={triggerLabel(job?.status).ariaLabel}
           aria-describedby="backfill-trigger-hint"
         >
           {isTriggering ? (
@@ -523,14 +501,14 @@ export function BackfillControl({ connectorId, provider = 'shopify', className }
           ) : (
             <>
               <Download className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
-              Import History
+              {triggerLabel(job?.status).text}
             </>
           )}
         </Button>
         </div>
       )}
 
-      {canTrigger && !hasActiveJob && !hasTerminalJob && (
+      {showTriggerControl && (
         <p
           id="backfill-trigger-hint"
           className="text-xs text-muted-foreground"

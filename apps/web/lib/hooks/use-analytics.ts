@@ -417,6 +417,15 @@ export function useCodMix() {
   });
 }
 
+/** useCodRto — the COD/RTO outcome funnel per currency (gold_cod_rto, DR-006). */
+export function useCodRto() {
+  return useQuery({
+    queryKey: [...ANALYTICS_QUERY_KEY, 'cod-rto'],
+    queryFn: () => analyticsApi.getCodRto(),
+    staleTime: 5 * 60_000,
+  });
+}
+
 /** useCheckoutFunnel — Shopflo abandoned-checkout funnel (REAL self-serve webhook). */
 export function useCheckoutFunnel() {
   return useQuery({

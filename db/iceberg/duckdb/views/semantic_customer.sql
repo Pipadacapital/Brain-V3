@@ -7,7 +7,7 @@
 --   • brain_serving.identity_current_v (LOCAL serving view) — SANCTIONED identity accessor (A.2.2/AMD-07); the
 --       identity timeline summary (identifier types currently present + count) is aggregated from it.
 --       NEVER read iceberg.brain_silver.silver_identity_map directly (identity-view-guard).
---   • iceberg.brain_gold.gold_customer_scores   — RFM segment membership (recency/frequency/monetary/churn_risk)
+--   • RFM segment membership (recency/frequency/monetary/churn_risk) — carried ON gold_customer_360 (DR-005; the scores mart is retired)
 --
 -- identity_basis: gold_customer_360 is built from the DETERMINISTIC identity spine only
 -- (§1.4 — probabilistic links are physically segregated and never reach revenue/customer facts),
@@ -52,11 +52,11 @@ SELECT
   c.churn_score,
   c.lifecycle_stage,
   c.journey_summary,
-  -- segment memberships (RFM) — from gold_customer_scores
-  s.recency_score,
-  s.frequency_score,
-  s.monetary_score,
-  s.churn_risk,
+  -- segment memberships (RFM) — carried on the 360 (DR-005)
+  c.recency_score,
+  c.frequency_score,
+  c.monetary_score,
+  c.churn_risk,
   -- identity_basis: deterministic spine only (§1.4). Constant, but explicit + honest.
   CAST('deterministic' AS varchar) AS identity_basis,
   c.updated_at
@@ -71,6 +71,4 @@ LEFT JOIN (
   -- LOCAL serving view (2-part name — DuckDB views live in the process, not the REST catalog)
   FROM brain_serving.identity_current_v iv
   GROUP BY iv.brand_id, iv.brain_id
-) ic ON ic.brand_id = c.brand_id AND ic.brain_id = c.brain_id
-LEFT JOIN iceberg.brain_gold.gold_customer_scores s
-  ON s.brand_id = c.brand_id AND s.brain_id = c.brain_id;
+) ic ON ic.brand_id = c.brand_id AND ic.brain_id = c.brain_id;

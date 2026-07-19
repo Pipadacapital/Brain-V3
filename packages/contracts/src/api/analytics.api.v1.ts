@@ -999,6 +999,38 @@ export const DeliveryTimeSchema = z.discriminatedUnion('state', [
 ]);
 export type DeliveryTime = z.infer<typeof DeliveryTimeSchema>;
 
+// ── DR-006 GET /v1/analytics/cod-rto — the COD/RTO outcome funnel per currency ──────────────────
+// @see apps/core/.../analytics/.../get-cod-rto.ts (money = bigint minor + sibling currency_code).
+// One row per (brand, currency) off gold_cod_rto: COD orders + at-risk COD cash, predicted-RTO
+// count, delivered vs RTO outcomes, and the checkout-prediction accuracy. Rates are integer
+// BASIS POINTS computed by the mart; NULL bps = honest insufficient-data (never a fake 0).
+
+export const CodRtoCurrencyDtoSchema = z.object({
+  currency_code: z.string(),
+  cod_orders: MinorUnitsSchema, // bigint → string (COD orders observed)
+  cod_amount_minor: MinorUnitsSchema, // bigint → string (at-risk COD cash, minor units)
+  predicted_rto: MinorUnitsSchema, // bigint → string (flagged RTO-risk at checkout)
+  actual_delivered: MinorUnitsSchema, // bigint → string (terminal delivered)
+  actual_rto: MinorUnitsSchema, // bigint → string (terminal RTO)
+  resolved: MinorUnitsSchema, // bigint → string (delivered + RTO — the rate base)
+  rto_rate_bps: z.number().nullable(), // integer basis points; null when resolved = 0
+  prediction_correct: MinorUnitsSchema, // bigint → string
+  prediction_evaluated: MinorUnitsSchema, // bigint → string
+  prediction_accuracy_bps: z.number().nullable(), // integer basis points; null when unevaluated
+  updated_at: z.string().nullable(), // mart refresh timestamp (as served)
+});
+export type CodRtoCurrencyDto = z.infer<typeof CodRtoCurrencyDtoSchema>;
+
+export const CodRtoSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('no_data'), generated_at: z.string().optional() }),
+  z.object({
+    state: z.literal('has_data'),
+    by_currency: z.array(CodRtoCurrencyDtoSchema),
+    generated_at: z.string().optional(),
+  }),
+]);
+export type CodRto = z.infer<typeof CodRtoSchema>;
+
 // ── P3 GET /v1/analytics/utm-source — the UTM / acquisition-SOURCE matrix ──────────────────────
 // @see apps/core/.../analytics/.../get-utm-source.ts (money = bigint minor + sibling currency_code).
 // One row per first-touch (source, medium): visitors / conversions / revenue / avg_ltv / repeat_rate.

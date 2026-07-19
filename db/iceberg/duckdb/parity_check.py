@@ -57,8 +57,6 @@ from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, connect
 GOLD_INCREMENTAL_MARTS: dict[str, tuple[list[str], list[str]]] = {
     "gold_customer_360": (["brand_id", "brain_id"], ["lifetime_value_minor", "order_count", "currency_code"]),
     "gold_order_economics": (["brand_id", "order_id"], ["net_revenue_minor", "gross_revenue_minor", "currency_code"]),
-    "gold_customer_health": (["brand_id", "brain_id"], ["health_score", "order_count"]),
-    "gold_customer_scores": (["brand_id", "brain_id"], ["score"]),
     "gold_customer_segments": (["brand_id", "brain_id"], ["segment"]),
     "gold_journey": (["brand_id", "journey_id"], ["touchpoint_count"]),
     "gold_journey_events": (["brand_id", "event_id"], ["seq"]),
@@ -69,7 +67,6 @@ GOLD_INCREMENTAL_MARTS: dict[str, tuple[list[str], list[str]]] = {
     "gold_marketing_attribution": (["brand_id", "channel"], ["attributed_revenue_minor", "currency_code"]),
     "gold_utm_source": (["brand_id", "utm_source"], ["revenue_minor", "currency_code"]),
     "gold_behavior": (["brand_id", "visitor_id"], ["event_count"]),
-    "gold_engagement": (["brand_id", "brain_id"], ["engagement_score"]),
     "gold_cohorts": (["brand_id", "cohort_month"], ["cohort_size"]),
     "gold_cohort_member": (["brand_id", "brain_id"], ["cohort_month"]),
     "gold_retention": (["brand_id", "cohort_month"], ["retained_count"]),

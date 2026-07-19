@@ -60,6 +60,8 @@ export type {
   DeliveryTime as AnalyticsDeliveryTimeResponse,
   DeliveryTimeCourierDto as DeliveryTimeCourier,
   DeliveryTimeBucketDto as DeliveryTimeBucket,
+  CodRto as AnalyticsCodRtoResponse,
+  CodRtoCurrencyDto as CodRtoCurrencyRow,
   UtmSource as AnalyticsUtmSourceResponse,
   UtmSourceRowDto as UtmSourceRow,
   CampaignAttribution as AnalyticsCampaignAttributionResponse,

@@ -295,8 +295,26 @@ export const META_BREAKDOWN_DIMS: Record<MetaBreakdownName, string[]> = {
  * field groups Meta forbids with that breakdown (documented above). The base pass always requests the
  * full set. Deduped + comma-joined.
  */
-function fieldSetForBreakdown(breakdown: MetaBreakdownName | null): string {
-  if (breakdown === null) return INSIGHTS_FIELDS;
+function fieldSetForBreakdown(
+  breakdown: MetaBreakdownName | null,
+  lightProjection = false,
+): string {
+  // LIGHT projection (backfill async-result-read 2637 fix): drop the two ad-creative-level extra tiers —
+  // VIDEO_METRIC_FIELDS + ENGAGEMENT_RANKING_FIELDS — from whatever the breakdown rule already computes.
+  // These are historically-null creative extras; IDENTITY + CORE + ACTION metrics (spend + all
+  // conversion/action arrays) are retained, so the backfill still lands spend + revenue truth. A large
+  // ad account 2637s ("reduce the amount of data") on the ASYNC RESULT READ purely on projection WIDTH,
+  // even at the 1-day floor where window-splitting can no longer help — narrowing the projection is the
+  // remedy. Composed WITH the breakdown-compatibility trimming: the base pass would be the FULL set, so
+  // light explicitly assembles IDENTITY + CORE + ACTION; a breakdown pass drops video/engagement on top
+  // of its existing action-breakdown trimming.
+  if (breakdown === null) {
+    if (lightProjection) {
+      // Base-grain light set = IDENTITY + CORE + ACTION only (drop VIDEO + ENGAGEMENT_RANKING).
+      return Array.from(new Set([...IDENTITY_FIELDS, ...CORE_METRIC_FIELDS, ...ACTION_METRIC_FIELDS])).join(',');
+    }
+    return INSIGHTS_FIELDS;
+  }
   const groups: string[][] = [IDENTITY_FIELDS, CORE_METRIC_FIELDS];
   if (breakdown === 'hourly') {
     // hourly ∩ video is incompatible → drop VIDEO; keep action COUNTS but drop ROAS/action_values arrays.
@@ -305,8 +323,11 @@ function fieldSetForBreakdown(breakdown: MetaBreakdownName | null): string {
     // demographic/geo/placement: keep action counts + video; drop ROAS + action_values (action-breakdown
     // compatibility). ROAS/action_values only reliably return at the base grain.
     groups.push(['actions', 'cost_per_action_type']);
-    groups.push(VIDEO_METRIC_FIELDS);
+    // LIGHT: additionally drop the video tier on top of the breakdown-compat trimming.
+    if (!lightProjection) groups.push(VIDEO_METRIC_FIELDS);
   }
+  // ENGAGEMENT_RANKING_FIELDS are never requested on a breakdown pass (ad-level-only), so light only
+  // affects the video tier here; the base-grain branch above handles the engagement drop.
   return Array.from(new Set(groups.flat())).join(',');
 }
 
@@ -451,19 +472,23 @@ export class MetaInsightsClient {
    * @param since      YYYY-MM-DD inclusive
    * @param until      YYYY-MM-DD inclusive
    * @param opts.asyncMode  when true, use the async ad_report_run path regardless of default
+   * @param opts.lightProjection  when true, request only IDENTITY + CORE + ACTION fields (drop the
+   *   VIDEO + ENGAGEMENT_RANKING tiers) — the backfill uses this so the large-account async result
+   *   read stops 2637-ing on projection width. Default false (the live repull keeps the FULL set).
    */
   async fetchInsightsFirstPage(
     level: 'campaign' | 'adset' | 'ad',
     since: string,
     until: string,
-    opts: { asyncMode?: boolean; breakdown?: MetaBreakdownName | null } = {},
+    opts: { asyncMode?: boolean; breakdown?: MetaBreakdownName | null; lightProjection?: boolean } = {},
   ): Promise<MetaInsightsPage> {
     const useAsync = opts.asyncMode ?? this.defaultAsyncMode;
     const breakdown = opts.breakdown ?? null;
+    const lightProjection = opts.lightProjection ?? false;
     if (useAsync) {
-      return this.fetchInsightsAsync(level, since, until, breakdown);
+      return this.fetchInsightsAsync(level, since, until, breakdown, lightProjection);
     }
-    return this.fetchInsightsSync(level, since, until, breakdown);
+    return this.fetchInsightsSync(level, since, until, breakdown, lightProjection);
   }
 
   // ── Synchronous path (small pulls) ─────────────────────────────────────────
@@ -473,9 +498,10 @@ export class MetaInsightsClient {
     since: string,
     until: string,
     breakdown: MetaBreakdownName | null = null,
+    lightProjection = false,
   ): Promise<MetaInsightsPage> {
     const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
-    const fields = fieldSetForBreakdown(breakdown);
+    const fields = fieldSetForBreakdown(breakdown, lightProjection);
     // FIREHOSE: a breakdown pass appends `&breakdowns=<comma-joined dims>`; the base pass omits it, so
     // base rows are byte-identical to the pre-firehose pull (no breakdown param → base grain unchanged).
     const breakdownParam = breakdown
@@ -501,9 +527,10 @@ export class MetaInsightsClient {
     since: string,
     until: string,
     breakdown: MetaBreakdownName | null = null,
+    lightProjection = false,
   ): Promise<MetaInsightsPage> {
     const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
-    const fields = fieldSetForBreakdown(breakdown);
+    const fields = fieldSetForBreakdown(breakdown, lightProjection);
     const breakdownParam = breakdown
       ? `&breakdowns=${encodeURIComponent(META_BREAKDOWN_DIMS[breakdown].join(','))}`
       : '';
@@ -609,14 +636,15 @@ export class MetaInsightsClient {
     since: string,
     until: string,
     breakdown: MetaBreakdownName | null = null,
-    opts: { asyncMode?: boolean } = {},
+    opts: { asyncMode?: boolean; lightProjection?: boolean } = {},
   ): Promise<MetaInsightsRawRow[]> {
     const asyncMode = opts.asyncMode ?? false;
+    const lightProjection = opts.lightProjection ?? false;
     try {
       const rows: MetaInsightsRawRow[] = [];
       // GET + cursor paging (async ad_report_run path when asyncMode, else the sync GET client default —
       // the proven-working path; see MODE note above).
-      let page = await this.fetchInsightsFirstPage(level, since, until, { breakdown, asyncMode });
+      let page = await this.fetchInsightsFirstPage(level, since, until, { breakdown, asyncMode, lightProjection });
       rows.push(...page.rows);
       while (page.nextUrl) {
         page = await this.fetchInsightsByUrl(page.nextUrl, level);
@@ -649,8 +677,8 @@ export class MetaInsightsClient {
         `[meta-insights-client] window ${since}..${until} too large (${reason}) ` +
         `— splitting at ${mid} and retrying each half (level=${level})`,
       );
-      const left = await this.fetchInsightsForWindow(level, since, mid, breakdown, { asyncMode });
-      const right = await this.fetchInsightsForWindow(level, isoNextDay(mid), until, breakdown, { asyncMode });
+      const left = await this.fetchInsightsForWindow(level, since, mid, breakdown, { asyncMode, lightProjection });
+      const right = await this.fetchInsightsForWindow(level, isoNextDay(mid), until, breakdown, { asyncMode, lightProjection });
       return [...left, ...right];
     }
   }

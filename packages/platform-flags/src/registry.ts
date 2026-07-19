@@ -97,13 +97,8 @@ export const PLATFORM_FLAGS = {
     spec: 'C.4',
     description: 'CAC/ROAS/executive marts read gold_measurement_* (parity-gated vs legacy).',
   },
-  'measurement.inventory_movement': {
-    wave: 'C',
-    spec: 'C.2.6',
-    description:
-      'Per-brand gold_measurement_inventory movement fact (derived from silver_inventory_level ' +
-      'level-deltas). OPTIONAL, default OFF → the movement fact is EMPTY for the brand.',
-  },
+  // 'measurement.inventory_movement' (C.2.6) RETIRED by DR-002: the inventory movement fact and its
+  // silver_inventory_level source were consumer-less and deleted (Bronze-replayable when a surface ships).
 
   // ── Wave D — semantic serving ───────────────────────────────────────────────
   'semantic.serving': {

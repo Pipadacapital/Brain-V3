@@ -6,8 +6,8 @@
  * withSilverBrand seam) and returns it as the treemap's leaf rows. Bounded top-N read (D-2 allowed —
  * the mart already holds the per-product revenue; no ad-hoc aggregation here).
  *
- * HONESTY NOTE — there is NO category dimension in the Gold/Silver marts today (neither
- * gold_product_detail nor silver_product carries a category/product_type column; the storefront
+ * HONESTY NOTE — there is NO category dimension in the Gold/Silver marts today
+ * (gold_product_detail carries no category/product_type column; the storefront
  * order line does not surface one). Rather than fabricate a category, the treemap rolls up at the
  * AVAILABLE granularity — the product — sized by revenue_minor. When a category attribute is later
  * landed on the mart, this query rolls up by it without changing the response shape (each row is a

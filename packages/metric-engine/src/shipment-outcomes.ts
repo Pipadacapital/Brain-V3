@@ -9,8 +9,8 @@
  * shared @brain/logistics-status terminal_class authority, so this one metric serves every source.
  *
  * ── WHY THIS LIVES HERE, NOT IN dbt (ADR-004) ──────────────────────────────────
- * dbt produced the ADDITIVE marts silver_shipment_event (per-transition) + silver_shipment
- * (latest-state). "RTO%" and the courier/pincode rollups are NON-additive (COUNT + ratio + rank).
+ * dbt produced the ADDITIVE mart silver_shipment (latest-state; since DR-002 the per-transition
+ * derivation is folded inside its job). "RTO%" and the courier/pincode rollups are NON-additive (COUNT + ratio + rank).
  * Non-additive math lives in the metric-engine, never in a dbt mart.
  *
  * ── INTEGER-ONLY RATE ──────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ test_run_tier_counting.py — run_all.run_tier counts ONLY final-pass failures.
 
 The silver tier runs the rest jobs twice so a job that reads a not-yet-produced sibling on pass 1 converges
 on pass 2. A cold/post-flush rebuild fails pass 1 on siblings not yet created (silver_touchpoint,
-silver_shipment_event, …). Summing the transient pass-1 failures made a fully-converged run exit non-zero,
+silver_touchpoint, …). Summing the transient pass-1 failures made a fully-converged run exit non-zero,
 which failed the tier and BLOCKED the downstream gold tier (prod 2026-07-18). run_tier must count a soft
 job as failed only if it still fails on the FINAL (authoritative) pass.
 

@@ -78,12 +78,8 @@ GOLD_INCREMENTAL_MARTS: dict[str, tuple[list[str], list[str]]] = {
     "gold_executive_metrics": (["brand_id", "metric_date"], ["revenue_minor", "currency_code"]),
     "gold_cod_rto": (["brand_id", "order_id"], ["rto_flag"]),
     "gold_delivery_time": (["brand_id", "shipment_id"], ["delivery_hours"]),
-    "gold_logistics_performance": (["brand_id", "courier"], ["shipment_count"]),
     "gold_product_economics": (["brand_id", "product_id"], ["margin_minor", "currency_code"]),
     "gold_measurement_fees": (["brand_id", "settlement_id"], ["fee_minor", "currency_code"]),
-    "gold_measurement_settlements": (["brand_id", "settlement_id"], ["settled_minor", "currency_code"]),
-    "gold_measurement_inventory": (["brand_id", "product_id"], ["on_hand_units"]),
-    "gold_settlement_summary": (["brand_id", "settlement_id"], ["net_minor", "currency_code"]),
 }
 
 

@@ -110,7 +110,7 @@ def _exists(con, fq: str) -> bool:
 def build(con):
     # Spark partitions bucket(64, brand_id), days(occurred_at). DuckDB's Iceberg writer does not implement
     # the days() transform, so we keep the brand-bucket anchor only (physical layout only — no effect on the
-    # rows/PK/parity). Matches the established DuckDB gold pattern (e.g. gold_measurement_refunds).
+    # rows/PK/parity). Matches the established DuckDB gold pattern (e.g. gold_measurement_costs).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
 
     # Empty-source guard: if silver_settlement is ABSENT the empty target is already created — nothing to

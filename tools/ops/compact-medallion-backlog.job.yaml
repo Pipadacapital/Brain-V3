@@ -1,0 +1,62 @@
+# One-off UNCAPPED medallion compaction — clears the fragmentation backlog that the deadline-bounded
+# v4-maintenance crons keep SIGTERM-ing on (the vicious cycle: backlog > deadline → exit 143 → backlog
+# grows). Running the SAME maintenance client (medallion_maintenance.py) once with NO deadline compacts
+# brain_silver + brain_gold fully; afterward the regular crons only see a small delta and finish in time.
+#
+# WHY THIS FIXES THE SLOW APIs: funnel/engagement/etc. scan silver_touchpoint (partitioned by
+# day(occurred_at) — pruning already works) but its day-partitions are fragmented into many tiny files,
+# so a 30-day COUNT(DISTINCT) opens thousands of files → ~23s. Compacted partitions → few files → seconds.
+# No parity risk — compaction only rewrites file LAYOUT, never row values.
+#
+# MODE=maintain: optimize (COW compaction, skip-heuristic) + expire_snapshots (7-day TTL). ORPHAN_FILES=0
+# (skip the deferred/no-op orphan sweep — keep it to compaction+expiry). Does NOT touch the maintenance
+# CRON config (that lane-merge fix is owned separately) — this is a pure backlog-clear.
+#
+# RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/compact-medallion-backlog.job.yaml
+# WATCH: kubectl --context brain-prod-ssm -n transform-worker logs -f job/compact-medallion-backlog
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: compact-medallion-backlog
+  namespace: transform-worker
+  labels:
+    app.kubernetes.io/part-of: brain
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  # NO activeDeadlineSeconds — this is the uncapped run that clears the backlog the capped crons can't.
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      serviceAccountName: brain-prod-transform-worker   # IRSA brain-prod-jobs — medallion catalog RW
+      restartPolicy: Never
+      nodeSelector:
+        karpenter.sh/nodepool: streaming
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: compact
+          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: core-env       # ICEBERG_REST_URI + ICEBERG_WAREHOUSE + AWS_* (IRSA chain)
+          env:
+            - { name: MODE, value: "maintain" }
+            - { name: MAINT_NAMESPACES, value: "brain_silver,brain_gold" }
+            - { name: ORPHAN_FILES, value: "0" }
+          resources:
+            requests: { cpu: "2", memory: "6Gi" }
+            limits:   { cpu: "3", memory: "8Gi" }
+          command: ["python", "/opt/brain/duckdb/maintenance/medallion_maintenance.py"]

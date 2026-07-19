@@ -439,46 +439,52 @@ async function backfillConnector(params: RepullParams): Promise<void> {
     const candidateSince = isoDate(addDays(new Date(`${chunkUntil}T00:00:00.000Z`), -BACKFILL_CHUNK_DAYS));
     const chunkSince = candidateSince < floor ? floor : candidateSince;
 
-    try {
-      // FIREHOSE: backfill covers base + every breakdown pass identically to the live repull (extra loop).
-      for (const breakdown of META_BREAKDOWN_PASSES) {
-        for (const level of META_LEVELS) {
-          const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
-          // Force the async ad_report_run path — historical month-wide pulls are large.
-          let page = await client.fetchInsightsFirstPage(level, chunkSince, chunkUntil, {
+    // FIREHOSE: backfill covers base + every breakdown pass identically to the live repull (extra loop).
+    // Each (breakdown,level) is its OWN non-fatal unit (mirrors the live repull loop ~239-282): a single
+    // unservable pass (e.g. ad-level demographic, which Meta answers with code 2637 / a raw 5xx) is
+    // SKIPPED, the chunk still completes, its cursor advances, and the backfill PROGRESSES to the next
+    // 30-day chunk instead of aborting the whole run and looping forever on the same first chunk.
+    // fetchInsightsForWindow does all the window-halving + paging internally (asyncMode forces the async
+    // ad_report_run path — historical month-wide pulls are large) and, at the 1-day floor, a persistent
+    // 5xx is skipped (returns []) so one unservable window never fails the pass.
+    for (const breakdown of META_BREAKDOWN_PASSES) {
+      for (const level of META_LEVELS) {
+        const canonicalLevel: AdSpendLevel = level === 'adset' ? 'adset' : (level as AdSpendLevel);
+        try {
+          const rows = await client.fetchInsightsForWindow(level, chunkSince, chunkUntil, breakdown, {
             asyncMode: true,
-            breakdown,
           });
-          while (true) {
-            const { emitted } = await emitPage({
-              rows: page.rows,
-              brandId,
-              ciId,
-              canonicalLevel,
-              breakdown,
-              accountCurrency: accountMeta.currencyCode,
-              accountTz: accountMeta.timezoneName,
-              producer,
-              pool,
-            });
-            totalEmitted += emitted;
-            if (!page.nextUrl) break;
-            page = await client.fetchInsightsByUrl(page.nextUrl, level);
+          const { emitted } = await emitPage({
+            rows,
+            brandId,
+            ciId,
+            canonicalLevel,
+            breakdown,
+            accountCurrency: accountMeta.currencyCode,
+            accountTz: accountMeta.timezoneName,
+            producer,
+            pool,
+          });
+          totalEmitted += emitted;
+        } catch (err) {
+          if (String(err).includes(META_RATE_LIMITED)) {
+            log.error(`[meta-backfill] connector=${ciId} RateLimited — checkpoint + retry next run (reached=${reached})`);
+            return; // cursor already checkpointed at the last completed chunk; resume next run
           }
+          if (String(err).includes(META_AUTH_ERROR)) {
+            recordConnectorAuthRejected('meta');
+            log.error(`[meta-backfill] connector=${ciId} auth error — RECONNECT_REQUIRED`);
+            return;
+          }
+          // ANY OTHER error (2637 at the 1-day floor, non-5xx hard error, access-forbidden, async timeout,
+          // …) is NON-FATAL for this pass — log + continue so the chunk still completes and advances.
+          log.warn(
+            `[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] level=${level} ` +
+              `breakdown=${breakdown ?? 'base'} pass error (non-fatal) — continuing`,
+            { err },
+          );
         }
       }
-    } catch (err) {
-      if (String(err).includes(META_RATE_LIMITED)) {
-        log.error(`[meta-backfill] connector=${ciId} RateLimited — checkpoint + retry next run (reached=${reached})`);
-        return; // cursor already checkpointed at the last completed chunk; resume next run
-      }
-      if (String(err).includes(META_AUTH_ERROR)) {
-        recordConnectorAuthRejected('meta');
-        log.error(`[meta-backfill] connector=${ciId} auth error — RECONNECT_REQUIRED`);
-        return;
-      }
-      log.error(`[meta-backfill] connector=${ciId} chunk [${chunkSince},${chunkUntil}] error — retry next run`, { err });
-      return;
     }
 
     // Chunk complete → advance the floor and checkpoint (resumable).

@@ -5,7 +5,7 @@
  *
  * Thin query wrapper around computeJourneyEventsCurrent (metric engine), reading ONE resolved
  * customer's CURRENT journey-ledger page from brain_serving.mv_journey_events_current
- * (is_current = true over iceberg.brain_gold.journey_events) through the withSilverBrand seam.
+ * (is_current = true over iceberg.brain_gold.gold_journey_events) through the withSilverBrand seam.
  * The customer is identified by brain_id (the RESOLVED identity — the same key Customer 360
  * uses), NOT brain_anon_id: an identity merge re-versions the ledger onto the canonical
  * brain_id, so this read always shows the post-merge canonical timeline. Newest-first,

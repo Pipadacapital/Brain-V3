@@ -669,8 +669,14 @@ module "irsa_spark_jobs" {
   oidc_provider_url    = module.eks.oidc_provider_url
   namespace            = "argo"
   service_account_name = "brain-jobs"
-  environment          = local.environment
-  project              = local.project
+  # ADR-0016 resident warm transform-worker: the brain-prod-transform-worker SA (ns transform-worker)
+  # runs the IDENTICAL medallion silver/gold jobs as the argo brain-jobs cron and reuses THIS role
+  # (its chart pins eks.amazonaws.com/role-arn: brain-prod-jobs). Without this second subject the
+  # resident's AssumeRoleWithWebIdentity 403s → no S3 creds → Bronze reads fail HTTP 403 → ticks no-op.
+  # NN-3 safe: an exact second subject, never a wildcard.
+  additional_subjects = ["system:serviceaccount:transform-worker:brain-prod-transform-worker"]
+  environment         = local.environment
+  project             = local.project
   policy_arns = [
     module.s3_iceberg.spark_medallion_rw_policy_arn,
     # journey-stitch-from-identity (runs as brain-jobs via the cron chart)

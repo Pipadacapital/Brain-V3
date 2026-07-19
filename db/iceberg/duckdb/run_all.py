@@ -454,6 +454,96 @@ def _start_health_server(state: "_LoopState", port: int) -> HTTPServer:
     return httpd
 
 
+# ── DR-007 P1: boot-time dependency preflight (kills serial failure discovery) ──────────────────────
+# The 2026-07-19 resident cutover CrashLooped through FOUR serially-discovered environment gaps
+# (missing secret → stale image → no PG env → IRSA trust), each visible only after fixing the prior
+# one in prod. This preflight checks EVERY external dependency at boot and reports ALL failures in
+# ONE diagnosis before the loop starts — a broken contract is one complete CrashLoop log, not a hunt.
+# TRANSFORM_PREFLIGHT=0 disables entirely; TRANSFORM_PREFLIGHT_SKIP="pg,rest,warehouse,env" skips
+# individual probes (each read-only). Probes are separate functions so tests can stub them.
+
+def _preflight_enabled() -> bool:
+    return os.environ.get("TRANSFORM_PREFLIGHT", "1").strip().lower() not in ("0", "false", "off")
+
+
+def _preflight_skips() -> set:
+    return {t.strip() for t in os.environ.get("TRANSFORM_PREFLIGHT_SKIP", "").split(",") if t.strip()}
+
+
+def _probe_env() -> list:
+    fails = []
+    if not os.environ.get("ICEBERG_REST_URI", "").strip():
+        fails.append("env: ICEBERG_REST_URI unset — catalog attach would fall back to the dev default")
+    if not (os.environ.get("SILVER_PG_JDBC_URL") or os.environ.get("DATABASE_URL_DIRECT")
+            or os.environ.get("DATABASE_URL")):
+        fails.append("env: no PG source (SILVER_PG_JDBC_URL / DATABASE_URL[_DIRECT]) — derive-pg-env.sh did not run?")
+    return fails
+
+
+def _probe_pg() -> list:
+    """Connect + SELECT 1 on the leader-lock DSN (the same derivation _LeaderLock uses)."""
+    try:
+        import psycopg  # noqa: E402
+        dsn = _LeaderLock(LEADER_LOCK_TRANSFORM_WORKER)._dsn()
+        with psycopg.connect(dsn, connect_timeout=10) as conn:
+            conn.execute("SELECT 1")
+        return []
+    except Exception as exc:  # noqa: BLE001 — every failure is a diagnosis line, never a crash here
+        return [f"pg: leader-lock DSN unreachable — {str(exc)[:160]}"]
+
+
+def _probe_rest() -> list:
+    """GET /v1/config on the Iceberg REST catalog (the attach handshake, without attaching)."""
+    try:
+        import urllib.request  # noqa: E402
+        base = os.environ.get("ICEBERG_REST_URI", "http://iceberg-rest:8181").rstrip("/")
+        with urllib.request.urlopen(f"{base}/v1/config", timeout=10) as r:  # noqa: S310 — in-cluster http
+            r.read(1)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        return [f"rest: Iceberg REST catalog unreachable — {str(exc)[:160]}"]
+
+
+def _probe_warehouse(shared) -> list:
+    """One tiny scan through the ATTACHED catalog — exercises REST metadata + S3 data-file reads with
+    the pod's real credentials (the exact IRSA-403 failure path of 2026-07-19). An absent table is a
+    PASS (fresh env — the catalog round-trip itself succeeded); auth/network errors are failures."""
+    probe = f"{_catalog.CATALOG}.{_catalog.BRONZE_NAMESPACE}.collector_events_connect"
+    try:
+        shared.execute(f"SELECT count(*) FROM {probe};").fetchone()
+        return []
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if "does not exist" in msg or "not found" in msg.lower():
+            return []  # fresh env: catalog answered, table simply absent — the dependency is healthy
+        return [f"warehouse: probe read of {probe} failed — {str(exc)[:200]}"]
+
+
+def _run_preflight(shared) -> int:
+    """Run every non-skipped probe, print ONE complete diagnosis. Returns the failure count."""
+    if not _preflight_enabled():
+        print("▷ preflight: disabled (TRANSFORM_PREFLIGHT=0)", flush=True)
+        return 0
+    skips = _preflight_skips()
+    failures = []
+    for name, probe in (("env", _probe_env), ("pg", _probe_pg), ("rest", _probe_rest)):
+        if name in skips:
+            print(f"▷ preflight: {name} skipped", flush=True)
+            continue
+        failures += probe()
+    if "warehouse" in skips:
+        print("▷ preflight: warehouse skipped", flush=True)
+    else:
+        failures += _probe_warehouse(shared)
+    if failures:
+        print(f"✗ PREFLIGHT FAILED — {len(failures)} broken dependencies (fix ALL, then redeploy):", flush=True)
+        for f in failures:
+            print(f"  ✗ {f}", flush=True)
+    else:
+        print("✓ preflight: env + pg + rest + warehouse OK", flush=True)
+    return len(failures)
+
+
 def run_resident() -> int:
     """The resident warm micro-batch loop (ADR-0016 P2.2). Holds ONE warm DuckDB connection + attached
     catalog across ticks; every TRANSFORM_TICK_MS runs run_one_tick UNDER the leader lock; drains the
@@ -476,7 +566,13 @@ def run_resident() -> int:
     )
 
     # THE ONE ATTACH — held warm for the process lifetime; every tick reuses it (zero per-tick cold start).
-    shared = _SharedConn(_catalog.connect())
+    try:
+        shared = _SharedConn(_catalog.connect())
+    except Exception as exc:  # noqa: BLE001 — DR-007: attach failure is a preflight-grade diagnosis
+        print(f"✗ PREFLIGHT FAILED — catalog attach: {str(exc)[:200]}", flush=True)
+        return 1
+    if _run_preflight(shared) > 0:
+        return 1  # CrashLoop with the COMPLETE dependency diagnosis above (DR-007 P1)
     _patch_connect(shared)
     leader = _LeaderLock(LEADER_LOCK_TRANSFORM_WORKER)
 

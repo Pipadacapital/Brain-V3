@@ -12,7 +12,12 @@ environment: prod
 # and remains the SOLE writer of the identity-owned Silver marts. The resident runs CORE-ONLY
 # (TRANSFORM_CORE_ONLY=1, worker.coreOnly below) so it never double-writes those tables. Resident lock
 # 910_005 (core) vs v4-identity lock 910_004 (identity) — two tables, two locks, single-writer each.
-enabled: true
+#
+# REVERTED TO CRON (2026-07-20, owner decision "simple cron, robust"): the warm resident kept 400ing on
+# the high-churn Kafka-Connect Bronze table collector_events_connect (it held stale snapshot metadata
+# across ticks — the cold */5 cron re-reads fresh each run and never hit this). Simplicity + robustness
+# over 45s freshness: resident OFF, v4-medallion cron back ON (cronworkflows transformWorker.enabled=false).
+enabled: false
 image:
   # Same brain-duckdb-prod image the cronworkflows medallion steps run (sparkV4.image in
   # cronworkflows/values-prod). MUST be an image whose db/iceberg/duckdb/run_all.py carries the

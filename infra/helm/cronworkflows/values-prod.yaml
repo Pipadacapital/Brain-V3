@@ -90,8 +90,11 @@ sparkV4:
 # resident runs CORE-ONLY (TRANSFORM_CORE_ONLY=1) so it never double-writes the identity marts. Two
 # tables, two locks, single-writer each. REVERSIBILITY: set this false AND transform-worker enabled=false
 # to restore exactly today's behaviour (v4-medallion cron owns core, v4-identity owns identity).
+# REVERTED (2026-07-20, "simple cron, robust"): false → v4-medallion cron is the CORE writer again.
+# The warm resident 400'd on the high-churn collector_events_connect Bronze (stale warm metadata); the
+# cold */5 cron reads fresh each run and is robust. Paired with transform-worker enabled=false.
 transformWorker:
-  enabled: true
+  enabled: false
 envSecretName: core-env
 serviceAccount:
   name: brain-jobs

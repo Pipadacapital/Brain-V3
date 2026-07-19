@@ -6,27 +6,28 @@ SPEC:C.2.4 per-SKU COGS dimension (Brain V4 Wave C). The brand-configured cost-o
 gold_measurement_costs (and gold_order_economics CM1) joins order lines against. Additive Gold
 dimension; no reader repointed.
 
-SOURCE (config tier, operational Postgres): billing.cost_input WHERE scope='sku' AND cost_type='cogs'
-(the governed, RLS-isolated cost seam, migration 0055). amount_minor is the per-unit COGS in bigint
-minor units + currency_code (char(3)); pct_bps rows are NOT product costs (a percentage-of-revenue
-cost is a variable fee handled elsewhere) so they are excluded here. effective_from/effective_to
-become valid_from/valid_to (an open cost has valid_to = NULL → current). cost_input_id →
-source_event_id; source_system is the literal 'cost_input'.
+SOURCE (config tier, operational Postgres): billing.product_cost_sheet — the brand-uploaded C.2.4
+per-SKU cost sheet (0126, renamed out of public by 0143; RLS-isolated, bi-temporal with a DB-level
+no-overlap constraint). DR-003: this job previously read billing.cost_input (scope='sku',
+cost_type='cogs' — the 0055 rate-config ancestor), which the CSV upload path never wrote, so
+uploaded COGS could not reach the economics chain. The sheet is the SOLE per-SKU COGS authority;
+cost_input remains the RATE-config seam (pct_bps / global / category) read by contribution margin.
+cost_minor is per-unit COGS in bigint minor units + currency_code; valid_from/valid_to map direct
+(open cost → valid_to NULL); the sheet's own source_system/source_event_id project through;
+cost_confidence = 'Trusted' (brand-provided actuals; taxonomy Trusted|Estimated|Insufficient).
 
 MONEY : cost_minor bigint minor units + currency_code, per-currency, never blended/float. brand_id first.
 KEY   : (brand_id, sku, valid_from) — a SKU may have a cost history (re-costing); each interval is one row.
 
-── PG portability (DuckDB vs Spark JDBC) ────────────────────────────────────────────────────────────────
-The Spark job reads Postgres over the JDBC driver (superuser ETL read). This DuckDB port reads the SAME
-query through the DuckDB `postgres` extension (ATTACH … TYPE postgres, READ_ONLY) — mirroring
-gold_contribution_margin.py. When Postgres is UNREACHABLE — the parallel-run parity harness / prod-local
-posture where only iceberg-rest + MinIO are up — the read degrades GRACEFULLY: the job still creates the
-correct EMPTY Gold dimension and exits clean. This is parity-equivalent to the current live data, whose
-billing.cost_input has 0 sku/cogs rows → the Spark job itself writes an EMPTY dimension.
+── PG portability ───────────────────────────────────────────────────────────────────────────────────────
+Reads Postgres through the DuckDB `postgres` extension (ATTACH … TYPE postgres, READ_ONLY) — mirroring
+gold_contribution_margin.py. When Postgres is UNREACHABLE — the parity harness / prod-local posture
+where only iceberg-rest + MinIO are up — the read degrades GRACEFULLY: the job still creates the
+correct EMPTY Gold dimension and exits clean (equivalent to a brand with no uploaded cost sheet).
 
-NO Iceberg Silver/Gold source: this dimension is sourced entirely from operational Postgres (the SAME as
-the Spark job — a pure PG-JDBC read, no lakehouse input). Configuring a per-SKU cost (POST /api/v1/costs,
-scope='sku') populates it on the next refresh with no code change.
+NO Iceberg Silver/Gold source: this dimension is sourced entirely from operational Postgres (a pure
+PG read, no lakehouse input). Uploading the brand cost sheet (CSV, POST /api/v1/product-costs lane)
+populates it on the next refresh with no code change.
 
 CAVEATS vs the Spark job (parity-preserving):
   - QUARANTINE: none — the Spark job has NO Stage-1/quarantine side-write here (reads governed PG config).
@@ -102,9 +103,8 @@ def _try_attach_pg(con) -> bool:
     """Attach operational Postgres READ-ONLY as `pg` via the DuckDB postgres extension.
 
     Returns True on success. On ANY failure (extension missing, PG unreachable — the parity-harness /
-    prod-local posture) returns False and the job writes the correct EMPTY dimension (parity-equivalent
-    to the Spark output whenever billing.cost_input has no sku/cogs rows — the current live data).
-    Best-effort, non-fatal.
+    prod-local posture) returns False and the job writes the correct EMPTY dimension (equivalent to a
+    brand that has uploaded no cost sheet). Best-effort, non-fatal.
     """
     try:
         con.execute("INSTALL postgres; LOAD postgres;")
@@ -129,37 +129,32 @@ def build(con):
         print(f"[gold-product-costs] PG unreachable — wrote empty {TABLE}, exiting", flush=True)
         return 0
 
-    # Register the PG source as a temp view — mirrors the Spark JDBC subquery verbatim:
-    #   scope='sku' AND cost_type='cogs' AND amount_minor IS NOT NULL AND scope_ref <> '' (a real SKU).
-    # pct_bps rows are excluded (a percentage-of-revenue cost is a variable fee, not a product cost).
-    # If billing.cost_input is absent/unreadable, degrade to empty (best-effort) and write the empty mart.
+    # Register the PG source as a temp view — the C.2.4 cost sheet, column-for-column (DR-003).
+    # If billing.product_cost_sheet is absent/unreadable, degrade to empty (best-effort) and write
+    # the empty mart.
     try:
         con.execute("""
             CREATE OR REPLACE TEMP VIEW _product_costs_src AS
             SELECT
-                CAST(brand_id AS VARCHAR)  AS brand_id,
-                scope_ref                  AS sku,
-                CAST(amount_minor AS BIGINT) AS cost_minor,
+                CAST(brand_id AS VARCHAR)   AS brand_id,
+                sku,
+                CAST(cost_minor AS BIGINT)  AS cost_minor,
                 currency_code,
-                CAST(effective_from AS DATE) AS valid_from,
-                CAST(effective_to   AS DATE) AS valid_to,
-                cost_confidence,
-                CAST(cost_input_id AS VARCHAR) AS source_event_id
-            FROM pg.billing.cost_input
-            WHERE scope = 'sku'
-              AND cost_type = 'cogs'
-              AND amount_minor IS NOT NULL
-              AND scope_ref IS NOT NULL
-              AND scope_ref <> '';
+                CAST(valid_from AS DATE)    AS valid_from,
+                CAST(valid_to   AS DATE)    AS valid_to,
+                'Trusted'                   AS cost_confidence,
+                source_system,
+                CAST(source_event_id AS VARCHAR) AS source_event_id
+            FROM pg.billing.product_cost_sheet
+            WHERE sku IS NOT NULL AND sku <> '' AND cost_minor IS NOT NULL;
         """)
     except Exception as exc:  # noqa: BLE001 — table absent/unreadable → empty dimension, exit clean
-        print(f'{{"job":"gold-product-costs","pg":"cost_input-unreadable","detail":"{str(exc)[:120]}",'
+        print(f'{{"job":"gold-product-costs","pg":"product_cost_sheet-unreadable","detail":"{str(exc)[:120]}",'
               f'"fallback":"empty dimension"}}', flush=True)
         return 0
 
-    # Project to the mart shape. source_system is the literal 'cost_input'; updated_at is UTC now().
-    # brand_id/sku/valid_from must be non-NULL (the PK) — the Spark job guards brand_id/sku; valid_from
-    # is NOT NULL in the source (effective_from), guarded here too for the mart's NOT NULL contract.
+    # Project to the mart shape. source_system/source_event_id come from the sheet (idempotent CSV
+    # versioning); updated_at is UTC now(). brand_id/sku/valid_from non-NULL (the mart PK).
     staged = f"""
         SELECT
             brand_id,
@@ -169,7 +164,7 @@ def build(con):
             CAST(valid_from AS DATE)     AS valid_from,
             CAST(valid_to   AS DATE)     AS valid_to,
             cost_confidence,
-            'cost_input'                 AS source_system,
+            source_system,
             source_event_id,
             now() AT TIME ZONE 'UTC'     AS updated_at
         FROM _product_costs_src

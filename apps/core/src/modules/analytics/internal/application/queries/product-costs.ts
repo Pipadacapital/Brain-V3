@@ -1,6 +1,6 @@
 // SPEC:C.2.4
 /**
- * product-costs.ts — CSV ingest + versioned per-SKU cost sheet (gold_product_costs, 0126).
+ * product-costs.ts — CSV ingest + versioned per-SKU cost sheet (billing.product_cost_sheet — renamed from public.gold_product_costs by 0143/DR-003).
  *
  * SPEC:C.2.4 — the brand-uploaded COGS source that feeds Wave C's gold_measurement_costs /
  * gold_order_economics when the connector catalog carries no cost field. `cost_input` (0055) is the
@@ -212,13 +212,13 @@ export async function ingestProductCosts(
         const id = productCostId(brandId, r.sku, r.currency_code, r.valid_from);
         // Does this exact version already exist?
         const existing = await client.query<{ product_cost_id: string }>(
-          `SELECT product_cost_id FROM gold_product_costs
+          `SELECT product_cost_id FROM billing.product_cost_sheet
             WHERE brand_id = $1 AND product_cost_id = $2 FOR UPDATE`,
           [brandId, id],
         );
         if (existing.rowCount && existing.rowCount > 0) {
           await client.query(
-            `UPDATE gold_product_costs
+            `UPDATE billing.product_cost_sheet
                 SET cost_minor = $3, valid_to = $4, source_system = $5, source_event_id = $6, updated_at = NOW()
               WHERE brand_id = $1 AND product_cost_id = $2`,
             [brandId, id, r.cost_minor, r.valid_to, 'cost_sheet_csv', source],
@@ -228,7 +228,7 @@ export async function ingestProductCosts(
         }
         // New version — reject if it overlaps a STORED version of the same (sku, currency).
         const clash = await client.query<{ valid_from: string; valid_to: string | null }>(
-          `SELECT valid_from::text, valid_to::text FROM gold_product_costs
+          `SELECT valid_from::text, valid_to::text FROM billing.product_cost_sheet
             WHERE brand_id = $1 AND sku = $2 AND currency_code = $3
               AND daterange(valid_from, valid_to, '[)') && daterange($4::date, $5::date, '[)')`,
           [brandId, r.sku, r.currency_code, r.valid_from, r.valid_to],
@@ -243,7 +243,7 @@ export async function ingestProductCosts(
           continue;
         }
         await client.query(
-          `INSERT INTO gold_product_costs
+          `INSERT INTO billing.product_cost_sheet
              (brand_id, product_cost_id, sku, cost_minor, currency_code, valid_from, valid_to, source_system, source_event_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [brandId, id, r.sku, r.cost_minor, r.currency_code, r.valid_from, r.valid_to, 'cost_sheet_csv', source],
@@ -272,7 +272,7 @@ export async function listProductCosts(brandId: string, deps: EngineDeps): Promi
       `SELECT sku, cost_minor::text AS cost_minor, currency_code,
               valid_from::text AS valid_from, valid_to::text AS valid_to,
               source_system, source_event_id
-         FROM gold_product_costs
+         FROM billing.product_cost_sheet
         WHERE brand_id = $1 AND valid_to IS NULL
         ORDER BY sku, currency_code`,
       [brandId],

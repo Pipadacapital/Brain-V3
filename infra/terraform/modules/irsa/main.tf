@@ -43,6 +43,18 @@ variable "service_account_name" {
   type        = string
 }
 
+variable "additional_subjects" {
+  description = <<-EOT
+    Extra fully-qualified OIDC subjects ("system:serviceaccount:<ns>:<sa>") allowed to assume this
+    role, BESIDES the primary namespace/service_account_name. NN-3 SAFE: these are appended to the
+    StringEquals values list as EXACT matches — never a wildcard/StringLike. Use when a SECOND
+    workload must share one role's identity (e.g. the ADR-0016 resident transform-worker Deployment
+    reuses the argo brain-jobs medallion role). Every entry must be a literal, fully-qualified subject.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "policy_arns" {
   description = "List of IAM policy ARNs to attach to the role"
   type        = list(string)
@@ -78,12 +90,17 @@ data "aws_iam_policy_document" "trust" {
       identifiers = [var.oidc_provider_arn]
     }
 
-    # NN-3 CRITICAL: StringEquals on oidc:sub — NEVER StringLike
+    # NN-3 CRITICAL: StringEquals on oidc:sub — NEVER StringLike. A LIST of exact subjects is still
+    # NN-3 compliant (each is a literal match; no wildcard); additional_subjects lets a second workload
+    # share this role (e.g. the resident transform-worker reusing the argo brain-jobs medallion role).
     # sub = "system:serviceaccount:<namespace>:<service-account-name>"
     condition {
       test     = "StringEquals"
       variable = "${var.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:${var.namespace}:${var.service_account_name}"]
+      values = concat(
+        ["system:serviceaccount:${var.namespace}:${var.service_account_name}"],
+        var.additional_subjects,
+      )
     }
 
     # NN-3: Also constrain aud to prevent token reuse across services

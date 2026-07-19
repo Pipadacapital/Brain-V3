@@ -473,9 +473,15 @@ export class WebhookPipeline {
         });
       } catch (kafkaErr) {
         incrementCounter('webhook_produce_failed_total', { provider });
+        // LOSS fix: isDuplicate() above atomically marked dedupKey seen (SET NX EX). If we left it
+        // set here, the provider's retry of this SAME delivery would 409 as a "duplicate" of an
+        // event that was never produced — permanent loss. Release the key (best-effort DEL,
+        // fail-open) so the retry re-produces; genuine duplicates of a SUCCESSFUL produce still
+        // 409 exactly as before.
+        await this.dedupAdapter.release(dedupKey);
         req.log?.error(
           { request_id: requestId, brand_id: brandId, event_id: mapped.eventId, provider },
-          '[webhook] Kafka produce failed — returning 500 so provider retries',
+          '[webhook] Kafka produce failed — dedup key released, returning 500 so provider retries',
         );
         span.recordException(kafkaErr instanceof Error ? kafkaErr : new Error(String(kafkaErr)));
         span.end();

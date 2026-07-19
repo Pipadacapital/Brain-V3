@@ -98,14 +98,14 @@ describe('GokwikWebhookStrategy.payloadMap — discriminated canonical emit', ()
   });
 
   it('order.failed → order.live.v1 financial_status=voided', async () => {
-    const body = { appid: APPID, event: 'order.failed', moid: 'OID9', total: '500', currency: 'INR' };
+    const body = { appid: APPID, event: 'order.failed', moid: 'OID9', total: '500', currency: 'INR', updated_at: '2026-05-05T16:00:00Z' };
     const res = await s.payloadMap(ctx(body));
     expect(res.eventName).toBe('order.live.v1');
     expect(res.properties['financial_status']).toBe('voided');
   });
 
   it('checkout.abandoned → checkout.abandoned.v1', async () => {
-    const body = { appid: APPID, event: 'checkout.abandoned', checkout_id: 'CHK1', total: '999.00', currency: 'INR', pincode: '110001' };
+    const body = { appid: APPID, event: 'checkout.abandoned', checkout_id: 'CHK1', total: '999.00', currency: 'INR', pincode: '110001', updated_at: '2026-05-05T16:00:00Z' };
     const res = await s.payloadMap(ctx(body));
     expect(res.skip).toBe(false);
     expect(res.eventName).toBe('checkout.abandoned.v1');
@@ -114,21 +114,21 @@ describe('GokwikWebhookStrategy.payloadMap — discriminated canonical emit', ()
   });
 
   it('checkout.started / checkout.step_completed → gokwik.checkout_started|step.v1', async () => {
-    const started = await s.payloadMap(ctx({ appid: APPID, event: 'checkout.started', checkout_id: 'CHK2' }));
+    const started = await s.payloadMap(ctx({ appid: APPID, event: 'checkout.started', checkout_id: 'CHK2', updated_at: '2026-05-05T16:00:00Z' }));
     expect(started.eventName).toBe('gokwik.checkout_started.v1');
-    const step = await s.payloadMap(ctx({ appid: APPID, event: 'checkout.step_completed', checkout_id: 'CHK3', step: 'address' }));
+    const step = await s.payloadMap(ctx({ appid: APPID, event: 'checkout.step_completed', checkout_id: 'CHK3', step: 'address', updated_at: '2026-05-05T16:00:00Z' }));
     expect(step.eventName).toBe('gokwik.checkout_step.v1');
     expect(step.properties['step_name']).toBe('address');
   });
 
   it('payment.attempted / payment.authorized → payment.*.v1 (payment_id hashed, raw dropped)', async () => {
-    const attempted = await s.payloadMap(ctx({ appid: APPID, event: 'payment.attempted', order_id: 'OID42', payment_id: 'pay_xyz', amount: '1299.00', currency: 'INR' }));
+    const attempted = await s.payloadMap(ctx({ appid: APPID, event: 'payment.attempted', order_id: 'OID42', payment_id: 'pay_xyz', amount: '1299.00', currency: 'INR', updated_at: '2026-05-05T16:05:00Z' }));
     expect(attempted.eventName).toBe('payment.attempted.v1');
     expect(attempted.properties['payment_status']).toBe('initiated');
     expect(JSON.stringify(attempted.properties)).not.toContain('pay_xyz');
     expect(attempted.properties['payment_id_hash']).toMatch(/^[0-9a-f]{64}$/);
 
-    const authorized = await s.payloadMap(ctx({ appid: APPID, event: 'payment.authorized', order_id: 'OID42', payment_id: 'pay_xyz', amount: '1299.00', currency: 'INR' }));
+    const authorized = await s.payloadMap(ctx({ appid: APPID, event: 'payment.authorized', order_id: 'OID42', payment_id: 'pay_xyz', amount: '1299.00', currency: 'INR', updated_at: '2026-05-05T16:05:00Z' }));
     expect(authorized.eventName).toBe('payment.authorized.v1');
     expect(authorized.properties['payment_status']).toBe('authorized');
   });
@@ -153,5 +153,18 @@ describe('GokwikWebhookStrategy.payloadMap — discriminated canonical emit', ()
     const b = await s.payloadMap(ctx(body));
     expect(a.eventId).toBe(b.eventId);
     expect(a.eventId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('missing payload timestamp → mapper throws (pipeline surfaces a 400 skip, never a wall-clock id)', async () => {
+    // FAIL-CLOSED contract: a mappable event with NO updated_at/event_time/created_at/timestamp must
+    // NOT mint a wall-clock occurred_at (it seeds the deterministic event_id → redelivery would mint a
+    // NEW id = permanent Bronze duplicate). The throw is caught by WebhookPipeline's payloadMap catch
+    // → 400 INVALID_PAYLOAD (a logged skip, not a 500 retry loop).
+    await expect(
+      s.payloadMap(ctx({ appid: APPID, event: 'order.updated', moid: 'OID-NT', total: '10' })),
+    ).rejects.toThrow(/timestamp/);
+    await expect(
+      s.payloadMap(ctx({ appid: APPID, event: 'payment.attempted', order_id: 'OID-NT' })),
+    ).rejects.toThrow(/timestamp/);
   });
 });

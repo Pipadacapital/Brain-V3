@@ -201,13 +201,14 @@ describe('UT-9: mapShopfloRefund → refund.recorded.v1', () => {
     expect(ev.properties.amount_minor).toBe('50000');
     expect(ev.properties.currency_code).toBe('INR');
     expect(ev.properties.order_id).toBe('SF-1001');
-    expect(ev.event_id).toBe(mapShopfloRefund({ refund_id: 'RF-7' }, BRAND_A, SALT_A).event_id);
+    // Same refund_id at a different payload time → SAME id (refund event_id is refund-id-keyed).
+    expect(ev.event_id).toBe(mapShopfloRefund({ refund_id: 'RF-7', occurred_at: '2026-06-12T00:00:00Z' }, BRAND_A, SALT_A).event_id);
   });
 });
 
 describe('UT-10: mapShopfloPayment → payment.attempted/authorized.v1', () => {
   it('authorized → payment.authorized.v1 with hashed payment id', () => {
-    const ev = mapShopfloPayment({ order_id: 'SF-1', payment_id: 'pay_abc', amount: 1299, currency: 'INR' }, BRAND_A, SALT_A, 'IN', 'authorized');
+    const ev = mapShopfloPayment({ order_id: 'SF-1', payment_id: 'pay_abc', amount: 1299, currency: 'INR', occurred_at: '2026-06-10T12:00:00Z' }, BRAND_A, SALT_A, 'IN', 'authorized');
     expect(ev.event_name).toBe(PAYMENT_AUTHORIZED_V1_EVENT_NAME);
     expect(ev.properties.payment_status).toBe('authorized');
     expect(ev.properties.payment_id_hash).toMatch(/^[0-9a-f]{64}$/);
@@ -215,9 +216,64 @@ describe('UT-10: mapShopfloPayment → payment.attempted/authorized.v1', () => {
     expect(ev.properties.amount_minor).toBe('129900');
   });
   it('attempted failure status → failed; else initiated', () => {
-    expect(mapShopfloPayment({ order_id: 'SF-1', status: 'declined' }, BRAND_A, SALT_A, 'IN', 'attempted').properties.payment_status).toBe('failed');
-    expect(mapShopfloPayment({ order_id: 'SF-1', status: 'pending' }, BRAND_A, SALT_A, 'IN', 'attempted').properties.payment_status).toBe('initiated');
-    expect(mapShopfloPayment({ order_id: 'SF-1' }, BRAND_A, SALT_A, 'IN', 'attempted').event_name).toBe(PAYMENT_ATTEMPTED_V1_EVENT_NAME);
+    const AT = { occurred_at: '2026-06-10T12:00:00Z' };
+    expect(mapShopfloPayment({ order_id: 'SF-1', status: 'declined', ...AT }, BRAND_A, SALT_A, 'IN', 'attempted').properties.payment_status).toBe('failed');
+    expect(mapShopfloPayment({ order_id: 'SF-1', status: 'pending', ...AT }, BRAND_A, SALT_A, 'IN', 'attempted').properties.payment_status).toBe('initiated');
+    expect(mapShopfloPayment({ order_id: 'SF-1', ...AT }, BRAND_A, SALT_A, 'IN', 'attempted').event_name).toBe(PAYMENT_ATTEMPTED_V1_EVENT_NAME);
+  });
+});
+
+describe('UT-12: missing payload timestamp FAILS CLOSED (no wall-clock event_id minting)', () => {
+  // occurred_at feeds the DETERMINISTIC event_id seed. A wall-clock fallback would mint a
+  // DIFFERENT id on every at-least-once webhook redelivery → permanent TRUE duplicates in
+  // Bronze/Silver. So a record with none of occurred_at/updated_at/event_time/created_at/
+  // timestamp is unmappable: the mapper throws — the same fail-closed posture the frozen
+  // abandoned lane's strategy gate already takes for a missing occurred_at.
+  it('order: no timestamp → throws (no event emitted, no wall-clock id)', () => {
+    expect(() => mapShopfloOrder({ event_name: 'order.paid', order_id: 'SF-NT-1', total_price: 1 }, BRAND_A, SALT_A)).toThrow(/timestamp/);
+  });
+  it('payment: no timestamp → throws', () => {
+    expect(() => mapShopfloPayment({ order_id: 'SF-NT-2', payment_id: 'p1' }, BRAND_A, SALT_A, 'IN', 'attempted')).toThrow(/timestamp/);
+  });
+  it('checkout funnel: no timestamp → throws', () => {
+    expect(() => mapShopfloCheckout({ checkout_id: 'chk-NT' }, BRAND_A, SALT_A, 'IN', 'started')).toThrow(/timestamp/);
+  });
+  it('refund: no timestamp → throws', () => {
+    expect(() => mapShopfloRefund({ refund_id: 'RF-NT' }, BRAND_A, SALT_A)).toThrow(/timestamp/);
+  });
+  it('unparseable timestamp → throws (never silently falls back to now)', () => {
+    expect(() => mapShopfloOrder({ event_name: 'order.paid', order_id: 'SF-NT-3', total_price: 1, updated_at: 'not-a-date' }, BRAND_A, SALT_A)).toThrow(/timestamp/);
+  });
+  it('same-payload redelivery → byte-identical event_id (order / payment / checkout)', () => {
+    const order = { event_name: 'order.paid', order_id: 'SF-RD-1', total_price: 10, updated_at: '2026-06-10T12:00:00Z' };
+    expect(mapShopfloOrder(order, BRAND_A, SALT_A).event_id).toBe(mapShopfloOrder(order, BRAND_A, SALT_A).event_id);
+    const payment = { order_id: 'SF-RD-2', occurred_at: '2026-06-10T12:00:00Z' };
+    expect(mapShopfloPayment(payment, BRAND_A, SALT_A, 'IN', 'attempted').event_id)
+      .toBe(mapShopfloPayment(payment, BRAND_A, SALT_A, 'IN', 'attempted').event_id);
+    const checkout = { checkout_id: 'chk-RD-1', occurred_at: '2026-06-10T12:00:00Z' };
+    expect(mapShopfloCheckout(checkout, BRAND_A, SALT_A, 'IN', 'started').event_id)
+      .toBe(mapShopfloCheckout(checkout, BRAND_A, SALT_A, 'IN', 'started').event_id);
+  });
+});
+
+describe('UT-13: null-payment-id event_id discriminator (payment_status folded into seed)', () => {
+  const AT = '2026-06-10T12:05:00Z';
+  it('distinct signals (initiated vs failed) with NO payment id at the same occurred_at → DISTINCT ids', () => {
+    const initiated = mapShopfloPayment({ order_id: 'SF-P-1', occurred_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    const failed = mapShopfloPayment({ order_id: 'SF-P-1', status: 'declined', occurred_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    expect(initiated.properties.payment_status).toBe('initiated');
+    expect(failed.properties.payment_status).toBe('failed');
+    expect(initiated.event_id).not.toBe(failed.event_id);
+  });
+  it('truly identical null-payment payloads still collapse to ONE id (same logical event)', () => {
+    const a = mapShopfloPayment({ order_id: 'SF-P-2', occurred_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    const b = mapShopfloPayment({ order_id: 'SF-P-2', occurred_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    expect(a.event_id).toBe(b.event_id);
+  });
+  it('a present payment_id keeps the payment-id-keyed seed (distinct from the null-case seed)', () => {
+    const withId = mapShopfloPayment({ order_id: 'SF-P-3', payment_id: 'pay_x', occurred_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    const withoutId = mapShopfloPayment({ order_id: 'SF-P-3', occurred_at: AT }, BRAND_A, SALT_A, 'IN', 'attempted');
+    expect(withId.event_id).not.toBe(withoutId.event_id);
   });
 });
 

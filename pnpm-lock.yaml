@@ -298,9 +298,6 @@ importers:
       '@brain/woocommerce-mapper':
         specifier: workspace:*
         version: link:../../packages/woocommerce-mapper
-      '@opentelemetry/api':
-        specifier: ^1.9.0
-        version: 1.9.1
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1

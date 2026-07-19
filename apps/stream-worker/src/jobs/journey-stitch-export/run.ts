@@ -8,6 +8,12 @@
  * single pool. Full-refresh (TRUNCATE + reload); ON CONFLICT keeps mid-batch replays idempotent.
  *
  * Invoked by the worker job entrypoint: `node dist/jobs/journey-stitch-export/run.js`.
+ *
+ * CLASSIFICATION (DR-004): ACTIVE — TENANT-ISOLATION SEAM, not a redundant copy. The source table is
+ * FORCE RLS (cross-brand reads silently return 0 — see above); the DuckDB transform tier is a
+ * cross-brand PG reader with no BYPASSRLS, so it reads the non-RLS ops.* projection instead. Deleting
+ * this lane would require a standing cross-brand read hole through RLS for the transform role —
+ * isolation outranks table count. Do not re-flag in hygiene audits.
  */
 import pg from 'pg';
 import { buildContextGucSql } from '@brain/db';

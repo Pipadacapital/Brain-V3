@@ -33,8 +33,8 @@ B2 ENRICHMENT (all LEFT JOINs, NULL when the optional source is absent — hones
   - last_activity_at   = max(silver_touchpoint.occurred_at) COALESCEd to silver_customer.last_seen_at.
   - journey_summary    = last 200 touchpoints as a JSON array [{seq,ts,event_type,channel,page_type,
                          product_handle,order_id,is_first_touch}], seq=1 most recent.
-  - health_band        = gold_customer_health.health_band fold (ABSENT in this catalog → NULL, cold cycle).
-  - churn_score        = INTEGER 0-100 via the VENDORED churn_score_from_risk UDF over gold_customer_scores.
+  - health_band        = deterministic recency band, INLINED from the retired gold_customer_health.py (DR-005).
+  - churn_score        = INTEGER 0-100 via the VENDORED churn_score_from_risk UDF over the INLINED churn_risk (DR-005).
   - lifecycle_stage    = VENDORED lifecycle_stage UDF over (health_band, lifetime_orders).
 
 MONEY (I-S07): lifetime_value_minor AND aov_minor are bigint MINOR units paired with currency_code (carried
@@ -54,8 +54,8 @@ CAVEATS vs the Spark job (all parity-preserving):
   - NO quarantine side-write to reproduce — this Gold rollup has none (reads already-gated Silver).
   - FULL recompute over the spine every run (the Spark gold_partition_filter incremental path is a perf
     optimisation whose end-state is byte-identical to a full recompute; the MERGE on the PK is idempotent).
-  - gold_customer_health is absent in this catalog → health_band / lifecycle_stage are NULL, EXACTLY the
-    Spark cold-cycle behavior (both sides read the same absent source).
+  - DR-005: health/RFM/churn are INLINED (no gold_customer_health / gold_customer_scores marts — this
+    mart is their sole successor; mv_gold_customer_health / mv_gold_customer_scores project it).
 
 Parity target: brain_gold.gold_customer_360 (3202 rows). PK (brand_id, brain_id); money col
   lifetime_value_minor (+ aov_minor).
@@ -92,8 +92,6 @@ SILVER_TOUCHPOINT = f"{CATALOG}.{SILVER_NAMESPACE}.silver_touchpoint"
 SILVER_PAGE_VIEW = f"{CATALOG}.{SILVER_NAMESPACE}.silver_page_view"
 SILVER_ORDER_LINE = f"{CATALOG}.{SILVER_NAMESPACE}.silver_order_line"
 SILVER_IDENTITY_MAP = f"{CATALOG}.{SILVER_NAMESPACE}.silver_identity_map"
-GOLD_CUSTOMER_HEALTH = f"{CATALOG}.{GOLD_NAMESPACE}.gold_customer_health"
-GOLD_CUSTOMER_SCORES = f"{CATALOG}.{GOLD_NAMESPACE}.gold_customer_scores"
 
 # Column contract — the dbt/Spark gold_customer_360 select list. brand_id first (tenant key). Money =
 # bigint minor + currency. Uses Iceberg/Spark type names (ensure_table maps them).
@@ -121,6 +119,15 @@ COLUMNS_SQL = """
   churn_score          int,
   lifecycle_stage      string,
   journey_summary      string,
+  recency_days         int,
+  frequency            bigint,
+  health_score         int,
+  last_order_at        timestamp,
+  days_since_last_order int,
+  recency_score        int,
+  frequency_score      int,
+  monetary_score       int,
+  churn_risk           string,
   customer_watermark   timestamp,
   updated_at           timestamp
 """.strip("\n")
@@ -131,6 +138,8 @@ COLUMNS = [
     "delivered_orders", "rto_orders", "cancelled_orders", "refunded_orders",
     "preferred_channel", "preferred_device", "top_category", "acquisition_source",
     "health_band", "churn_score", "lifecycle_stage", "journey_summary",
+    "recency_days", "frequency", "health_score", "last_order_at", "days_since_last_order",
+    "recency_score", "frequency_score", "monetary_score", "churn_risk",
     "customer_watermark", "updated_at",
 ]
 
@@ -345,16 +354,42 @@ def build(con):
     else:
         top_category = None
 
-    # health_band fold (OPTIONAL; absent in this catalog → NULL, matching the Spark cold cycle).
-    health = (
-        f"SELECT brand_id, brain_id, health_band FROM {GOLD_CUSTOMER_HEALTH}"
-        if _table_exists(con, GOLD_CUSTOMER_HEALTH) else None
-    )
-    # churn_risk fold (OPTIONAL).
-    scores = (
-        f"SELECT brand_id, brain_id, churn_risk FROM {GOLD_CUSTOMER_SCORES}"
-        if _table_exists(con, GOLD_CUSTOMER_SCORES) else None
-    )
+    # health derivation (DR-005): INLINED verbatim from the retired gold_customer_health.py — recency/
+    # frequency facts from the order spine + the deterministic score/band, computed FRESH this tick.
+    # (The old mart-fold read last tick's gold_customer_health — 360 sorts before it in the gold glob —
+    # so health_band/churn_score were one tick stale; inlining kills both the staleness and two marts.
+    # mv_gold_customer_health / mv_gold_customer_scores now project THIS mart.)
+    if _table_exists(con, SILVER_ORDER_STATE):
+        health = f"""
+          SELECT brand_id, brain_id, frequency, last_order_at, recency_days,
+                 CAST(
+                   (CASE WHEN recency_days <= 30  THEN 60
+                         WHEN recency_days <= 60  THEN 45
+                         WHEN recency_days <= 90  THEN 30
+                         WHEN recency_days <= 180 THEN 15
+                         ELSE 0 END)
+                   +
+                   (CASE WHEN frequency >= 10 THEN 40
+                         WHEN frequency >= 5  THEN 30
+                         WHEN frequency >= 3  THEN 20
+                         WHEN frequency >= 2  THEN 10
+                         ELSE 5 END)
+                 AS INTEGER)                                        AS health_score,
+                 CASE WHEN recency_days <= 90  THEN 'healthy'
+                      WHEN recency_days <= 180 THEN 'at_risk'
+                      ELSE 'churned' END                            AS health_band
+          FROM (
+            SELECT brand_id, brain_id,
+                   COUNT(DISTINCT order_id) AS frequency,
+                   MAX(first_event_at)      AS last_order_at,
+                   CAST(date_diff('day', CAST(MAX(first_event_at) AS DATE), current_date) AS INT) AS recency_days
+            FROM {SILVER_ORDER_STATE}
+            WHERE brand_id IS NOT NULL AND brain_id IS NOT NULL
+            GROUP BY brand_id, brain_id
+          )
+        """
+    else:
+        health = None
 
     # ── Assemble: spine LEFT JOIN lifecycle LEFT JOIN each optional enrichment on (brand_id, brain_id). ──
     # Each optional frame joins only when its source existed; otherwise the projection emits a typed NULL
@@ -375,14 +410,22 @@ def build(con):
     _join("la", last_activity)
     _join("js", journey_summary)
     _join("hb", health)
-    _join("sc", scores)
 
     # Resolve the enrichment columns folded through UDFs, matching the Spark projection semantics:
     #  - last_activity_at = coalesce(max touchpoint activity, spine last_seen_at)
     #  - health_band / churn_score / lifecycle_stage via the VENDORED UDFs.
     la_expr = "COALESCE(la.last_activity_at, c.last_seen_at)" if last_activity else "c.last_seen_at"
     hb_expr = "hb.health_band" if health else "CAST(NULL AS VARCHAR)"
-    churn_expr = "sc.churn_risk" if scores else "CAST(NULL AS VARCHAR)"
+    hb_recency = "hb.recency_days" if health else "CAST(NULL AS INTEGER)"
+    hb_freq = "hb.frequency" if health else "CAST(NULL AS BIGINT)"
+    hb_score = "hb.health_score" if health else "CAST(NULL AS INTEGER)"
+    hb_last = "hb.last_order_at" if health else "CAST(NULL AS TIMESTAMP)"
+    # RFM/churn scoring (DR-005): INLINED verbatim from the retired gold_customer_scores.py — a pure
+    # per-row projection off the spine (same thresholds; days from last_seen_at, Spark-arg-order flip).
+    dslo = "date_diff('day', CAST(c.last_seen_at AS DATE), current_date)"
+    churn_expr = (
+        f"CASE WHEN {dslo} > 180 THEN 'high' WHEN {dslo} > 90 THEN 'medium' ELSE 'low' END"
+    )
     pc_expr = "pc.preferred_channel" if preferred_channel else "CAST(NULL AS VARCHAR)"
     pd_expr = "pd.preferred_device" if preferred_device else "CAST(NULL AS VARCHAR)"
     tc_expr = "tc.top_category" if top_category else "CAST(NULL AS VARCHAR)"
@@ -415,6 +458,23 @@ def build(con):
         churn_score_udf({churn_expr})                                   AS churn_score,
         lifecycle_stage_udf({hb_expr}, c.lifetime_orders)              AS lifecycle_stage,
         {js_expr}                                                       AS journey_summary,
+        {hb_recency}                                                    AS recency_days,
+        {hb_freq}                                                       AS frequency,
+        {hb_score}                                                      AS health_score,
+        {hb_last}                                                       AS last_order_at,
+        CAST({dslo} AS INTEGER)                                         AS days_since_last_order,
+        CAST(CASE WHEN {dslo} <= 30 THEN 5 WHEN {dslo} <= 60 THEN 4
+                  WHEN {dslo} <= 90 THEN 3 WHEN {dslo} <= 180 THEN 2
+                  ELSE 1 END AS INTEGER)                                AS recency_score,
+        CAST(CASE WHEN c.lifetime_orders >= 10 THEN 5 WHEN c.lifetime_orders >= 5 THEN 4
+                  WHEN c.lifetime_orders >= 3 THEN 3 WHEN c.lifetime_orders >= 2 THEN 2
+                  ELSE 1 END AS INTEGER)                                AS frequency_score,
+        CAST(CASE WHEN c.lifetime_value_minor >= 10000000 THEN 5
+                  WHEN c.lifetime_value_minor >= 5000000  THEN 4
+                  WHEN c.lifetime_value_minor >= 1000000  THEN 3
+                  WHEN c.lifetime_value_minor >= 200000   THEN 2
+                  ELSE 1 END AS INTEGER)                                AS monetary_score,
+        {churn_expr}                                                    AS churn_risk,
         c.customer_watermark,
         now() AT TIME ZONE 'UTC'                                        AS updated_at
       FROM {SILVER_CUSTOMER} c

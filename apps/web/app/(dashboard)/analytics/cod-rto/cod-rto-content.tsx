@@ -6,8 +6,9 @@
  * Three views, each via the BFF sole-read-path (metric-engine, ADR-002 — NO ad-hoc
  * SUM/COUNT in the client or routes):
  *   1. RTO% by pincode cohort   — /api/v1/analytics/cod-rto-rates (GoKwik AWB, SYNTHETIC dev)
- *   2. CoD-vs-prepaid + CoD CM2  — /api/v1/analytics/cod-mix       (ledger cod_*, SYNTHETIC dev)
- *   3. Checkout-conversion funnel— /api/v1/analytics/checkout-funnel (Shopflo, REAL)
+ *   2. CoD outcome funnel        — /api/v1/analytics/cod-rto       (gold_cod_rto mart, DR-006)
+ *   3. CoD-vs-prepaid + CoD CM2  — /api/v1/analytics/cod-mix       (ledger cod_*, SYNTHETIC dev)
+ *   4. Checkout-conversion funnel— /api/v1/analytics/checkout-funnel (Shopflo, REAL)
  *
  * Money discipline (I-S07 / D-7): every amount is a bigint-serialized minor-unit string
  * rendered via formatMoneyDisplay(minorString, currency_code) — NO /100, NO parseFloat.
@@ -42,13 +43,14 @@ import { RtoPincodeChart } from '@/components/analytics/rto-pincode-chart';
 import { CodMixChart } from '@/components/analytics/cod-mix-chart';
 import { CheckoutFunnelChart } from '@/components/analytics/checkout-funnel-chart';
 import { RtoRiskChart } from '@/components/analytics/rto-risk-chart';
-import { useCodRtoRates, useCodMix, useCheckoutFunnel, useRtoRiskDistribution } from '@/lib/hooks/use-analytics';
+import { useCodRtoRates, useCodRto, useCodMix, useCheckoutFunnel, useRtoRiskDistribution } from '@/lib/hooks/use-analytics';
 import { formatMoneyDisplay } from '@/lib/format/money-display';
 import type { CurrencyCode } from '@brain/money';
 import type {
   AnalyticsCodMixResponse,
   AnalyticsCheckoutFunnelResponse,
   AnalyticsRtoRiskResponse,
+  CodRtoCurrencyRow,
 } from '@/lib/api/types';
 
 type CodMixHasData = Extract<AnalyticsCodMixResponse, { state: 'has_data' }>;
@@ -130,6 +132,7 @@ export function CodRtoContent() {
 
       <RtoSection />
       <RtoRiskSection />
+      <CodOutcomesSection />
       <CodMixSection />
       <CheckoutFunnelSection />
     </div>
@@ -239,6 +242,126 @@ function RtoSection() {
         </div>
       )}
     </section>
+  );
+}
+
+// ── 2b. COD outcomes & prediction accuracy (gold_cod_rto — DR-006) ─────────────
+
+/** Integer basis points → 2dp percent string for display (bps ≤ 10000; NOT money math). */
+function bpsToPct(bps: number): string {
+  return (bps / 100).toFixed(2);
+}
+
+function CodOutcomesSection() {
+  const { data, isLoading, error, refetch } = useCodRto();
+
+  const hasData = data && data.state === 'has_data' ? data : null;
+  const totalCodOrders = hasData
+    ? hasData.by_currency.reduce((acc, c) => acc + toCount(c.cod_orders), 0)
+    : 0;
+
+  return (
+    <section aria-label="Cash-on-delivery outcomes and prediction accuracy" data-testid="cod-outcomes-section">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground">
+          CoD outcomes &amp; prediction accuracy
+        </h2>
+        {hasData && (
+          <div className="ml-auto flex items-center gap-3">
+            {/* Brand-wide all-time mart aggregate — no date window on this endpoint. */}
+            <DataWindowBadge
+              from={null}
+              to={null}
+              count={totalCodOrders}
+              label="CoD orders"
+              data-testid="cod-outcomes-window-badge"
+            />
+            <VerifyLink href="/analytics/orders" label="See orders" />
+          </div>
+        )}
+      </div>
+
+      {isLoading && <SectionSkeleton label="CoD outcomes" />}
+      {!isLoading && error && <ErrorCard error={error} retry={refetch} />}
+
+      {!isLoading && !error && data?.state === 'no_data' && (
+        <EmptyConnectCard
+          testId="cod-outcomes-empty"
+          icon={<Wallet className="h-8 w-8" />}
+          title="No CoD outcome data yet"
+          description="Connect GoKwik so Brain can reconcile your cash-on-delivery orders against their delivery outcomes — then RTO rate and prediction accuracy appear here."
+          cta="Connect GoKwik"
+        />
+      )}
+
+      {!isLoading && !error && data?.state === 'has_data' && (
+        <div className="space-y-3">
+          {data.by_currency.map((row) => (
+            <CodOutcomesCurrency key={row.currency_code} row={row} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CodOutcomesCurrency({ row }: { row: CodRtoCurrencyRow }) {
+  const ccy = row.currency_code as CurrencyCode;
+  const delivered = toCount(row.actual_delivered);
+  const rto = toCount(row.actual_rto);
+  const resolved = toCount(row.resolved);
+  const evaluated = toCount(row.prediction_evaluated);
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5" data-testid={`cod-outcomes-${row.currency_code}`}>
+      <KpiTile
+        label="CoD Orders"
+        help="Cash-on-delivery orders Brain has reconciled against their shipment outcomes."
+        value={toCount(row.cod_orders).toLocaleString('en-IN')}
+        sublabel="reconciled orders"
+        data-testid="cod-outcomes-kpi-orders"
+      />
+      <KpiTile
+        label="CoD Value"
+        help="The cash at risk on these cash-on-delivery orders — collected only if delivered."
+        value={formatMoneyDisplay(row.cod_amount_minor, ccy)}
+        sublabel="at-risk CoD cash"
+        data-testid="cod-outcomes-kpi-value"
+      />
+      <KpiTile
+        label="RTO Rate"
+        help="Of CoD orders whose journey has finished, the share that came back undelivered — lower is better."
+        value={row.rto_rate_bps === null ? null : `${bpsToPct(row.rto_rate_bps)}%`}
+        sublabel={resolved > 0 ? 'of resolved CoD orders' : 'no resolved shipments yet'}
+        lowerIsBetter
+        data-testid="cod-outcomes-kpi-rto-rate"
+      />
+      <KpiTile
+        label="Delivered vs RTO"
+        help="How the resolved CoD orders ended — delivered to the customer, or returned to you."
+        value={
+          resolved > 0
+            ? `${delivered.toLocaleString('en-IN')} / ${rto.toLocaleString('en-IN')}`
+            : null
+        }
+        sublabel={resolved > 0 ? 'delivered / returned' : 'no resolved shipments yet'}
+        data-testid="cod-outcomes-kpi-split"
+      />
+      <KpiTile
+        label="Prediction Accuracy"
+        help="How often the checkout RTO-risk prediction matched what actually happened to the shipment."
+        value={
+          evaluated > 0 && row.prediction_accuracy_bps !== null
+            ? `${bpsToPct(row.prediction_accuracy_bps)}%`
+            : null
+        }
+        sublabel={
+          evaluated > 0
+            ? `${evaluated.toLocaleString('en-IN')} predictions evaluated`
+            : 'no evaluated predictions yet'
+        }
+        data-testid="cod-outcomes-kpi-accuracy"
+      />
+    </div>
   );
 }
 

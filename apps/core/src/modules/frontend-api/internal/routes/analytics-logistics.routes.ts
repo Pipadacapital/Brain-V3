@@ -14,6 +14,7 @@ import {
   getCodRtoRates,
   getCustomerBaseSummary,
   getCodMix,
+  getCodRto,
   getCheckoutFunnel,
   getRtoRiskDistribution,
   getDeliveryTime,
@@ -37,6 +38,7 @@ import type {
   ContributionMargin as ContractContributionMargin,
   CostInputsList as ContractCostInputsList,
   DeliveryTime as ContractDeliveryTime,
+  CodRto as ContractCodRto,
 } from '@brain/contracts';
 import type { BffDeps } from './_shared.js';
 
@@ -126,6 +128,34 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (StarRocks) not available' } });
       }
       const result = await getCodMix(auth.brandId, { srPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/analytics/cod-rto
+   * DR-006 — the COD/RTO outcome funnel per currency from the gold_cod_rto Gold mart
+   * (mv_gold_cod_rto): COD orders + at-risk COD cash, predicted-RTO count, delivered vs RTO
+   * outcomes, and the checkout-prediction accuracy. Money = bigint minor-unit strings; rates
+   * are mart-computed integer BASIS POINTS (null when unresolved/unevaluated — honest,
+   * never a fake 0). Honest no_data when the brand has no COD orders. Brand from session (D-1).
+   */
+  fastify.get(
+    '/api/v1/analytics/cod-rto',
+    { preHandler: [bffProtectedPreHandler] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const auth = (request as AuthenticatedRequest).auth;
+      if (!auth.brandId) {
+        return reply.send({ request_id: requestId, data: { state: 'no_data', generated_at: new Date().toISOString() } });
+      }
+      if (!srPool) {
+        return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'Silver tier (duckdb-serving) not available' } });
+      }
+      const brandId = auth.brandId; // narrowed string — stable inside the cache closure
+      const result: ContractCodRto = await cachedRead(brandId, 'cod_rto', {}, () =>
+        getCodRto(brandId, { srPool }),
+      );
       return reply.send({ request_id: requestId, data: result });
     },
   );

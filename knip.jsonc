@@ -34,6 +34,9 @@
     "tools/seed/**",
     // k6 CLI scripts, invoked per docs/runbooks/prod-deploy.md — not part of the import graph.
     "tools/load-test/**",
+    // ingest-40k load/duplicate-injection harness (doc-18 PR 0.1) — standalone .mjs scripts run by
+    // `node tools/load/ingest-40k/producer.mjs`, never imported. Same class as tools/load-test above.
+    "tools/load/ingest-40k/**",
     // Negative-control fixtures for the custom eslint rules — intentionally "dead".
     "tools/eslint-rules/fixtures/**",
     // Shopify-CLI-built web pixel extension (shopify.extension.toml owns its entrypoint).

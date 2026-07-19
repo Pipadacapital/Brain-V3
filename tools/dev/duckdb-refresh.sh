@@ -14,7 +14,8 @@
 #                         rest of Silver ×2 (a job that read a not-yet-produced sibling converges on pass 2)
 #   node silver-identity → the Node identity batch job (ADR-0015 WS3: identity resolves in Silver) —
 #                         resolves via IdentityResolver → Neo4j (the identity SoR, ADR-0004); continue-on-error
-#   silver_identity_map → re-project the graph → the Iceberg bi-temporal map so gold reads THIS run's resolutions
+#   identity projections → re-project the graph → ALL FOUR identity-owned marts (map/alias/customer_identity/
+#                         unmerge) so gold reads THIS run's resolutions (prod v4-identity parity, DR-004)
 #   run_all.py gold      → gold_revenue_ledger (required) + the ordered attribution chain, then the rest (1 pass)
 #   serving-cache-bust   → direct Redis eviction of the brand-scoped serving cache (fail-open; TTL is the net)
 #
@@ -29,7 +30,7 @@
 #   tools/dev/duckdb-refresh.sh                 # full run: silver (keystone + ×2) → identity → gold → cache-bust
 #   STAGE=keystone  tools/dev/duckdb-refresh.sh # just the keystone (silver_collector_event) — golden-baseline seed
 #   STAGE=silver    tools/dev/duckdb-refresh.sh # silver only (run_all.py silver)
-#   STAGE=identity  tools/dev/duckdb-refresh.sh # identity stage only (node job + map re-project)
+#   STAGE=identity  tools/dev/duckdb-refresh.sh # identity stage only (node job + the 4 identity-mart projections)
 #   STAGE=gold      tools/dev/duckdb-refresh.sh # gold only (run_all.py gold)
 #
 # The env (S3_ENDPOINT / ICEBERG_* / AWS_* / NEO4J_URI) must be exported by the caller, exactly like the
@@ -53,27 +54,35 @@ SILVER_IDENTITY_CMD="${SILVER_IDENTITY_CMD:-pnpm --filter @brain/stream-worker r
 
 ts() { printf '%(%H:%M:%S)T' -1 2>/dev/null || date +%H:%M:%S; }
 
-run_silver()   { echo "[$(ts)] ── silver (run_all.py, single-process) ──"; "$PYTHON" "$DUCK_DIR/run_all.py" silver; }
+# CORE↔IDENTITY re-split parity (DR-004): the silver tier runs CORE-ONLY exactly like the prod
+# v4-medallion lane — the four identity-owned jobs are excluded from the glob and run in the
+# identity stage below (post-resolution, mirroring v4-identity's map-export step).
+run_silver()   { echo "[$(ts)] ── silver (run_all.py, single-process, CORE-ONLY) ──"; TRANSFORM_CORE_ONLY=1 "$PYTHON" "$DUCK_DIR/run_all.py" silver; }
 run_gold()     { echo "[$(ts)] ── gold (run_all.py, single-process) ──";   "$PYTHON" "$DUCK_DIR/run_all.py" gold; }
 run_keystone() {
   echo "[$(ts)] ── keystone: silver_collector_event (the admission gate every silver job reads) ──"
   "$PYTHON" "$DUCK_DIR/silver/silver_collector_event.py"
 }
 
-# Identity stage (ADR-0015 WS3): the Node resolver job, then re-project the Neo4j graph → Iceberg map so
-# gold reads THIS run's resolutions. Both continue-on-error (the map job re-projects even if the node job
-# advanced the graph; a failure holds a watermark and converges next run).
+# Identity stage (ADR-0015 WS3 + CORE↔IDENTITY re-split): the Node resolver job, then re-project the
+# Neo4j graph → ALL FOUR identity-owned Iceberg marts (map/alias/customer_identity/unmerge), mirroring
+# prod's v4-identity map-export step exactly (DR-004: previously only the map was re-projected here,
+# so dev left alias/customer_identity/unmerge to the CORE silver glob — a one-stage-stale projection
+# split prod no longer has). Each continue-on-error (idempotent MERGE; converge next run).
 run_identity() {
   local fail=0
-  echo "[$(ts)] ── identity stage (ADR-0015 WS3: resolve in Silver → refresh the Iceberg identity map) ──"
+  echo "[$(ts)] ── identity stage (ADR-0015 WS3: resolve in Silver → refresh the identity marts) ──"
   ( cd "$ROOT" && eval "$SILVER_IDENTITY_CMD" ) \
     && echo "[$(ts)] ✓ identity/silver-identity" \
     || { fail=$((fail+1)); echo "[$(ts)] ✗ identity/silver-identity FAILED — converge next run"; }
-  if [ -e "$DUCK_DIR/silver/silver_identity_map.py" ]; then
-    "$PYTHON" "$DUCK_DIR/silver/silver_identity_map.py" \
-      && echo "[$(ts)] ✓ silver/silver_identity_map" \
-      || { fail=$((fail+1)); echo "[$(ts)] ✗ silver/silver_identity_map FAILED — converge next run"; }
-  fi
+  local j
+  for j in silver_identity_map silver_identity_alias silver_customer_identity silver_identity_unmerge; do
+    if [ -e "$DUCK_DIR/silver/$j.py" ]; then
+      "$PYTHON" "$DUCK_DIR/silver/$j.py" \
+        && echo "[$(ts)] ✓ silver/$j" \
+        || { fail=$((fail+1)); echo "[$(ts)] ✗ silver/$j FAILED — converge next run"; }
+    fi
+  done
   return "$fail"
 }
 

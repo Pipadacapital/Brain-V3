@@ -48,7 +48,7 @@ Row counts are the local dev dataset (small; prod differs). Legend: NN = NOT NUL
 | connector_dlq_record (partitioned) | 0 | Webhook/pipeline dead-letter forensic store (topic/partition/offset, error_class, redrive_count) | ACTIVE |
 | connector_webhook_raw_archive (partitioned) | 0 | Raw webhook payload archive (redacted_body, body_sha256 dedup) | WRITE-ONLY (forensics) |
 | connector_webhook_raw_archive_legacy | 0 | Non-partitioned legacy copy of the archive | LEGACY — candidate to drop |
-| connector_journey_stitch_map | 0 | order→stitched anon/brain_id map (click_ids, utms) | ACTIVE |
+| connector_journey_stitch_map | 0 | order→stitched anon/brain_id map (click_ids, utms); FORCE RLS — exported to ops.silver_journey_stitch (the non-RLS transform seam, DR-004: both KEEP) | ACTIVE |
 | connector_razorpay_order_map | 0 | Razorpay payment/order ↔ Shopify order id map | ACTIVE |
 
 ### jobs / pixel — ALL ACTIVE
@@ -68,7 +68,7 @@ Row counts are the local dev dataset (small; prod differs). Legend: NN = NOT NUL
 | scoped_recompute_request | 0 | Scoped recompute queue (brain_ids, affected_marts) | ACTIVE |
 | silver_customer_identity | 6 | Neo4j→PG identity snapshot export (brain_id, lifecycle_state, merged_into) | ACTIVE |
 | silver_identity_link | 10 | Identity link export (identifier_type/value → brain_id, tier) | ACTIVE |
-| silver_journey_stitch | 0 | Journey stitch export (order_id → stitched_anon_id/brain_id) | ACTIVE |
+| silver_journey_stitch | 0 | Journey stitch export — the non-RLS tenant-isolation seam the transform tier reads (DR-004: deliberate, not redundant) | ACTIVE (isolation seam) |
 | silver_identity_watermark | 4 | Silver-identity batch watermark (0138) | ACTIVE (internal) |
 | identity_export_state | 2 | Identity export watermark | ACTIVE (internal) |
 | stitch_conflict_review | 0 | Probabilistic-stitch conflict review queue | ACTIVE |

@@ -151,6 +151,9 @@ export { getFormConversion } from './internal/application/queries/get-form-conve
 export type { FormConversionResult, FormBucketDto, FormDayBucketDto } from './internal/application/queries/get-form-conversion.js';
 export { getCodMix } from './internal/application/queries/get-cod-mix.js';
 export type { CodMixResult } from './internal/application/queries/get-cod-mix.js';
+// DR-006 — the COD/RTO outcome funnel per currency from gold_cod_rto (mv_gold_cod_rto).
+export { getCodRto } from './internal/application/queries/get-cod-rto.js';
+export type { CodRtoResult, CodRtoCurrencyDto } from './internal/application/queries/get-cod-rto.js';
 export { getCheckoutFunnel } from './internal/application/queries/get-checkout-funnel.js';
 export type { CheckoutFunnelResult } from './internal/application/queries/get-checkout-funnel.js';
 export { getRtoRiskDistribution } from './internal/application/queries/get-rto-risk-distribution.js';

@@ -1,124 +1,22 @@
 /**
- * IdentityAuditDecisionLog — the PG adapter for the Decision Log + Evidence Store, writing
- * ADDITIVELY into the EXISTING identity_audit compliance ledger.
+ * identity_audit decision/evidence mapping helpers — the PURE (no-DB) functions that shape the
+ * ADDITIVE `detail` JSONB written into the EXISTING identity_audit compliance ledger (migration
+ * 0017, partitioned in 0075, `audit` schema — STAYS in PG per ADR-0004, HASH-ONLY, I-S02).
  *
- * BINDS THE EXISTING TABLE, DOES NOT MIGRATE IT. identity_audit (migration 0017, partitioned in
- * 0075, `audit` schema) is the immutable identity compliance ledger that STAYS in PG per ADR-0004.
- * Its columns are unchanged: (brand_id, audit_id, brain_id, action, merge_id, detail jsonb,
- * occurred_at). This adapter is ADDITIVE — it records the new reversible-Command + version +
- * evidence-ref + inverse, and the full evidence (incl. the structured identifier_combo that was
- * previously lost as []), inside the free-form `detail` JSONB. No DDL, no new column.
- *
- * APPEND-ONLY: brain_app holds SELECT+INSERT only on identity_audit (no UPDATE/DELETE). So a single
- * append-only row carries BOTH the decision-log entry AND its evidence (one row per decision). The
- * EvidenceStore `put()` stages the evidence; the DecisionLog `append()` flushes it into that one
- * row's `detail.evidence`. This satisfies both ports with a single immutable append.
- *
- * The CHECK-constrained `action` column (mint|link|merge|unmerge|rebind|erase) is a COARSE bucket;
- * the precise reversible Command lives in `detail.command` (suppress/route_to_review map to the
- * neutral 'link' bucket to respect the existing CHECK while preserving the true command in detail).
- *
- * RLS: identity_audit is FORCE-RLS on brand_id → every txn sets app.current_brand_id first. Connects
- * as brain_app (never superuser). HASH-ONLY — no raw PII ever reaches this row (I-S02).
+ * NOTE (ADR-0015): the PG `IdentityAuditDecisionLog` adapter class that used to live here was a
+ * v3 Wave-2 artifact wired into the stream-worker decision path. That path was superseded when
+ * identity resolution moved to the Silver-stage batch job (apps/stream-worker/src/jobs/silver-identity),
+ * and the adapter was never instantiated anywhere — knip flagged it as dead. It has been removed;
+ * these deterministic mappers remain (exercised by the unit test) as the canonical detail-JSONB
+ * shape any future writer of identity_audit must use.
  */
-import type { Pool } from 'pg';
-import { buildContextGucSql } from '@brain/db';
 import type { IdentityDecision, IdentityCommand } from '@brain/contracts';
-import type {
-  DecisionLogRepository,
-  DecisionLogEntry,
-  DecisionLogReceipt,
-} from '../../domain/identity/decisions/DecisionLogRepository.js';
-import type {
-  EvidenceStore,
-  DecisionEvidence,
-} from '../../domain/identity/decisions/EvidenceStore.js';
+import type { DecisionLogEntry } from '../../domain/identity/decisions/DecisionLogRepository.js';
+import type { DecisionEvidence } from '../../domain/identity/decisions/EvidenceStore.js';
 import { NIL_BRAIN_ID } from '../../domain/identity/decisions/DecisionEngine.js';
 
 /** The CHECK-allowed identity_audit.action bucket set (migration 0017 / 0075). */
 export type AuditAction = 'mint' | 'link' | 'merge' | 'unmerge' | 'rebind' | 'erase';
-
-export class IdentityAuditDecisionLog implements DecisionLogRepository, EvidenceStore {
-  /** Staged evidence (keyed brand_id:decision_id) flushed into the row on append(). */
-  private readonly pending = new Map<string, DecisionEvidence>();
-
-  constructor(private readonly pool: Pool) {}
-
-  /** Stage evidence for a decision; durably written into the audit row on append(). */
-  async put(evidence: DecisionEvidence): Promise<void> {
-    this.pending.set(`${evidence.brand_id}:${evidence.decision_id}`, evidence);
-  }
-
-  /** Append one immutable identity_audit row embedding the decision + (staged) evidence. */
-  async append(entry: DecisionLogEntry): Promise<DecisionLogReceipt> {
-    const key = `${entry.brand_id}:${entry.decision_id}`;
-    const evidence = this.pending.get(key) ?? null;
-    const detail = buildAuditDetail(entry, evidence);
-
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(buildContextGucSql({ brandId: entry.brand_id, correlationId: '' }));
-      await client.query(
-        `INSERT INTO identity_audit (brand_id, brain_id, action, merge_id, detail)
-         VALUES ($1, $2, $3, $4, $5::jsonb)`,
-        [
-          entry.brand_id,
-          anchorBrainId(entry.decision),
-          mapCommandToAction(entry.decision.command),
-          mergeIdOf(entry.decision),
-          JSON.stringify(detail),
-        ],
-      );
-      await client.query('COMMIT');
-      this.pending.delete(key);
-      return { appended: true, decision_id: entry.decision_id };
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-
-  /** Read back a logged decision by its deterministic id (audit / undo). */
-  async read(args: { brand_id: string; decision_id: string }): Promise<DecisionLogEntry | null> {
-    const detail = await this.selectDetail(args.brand_id, args.decision_id);
-    return detail ? parseAuditEntry(args.brand_id, detail) : null;
-  }
-
-  /** Fetch the evidence behind a decision (staged buffer first, else the persisted audit row). */
-  async get(args: { brand_id: string; decision_id: string }): Promise<DecisionEvidence | null> {
-    const staged = this.pending.get(`${args.brand_id}:${args.decision_id}`);
-    if (staged) return staged;
-    const detail = await this.selectDetail(args.brand_id, args.decision_id);
-    return detail ? parseAuditEvidence(args.brand_id, detail) : null;
-  }
-
-  private async selectDetail(
-    brandId: string,
-    decisionId: string,
-  ): Promise<Record<string, unknown> | null> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(buildContextGucSql({ brandId: brandId, correlationId: '' }));
-      const res = await client.query<{ detail: Record<string, unknown> }>(
-        `SELECT detail FROM identity_audit
-         WHERE brand_id = $1 AND detail->>'decision_id' = $2
-         ORDER BY occurred_at DESC LIMIT 1`,
-        [brandId, decisionId],
-      );
-      await client.query('COMMIT');
-      return res.rows[0]?.detail ?? null;
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-}
 
 // ── Pure mapping helpers (exported for unit tests — no DB) ─────────────────────
 

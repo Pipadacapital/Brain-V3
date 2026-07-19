@@ -51,5 +51,22 @@ echo "case 4: no source URL — no-op (compose defaults left intact for the jobs
   assert "no-op" "" "${BRONZE_PG_JDBC_URL:-}"
 ) || rc=1
 
+echo "case 5: no-copy-paste drift — the transform-worker chart mirror is byte-identical"
+(
+  # The resident warm worker (ADR-0016) is a SEPARATE helm chart and cannot .Files.Get across charts,
+  # so it carries a VERBATIM copy of derive-pg-env.sh. Enforce the "single fix point" rule mechanically:
+  # canonical and mirror must never diverge. Edit the canonical here, then re-copy to the mirror.
+  mirror="$here/../../transform-worker/files/derive-pg-env.sh"
+  if [ ! -f "$mirror" ]; then
+    echo "  FAIL: transform-worker mirror missing at $mirror"; false
+  elif diff -q "$SCRIPT" "$mirror" >/dev/null; then
+    echo "  ok: transform-worker mirror byte-identical"
+  else
+    echo "  FAIL: transform-worker derive-pg-env.sh DRIFTED from canonical — re-copy: cp $SCRIPT $mirror"
+    diff "$SCRIPT" "$mirror" || true
+    false
+  fi
+) || rc=1
+
 if [ "$rc" -eq 0 ]; then echo "PASS: all derive-pg-env cases"; else echo "FAIL: derive-pg-env"; fi
 exit $rc

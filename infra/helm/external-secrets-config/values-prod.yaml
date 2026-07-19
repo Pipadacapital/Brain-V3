@@ -35,6 +35,13 @@ secrets:
   - name: core-env
     namespace: argo
     key: brain/prod/k8s/core-env
+  # transform-worker (ADR-0016 resident worker) consumes the SAME core-env map (envFrom: core-env in
+  # infra/helm/transform-worker/templates/deployment.yaml) — the resident DuckDB worker needs the exact
+  # ICEBERG_REST_URI / AWS_* / NEO4J_* / DATABASE_URL the argo cron pods use. Without this the resident
+  # pod is CreateContainerConfigError (envFrom secretRef core-env, Optional:false) and the cutover stalls.
+  - name: core-env
+    namespace: transform-worker
+    key: brain/prod/k8s/core-env
   - name: web-env
     namespace: web
     key: brain/prod/k8s/web-env

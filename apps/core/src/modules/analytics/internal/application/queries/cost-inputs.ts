@@ -80,6 +80,14 @@ export async function upsertCostInput(
   if (hasAmount === hasPct) {
     throw new Error('cost input requires exactly one of amount_minor or pct_bps');
   }
+  if (input.scope === 'sku' && input.cost_type === 'cogs' && hasAmount) {
+    // DR-003: per-SKU unit COGS has ONE door — the cost sheet (billing.product_cost_sheet,
+    // POST /api/v1/product-costs CSV lane, bi-temporal + no-overlap enforced). cost_input is the
+    // RATE-config seam; a second amount-per-SKU path here is how the sources diverged.
+    throw new Error(
+      'per-SKU unit COGS is managed via the product cost sheet upload (POST /api/v1/product-costs), not cost inputs',
+    );
+  }
   const id = costInputId(brandId, input.scope, scopeRef, input.cost_type);
 
   await withBrandTxn(deps.pool, brandId, async (client) => {

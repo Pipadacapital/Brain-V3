@@ -1,6 +1,6 @@
 // SPEC:C.2.4
 /**
- * product-costs.live.test.ts — cost-sheet CSV ingest → gold_product_costs (0126).
+ * product-costs.live.test.ts — cost-sheet CSV ingest → billing.product_cost_sheet (0126/0143).
  *
  * Two parts (named after the spec section):
  *   C2.4 validation — PURE (no DB): parse + validate reject bad currency / negative cost /
@@ -32,10 +32,10 @@ beforeAll(async () => {
   try {
     await pool.query('SELECT 1');
     // Fail fast if 0126 is missing so a skip vs a real bug is distinguishable.
-    const r = await pool.query("SELECT to_regclass('gold_product_costs') AS t");
+    const r = await pool.query("SELECT to_regclass('billing.product_cost_sheet') AS t");
     pgUp = r.rows[0]?.t != null;
     if (pgUp) {
-      await pool.query('DELETE FROM gold_product_costs WHERE brand_id = ANY($1)', [[BRAND_A, BRAND_B]]);
+      await pool.query('DELETE FROM billing.product_cost_sheet WHERE brand_id = ANY($1)', [[BRAND_A, BRAND_B]]);
     }
   } catch {
     pgUp = false;
@@ -43,7 +43,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (pgUp) await pool.query('DELETE FROM gold_product_costs WHERE brand_id = ANY($1)', [[BRAND_A, BRAND_B]]);
+  if (pgUp) await pool.query('DELETE FROM billing.product_cost_sheet WHERE brand_id = ANY($1)', [[BRAND_A, BRAND_B]]);
   await pool?.end();
 });
 
@@ -134,7 +134,7 @@ describe('C2.4 round-trip', () => {
 
   it('updates an existing version in place (same valid_from) and rejects an overlapping new version', async () => {
     if (!pgUp) return;
-    await pool.query('DELETE FROM gold_product_costs WHERE brand_id = $1', [BRAND_A]);
+    await pool.query('DELETE FROM billing.product_cost_sheet WHERE brand_id = $1', [BRAND_A]);
     await ingestProductCosts(BRAND_A, [{ sku: 'S', cost_minor: '500', currency_code: 'INR', valid_from: '2026-01-01' }], { pool });
 
     // Same version key (sku+currency+valid_from) with a corrected cost → UPDATE in place.
@@ -151,7 +151,7 @@ describe('C2.4 round-trip', () => {
 
   it('isolates tenants: brand B never sees brand A costs (RLS)', async () => {
     if (!pgUp) return;
-    await pool.query('DELETE FROM gold_product_costs WHERE brand_id = ANY($1)', [[BRAND_A, BRAND_B]]);
+    await pool.query('DELETE FROM billing.product_cost_sheet WHERE brand_id = ANY($1)', [[BRAND_A, BRAND_B]]);
     await ingestProductCosts(BRAND_A, [{ sku: 'ONLY-A', cost_minor: '100', currency_code: 'INR', valid_from: '2026-01-01' }], { pool });
     const bList = await listProductCosts(BRAND_B, { pool });
     expect(bList).toHaveLength(0);

@@ -176,32 +176,43 @@ def run_tier(shared: "_SharedConn", tier: str) -> int:
 
     fails = 0
 
-    def run_soft(basename: str) -> None:
-        nonlocal fails
+    def run_soft(basename: str) -> bool:
+        """Run a soft job; True on success, False on failure (logged). The caller owns the tally so the
+        multi-pass rest loop can count only the FINAL (converged) pass — see below."""
         print(f"▶ {basename}", flush=True)
         try:
             _run_job_file(os.path.join(job_dir, basename))
+            return True
         except Exception as exc:  # noqa: BLE001 — best-effort; count + continue (matches the bash runner)
             print(f"✗ FAILED: {basename}: {exc}", flush=True)
+            return False
+
+    # Ordered-first soft jobs (the gold attribution chain) — each failure counts (they run once).
+    for name in ordered:
+        if not run_soft(name):
             fails += 1
 
-    # Ordered-first soft jobs (the gold attribution chain).
-    for name in ordered:
-        run_soft(name)
-
-    # The rest, `passes` times (silver runs twice so a job that read a not-yet-produced sibling on pass
-    # 1 converges on pass 2 — unchanged from the bash runner; cheap now that there is no per-job attach).
+    # The rest, `passes` times (silver runs twice so a job that reads a not-yet-produced sibling on pass 1
+    # converges on pass 2). COUNT ONLY THE FINAL PASS's failures: a cold rebuild fails pass 1 on siblings
+    # not yet created (silver_touchpoint, silver_shipment_event, …) but those jobs succeed on pass 2 once
+    # the producers have run. Summing the transient pass-1 failures made a fully-CONVERGED cold-start run
+    # exit non-zero — which fails the tier and BLOCKS the downstream gold tier on every post-flush rebuild
+    # (prod 2026-07-18: Silver correct, gold starved). The final pass is the authoritative converged state;
+    # a job that still fails there is a real, unconverged failure and is counted.
     skip = set(required) | set(ordered)
     rest = sorted(
         b for b in (os.path.basename(p) for p in glob.glob(os.path.join(job_dir, pattern)))
         if b not in skip and not b.startswith("_")
     )
+    rest_fails = 0
     for p in range(1, passes + 1):
         if passes > 1:
             print(f"── {tier} pass {p}/{passes} ──", flush=True)
+        rest_fails = 0  # reset each pass; only the last pass's unconverged failures are real
         for b in rest:
-            run_soft(b)
-    return fails
+            if not run_soft(b):
+                rest_fails += 1
+    return fails + rest_fails
 
 
 def main() -> int:

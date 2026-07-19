@@ -53,7 +53,17 @@ import type { BffDeps } from './_shared.js';
 import { queryConnectorRecords, CONNECTOR_RECORD_ENTITIES } from '@brain/metric-engine';
 
 export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, srPool, rawPool, flagService } = deps;
+  const { bffProtectedPreHandler, srPool, rawPool, flagService, servingCache } = deps;
+
+  // Redis serving-cache wrapper (same shape as analytics-core/-marketing/-logistics routes) — wraps a
+  // serving-tier read so repeated loads hit Redis (TTL tier keyed on metricId) instead of re-querying
+  // the serving node. No-op passthrough when the cache is absent; brand_id-leading keys.
+  const cached = <T>(
+    brandId: string,
+    metricId: string,
+    params: Record<string, unknown>,
+    compute: () => Promise<T>,
+  ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
   // SPEC: B.4 — the per-brand flag gating the NEW replay (?as_of=) behavior on the journey ledger route
   // (DEFAULT OFF, fail-closed — §0.5). The existing current-projection read (no as_of) is grandfathered
@@ -119,10 +129,12 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
       const fromStr = query.from ?? defaultFrom;
       const page = query.page ? Number(query.page) : 1;
 
-      const result = await queryConnectorRecords(
-        auth.brandId,
-        { srPool },
-        { entity, fromStr, toStr, search: query.search, page },
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result = await cached(
+        brandId,
+        'analytics.records-orders',
+        { entity, from: fromStr, to: toStr, search: query.search ?? null, page },
+        () => queryConnectorRecords(brandId, { srPool }, { entity, fromStr, toStr, search: query.search, page }),
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -544,16 +556,19 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
       const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result: ContractFunnelAnalytics = await getFunnelAnalytics(
-        auth.brandId,
-        { srPool },
-        {
-          from: new Date(`${fromStr}T00:00:00Z`),
-          to: new Date(`${toStr}T23:59:59Z`),
-          fromStr,
-          toStr,
-          dataSource: 'live',
-        },
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result: ContractFunnelAnalytics = await cached(brandId, 'analytics.funnel', { from: fromStr, to: toStr }, () =>
+        getFunnelAnalytics(
+          brandId,
+          { srPool },
+          {
+            from: new Date(`${fromStr}T00:00:00Z`),
+            to: new Date(`${toStr}T23:59:59Z`),
+            fromStr,
+            toStr,
+            dataSource: 'live',
+          },
+        ),
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -732,16 +747,19 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
       const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result: ContractEngagement = await getEngagement(
-        auth.brandId,
-        { srPool },
-        {
-          from: new Date(`${fromStr}T00:00:00Z`),
-          to: new Date(`${toStr}T23:59:59Z`),
-          fromStr,
-          toStr,
-          dataSource: 'live',
-        },
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result: ContractEngagement = await cached(brandId, 'analytics.engagement', { from: fromStr, to: toStr }, () =>
+        getEngagement(
+          brandId,
+          { srPool },
+          {
+            from: new Date(`${fromStr}T00:00:00Z`),
+            to: new Date(`${toStr}T23:59:59Z`),
+            fromStr,
+            toStr,
+            dataSource: 'live',
+          },
+        ),
       );
 
       return reply.send({ request_id: requestId, data: result });
@@ -851,10 +869,13 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
       const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] as string;
       const fromStr = query.from ?? defaultFrom;
 
-      const result: ContractFormConversion = await getFormConversion(
-        auth.brandId,
-        { srPool },
-        { fromStr, toStr, dataSource: 'live' },
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result: ContractFormConversion = await cached(brandId, 'analytics.forms', { from: fromStr, to: toStr }, () =>
+        getFormConversion(
+          brandId,
+          { srPool },
+          { fromStr, toStr, dataSource: 'live' },
+        ),
       );
 
       return reply.send({ request_id: requestId, data: result });

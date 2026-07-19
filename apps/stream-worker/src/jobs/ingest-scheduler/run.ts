@@ -45,6 +45,7 @@ import {
 import { incrementCounter } from '@brain/observability';
 import { loadStreamWorkerConfig } from '@brain/config';
 import type { IConnectorRateLimiter } from '../../infrastructure/redis/ConnectorRateLimiter.js';
+import { setSyncState } from '../meta-spend-repull/run.js';
 import { log } from "../../log.js";
 
 /**
@@ -97,6 +98,7 @@ interface ClaimedConnector {
  * connector_sync_status.state='error' itself), so one bad connector never breaks the pool.
  */
 async function dispatchOne(
+  pool: Pool,
   connector: ClaimedConnector,
   rateLimiter?: IConnectorRateLimiter,
 ): Promise<boolean> {
@@ -141,6 +143,22 @@ async function dispatchOne(
     incrementCounter('ingest_scheduler_dispatch_error_total', { provider: connector.provider });
     log.error(`[ingest-scheduler] repull run failed provider=${connector.provider} ` +
                 `connector=${connector.connector_instance_id}`, { err: err });
+    // Belt-and-suspenders (defect #2): when the per-dispatch DEADLINE races a slow repull and wins,
+    // run()'s own closing setSyncState('connected') never runs → the connector is left stuck at
+    // 'syncing' ("Already syncing — please wait") with no auto-recovery. On JUST the deadline error,
+    // reset the sync-state to 'error' so the next tick can re-dispatch it. Fail-SOFT: a reset failure
+    // must never mask the original error, and this is ONLY for the deadline (not every dispatch error).
+    if (err instanceof Error && err.message.includes('dispatch deadline exceeded')) {
+      try {
+        await setSyncState(
+          pool, connector.brand_id, connector.connector_instance_id,
+          'error', 'dispatch deadline exceeded — will retry next tick',
+        );
+      } catch (resetErr) {
+        log.warn(`[ingest-scheduler] sync-state reset after deadline failed (non-fatal) ` +
+                   `connector=${connector.connector_instance_id}`, { err: resetErr });
+      }
+    }
     return false;
   }
 }
@@ -180,7 +198,7 @@ export async function tick(
       const i = nextIdx;
       nextIdx += 1;
       if (i >= connectors.length) return;
-      const ok = await dispatchOne(connectors[i]!, rateLimiter);
+      const ok = await dispatchOne(pool, connectors[i]!, rateLimiter);
       if (ok) dispatched += 1;
     }
   };

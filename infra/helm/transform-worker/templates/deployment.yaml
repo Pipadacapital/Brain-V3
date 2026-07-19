@@ -46,9 +46,15 @@ spec:
           image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else if and .Values.image.tag (ne .Values.image.tag "latest") }}:{{ .Values.image.tag }}{{ else }}{{ fail "image.digest (preferred) or an immutable, non-':latest' image.tag is required (B3) — refusing to deploy an unpinned/mutable image" }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # run_all.py `resident` — the warm micro-batch loop (overrides the Dockerfile's
-          # bronze_maintenance ENTRYPOINT).
-          command:
-            {{- toYaml .Values.command | nindent 12 }}
+          # bronze_maintenance ENTRYPOINT). Wrapped in bash to run the SAME SILVER_PG_*/GOLD_PG_*
+          # derivation the cronworkflow steps inline (files/derive-pg-env.sh): the advisory leader
+          # lock and the PG-reading gold jobs dial SILVER_PG_JDBC_URL — without the derivation they
+          # hit localhost (the resident CrashLoop's third act, 2026-07-19).
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              {{- .Files.Get "files/derive-pg-env.sh" | nindent 14 }}
+              exec {{ join " " .Values.command }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

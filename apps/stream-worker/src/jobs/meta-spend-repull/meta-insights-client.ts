@@ -465,11 +465,18 @@ export class MetaInsightsClient {
       // Genuine faults (network, unhandled 5xx=META_SERVER_ERROR, async-timeout) still count → fail-fast.
       isFailure: (err) => {
         const s = String(err);
+        // EVERY META_* sentinel is a condition where Meta RESPONDED and the caller has a specific
+        // handler (window-split, floor-skip, backoff, reconnect, history-floor, async hold-retry) — none
+        // is a connectivity fault, so none may trip the circuit (which would fail-fast every pass and
+        // stall the whole firehose for a heavy account — 2637 + 5xx + async-timeout all seen 2026-07-19).
+        // Only a RAW error (fetch/DNS/socket failure — no META_* prefix) is a genuine fault → trips.
         return !(
-          s.includes(META_TOO_MUCH_DATA) ||
-          s.includes(META_RATE_LIMITED) ||
-          s.includes(META_AUTH_ERROR) ||
-          s.includes(META_ACCESS_FORBIDDEN)
+          s.includes(META_TOO_MUCH_DATA) ||     // 2637 "reduce data" → split / floor-skip
+          s.includes(META_SERVER_ERROR) ||      // 5xx on the async result read → split / floor-skip
+          s.includes(META_ASYNC_TIMEOUT) ||     // async report didn't complete → hold + retry next run
+          s.includes(META_RATE_LIMITED) ||      // caller backs off + checkpoints
+          s.includes(META_AUTH_ERROR) ||        // routed to RECONNECT_REQUIRED
+          s.includes(META_ACCESS_FORBIDDEN)     // 403 accessible-history boundary (expected on backfills)
         );
       },
     });

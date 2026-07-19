@@ -55,6 +55,15 @@ FLAG: the resident mode is opt-in — `resident` argv (chart `.Values.transformW
 Deployment with this arg); the `silver`/`gold` single-shot paths are UNCHANGED so the CronWorkflow keeps
 working until the resident worker is validated (ADR-0016 D3 cutover: enabling transformWorker suppresses
 the v4-medallion cron, so the two never both write).
+
+CORE-ONLY (TRANSFORM_CORE_ONLY, CORE↔IDENTITY re-split 2026-07-19): identity was decoupled onto its own
+v4-identity cron. When this flag is set — on the resident loop AND on the single-shot `silver` tier the
+v4-medallion cron runs — the CORE writer NEVER touches the identity-owned Silver marts (silver_identity_
+map/_alias, silver_customer_identity, silver_identity_unmerge): run_tier('silver') excludes them and
+run_one_tick skips the node identity subprocess + the map re-projection. The v4-identity cron is the SOLE
+identity writer; gold reads the last-written silver_identity_map (bi-temporal Iceberg, converges). This
+prevents two writers on one Iceberg table AND keeps the slow identity resolve off the core path. Default
+false = pre-flag behaviour (fully reversible).
 """
 from __future__ import annotations
 
@@ -92,6 +101,31 @@ LEADER_LOCK_TRANSFORM_WORKER = int(os.environ.get("TRANSFORM_WORKER_LOCK_KEY", "
 SILVER_IDENTITY_CMD = os.environ.get(
     "SILVER_IDENTITY_CMD", "pnpm --filter @brain/stream-worker run job:silver-identity"
 )
+
+# ── CORE-ONLY switch (CORE↔IDENTITY re-split, 2026-07-19) ───────────────────────────────────────────
+# The identity lane (Neo4j resolve → identity-owned Silver marts) was DECOUPLED out of the blocking core
+# chain onto its OWN cron (infra/helm/cronworkflows/templates/v4-identity.yaml). When TRANSFORM_CORE_ONLY
+# is set, the CORE writer (the resident loop AND the single-shot `silver` tier the v4-medallion cron runs)
+# must NOT touch the identity-owned tables — the v4-identity lane is their SOLE writer. Two writers on one
+# Iceberg table is a write-conflict; a slow identity job in the core chain also re-blocks core freshness
+# (the exact regression the decouple fixed). Default false = today's behaviour (fully reversible): core
+# still runs identity in-process and writes the map, exactly as before this flag existed.
+#
+# IDENTITY_OWNED_JOBS — the silver_*.py jobs OWNED by the v4-identity lane (each reads Neo4j and/or writes
+# an identity-owned Iceberg table: silver_identity_map/_alias, silver_customer_identity, silver_identity_
+# unmerge). CONFIRMED by grep (2026-07-19): these are the only silver_*.py that import the neo4j driver
+# and MERGE into the identity tables. silver_session_identity.py is NOT here — it WRITES the session mart
+# and only READS silver_identity_map (read-only, core-owned). When TRANSFORM_CORE_ONLY is on, run_tier
+# EXCLUDES this set from the silver glob and run_one_tick SKIPS the identity subprocess + the explicit
+# silver_identity_map re-projection. Gold then reads the LAST-written silver_identity_map (persisted by
+# the v4-identity lane — a bi-temporal Iceberg table; slightly stale, converges — safe).
+TRANSFORM_CORE_ONLY = os.environ.get("TRANSFORM_CORE_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
+IDENTITY_OWNED_JOBS = frozenset({
+    "silver_identity_map.py",
+    "silver_identity_alias.py",
+    "silver_customer_identity.py",
+    "silver_identity_unmerge.py",
+})
 
 
 class _SharedConn:
@@ -195,6 +229,11 @@ def run_tier(shared: "_SharedConn", tier: str) -> int:
     # (prod 2026-07-18: Silver correct, gold starved). The final pass is the authoritative converged state;
     # a job that still fails there is a real, unconverged failure and is counted.
     skip = set(required) | set(ordered)
+    # CORE-ONLY: exclude the v4-identity-owned jobs from the silver glob so the core writer never touches
+    # an identity-owned Iceberg table (the v4-identity lane is its sole writer). No-op for the gold tier
+    # (none of IDENTITY_OWNED_JOBS is a gold_*.py) and no-op when the flag is off (today's behaviour).
+    if TRANSFORM_CORE_ONLY:
+        skip |= set(IDENTITY_OWNED_JOBS)
     rest = sorted(
         b for b in (os.path.basename(p) for p in glob.glob(os.path.join(job_dir, pattern)))
         if b not in skip and not b.startswith("_")
@@ -366,17 +405,24 @@ def run_one_tick(shared: "_SharedConn") -> int:
     silver_identity_map re-projection is part of the silver tier's `rest` set already (it is a silver_*.py
     job), so running the node identity subprocess between the silver and gold tiers gives gold a map that
     reflects THIS tick's resolutions — matching duckdb-refresh.sh's keystone→silver→identity→gold order.
-    Returns total non-required failures across the tick (identity subprocess non-zero counts as 1)."""
+    Returns total non-required failures across the tick (identity subprocess non-zero counts as 1).
+
+    CORE-ONLY (TRANSFORM_CORE_ONLY): the identity stage is SKIPPED entirely — no node identity subprocess
+    and no explicit silver_identity_map re-projection (and run_tier('silver') has already excluded the
+    identity-owned jobs). The v4-identity cron is the SOLE identity writer; this core loop only reads the
+    LAST-written silver_identity_map in gold. Net core tick = silver(minus identity) → gold. This keeps the
+    slow identity resolve off the core path (no re-block) and preserves single-writer per identity table."""
     fails = 0
     fails += run_tier(shared, "silver")
-    if _run_identity_subprocess() != 0:
-        fails += 1
-    # Re-project the graph → Iceberg map on the WARM conn so gold reads this tick's resolutions.
-    try:
-        _run_job_file(os.path.join(HERE, "silver", "silver_identity_map.py"))
-    except Exception as exc:  # noqa: BLE001 — converge next tick
-        print(f"✗ FAILED: silver_identity_map.py: {exc}", flush=True)
-        fails += 1
+    if not TRANSFORM_CORE_ONLY:
+        if _run_identity_subprocess() != 0:
+            fails += 1
+        # Re-project the graph → Iceberg map on the WARM conn so gold reads this tick's resolutions.
+        try:
+            _run_job_file(os.path.join(HERE, "silver", "silver_identity_map.py"))
+        except Exception as exc:  # noqa: BLE001 — converge next tick
+            print(f"✗ FAILED: silver_identity_map.py: {exc}", flush=True)
+            fails += 1
     fails += run_tier(shared, "gold")
     return fails
 
@@ -424,7 +470,8 @@ def run_resident() -> int:
     httpd = _start_health_server(state, TRANSFORM_WORKER_HEALTH_PORT)
     print(
         f"▶ transform-worker resident: tick={TRANSFORM_TICK_MS}ms health=:{TRANSFORM_WORKER_HEALTH_PORT} "
-        f"lock_key={LEADER_LOCK_TRANSFORM_WORKER}",
+        f"lock_key={LEADER_LOCK_TRANSFORM_WORKER} "
+        f"core_only={'ON (identity owned by v4-identity cron)' if TRANSFORM_CORE_ONLY else 'off'}",
         flush=True,
     )
 

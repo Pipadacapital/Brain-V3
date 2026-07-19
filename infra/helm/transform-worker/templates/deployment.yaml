@@ -84,6 +84,26 @@ spec:
             - name: SILVER_IDENTITY_CMD
               value: {{ .Values.worker.silverIdentityCmd | quote }}
             {{- end }}
+            # CORE-ONLY (TRANSFORM_CORE_ONLY, CORE↔IDENTITY re-split). true ⇒ the resident loop excludes the
+            # v4-identity-owned Silver marts + skips the identity subprocess/map re-projection. The
+            # v4-identity CronWorkflow (lock 910_004) is the SOLE identity writer; this resident (lock
+            # 910_005) writes only the CORE tables — two tables, two locks, single-writer each.
+            - name: TRANSFORM_CORE_ONLY
+              value: {{ .Values.worker.coreOnly | quote }}
+            # ── Incremental-read / OOM-safety env (the resident chart does NOT inherit the cron's
+            #    sparkV4.env — these MUST be set here or a tick full-scan-bootstraps and OOMs). ──
+            - name: ICEBERG_CATALOG
+              value: {{ .Values.transform.iceberg.catalog | quote }}
+            - name: SILVER_INCREMENTAL
+              value: {{ .Values.transform.silverIncremental | quote }}
+            - name: GOLD_INCREMENTAL
+              value: {{ .Values.transform.goldIncremental | quote }}
+            # WATERMARK_MAX_SLICE_SECONDS — the OOM-safe forward-slice cap. A resident tick with cap=0
+            # does an unbounded full-scan bootstrap → OOM; 3600 walks any backlog in 1h chunks per tick.
+            - name: WATERMARK_MAX_SLICE_SECONDS
+              value: {{ .Values.transform.watermarkMaxSliceSeconds | quote }}
+            - name: WATERMARK_LOOKBACK_SECONDS
+              value: {{ .Values.transform.watermarkLookbackSeconds | quote }}
             {{- if .Values.otelExporterOtlpEndpoint }}
             # AUD-OBS-2: OTel export ON-switch (empty ⇒ flag OFF; auth headers, if any, come from the
             # envSecretName secret as OTEL_EXPORTER_OTLP_HEADERS).

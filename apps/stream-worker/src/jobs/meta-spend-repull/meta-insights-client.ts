@@ -596,25 +596,27 @@ export class MetaInsightsClient {
    * genuine hard error and is re-thrown; throttle/auth errors propagate unchanged so the driver's
    * cursor-preserving resume still applies.
    *
-   * MODE: follows the client's default (META_INSIGHTS_ASYNC_MODE, default false = SYNC GET) — the SAME
-   * path the live meta-spend-repull lane uses and which is proven to pull 28-day windows on real
-   * accounts. We do NOT force the async ad_report_run path here: on some accounts Meta's async RESULT
-   * read (GET /{report_run_id}/insights) returns 2637 even for a completed SINGLE-DAY, CAMPAIGN-level
-   * report (a handful of rows) — i.e. the failure is the async result endpoint, not data volume — which
-   * made the window-halving recurse to the 1-day floor and still fail. The sync GET paginates via
-   * `nextUrl` (limit=500/page), so large windows are handled by cursor paging; window-halving remains a
-   * defensive fallback for a window that genuinely 2637s on the sync path.
+   * MODE: default follows the client's default (META_INSIGHTS_ASYNC_MODE, default false = SYNC GET) —
+   * the SAME path the live meta-spend-repull lane uses and which is proven to pull 28-day windows on
+   * real accounts. The sync GET paginates via `nextUrl` (limit=500/page), so large windows are handled
+   * by cursor paging; window-halving remains a defensive fallback for a window that genuinely 2637s on
+   * the sync path. The BACKFILL lane passes `opts.asyncMode=true` to force the async ad_report_run path
+   * (historical month-wide pulls are large): the same 2637/5xx window-halving + 1-day-floor skip then
+   * applies to the async result read too (the recursive split threads asyncMode down unchanged).
    */
   async fetchInsightsForWindow(
     level: 'campaign' | 'adset' | 'ad',
     since: string,
     until: string,
     breakdown: MetaBreakdownName | null = null,
+    opts: { asyncMode?: boolean } = {},
   ): Promise<MetaInsightsRawRow[]> {
+    const asyncMode = opts.asyncMode ?? false;
     try {
       const rows: MetaInsightsRawRow[] = [];
-      // Sync GET + cursor paging (client default) — the proven-working path; see MODE note above.
-      let page = await this.fetchInsightsFirstPage(level, since, until, { breakdown });
+      // GET + cursor paging (async ad_report_run path when asyncMode, else the sync GET client default —
+      // the proven-working path; see MODE note above).
+      let page = await this.fetchInsightsFirstPage(level, since, until, { breakdown, asyncMode });
       rows.push(...page.rows);
       while (page.nextUrl) {
         page = await this.fetchInsightsByUrl(page.nextUrl, level);
@@ -647,8 +649,8 @@ export class MetaInsightsClient {
         `[meta-insights-client] window ${since}..${until} too large (${reason}) ` +
         `— splitting at ${mid} and retrying each half (level=${level})`,
       );
-      const left = await this.fetchInsightsForWindow(level, since, mid, breakdown);
-      const right = await this.fetchInsightsForWindow(level, isoNextDay(mid), until, breakdown);
+      const left = await this.fetchInsightsForWindow(level, since, mid, breakdown, { asyncMode });
+      const right = await this.fetchInsightsForWindow(level, isoNextDay(mid), until, breakdown, { asyncMode });
       return [...left, ...right];
     }
   }

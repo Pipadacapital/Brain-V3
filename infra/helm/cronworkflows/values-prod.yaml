@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:74cf9f918d4e0739345210575a0286fbf42929277e2a41f9d0ea936a4fb3c76c"
+  digest: "sha256:930ba2e4fbb38439b6ed044bd1d80041f2a90b18f0ec898a51b18cb64e3bd00a"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:58e888bb5bf97abe491291aaecb6a98e5875b201c2688c1fd9171a6f4f824394"
+  digest: "sha256:fd5588ea0282ced62cf63fd30a87085fc35e2e35cefc8bde1824863035a57047"
 # duckdb image — bronze/medallion maintenance + erasure (via the PyIceberg maintenance client it carries) AND the V4
 # Silver/Gold transform crons (.sparkV4.image — CI promotes both digests build-once from staging, one
 # image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover: replaces
@@ -15,7 +15,7 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:65f1d0026e0d926e08bea369d02c557cf2132271451b318158e548054dde490e"
+    digest: "sha256:621fb0e6c99d4f47f00dde5500c7e98b27c7ff90e4732c38bc1aca4c6a7d738d"
   # AUD-PROD-006: the maintenance/erasure cron pods run on the streaming Karpenter pool (the batch pool
   # was removed in the Spark→DuckDB cutover — the DuckDB crons are lightweight python, no JVM). A
   # Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry + idempotent maintenance.
@@ -27,7 +27,7 @@ sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:65f1d0026e0d926e08bea369d02c557cf2132271451b318158e548054dde490e"
+    digest: "sha256:621fb0e6c99d4f47f00dde5500c7e98b27c7ff90e4732c38bc1aca4c6a7d738d"
   # CORE↔IDENTITY re-split (2026-07-19): prod inherits `identity.enabled: true` + `identitySchedule:
   # */5` + the 1h SILVER_IDENTITY_MAX_SLICE_MS from base values.yaml. The v4-identity cron reuses this
   # sparkV4 image (map-export, duckdb) + streamWorkerImage (identity-resolve) + the nodeSelector /

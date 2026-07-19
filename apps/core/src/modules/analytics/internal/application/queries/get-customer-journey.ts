@@ -6,7 +6,7 @@
  * customer's touchpoints. §1.11 serving: the HOT path reads the A.4 Redis touchpoint cache
  * (`{brand_id}:tp:{brain_id}` zset — the last ≤200 touchpoints); when the cache is COLD (no key,
  * TTL-expired, the A.4 lane flag-OFF for the brand, or no cache client wired) the read falls back
- * to the durable serving ledger (mv_journey_events_current over iceberg.brain_gold.journey_events).
+ * to the durable serving ledger (mv_journey_events_current over iceberg.brain_gold.gold_journey_events).
  *
  * ONE opaque cursor spans both paths: it records which source is paginating (`c` = cache offset,
  * `t` = serving-ledger keyset sequence) so a continuation stays on the source the FIRST page chose — the

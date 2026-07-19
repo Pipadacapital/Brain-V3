@@ -1,12 +1,12 @@
 """
 gold_journey_events.py (DuckDB) — faithful port of db/iceberg/spark/gold/gold_journey_events.py.
 
-The ADDITIVE **versioned event-sourced journey ledger** brain_gold.journey_events (Brain V4 spec gap G4 /
+The ADDITIVE **versioned event-sourced journey ledger** brain_gold.gold_journey_events (Brain V4 spec gap G4 /
 SPEC B.1 canonical journey generation). ONE row per (brand_id, touchpoint_id, data_version) — every
 touchpoint of every journey re-keyed onto the RESOLVED identity (brain_id) and versioned so an identity
 MERGE never rewrites history. Reads the sibling Silver Iceberg tables DIRECTLY (silver_touchpoint +
 silver_identity_map + silver_order_state), NOT the gated collector keystone — exactly as the Spark job's
-spark.table() reads. Writes {CATALOG}.brain_gold.journey_events (Spark TARGET_TABLE = "journey_events",
+spark.table() reads. Writes {CATALOG}.brain_gold.gold_journey_events (table renamed from Spark-era "journey_events" per DR-001,
 NOT "gold_journey_events") honoring MIGRATION_TABLE_SUFFIX.
 
 PK / GRAIN (unchanged from Spark): (brand_id, touchpoint_id, data_version). touchpoint_id =
@@ -76,7 +76,7 @@ CAVEATS vs the Spark job (all parity-preserving on the flag-OFF oracle):
   - composite_order_key: the Spark job synthesizes it from stitched_order_id when silver_touchpoint lacks
     the column (transitional seam). We reproduce that same fallback so the LEFT-JOIN revenue stamp matches.
 
-Parity target: brain_gold.journey_events (56854 rows). PK (brand_id, touchpoint_id, data_version).
+Parity target: brain_gold.gold_journey_events (56854 rows). PK (brand_id, touchpoint_id, data_version).
 """
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ from _base import GOLD_INCREMENTAL, ensure_table, incremental_window, merge_on_p
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
 from _journey_events_pure import event_category  # noqa: E402 — vendored pure module (byte copy)
 
-TABLE_NAME = "journey_events"  # Spark TARGET_TABLE — NOT "gold_journey_events".
+TABLE_NAME = "gold_journey_events"  # renamed from legacy "journey_events" (DR-001; catalog rename runbook)
 
 _SUFFIX = os.environ.get("MIGRATION_TABLE_SUFFIX", "")
 TARGET = f"{CATALOG}.{GOLD_NAMESPACE}.{TABLE_NAME}{_SUFFIX}"

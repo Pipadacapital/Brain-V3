@@ -2,7 +2,7 @@
 -- Brain V4 — DuckDB serving VIEW: mv_journey_events_current
 --
 -- Brain V4 serving runs over DUCKDB (Iceberg). This view is the thin serving projection over the
--- versioned event-sourced journey ledger Spark builds (iceberg.brain_gold.journey_events —
+-- versioned event-sourced journey ledger Spark builds (iceberg.brain_gold.gold_journey_events —
 -- gold_journey_events.py + its merge re-versioning companion gold_journey_events_reversion.py,
 -- spec gap G4 re-ratified). WHERE is_current = true keeps exactly ONE live version per touchpoint:
 -- an identity merge flips the superseded version's flag and appends a data_version+1 copy owned by
@@ -56,5 +56,5 @@ SELECT
   -- live in a separate view). The B.3 journey APIs surface matched_via per touchpoint.
   matched_via,
   identity_basis
-FROM iceberg.brain_gold.journey_events
+FROM iceberg.brain_gold.gold_journey_events
 WHERE is_current = true;

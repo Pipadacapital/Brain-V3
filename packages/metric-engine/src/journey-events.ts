@@ -2,7 +2,7 @@
  * @brain/metric-engine — computeJourneyEventsCurrent (versioned journey-ledger serving read).
  *
  * The SOLE read seam for the versioned event-sourced journey ledger's CURRENT projection
- * (brain_serving.mv_journey_events_current — `is_current = true` over iceberg.brain_gold.journey_events,
+ * (brain_serving.mv_journey_events_current — `is_current = true` over iceberg.brain_gold.gold_journey_events,
  * built by gold_journey_events.py + its merge re-versioning companion). One row per
  * (brand_id, touchpoint_id): the canonical resolved-identity timeline for a customer — an identity
  * merge flips the superseded version and appends a data_version+1 copy owned by the canonical

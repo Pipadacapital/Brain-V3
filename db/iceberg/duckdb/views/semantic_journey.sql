@@ -1,7 +1,7 @@
 -- ============================================================
 -- SPEC:D.1 — Semantic ENTITY view: semantic_journey
 --
--- Wave D semantic layer. ALIASES the Wave-B canonical journey entity (iceberg.brain_gold.journey_events —
+-- Wave D semantic layer. ALIASES the Wave-B canonical journey entity (iceberg.brain_gold.gold_journey_events —
 -- the versioned, event-sourced journey ledger with matched_via + identity_basis + bi-temporal brain_id_asof)
 -- into the semantic_* namespace, so dashboards / APIs / BAI / agents address journeys through one governed
 -- entity name alongside semantic_customer/order/product/campaign. Pure projection — no recompute; identical
@@ -43,4 +43,4 @@ SELECT
   identity_basis,
   ingested_at,
   updated_at
-FROM iceberg.brain_gold.journey_events;
+FROM iceberg.brain_gold.gold_journey_events;

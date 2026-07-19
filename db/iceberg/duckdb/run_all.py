@@ -189,7 +189,7 @@ def run_tier(shared: "_SharedConn", tier: str) -> int:
 
     # The rest, `passes` times (silver runs twice so a job that reads a not-yet-produced sibling on pass 1
     # converges on pass 2). COUNT ONLY THE FINAL PASS's failures: a cold rebuild fails pass 1 on siblings
-    # not yet created (silver_touchpoint, silver_shipment_event, …) but those jobs succeed on pass 2 once
+    # not yet created (silver_touchpoint, silver_shipment, …) but those jobs succeed on pass 2 once
     # the producers have run. Summing the transient pass-1 failures made a fully-CONVERGED cold-start run
     # exit non-zero — which fails the tier and BLOCKS the downstream gold tier on every post-flush rebuild
     # (prod 2026-07-18: Silver correct, gold starved). The final pass is the authoritative converged state;

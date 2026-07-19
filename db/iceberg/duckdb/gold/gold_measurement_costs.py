@@ -173,7 +173,7 @@ def _register_global_costs(con) -> None:
 def build(con):
     # Spark partitions bucket(64, brand_id), days(occurred_at). DuckDB's Iceberg writer does not implement
     # the days() transform, so we keep the brand-bucket anchor only (physical layout only — no effect on the
-    # rows/PK/parity). Matches the established DuckDB gold pattern (e.g. gold_measurement_refunds).
+    # rows/PK/parity). Matches the established DuckDB gold pattern (e.g. gold_measurement_fees).
     ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
 
     # EXISTENCE / EMPTY GUARD — if the gated keystone is absent, no order can be costed. The empty target is

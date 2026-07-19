@@ -55,8 +55,8 @@ QUARANTINE: the Spark job has NO Stage-1/quarantine side-write (this is a pure S
   non-fatal no-op for this job.
 
 GAP-B (2026-07-16) — silver_fulfillment DELIBERATELY NOT WIRED (honest-empty for Shopify-only brands):
-  the sibling gold_logistics_performance gained a silver_fulfillment fallback lane (storefront-side
-  delivery OUTCOMES are computable from a latest-state row), but delivery TIME is NOT computable from
+  the retired sibling gold_logistics_performance (DR-002) had a silver_fulfillment fallback lane
+  (storefront-side delivery OUTCOMES are computable from a latest-state row), but delivery TIME is NOT computable from
   silver_fulfillment's columns: that mart is a latest-STATE-per-(brand_id, fulfillment_id) fold whose ONE
   timestamp pair is (occurred_at = the LATEST status transition, ingested_at = its landing) — there is no
   dispatched/created anchor (no first_event_at, no created_at) and no per-status event progression (the

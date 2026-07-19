@@ -19,13 +19,13 @@ import {
   roasFromMinor,
   getMetricLineage,
 } from '../../../analytics/index.js';
-import { getDataQualitySummary, getServingFreshness } from '../../../data-quality/index.js';
+import { getDataQualitySummary, getServingFreshness, getMedallionJourney } from '../../../data-quality/index.js';
 import type { DataQualitySummary as ContractDataQualitySummary } from '@brain/contracts';
 import type { AdPlatform, TimeGrain } from '@brain/metric-engine';
 import type { BffDeps } from './_shared.js';
 
 export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps: BffDeps): void {
-  const { bffProtectedPreHandler, rawPool, srPool, flagService, semanticRouter, servingCache } = deps;
+  const { bffProtectedPreHandler, rawPool, srPool, flagService, semanticRouter, servingCache, neo4jPipelineCounts } = deps;
 
   // AUD-IMPL-026: data-health full-scans the unprunable Bronze lift view (json_extract_scalar
   // columns → no Trino pushdown) per request. Front it with the serving Redis cache (executive
@@ -320,6 +320,29 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
     async (_request: FastifyRequest, reply: FastifyReply) => {
       const requestId = randomUUID();
       const result = await getServingFreshness({ srPool });
+      return reply.send({ request_id: requestId, data: result });
+    },
+  );
+
+  /**
+   * GET /api/v1/data-quality/medallion-journey  (V4-pipeline observability)
+   *
+   * Returns the "medallion journey" — the state of the WHOLE data pipeline (Bronze → Silver →
+   * Identity/Neo4j → Gold → Serving) computed from CHEAP METADATA ONLY: Iceberg-metadata row counts,
+   * column-stat max() freshness, the tiny silver_job_watermark row, and 2-3 Neo4j counts. NO full-table
+   * scans (the serving node 504s under load; each serving probe carries a short client timeout).
+   *
+   * BRAND-AGNOSTIC by design (like serving-freshness): cross-brand PIPELINE health — no tenant row to
+   * scope, gated on a valid session (bffProtectedPreHandler) but NOT brand-scoped. FAIL-SOFT per tier:
+   * a down serving tier / unreachable Neo4j degrades ONLY that tier to honest nulls + state, NEVER a 500.
+   * NO money, NO PII — counts + timestamps + table/mart/view names only.
+   */
+  fastify.get(
+    '/api/v1/data-quality/medallion-journey',
+    { preHandler: [bffProtectedPreHandler] },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      const requestId = randomUUID();
+      const result = await getMedallionJourney({ srPool, neo4jCounts: neo4jPipelineCounts });
       return reply.send({ request_id: requestId, data: result });
     },
   );

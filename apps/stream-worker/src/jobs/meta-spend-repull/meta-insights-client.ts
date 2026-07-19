@@ -452,7 +452,27 @@ export class MetaInsightsClient {
     this.actId = normalizeAccountId(creds.adAccountId);
     this.maxBackoffRetries = maxBackoffRetries;
     this.defaultAsyncMode = defaultAsyncMode;
-    this.breaker = new CircuitBreaker({ name: 'meta-insights', failureThreshold: 5, openMs: 60_000 });
+    this.breaker = new CircuitBreaker({
+      name: 'meta-insights', failureThreshold: 5, openMs: 60_000,
+      // Meta RESPONDING with a data-shape/policy signal is NOT a service fault — it must not trip the
+      // circuit (which would fail-fast every pass and stall the whole firehose, as seen 2026-07-19 when
+      // the heavy ad-level demographic/geo/placement/hourly breakdowns 2637'd the account into an OPEN
+      // circuit). These are all handled by the caller (window-split, backoff, reconnect, history-floor):
+      //   • META_TOO_MUCH_DATA (2637) — split the window / skip at the 1-day floor
+      //   • META_RATE_LIMITED — the caller already backs off + checkpoints
+      //   • META_AUTH_ERROR — routed to RECONNECT_REQUIRED
+      //   • META_ACCESS_FORBIDDEN (403) — the accessible-history boundary (expected on deep backfills)
+      // Genuine faults (network, unhandled 5xx=META_SERVER_ERROR, async-timeout) still count → fail-fast.
+      isFailure: (err) => {
+        const s = String(err);
+        return !(
+          s.includes(META_TOO_MUCH_DATA) ||
+          s.includes(META_RATE_LIMITED) ||
+          s.includes(META_AUTH_ERROR) ||
+          s.includes(META_ACCESS_FORBIDDEN)
+        );
+      },
+    });
   }
 
   /** Fetch account currency + timezone once (currency authority is the account, not the row). */

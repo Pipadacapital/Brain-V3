@@ -34,3 +34,17 @@ export type {
   ServingMartRow,
   MartFreshness,
 } from './internal/application/queries/get-serving-freshness.js';
+
+// V4-pipeline observability: the "medallion journey" — whole-pipeline state (Bronze → Silver →
+// Identity/Neo4j → Gold → Serving) from CHEAP METADATA ONLY (Iceberg counts/column-stats, the tiny
+// watermark table, Neo4j counts). Brand-AGNOSTIC ops read; fail-soft per tier (never a 500). See header.
+export { getMedallionJourney } from './internal/application/queries/get-medallion-journey.js';
+export type {
+  MedallionJourney,
+  MedallionStageHealth,
+  MedallionJourneyDeps,
+  Neo4jPipelineCounts,
+} from './internal/application/queries/get-medallion-journey.js';
+// Concrete Neo4j identity-tier count reader (cheap, brand-agnostic) — constructed at the composition
+// root and injected as the medallion-journey neo4jPipelineCounts port.
+export { Neo4jPipelineCountsReader } from './internal/infrastructure/neo4j-pipeline-counts.js';

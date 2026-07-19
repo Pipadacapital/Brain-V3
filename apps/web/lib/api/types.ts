@@ -1508,3 +1508,51 @@ export interface SemanticMetricsCatalog {
   semantic_serving_flag: boolean;
   metrics: SemanticMetricEntry[];
 }
+
+// ── Medallion Journey (Data Journey observability page) ─────────────────────────
+// GET /api/v1/data-quality/medallion-journey — one roll-up tracing a brand's data through the
+// pipeline stages Bronze → Silver → Identity → Gold → Serving. Row counts are numbers (not bigint
+// minor units — these are cardinalities, not money) and are nullable (honest: null = unknown, not 0).
+// Every stage carries a lifecycle `state` ('fresh'|'stale'|'failed'|'never'|'no_data') the UI turns
+// into a plain-language freshness pill. Contract mirrors the parallel backend endpoint exactly.
+
+/** A medallion stage's lifecycle state as the endpoint reports it. */
+export type MedallionStageState = 'fresh' | 'stale' | 'failed' | 'never' | 'no_data';
+
+export interface MedallionJourney {
+  generatedAt: string;
+  bronze: {
+    table: string;
+    rowCount: number | null;
+    latestEventAt: string | null;
+    state: MedallionStageState;
+  };
+  silver: {
+    keystone: { rowCount: number | null; freshnessAt: string | null };
+    orderState: { rowCount: number | null; freshnessAt: string | null };
+    marketingSpend: { rowCount: number | null; freshnessAt: string | null };
+    watermark: { lastIngestedAt: string | null; lagSeconds: number | null };
+    state: MedallionStageState;
+  };
+  identity: {
+    reachable: boolean;
+    brainIds: number | null;
+    identifiers: number | null;
+    edges: number | null;
+    state: MedallionStageState;
+  };
+  gold: {
+    customer360: { table: string; rowCount: number | null; freshnessAt: string | null };
+    biMarts: Array<{ name: string; rowCount: number | null; freshnessAt: string | null }>;
+    state: MedallionStageState;
+  };
+  serving: {
+    marts: Array<{
+      view: string;
+      rowCount: number | null;
+      freshnessAt: string | null;
+      state: string;
+    }>;
+    state: MedallionStageState;
+  };
+}

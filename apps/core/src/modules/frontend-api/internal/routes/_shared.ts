@@ -22,6 +22,7 @@ import type {
 } from '../../../workspace-access/index.js';
 import type { IdentityReader } from '../../../identity/index.js';
 import type { ContactPiiVaultService } from '../../../identity/index.js';
+import type { Neo4jPipelineCounts } from '../../../data-quality/index.js';
 import type { FoundationSignals } from '../../../analytics/index.js';
 import type { FlagService } from '@brain/platform-flags';
 import type { IdentityUnmergeDirtyWriter } from '../../../../infrastructure/pg/IdentityUnmergeDirtyRepository.js';
@@ -84,6 +85,12 @@ export interface BffDeps {
   semanticRouter?: SemanticServingRouter;
   vaultService?: ContactPiiVaultService;
   identityReader?: IdentityReader;
+  /**
+   * V4-pipeline observability (medallion-journey): the CHEAP Neo4j identity-tier counts port
+   * (brain_ids / identifiers / edges — brand-agnostic pipeline totals). Optional: absent → the
+   * medallion-journey identity tier reports reachable:false (honest, never a 500). See the query header.
+   */
+  neo4jPipelineCounts?: Neo4jPipelineCounts;
   /**
    * SPEC: A.2.4 (WA-19) / ADR-0015 WS3 — direct PG dirty-queue writer for the admin unmerge
    * (ops.restitch_pending + ops.journey_reversion_pending, drained by the Silver identity stage).

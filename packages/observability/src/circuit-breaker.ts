@@ -58,6 +58,16 @@ export interface CircuitBreakerOptions {
    * AbortSignal.timeout on the underlying fetch).
    */
   callTimeoutMs?: number;
+  /**
+   * Optional predicate deciding whether a thrown error counts as a breaker FAILURE.
+   * Return false for errors that mean "the dependency RESPONDED, this is an expected/handled
+   * business signal" (e.g. a vendor 400 "reduce the amount of data", a rate-limit the caller
+   * already backs off on, an auth error routed to reconnect) — those must NOT trip the circuit,
+   * because the service is reachable. Such errors are treated as a SUCCESS for breaker state
+   * (they close a HALF_OPEN probe) but are STILL re-thrown for the caller to handle.
+   * Default: () => true (every error is a failure — the original behaviour).
+   */
+  isFailure?: (err: unknown) => boolean;
 }
 
 export class CircuitBreaker {
@@ -69,12 +79,14 @@ export class CircuitBreaker {
   private readonly failureThreshold: number;
   private readonly openMs: number;
   private readonly callTimeoutMs: number | undefined;
+  private readonly isFailure: (err: unknown) => boolean;
 
   constructor(opts: CircuitBreakerOptions) {
     this.name = opts.name;
     this.failureThreshold = opts.failureThreshold ?? 5;
     this.openMs = opts.openMs ?? 30_000;
     this.callTimeoutMs = opts.callTimeoutMs;
+    this.isFailure = opts.isFailure ?? (() => true);
   }
 
   /** Current state (for inspection / tests). */
@@ -108,7 +120,14 @@ export class CircuitBreaker {
     try {
       result = await this._runWithTimeout(call);
     } catch (err) {
-      this._onFailure(err);
+      // A caller-classified NON-failure (the dependency responded with an expected/handled signal)
+      // must not trip the breaker: the service is reachable, so treat it as a success for breaker
+      // state (closes a HALF_OPEN probe) — but still re-throw so the caller handles it.
+      if (this.isFailure(err)) {
+        this._onFailure(err);
+      } else {
+        this._onSuccess();
+      }
       throw err;
     }
 

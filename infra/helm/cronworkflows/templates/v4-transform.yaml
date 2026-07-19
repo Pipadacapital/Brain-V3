@@ -1,22 +1,37 @@
 {{- /*
-Brain V4 DuckDB medallion transform — ONE CHAINED CronWorkflow (ADR-0016 P2.1).
+Brain V4 DuckDB medallion transform — the CORE CronWorkflow (v4-medallion).
 
 WAS three staggered CronWorkflows (v4-silver :00/5 + v4-identity :02/5 + v4-gold :00/5) whose only
 cross-stage sequencing was the ~2-min schedule offset — so end-to-end latency stacked the whole
 scheduling wait (Silver commits, then up to 5 min until the Gold tick reads it, etc.). ADR-0016 D2
-collapses them into ONE ordered run (`v4-medallion`) that walks keystone → Silver → identity(resolve)
-→ silver_identity_map → Gold marts → serving-cache-bust BACK-TO-BACK with NO inter-stage cron wait.
-ONE schedule, sequential, `concurrencyPolicy: Forbid` (a long run just skips the next tick, never
-overlaps a second writer). This mirrors tools/dev/duckdb-refresh.sh's ordering EXACTLY.
+collapsed them into ONE ordered run that walked keystone → Silver → identity(resolve) →
+silver_identity_map → Gold marts → serving-cache-bust BACK-TO-BACK with NO inter-stage cron wait.
 
-WHY an in-workflow `steps` sequence (not a single container): the chain CROSSES IMAGES — Silver /
-map-export / Gold run the brain-duckdb image (`python /opt/brain/duckdb/**`), while the identity
-resolve step and the serving-cache-bust step run node entrypoints that ship in the stream-worker
-deployable. A single container can't carry both, so the Argo `steps` DAG is the lowest-complexity
-way to run them in one ordered workflow (same idiom the old v4-identity/v4-gold workflows already
-used for their intra-run ordering). All stages are idempotent watermark+MERGE, so a mid-chain
-failure is converge-next-run safe; each step's failure counts toward the workflow status
-(TransformTierRunFailed, tier=v4-medallion) except the fail-open serving-cache-bust.
+CORE↔IDENTITY RE-SPLIT (2026-07-19 freshness incident) — this v4-medallion is now the CORE lane
+ONLY: keystone → Silver ×2 → Gold marts → serving-cache-bust. The identity(resolve) → map-export
+pair has been MOVED OUT into its OWN CronWorkflow (`v4-identity`, templates/v4-identity.yaml).
+WHY: the identity-resolve step (stream-worker Neo4j resolution) is SLOW — a data-heavy brand's
+identity watermark ran ~6 DAYS behind and each 6h slice took ~2h. Because it sat IN this chain, the
+WHOLE run took 2+h; with `concurrencyPolicy: Forbid` every 5-min tick was skipped underneath →
+keystone/Silver/Gold (revenue/orders/spend) barely advanced → fresh Bronze never reached serving.
+Core Gold does NOT need THIS run's identity: gold's customer marts read the LAST-written
+silver_identity_map (a persistent Iceberg bi-temporal table). Slightly stale identity is safe and
+converges; a stalled CORE medallion is not. So identity runs on its OWN every-5-min Forbid schedule — a
+slow identity run skips its OWN next tick but can NEVER block core freshness.
+
+This DELIBERATELY re-splits what ADR-0016 D2 collapsed (identity co-scheduling in one run). The
+trade-off is intentional: CORE serving latency wins over one-shot identity co-scheduling. All stages
+stay idempotent watermark+MERGE, so a mid-chain failure is converge-next-run safe. See v4-identity.yaml
+for the identity lane; the FORWARD-SLICE cap there is tightened to 1h (SILVER_IDENTITY_MAX_SLICE_MS)
+so each identity slice finishes fast and the 6-day backlog drains over more, shorter ticks.
+
+WHY an in-workflow `steps` sequence (not a single container): the CORE chain CROSSES IMAGES — Silver
+and Gold run the brain-duckdb image (`python /opt/brain/duckdb/**`), while the serving-cache-bust step
+runs a node entrypoint that ships in the stream-worker deployable. A single container can't carry both,
+so the Argo `steps` DAG is the lowest-complexity way to run them in one ordered workflow. All stages
+are idempotent watermark+MERGE, so a mid-chain failure is converge-next-run safe; each step's failure
+counts toward the workflow status (TransformTierRunFailed, tier=v4-medallion) except the fail-open
+serving-cache-bust.
 
 INTERIM before the resident warm worker (ADR-0016 D3 / WS2): this is still a CronWorkflow — it pays a
 cold pod + catalog-attach per tick. WS2 supersedes it with a resident Deployment holding a WARM
@@ -41,9 +56,10 @@ The value block is still named `sparkV4` (chart values compatibility — one ima
 {{- else -}}
   {{- fail "sparkV4.image.digest (preferred) or an immutable non-':latest' tag is required (B3) — refusing to deploy an unpinned image" -}}
 {{- end -}}
-{{- /* Stream-worker image (B3 fail-closed, same rule): the identity resolve step and the
-       serving-cache-bust step run node entrypoints that ship in the stream-worker deployable —
-       same image/idiom as the .Values.jobs useStreamWorkerImage jobs. */ -}}
+{{- /* Stream-worker image (B3 fail-closed, same rule): the serving-cache-bust step runs a node
+       entrypoint that ships in the stream-worker deployable — same image/idiom as the .Values.jobs
+       useStreamWorkerImage jobs. (The identity-resolve step also uses this image but now lives in
+       templates/v4-identity.yaml — see the CORE↔IDENTITY re-split note above.) */ -}}
 {{- $swImg := .Values.streamWorkerImage -}}
 {{- $swRef := "" -}}
 {{- if $swImg.digest -}}
@@ -119,8 +135,8 @@ spec:
     tolerations:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    # The chain now runs ALL stages in ONE workflow (silver ×2 → identity → map → gold → cache-bust),
-    # so the deadline must cover the WHOLE run — the union of the old per-stage ceilings. The FIRST
+    # The CORE chain runs silver ×2 → gold → cache-bust in ONE workflow (identity/map moved to the
+    # v4-identity cron), so the deadline must cover the whole CORE run. The FIRST
     # run after SILVER_INCREMENTAL is enabled has no watermark → a full-scan BOOTSTRAP (~75 min) that
     # MUST complete to seed the watermark; a low cap would kill it before the watermark write → every
     # run re-bootstraps and never progresses. Leave this ceiling high; Forbid skips ticks until each
@@ -129,21 +145,17 @@ spec:
     podGC:
       strategy: OnWorkflowSuccess
     templates:
-      # ── THE CHAIN (mirrors tools/dev/duckdb-refresh.sh's `all` stage EXACTLY) ─────────────────────
-      # keystone → silver ×2 → identity(resolve) → silver_identity_map → gold marts → cache-bust,
-      # each step depending on the prior. continueOn.failed only on the identity resolve (dev doctrine:
-      # map-export still re-projects the graph, which may have advanced) and the fail-open cache-bust
-      # (TTL is the safety net); every other step is a hard link in the chain.
+      # ── THE CORE CHAIN ────────────────────────────────────────────────────────────────────────────
+      # keystone → silver ×2 → gold marts → cache-bust, each step depending on the prior. The
+      # identity(resolve) → map-export pair is NOT here anymore — it runs in the separate v4-identity
+      # CronWorkflow (templates/v4-identity.yaml) so its slow catch-up can never block core freshness.
+      # gold-marts reads whatever silver_identity_map the v4-identity cron LAST wrote (a persistent
+      # Iceberg table — safe; slightly stale, converges). continueOn.failed only on the fail-open
+      # cache-bust (TTL is the safety net); every other step is a hard link in the chain.
       - name: run
         steps:
           - - name: silver
               template: silver
-          - - name: identity-resolve
-              template: identity-resolve
-              continueOn:
-                failed: true           # dev parity: map-export still re-projects (graph may have advanced)
-          - - name: map-export
-              template: map-export
           - - name: gold-marts
               template: gold-marts
           - - name: serving-cache-bust
@@ -183,69 +195,6 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* + NEO4J_* (identity mart reads)
-          {{- end }}
-          resources:
-            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
-
-      # ── IDENTITY RESOLVE (ADR-0015 WS3: identity resolves in Silver) — stream-worker image ─────────
-      # `pnpm exec tsx src/jobs/silver-identity/run.ts` (the exact node-job invocation idiom of
-      # .Values.jobs; the dev script's `pnpm --filter @brain/stream-worker run job:silver-identity` is
-      # the same entrypoint behind a package script whose --env-file only exists in the repo checkout).
-      # Reads new keystone rows over duckdb-serving, resolves via IdentityResolver → Neo4j (the identity
-      # SoR, ADR-0004), writes dirty-sets/consent/CAPI. Watermark-driven, leader-locked, per-brand
-      # idempotent; emits brain_silver_identity_runs_total per clean brand pass (absence-alerted in
-      # infra/observe/alerts/brain-slo.rules.yml — BrainSilverIdentityStageStalled). A failed brand
-      # HOLDS its watermark; the next run re-processes the same idempotent window (no loss).
-      - name: identity-resolve
-        retryStrategy:
-          limit: {{ .Values.defaults.backoffLimit | quote }}   # watermark-held + idempotent — retry-safe
-          retryPolicy: OnError
-        metrics:
-          prometheus:
-            - name: brain_transform_workflow_failed_total
-              help: "v4 DuckDB medallion workflow runs that ended Failed (deadline/retries exhausted)"
-              labels:
-                - key: tier
-                  value: v4-medallion
-              when: {{ `"{{status}} == Failed"` }}
-              counter:
-                value: "1"
-        container:
-          image: {{ $swRef | quote }}
-          imagePullPolicy: {{ $swImg.pullPolicy }}
-          command: ["pnpm", "exec", "tsx", "src/jobs/silver-identity/run.ts"]
-          {{- if $envFrom }}
-          envFrom:
-            - secretRef:
-                name: {{ $envFrom }}
-          {{- end }}
-          resources:
-            {{- toYaml .Values.defaults.resources | nindent 12 }}
-
-      # ── MAP-EXPORT — duckdb image ─────────────────────────────────────────────────────────────────
-      # silver/silver_identity_map.py re-projects the Neo4j graph (the identity SoR, ADR-0004) into the
-      # Iceberg bi-temporal map so gold (customer_360 &co) reads THIS run's resolutions, not the
-      # previous tick's. IDENTITY_MAP_DIRTY_ONLY (default OFF, DE parity gate) scopes the re-export to
-      # only the brain_ids mutated this tick when validated — dirty-set-driven, chaining unchanged.
-      - name: map-export
-        retryStrategy:
-          limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent MERGE — retry-safe
-          retryPolicy: OnError
-        container:
-          image: {{ $ref | quote }}
-          imagePullPolicy: {{ $img.pullPolicy }}
-          command: ["/bin/bash", "-c"]
-          args:
-            - |
-              set -uo pipefail
-              {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
-              exec python /opt/brain/duckdb/silver/silver_identity_map.py
-          env:
-            {{- toYaml .Values.sparkV4.env | nindent 12 }}
-          {{- if $envFrom }}
-          envFrom:
-            - secretRef:
-                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* + NEO4J_*
           {{- end }}
           resources:
             {{- toYaml .Values.sparkV4.resources | nindent 12 }}

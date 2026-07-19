@@ -16,11 +16,17 @@ environment: prod
 enabled: true
 
 image:
-  # Same brain-duckdb-prod image + digest the cronworkflows medallion steps run (sparkV4.image /
-  # values-prod). Kept in sync at promote time (deploy.yml build-data-images bumps both).
+  # Same brain-duckdb-prod image the cronworkflows medallion steps run (sparkV4.image in
+  # cronworkflows/values-prod). MUST be an image whose db/iceberg/duckdb/run_all.py carries the
+  # `resident` tier (ADR-0016 P2) — the Deployment command is `run_all.py resident`. HAND-PINNED:
+  # deploy.yml's gitops-staging/prod-promote bump the app + cronworkflows charts but NOT this one,
+  # so it does not auto-track the duckdb image. Keep it equal to cronworkflows sparkV4.image.digest
+  # on every bump. (The prior pin sha256:bc865113… predated the resident code → `unknown tier
+  # 'resident'` CrashLoop; this digest = the digest the healthy v4-medallion cron runs, git 87f7c6bd,
+  # verified to contain run_resident().) FOLLOW-UP: teach deploy.yml to bump transform-worker too.
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
   tag: ""
-  digest: "sha256:bc865113d9f4a17c87d8a7e19819c8f50fd4796d174d32e48436342f1240d1d8"
+  digest: "sha256:65f1d0026e0d926e08bea369d02c557cf2132271451b318158e548054dde490e"
 
 # The SAME catalog-creds secret the cronworkflows medallion steps envFrom.
 envSecretName: core-env

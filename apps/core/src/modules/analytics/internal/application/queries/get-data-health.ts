@@ -20,7 +20,7 @@
 
 import type { EngineDeps, SilverPool } from '@brain/metric-engine';
 import { withBrandTxn, withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
-import { ICEBERG_BRONZE, BRONZE_COLLECTOR_PREDICATE } from './_bronze-source.js';
+import { COLLECTOR_EVENTS_VIEW, COLLECTOR_PREDICATE } from './_bronze-source.js';
 import { hasSilver } from './_bronze-source.js';
 import { log } from '../../../../../log.js';
 
@@ -43,7 +43,7 @@ export type DataHealthResult =
 const VOLUME_WINDOW_DAYS = 30;
 
 /** The Iceberg Bronze table over Trino (Brain V4 — StarRocks removed); Trino's default catalog is `iceberg`. */
-// ICEBERG_BRONZE + the (constant TRUE) collector predicate come from the shared _bronze-source
+// COLLECTOR_EVENTS_VIEW + the (constant TRUE) collector predicate come from the shared _bronze-source
 // (ADR-0010 — the BRONZE_SOURCE switch is removed; the connect lift view is the only source).
 
 export interface DataHealthDeps extends EngineDeps {
@@ -86,7 +86,7 @@ async function readBronzeIceberg(
     const [headRows, volumeRows] = await Promise.all([
       withSilverBrand(srPool, brandId, (scope) =>
         scope.runScoped<{ n: number | string; last_ingest_at: Date | string | null }>(
-          `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${ICEBERG_BRONZE} WHERE ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
+          `SELECT COUNT(*) AS n, MAX(ingested_at) AS last_ingest_at FROM ${COLLECTOR_EVENTS_VIEW} WHERE ${COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}`,
         ),
       ),
       // Per-day volume over the bounded window. date_trunc + interval math; the brand predicate
@@ -94,8 +94,8 @@ async function readBronzeIceberg(
       withSilverBrand(srPool, brandId, (scope) =>
         scope.runScoped<{ bucket: Date | string; count: number | string }>(
           `SELECT date_trunc('day', occurred_at) AS bucket, COUNT(*) AS count
-             FROM ${ICEBERG_BRONZE}
-            WHERE occurred_at >= (now() - INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${BRONZE_COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
+             FROM ${COLLECTOR_EVENTS_VIEW}
+            WHERE occurred_at >= (now() - INTERVAL ${VOLUME_WINDOW_DAYS} DAY) AND ${COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
             GROUP BY 1 ORDER BY 1 ASC`,
         ),
       ),

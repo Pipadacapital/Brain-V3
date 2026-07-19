@@ -215,7 +215,7 @@ export { computeJourneyList } from './journey-list.js';
 export type { JourneyListResult, JourneyListRow, JourneyListParams } from './journey-list.js';
 
 // Versioned journey-ledger CURRENT projection (mv_journey_events_current over
-// iceberg.brain_gold.journey_events) — the resolved-identity per-customer timeline,
+// iceberg.brain_gold.gold_journey_events) — the resolved-identity per-customer timeline,
 // keyset-paginated newest-first. Money = bigint minor string ONLY on composite rows.
 export { computeJourneyEventsCurrent, computeJourneyEventsAsOf, resolveIdentityAsOf } from './journey-events.js';
 export type {

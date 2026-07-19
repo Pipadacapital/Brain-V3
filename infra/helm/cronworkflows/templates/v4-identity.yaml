@@ -26,11 +26,16 @@ brand serving cache after the Gold marts rewrite). A map-export refreshing silve
 not itself change any served mart until Gold re-reads it — the NEXT v4-medallion run's gold-marts +
 its own cache-bust cover that. So the identity lane needs no cache-bust of its own.
 
-Same suppression seam as v4-medallion: when the resident warm transform worker is on
-(`transformWorker.enabled`, ADR-0016 WS2) this whole cron is suppressed — the resident worker loops
-identity in-process (single-writer preserved across the cutover). Images MUST be digest-pinned (B3).
+CORE↔IDENTITY re-split under the resident worker (2026-07-19): UNLIKE v4-medallion, this v4-identity cron
+STAYS ENABLED when the resident warm transform worker is on (`transformWorker.enabled`). The resident
+worker runs CORE-ONLY (TRANSFORM_CORE_ONLY=1) and DELIBERATELY does NOT write the identity-owned marts —
+so v4-identity must keep running as the SOLE identity writer alongside it. Its gate is therefore
+`and sparkV4.enabled sparkV4.identity.enabled` ONLY (no `not transformWorker.enabled` term). SINGLE-WRITER
+per table: the resident holds the CORE tick lock 910_005; v4-identity's identity-resolve step holds the
+910_004 silver-identity leader lock — two different tables, two different locks, no contention. Images
+MUST be digest-pinned (B3).
 */ -}}
-{{- if and .Values.sparkV4.enabled .Values.sparkV4.identity.enabled (not .Values.transformWorker.enabled) }}
+{{- if and .Values.sparkV4.enabled .Values.sparkV4.identity.enabled }}
 {{- $img := .Values.sparkV4.image -}}
 {{- $ref := "" -}}
 {{- if $img.digest -}}
@@ -118,8 +123,9 @@ spec:
       strategy: OnWorkflowSuccess
     templates:
       # ── THE IDENTITY CHAIN ────────────────────────────────────────────────────────────────────────
-      # identity(resolve) → silver_identity_map (map-export). continueOn.failed on the resolve (dev
-      # parity: map-export still re-projects the graph, which may have advanced).
+      # identity(resolve) → map-export (the identity-silver tier: silver_identity_map + _alias +
+      # _customer_identity + _unmerge — all four identity-owned marts). continueOn.failed on the resolve
+      # (dev parity: map-export still re-projects the graph, which may have advanced).
       - name: run
         steps:
           - - name: identity-resolve
@@ -171,11 +177,20 @@ spec:
           resources:
             {{- toYaml .Values.defaults.resources | nindent 12 }}
 
-      # ── MAP-EXPORT — duckdb image ─────────────────────────────────────────────────────────────────
-      # silver/silver_identity_map.py re-projects the Neo4j graph (the identity SoR, ADR-0004) into the
-      # Iceberg bi-temporal map so gold (customer_360 &co) reads the freshest resolutions on its next
-      # run. IDENTITY_MAP_DIRTY_ONLY (default OFF, DE parity gate) scopes the re-export to only the
-      # brain_ids mutated this tick when validated — dirty-set-driven.
+      # ── MAP-EXPORT — the IDENTITY-SILVER tier (duckdb image) ────────────────────────────────────────
+      # Re-projects the Neo4j identity graph (the identity SoR, ADR-0004) into the FOUR identity-owned
+      # Iceberg Silver marts. This step is the SOLE writer of all four (CORE↔IDENTITY re-split,
+      # 2026-07-19): the core lane (v4-medallion silver step + the resident worker) now runs
+      # TRANSFORM_CORE_ONLY=1, which EXCLUDES these exact jobs from run_all.py's silver glob — so if this
+      # step only re-projected silver_identity_map, the alias / customer_identity / unmerge marts would be
+      # left WRITERLESS. It therefore runs all four (each reads Neo4j, each an idempotent MERGE):
+      #   silver_identity_map.py       → silver_identity_map      (bi-temporal brain_id map gold reads)
+      #   silver_identity_alias.py     → silver_identity_alias    (IDENTIFIES edges / CAPI subject hashes)
+      #   silver_customer_identity.py  → silver_customer_identity (Customer-node projection)
+      #   silver_identity_unmerge.py   → silver_identity_unmerge  (UnmergeEvent audit ledger)
+      # `set -uo pipefail` (NOT -e): one mart's failure must not abort the others (best-effort, converge
+      # next run — same discipline as the core silver step). IDENTITY_MAP_DIRTY_ONLY (default OFF, DE
+      # parity gate) scopes the map re-export to the brain_ids mutated this tick when validated.
       - name: map-export
         retryStrategy:
           limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent MERGE — retry-safe
@@ -188,7 +203,12 @@ spec:
             - |
               set -uo pipefail
               {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
-              exec python /opt/brain/duckdb/silver/silver_identity_map.py
+              rc=0
+              for j in silver_identity_map silver_identity_alias silver_customer_identity silver_identity_unmerge; do
+                echo "── identity-silver: $j ──"
+                python /opt/brain/duckdb/silver/$j.py || { echo "✗ $j failed (converge next run)"; rc=1; }
+              done
+              exit $rc
           env:
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
           {{- if $envFrom }}

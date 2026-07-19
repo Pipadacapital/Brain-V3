@@ -126,24 +126,6 @@ def main() -> int:
         rows,
     )
 
-    # The serving view brain_bronze.events_unified (mv_bronze_events_unified.sql) UNION-ALLs the
-    # collector lane with brain_bronze.shopify_orders_raw_connect — it HARD-references that raw lane,
-    # so if the table is absent the CREATE VIEW binder-errors and duckdb-serving skips the view,
-    # which fails the /readyz gate (views_skipped must be []). The raw lanes normally auto-create on
-    # the first Connect record; with the deterministic seed there is none, so create the table EMPTY
-    # with the columns the view projects (exploded schema: brand_id is a real column; kafka_partition
-    # is bigint on the raw lanes). No rows — the unified view just needs it to exist.
-    raw_fq = mb.fqtn(BRONZE_NS, "shopify_orders_raw_connect")
-    con.execute(
-        f"""CREATE TABLE IF NOT EXISTS {raw_fq} (
-              brand_id        VARCHAR,
-              kafka_topic     VARCHAR,
-              kafka_partition BIGINT,
-              kafka_offset    BIGINT,
-              kafka_timestamp TIMESTAMP
-            );"""
-    )
-
     total = con.execute(f"SELECT count(*) FROM {fq};").fetchone()[0]
     print(
         f"✓ Bronze fixture seeded: appended {len(rows)} order.live.v1 rows to "

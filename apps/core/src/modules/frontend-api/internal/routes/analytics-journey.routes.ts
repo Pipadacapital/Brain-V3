@@ -988,7 +988,7 @@ export function registerAnalyticsJourneyRoutes(fastify: FastifyInstance, deps: B
   /**
    * GET /api/v1/analytics/journey/events?brainId=<uuid>&cursor=&limit=&as_of=<iso>
    * The versioned journey LEDGER for ONE resolved customer — the current (is_current=true)
-   * projection of iceberg.brain_gold.journey_events via brain_serving.mv_journey_events_current.
+   * projection of iceberg.brain_gold.gold_journey_events via brain_serving.mv_journey_events_current.
    * Keyed by brain_id (the RESOLVED identity, same key as Customer 360 — post-merge canonical),
    * newest-first, keyset-paginated (opaque next_cursor; an invalid cursor degrades to the first
    * page). MONEY: revenue_minor bigint-minor-string + sibling currency_code, composite rows only.

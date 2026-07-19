@@ -256,7 +256,7 @@ export type JourneyTimeline = z.infer<typeof JourneyTimelineSchema>;
 // ── #7b GET /v1/analytics/journey/events — versioned journey ledger (current projection) ──
 // @see apps/core/.../analytics/.../get-journey-events.ts
 // One customer's resolved-identity timeline from brain_serving.mv_journey_events_current
-// (is_current=true over iceberg.brain_gold.journey_events). Keyed by brain_id (the RESOLVED
+// (is_current=true over iceberg.brain_gold.gold_journey_events). Keyed by brain_id (the RESOLVED
 // customer, not brain_anon_id), newest-first, keyset-paginated (opaque next_cursor).
 // MONEY: revenue_minor is bigint minor-units-as-string (I-S07), non-null ONLY on composite rows.
 

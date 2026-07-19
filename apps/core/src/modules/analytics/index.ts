@@ -168,7 +168,7 @@ export { getJourneyStitchRate } from './internal/application/queries/get-journey
 export type { JourneyStitchRateResult, JourneyStitchRateParams } from './internal/application/queries/get-journey-stitch-rate.js';
 export { getJourneyTimeline } from './internal/application/queries/get-journey-timeline.js';
 export type { JourneyTimelineResult, TimelineTouchDto, JourneyTimelineParams } from './internal/application/queries/get-journey-timeline.js';
-// Versioned journey ledger (mv_journey_events_current over iceberg.brain_gold.journey_events) —
+// Versioned journey ledger (mv_journey_events_current over iceberg.brain_gold.gold_journey_events) —
 // one resolved customer's canonical timeline, newest-first, keyset-paginated (opaque cursor).
 export { getJourneyEvents } from './internal/application/queries/get-journey-events.js';
 export type { JourneyEventsResult, JourneyEventDto, JourneyEventsQueryParams } from './internal/application/queries/get-journey-events.js';

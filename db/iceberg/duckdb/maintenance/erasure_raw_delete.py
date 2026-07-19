@@ -82,20 +82,11 @@ ERASE_COMPACT = os.environ.get("ERASE_COMPACT", "1") == "1"
 
 # Mapping: raw_table_name -> list of column names that carry a hashed subject identifier. Each listed
 # column receives its own COW delete: delete(And(EqualTo('brand_id', <b>), EqualTo(<col>, <hash>))).
-# A column absent from a table's schema is skipped (safe on partial schema evolution). Tables with an
-# empty list are spend/aggregate lanes with no per-subject row (skipped silently). collector_events_connect
-# is NOT here — it is payload-only; its erasure is the PAYLOAD-PATH mechanism below.
-RAW_TABLE_IDENTIFIER_COLS: "dict[str, list[str]]" = {
-    "shopify_orders_raw_connect": ["identifier_hash", "email_hash"],
-    "woocommerce_orders_raw_connect": ["identifier_hash", "email_hash"],
-    "meta_spend_raw_connect": [],    # aggregate spend — no per-subject identifier
-    "google_spend_raw_connect": [],  # aggregate spend — no per-subject identifier
-    "ga4_rows_raw_connect": ["identifier_hash", "client_id"],
-    "shiprocket_shipments_raw_connect": ["identifier_hash"],
-    "gokwik_events_raw_connect": ["identifier_hash"],
-    "shopflo_checkout_raw_connect": ["identifier_hash"],
-    "razorpay_settlement_raw_connect": ["identifier_hash"],
-}
+# The 9 `*_raw_connect` lanes were RETIRED by ADR-0016 (2026-07-18) — never populated, sinks removed —
+# so this mechanism has no live tables (DR-001 hygiene); the constant stays so the erasure sequence
+# (and any future ADR-sanctioned lifted-column lane) needs no rework. collector_events_connect is NOT
+# here — it is payload-only; its erasure is the PAYLOAD-PATH mechanism below.
+RAW_TABLE_IDENTIFIER_COLS: "dict[str, list[str]]" = {}
 
 # ── PAYLOAD-PATH PREDICATE ERASURE (ADR-0010 RTBF posture for the payload-only Bronze SoR) ────────
 # collector_events_connect lands ONLY the verbatim envelope `payload` JSON + kafka coordinates — no

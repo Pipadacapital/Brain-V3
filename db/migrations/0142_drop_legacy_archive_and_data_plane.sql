@@ -1,0 +1,51 @@
+--
+-- 0142_drop_legacy_archive_and_data_plane.sql — DR-001 hygiene wave (docs/data-platform/design-review-001).
+--
+-- 1. connectors.connector_webhook_raw_archive_legacy: 0 rows, superseded by the PARTITIONED
+--    connectors.connector_webhook_raw_archive; zero code references outside migrations. Cascade
+--    check performed against the live DB: the partitioned archive's id default uses its OWN
+--    sequence (connector_webhook_raw_archive_part_id_seq); the legacy table owns the separate
+--    connector_webhook_raw_archive_id_seq, so this DROP cascades only to legacy's own sequence
+--    and RLS policy — the live webhook archive path is untouched.
+-- 2. data_plane schema: empty since 0139 (ingest_dedup) and 0141 (collector_spool) drops.
+--
+-- Lock: AccessExclusive on an unreferenced, empty table — instantaneous. IF EXISTS = idempotent.
+--
+-- VALIDATION:
+--   SELECT to_regclass('connectors.connector_webhook_raw_archive_legacy') IS NULL;          -- true
+--   SELECT NOT EXISTS (SELECT 1 FROM information_schema.schemata
+--                       WHERE schema_name = 'data_plane');                                  -- true
+--   SELECT column_default FROM information_schema.columns
+--    WHERE table_schema='connectors' AND table_name='connector_webhook_raw_archive'
+--      AND column_name='id';  -- still nextval('connector_webhook_raw_archive_part_id_seq')
+--
+-- ROLLBACK (structural only — table was empty; policy/DDL reproduced from 0000 baseline + 0134):
+--   CREATE SCHEMA IF NOT EXISTS data_plane;
+--   CREATE TABLE connectors.connector_webhook_raw_archive_legacy (
+--       id bigint NOT NULL,
+--       brand_id uuid NOT NULL,
+--       source text NOT NULL,
+--       topic text NOT NULL,
+--       body_sha256 text NOT NULL,
+--       received_at timestamptz DEFAULT now() NOT NULL,
+--       correlation_id text,
+--       redacted_body jsonb NOT NULL
+--   );
+--   CREATE SEQUENCE connectors.connector_webhook_raw_archive_id_seq
+--       START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1
+--       OWNED BY connectors.connector_webhook_raw_archive_legacy.id;
+--   ALTER TABLE ONLY connectors.connector_webhook_raw_archive_legacy
+--       ALTER COLUMN id SET DEFAULT nextval('connectors.connector_webhook_raw_archive_id_seq'::regclass),
+--       ADD CONSTRAINT connector_webhook_raw_archive_pkey PRIMARY KEY (id),
+--       ADD CONSTRAINT connector_webhook_raw_archive_dedup UNIQUE (brand_id, topic, body_sha256);
+--   CREATE INDEX idx_webhook_raw_archive_brand_received
+--       ON connectors.connector_webhook_raw_archive_legacy (brand_id, received_at DESC);
+--   ALTER TABLE connectors.connector_webhook_raw_archive_legacy ENABLE ROW LEVEL SECURITY;
+--   ALTER TABLE ONLY connectors.connector_webhook_raw_archive_legacy FORCE ROW LEVEL SECURITY;
+--   CREATE POLICY connector_webhook_raw_archive_isolation
+--       ON connectors.connector_webhook_raw_archive_legacy TO brain_app
+--       USING ((brand_id = (NULLIF(current_setting('app.current_brand_id', true), ''))::uuid));
+--
+
+DROP TABLE IF EXISTS connectors.connector_webhook_raw_archive_legacy;
+DROP SCHEMA IF EXISTS data_plane;

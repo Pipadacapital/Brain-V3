@@ -191,6 +191,13 @@ spec:
             # ADR-0010: the silver jobs read the Kafka Connect Bronze tables (collector_events_connect
             # + <lane>_raw_connect) — fixed, no BRONZE_SOURCE switch (rollback = git revert).
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
+            # CORE-ONLY (CORE↔IDENTITY re-split, 2026-07-19): this CORE silver step must EXCLUDE the
+            # v4-identity-owned marts (silver_identity_map/_alias, silver_customer_identity,
+            # silver_identity_unmerge) so it does NOT double-write them against the separate v4-identity
+            # cron (which now solely owns them). Without this, run_all.py silver globs ALL silver_*.py —
+            # including the identity jobs — so the core cron and v4-identity would BOTH write those Iceberg
+            # tables (a latent write-conflict introduced by the decouple). Fixed here.
+            - { name: TRANSFORM_CORE_ONLY, value: "1" }
           {{- if $envFrom }}
           envFrom:
             - secretRef:
@@ -226,6 +233,10 @@ spec:
             # ADR-0010: the gold jobs' Silver inputs derive from the Kafka Connect Bronze tables —
             # fixed, no BRONZE_SOURCE switch (rollback = git revert).
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
+            # CORE-ONLY for symmetry with the silver step. No gold_*.py job is identity-owned, so this is a
+            # no-op for the gold tier (run_all.py only excludes IDENTITY_OWNED_JOBS, all silver_*), but it
+            # keeps the CORE lane's env uniform and documents that gold never writes an identity table.
+            - { name: TRANSFORM_CORE_ONLY, value: "1" }
           {{- if $envFrom }}
           envFrom:
             - secretRef:

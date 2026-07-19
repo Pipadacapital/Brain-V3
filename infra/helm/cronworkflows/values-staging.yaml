@@ -23,6 +23,14 @@ sparkV4:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
     digest: "sha256:65f1d0026e0d926e08bea369d02c557cf2132271451b318158e548054dde490e"
+# ADR-0016 D3 / CORE↔IDENTITY re-split — resident warm transform worker (staging validation env).
+# transform-worker values-staging already has enabled=true; this is the LOCKSTEP flag its header calls
+# for — it SUPPRESSES the v4-medallion (CORE) cron so the resident Deployment is the sole CORE writer.
+# v4-identity is NOT suppressed (gate dropped the `not transformWorker.enabled` term) — it stays the sole
+# IDENTITY writer. Resident runs CORE-ONLY so it never double-writes the identity marts. Rollback = flip
+# this + transform-worker enabled back to false together.
+transformWorker:
+  enabled: true
 # The job pods read the same secret as the core/stream-worker deployments (DATABASE_URL,
 # BRAIN_APP_DATABASE_URL, DUCKDB_SERVING_HOST, ICEBERG_*). External Secrets ← AWS Secrets Manager.
 envSecretName: core-env

@@ -17,8 +17,8 @@
  *
  * SHAPE PARITY: product.upsert.v1 / customer.upsert.v1 / refund.recorded.v1 emit the IDENTICAL
  * canonical shape @brain/shopify-mapper produces (source:'woocommerce'), so the EXISTING silver
- * builders (silver_product_variant / silver_inventory_level / silver_refund / customer directory)
- * consume both storefronts with one code path. coupon.upsert.v1 is a NEW grain (no Shopify peer).
+ * builders (silver_refund / customer directory; the product/inventory grains land in Bronze,
+ * DR-002 deferred their Silver materialization) consume both storefronts with one code path. coupon.upsert.v1 is a NEW grain (no Shopify peer).
  */
 
 import type { CanonicalEventDraft } from '@brain/connector-core';

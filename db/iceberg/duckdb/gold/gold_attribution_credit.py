@@ -253,7 +253,7 @@ def _read_touchpoints(con):
     if _attribution_source_is_journey():
         raise SystemExit(
             "[gold_attribution_credit] ATTRIBUTION_SOURCE=journey requires the Spark-tree "
-            "brain_gold.journey_events mart, which is not present in the DuckDB tree — this port supports "
+            "brain_gold.gold_journey_events mart, which is not present in the DuckDB tree — this port supports "
             "only the DEFAULT legacy source (silver_touchpoint). Unset ATTRIBUTION_SOURCE or run the Spark "
             "job for the journey source [B.5.4]."
         )

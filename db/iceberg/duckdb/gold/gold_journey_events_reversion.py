@@ -2,7 +2,7 @@
 gold_journey_events_reversion.py (DuckDB) — faithful port of
 db/iceberg/spark/gold/gold_journey_events_reversion.py.
 
-MERGE RE-VERSIONING for the event-sourced journey ledger brain_gold.journey_events (spec gap G4 companion
+MERGE RE-VERSIONING for the event-sourced journey ledger brain_gold.gold_journey_events (spec gap G4 companion
 of gold_journey_events.py — the SAME table, a separate job so the v4-refresh-loop sequences it in the BI
 tier AFTER construction). It reads the SAME target the construction job writes (honoring
 MIGRATION_TABLE_SUFFIX) and, for a parallel-run parity harness, operates on journey_events<suffix>.
@@ -76,7 +76,7 @@ from _journey_reversion_pure import derive_unmerge_pairs, resolve_terminal  # no
 
 JOB_NAME = "gold_journey_events_reversion"          # silver_job_watermark key (merge pass)
 UNMERGE_JOB_NAME = "gold_journey_events_reversion_unmerge"  # SECOND, independent watermark (unmerge pass)
-TABLE_NAME = "journey_events"                       # the SAME ledger construction writes
+TABLE_NAME = "gold_journey_events"                  # the SAME ledger construction writes (DR-001 rename)
 _SUFFIX = os.environ.get("MIGRATION_TABLE_SUFFIX", "")
 TARGET = f"{CATALOG}.{GOLD_NAMESPACE}.{TABLE_NAME}{_SUFFIX}"
 

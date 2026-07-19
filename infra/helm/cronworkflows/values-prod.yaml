@@ -82,6 +82,16 @@ sparkV4:
         schedule: "0 4 * * *" # daily 04:00 IST — off the Gold cadence
         activeDeadlineSeconds: 10800 # 3h — enough headroom for the fragmented Silver tables
         orphanFiles: "1"
+# ADR-0016 D3 / CORE↔IDENTITY re-split (2026-07-19) — resident warm transform worker CUTOVER (prod).
+# transformWorker.enabled=true SUPPRESSES the v4-medallion (CORE) CronWorkflow — the resident Deployment
+# (infra/helm/transform-worker, enabled=true there IN LOCKSTEP) becomes the sole CORE writer, gated on its
+# own pg advisory lock 910_005. This does NOT suppress the v4-identity cron (its gate dropped the
+# `not transformWorker.enabled` term) — v4-identity STAYS the sole IDENTITY writer (lock 910_004). The
+# resident runs CORE-ONLY (TRANSFORM_CORE_ONLY=1) so it never double-writes the identity marts. Two
+# tables, two locks, single-writer each. REVERSIBILITY: set this false AND transform-worker enabled=false
+# to restore exactly today's behaviour (v4-medallion cron owns core, v4-identity owns identity).
+transformWorker:
+  enabled: true
 envSecretName: core-env
 serviceAccount:
   name: brain-jobs

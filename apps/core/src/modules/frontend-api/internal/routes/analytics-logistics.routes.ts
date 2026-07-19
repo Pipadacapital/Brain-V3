@@ -395,7 +395,10 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
       if (!rawPool || !srPool) {
         return reply.code(503).send({ request_id: requestId, error: { code: 'SERVICE_UNAVAILABLE', message: 'read pool or Silver tier not available' } });
       }
-      const result: ContractContributionMargin = await getContributionMargin(auth.brandId, new Date(`${asOfStr}T23:59:59Z`), { pool: rawPool, srPool });
+      const brandId = auth.brandId; // narrowed (guarded above) — stable inside the cache closure
+      const result: ContractContributionMargin = await cachedRead(brandId, 'analytics.contribution-margin', { as_of: asOfStr }, () =>
+        getContributionMargin(brandId, new Date(`${asOfStr}T23:59:59Z`), { pool: rawPool, srPool }),
+      );
       return reply.send({ request_id: requestId, data: result });
     },
   );

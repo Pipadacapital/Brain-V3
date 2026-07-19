@@ -47,8 +47,8 @@ export interface ICacheEvictionClient {
  */
 const DURABLE_CONFIG_NAMESPACES = ['flag'] as const;
 
-/** Is this brand-owned key durable config (never evicted by cache invalidation)? */
-export function isDurableConfigKey(key: string, brandId: string): boolean {
+/** Is this brand-owned key durable config (never evicted by cache invalidation)? Module-local. */
+function isDurableConfigKey(key: string, brandId: string): boolean {
   return DURABLE_CONFIG_NAMESPACES.some((ns) => key.startsWith(`${brandId}:${ns}:`));
 }
 

@@ -78,6 +78,9 @@ export type { CacRow } from './cac.js';
 // GoKwik + Shopflo CoD/RTO surface (Track C) — RTO rates, CoD mix/CM2, checkout funnel
 export { computeCodRtoRates } from './cod-rto-rates.js';
 export type { CodRtoRatesResult, CodRtoCohort } from './cod-rto-rates.js';
+// DR-006 — the COD/RTO outcome funnel per currency (gold_cod_rto via mv_gold_cod_rto)
+export { computeCodRto } from './cod-rto.js';
+export type { CodRtoResult, CodRtoCurrencySummary } from './cod-rto.js';
 
 // Customer 360 (Gold) summary — re-platform Phase E
 export { getCustomer360Summary } from './customer-360.js';

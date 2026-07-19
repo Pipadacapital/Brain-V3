@@ -23,6 +23,7 @@ import {
   RepeatLatencySchema,
   CohortUsersSchema,
   DeliveryTimeSchema,
+  CodRtoSchema,
   UtmSourceSchema,
   CampaignAttributionSchema,
   CampaignTimeseriesSchema,
@@ -92,6 +93,7 @@ import type {
   AnalyticsRepeatLatencyResponse,
   AnalyticsCohortUsersResponse,
   AnalyticsDeliveryTimeResponse,
+  AnalyticsCodRtoResponse,
   AnalyticsUtmSourceResponse,
   AnalyticsCampaignAttributionResponse,
   AnalyticsCampaignTimeseriesResponse,
@@ -386,6 +388,12 @@ export const analyticsApi = {
       `/v1/analytics/cod-mix`,
     );
     return data;
+  },
+
+  /** GET /api/v1/analytics/cod-rto — the COD/RTO outcome funnel per currency (gold_cod_rto, DR-006). */
+  getCodRto: async (): Promise<AnalyticsCodRtoResponse> => {
+    const env = await bffFetch<BffEnvelope<unknown>>(`/v1/analytics/cod-rto`);
+    return parseData(CodRtoSchema, env);
   },
 
   /**

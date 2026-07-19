@@ -46,9 +46,20 @@ spec:
           image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else if and .Values.image.tag (ne .Values.image.tag "latest") }}:{{ .Values.image.tag }}{{ else }}{{ fail "image.digest (preferred) or an immutable, non-':latest' image.tag is required (B3) — refusing to deploy an unpinned/mutable image" }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # run_all.py `resident` — the warm micro-batch loop (overrides the Dockerfile's
-          # bronze_maintenance ENTRYPOINT).
-          command:
-            {{- toYaml .Values.command | nindent 12 }}
+          # bronze_maintenance ENTRYPOINT). WRAPPED in bash to first derive the BRONZE/SILVER/GOLD_PG_*
+          # env: the leader-lock (pg_try_advisory_lock 910_005, LeaderLock._dsn) AND the silver/gold jobs
+          # the resident loops read those PG families, but core-env carries only DATABASE_URL_DIRECT — so
+          # without derivation PG defaults to localhost:5432 and every tick errors "connection refused"
+          # (the lock never acquires; ticks no-op). files/derive-pg-env.sh is a VERBATIM mirror of
+          # cronworkflows/files/derive-pg-env.sh (the v4-silver/v4-gold crons' SAME single fix point) —
+          # keep byte-identical (a drift-check diffs the two). exec keeps run_all.py as PID 1 so the
+          # SIGTERM drain (AUD-OPS-004) reaches it directly.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              {{- .Files.Get "files/derive-pg-env.sh" | nindent 14 }}
+              exec {{ .Values.command | join " " }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

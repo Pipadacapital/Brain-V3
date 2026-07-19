@@ -429,13 +429,17 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
         if ((err as { code?: string }).code === '23505') {
           return reply.code(409).send({ request_id: requestId, error: { code: 'COST_ALREADY_RECORDED', message: 'This cost has already been recorded.' } });
         }
+        const msg = (err as Error).message ?? '';
+        if (msg.includes('product cost sheet') || msg.includes('exactly one of')) {
+          return reply.code(400).send({ request_id: requestId, error: { code: 'INVALID_PARAMS', message: msg } });
+        }
         return reply.code(500).send({ request_id: requestId, error: { code: 'INTERNAL_ERROR', message: 'Could not save cost input.' } });
       }
     },
   );
 
   /**
-   * SPEC:C.2.4 — per-SKU COGS cost sheet (gold_product_costs, 0126).
+   * SPEC:C.2.4 — per-SKU COGS cost sheet (billing.product_cost_sheet, 0126/0143).
    *
    * GET  /api/v1/costs/product-sheet — the brand's currently-open per-SKU unit costs.
    * POST /api/v1/costs/product-sheet — CSV ingest (versioned, bi-temporal, idempotent). Body is

@@ -71,7 +71,7 @@ export { getContributionMargin } from './internal/application/queries/get-contri
 export type { ContributionMarginResult, ContributionMarginDto } from './internal/application/queries/get-contribution-margin.js';
 export { listCostInputs, upsertCostInput } from './internal/application/queries/cost-inputs.js';
 export type { CostInputDto, UpsertCostInputInput, CostScope, CostType } from './internal/application/queries/cost-inputs.js';
-// SPEC:C.2.4 — per-SKU cost-sheet CSV ingest → gold_product_costs (versioned COGS source).
+// SPEC:C.2.4 — per-SKU cost-sheet CSV ingest → billing.product_cost_sheet (versioned COGS source; DR-003).
 export {
   parseCostSheetCsv,
   validateRows as validateProductCostRows,

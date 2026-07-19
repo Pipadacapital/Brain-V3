@@ -87,6 +87,38 @@ worker:
   # interim path; this env documents the seam and lets a future image (node-carrying, or a localhost
   # side-car exec) override it. Empty ⇒ run_all.py's dev pnpm default (harmless no-op in the container).
   silverIdentityCmd: ""
+  # CORE-ONLY (TRANSFORM_CORE_ONLY, CORE↔IDENTITY re-split 2026-07-19). When true, the resident loop is
+  # the CORE writer ONLY: run_all.py excludes the v4-identity-owned Silver marts (silver_identity_map/
+  # _alias, silver_customer_identity, silver_identity_unmerge) from the silver tier AND skips the node
+  # identity subprocess + the map re-projection. The v4-identity CronWorkflow (which STAYS enabled
+  # alongside the resident worker) is the SOLE writer of those tables — so the resident worker (lock
+  # 910_005) and v4-identity (lock 910_004) never write the same Iceberg table. Gold reads the
+  # last-written silver_identity_map (bi-temporal, converges). MUST be true when this Deployment is on,
+  # else the resident double-writes the identity tables against the v4-identity cron. Default true here;
+  # setting false reverts to the pre-split in-process identity behaviour (single-writer then requires
+  # v4-identity to be suppressed — do not run both with coreOnly=false).
+  coreOnly: true
+
+# ── Incremental-read / OOM-safety env (db/iceberg/duckdb/_base.py, _catalog.py) ─────────────────────
+# The resident worker is a SEPARATE chart from the cronworkflows medallion, so it does NOT inherit the
+# cron's sparkV4.env. These MUST be set here or the resident tick full-scan-bootstraps and OOMs:
+#   iceberg.catalog          ICEBERG_CATALOG — the attached catalog handle (rest catalog). Default "rest".
+#   silverIncremental        SILVER_INCREMENTAL — watermark-windowed silver reads (ON in prod, mirrors the
+#                            cron's sparkV4.env). Without it every tick full-scans Bronze.
+#   watermarkMaxSliceSeconds WATERMARK_MAX_SLICE_SECONDS — the OOM-safe forward-slice cap (3600 = 1h). A
+#                            resident tick with cap=0 does an UNBOUNDED full-scan bootstrap on the first
+#                            pass → OOM. 3600 walks any backlog in 1h chunks over successive ticks. MUST be
+#                            set (same value as the cron's sparkV4.env WATERMARK_MAX_SLICE_SECONDS=3600).
+#   goldIncremental          GOLD_INCREMENTAL — Gold watermark-windowed reads (default "0" full-scan, flip
+#                            only after parity_check.py's Gold gate passes — mirrors the cron default).
+#   watermarkLookbackSeconds WATERMARK_LOOKBACK_SECONDS — trailing re-scan margin (idempotent MERGE dedups).
+transform:
+  iceberg:
+    catalog: "rest"
+  silverIncremental: "1"
+  goldIncremental: "0"
+  watermarkMaxSliceSeconds: "3600"
+  watermarkLookbackSeconds: "600"
 
 # AUD-OBS-2: OTel OTLP export flag — empty (default) keeps run_all.py's stdout-line telemetry the only
 # signal. The authoritative medallion_freshness_seconds gauge is owned by the observability chart's

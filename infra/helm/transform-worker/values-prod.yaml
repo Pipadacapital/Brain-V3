@@ -7,7 +7,13 @@ environment: prod
 #   1. set cronworkflows values-prod transformWorker.enabled=true   → suppresses the v4-medallion cron
 #   2. set this enabled=true                                        → starts the resident Deployment
 # Both land in the SAME promotion PR so the two are never both writing across the deploy.
-enabled: false
+#
+# CUTOVER (CORE↔IDENTITY re-split, 2026-07-19): the resident worker replaces ONLY the CORE v4-medallion
+# cron. The v4-identity cron STAYS enabled alongside it (its gate no longer suppresses on transformWorker)
+# and remains the SOLE writer of the identity-owned Silver marts. The resident runs CORE-ONLY
+# (TRANSFORM_CORE_ONLY=1, worker.coreOnly below) so it never double-writes those tables. Resident lock
+# 910_005 (core) vs v4-identity lock 910_004 (identity) — two tables, two locks, single-writer each.
+enabled: true
 
 image:
   # Same brain-duckdb-prod image + digest the cronworkflows medallion steps run (sparkV4.image /
@@ -30,14 +36,18 @@ serviceAccount:
 nodeSelector:
   karpenter.sh/nodepool: streaming
 
-# Same shape as the cronworkflows sparkV4.resources — identical jobs, identical image, just warm.
+# MATCH the cronworkflows sparkV4.resources (values-prod: req 2CPU/6Gi, lim 3CPU/8Gi) — the resident runs
+# the IDENTICAL DuckDB silver/gold jobs on the IDENTICAL image, and it holds the catalog WARM across ticks
+# with the same WATERMARK_MAX_SLICE_SECONDS=3600 slice folds. A lower ceiling than the cron's would OOM
+# the resident on the same 1h-slice working set the cron sized 8Gi for (the warm resident must have AT
+# LEAST the medallion cron pod's memory ceiling — the 2Gi/4Gi base default is undersized for prod).
 resources:
   requests:
-    cpu: "1"
-    memory: 2Gi
-  limits:
     cpu: "2"
-    memory: 4Gi
+    memory: 6Gi
+  limits:
+    cpu: "3"
+    memory: 8Gi
 
 # Resident-worker knobs — prod pins the ADR-0016 defaults explicitly so they don't drift from the base
 # chart / run_all.py / the cronworkflows transformWorker documentation block.
@@ -45,3 +55,18 @@ worker:
   tickMs: 45000
   healthPort: 8092
   lockKey: 910005
+  # CORE-ONLY: the resident is the CORE writer only; the v4-identity cron owns the identity tables.
+  coreOnly: true
+
+# Incremental-read / OOM-safety env — mirrors the cronworkflows sparkV4.env (values.yaml). The resident
+# chart does NOT inherit that env, so pin it here: SILVER_INCREMENTAL=1 (watermark-windowed reads, prod-on)
+# + WATERMARK_MAX_SLICE_SECONDS=3600 (the OOM-safe 1h forward-slice cap — a resident tick with cap=0 does
+# an unbounded full-scan bootstrap → OOM). GOLD_INCREMENTAL stays "0" (full-scan) until parity_check.py's
+# Gold gate passes, exactly like the cron default.
+transform:
+  iceberg:
+    catalog: "rest"
+  silverIncremental: "1"
+  goldIncremental: "0"
+  watermarkMaxSliceSeconds: "3600"
+  watermarkLookbackSeconds: "600"

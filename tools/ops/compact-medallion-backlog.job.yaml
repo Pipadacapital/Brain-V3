@@ -13,12 +13,12 @@
 # CRON config (that lane-merge fix is owned separately) — this is a pure backlog-clear.
 #
 # RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/compact-medallion-backlog.job.yaml
-# WATCH: kubectl --context brain-prod-ssm -n transform-worker logs -f job/compact-medallion-backlog
+# WATCH: kubectl --context brain-prod-ssm -n argo logs -f job/compact-medallion-backlog
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: compact-medallion-backlog
-  namespace: transform-worker
+  namespace: argo
   labels:
     app.kubernetes.io/part-of: brain
 spec:
@@ -30,7 +30,7 @@ spec:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
     spec:
-      serviceAccountName: brain-prod-transform-worker   # IRSA brain-prod-jobs — medallion catalog RW
+      serviceAccountName: brain-jobs   # IRSA brain-prod-jobs — medallion catalog RW
       restartPolicy: Never
       nodeSelector:
         karpenter.sh/nodepool: streaming

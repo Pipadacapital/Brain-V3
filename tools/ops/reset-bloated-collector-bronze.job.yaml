@@ -10,12 +10,12 @@
 # stays so the Iceberg sink keeps writing to it. Run at low traffic to avoid a concurrent-commit retry.
 #
 # RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/reset-bloated-collector-bronze.job.yaml
-# WATCH: kubectl --context brain-prod-ssm -n transform-worker logs -f job/reset-collector-bronze
+# WATCH: kubectl --context brain-prod-ssm -n argo logs -f job/reset-collector-bronze
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: reset-collector-bronze
-  namespace: transform-worker
+  namespace: argo
   labels:
     app.kubernetes.io/part-of: brain
 spec:
@@ -26,7 +26,7 @@ spec:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
     spec:
-      serviceAccountName: brain-prod-transform-worker   # IRSA brain-prod-jobs — Bronze catalog RW
+      serviceAccountName: brain-jobs   # IRSA brain-prod-jobs — Bronze catalog RW
       restartPolicy: Never
       nodeSelector:
         karpenter.sh/nodepool: streaming

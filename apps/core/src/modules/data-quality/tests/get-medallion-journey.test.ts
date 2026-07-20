@@ -2,8 +2,10 @@
  * get-medallion-journey.test.ts — unit tests for the V4 "medallion journey" pipeline-observability read.
  *
  * The read composes CHEAP-metadata probes across the medallion tiers (Bronze → Silver → Identity/Neo4j
- * → Gold → Serving). These tests script a fake serving pool (answering each tier's count/max probe by
- * SQL shape) + a stubbed Neo4j counts port, and assert:
+ * → Gold → Serving). FRESHNESS + STATE for every tier now come from the tiny silver_job_watermark
+ * side-table (read ONCE), while row counts are best-effort count-only probes that never gate state.
+ * These tests script a fake serving pool (answering the watermark read + each tier's count-only probe
+ * by SQL shape) + a stubbed Neo4j counts port, and assert:
  *   • the full contract shape (all five tiers present, well-formed);
  *   • the Gold partition — mv_gold_customer_360 → customer360, other mv_gold_* → biMarts;
  *   • the Serving tier reuses getServingFreshness's per-mart output verbatim;
@@ -28,9 +30,10 @@ const GOLD_MARTS = ['mv_gold_customer_360', 'mv_gold_revenue_ledger', 'mv_gold_f
  * A fake serving SilverPool. Routes each .query by SQL shape to the right canned answer:
  *   • information_schema.columns (getServingFreshness enumerate) → the serving view list;
  *   • the UNION-ALL freshness probe (getServingFreshness) → per-mart aggregates;
- *   • brain_bronze.collector_events_connect → Bronze count + max(kafka_timestamp);
- *   • silver_job_watermark → the watermark row;
- *   • a brain_serving."mv_silver_*" single-view probe → that Silver mart's count + max(updated_at).
+ *   • silver_job_watermark → the FULL watermark side-table (one row per job — the freshness+state
+ *     source for EVERY tier: keystone/Bronze, order-state, marketing-spend, and the gold-* jobs);
+ *   • brain_bronze.collector_events_connect → Bronze best-effort count-only;
+ *   • a brain_serving."mv_silver_*" single-view probe → that Silver mart's best-effort count-only.
  * `dead: true` makes EVERY query throw (fail-soft dead-tier path).
  */
 function fakeSr(opts: { dead?: boolean } = {}): SilverPool {
@@ -38,6 +41,18 @@ function fakeSr(opts: { dead?: boolean } = {}): SilverPool {
     async query(sql: string): Promise<unknown[]> {
       if (opts.dead) throw new Error('duckdb-serving unreachable (504)');
 
+      if (sql.includes('silver_job_watermark')) {
+        // The whole tiny side-table: one row per transform job (silver + gold). This is the
+        // freshness/state source for every tier.
+        return [
+          { job_name: 'silver-collector-event', last_ingested_at: recentIso(3), updated_at: recentIso(2) },
+          { job_name: 'silver-order-state', last_ingested_at: recentIso(4), updated_at: recentIso(3) },
+          { job_name: 'silver-marketing-spend', last_ingested_at: recentIso(4), updated_at: recentIso(3) },
+          { job_name: 'gold-customer-360', last_ingested_at: recentIso(5), updated_at: recentIso(4) },
+          { job_name: 'gold-revenue-ledger', last_ingested_at: recentIso(5), updated_at: recentIso(4) },
+          { job_name: 'gold-funnel', last_ingested_at: recentIso(6), updated_at: recentIso(5) },
+        ];
+      }
       if (sql.includes('information_schema.columns')) {
         // getServingFreshness enumerate: every serving view that carries updated_at.
         return GOLD_MARTS.map((table_name) => ({ table_name }));
@@ -51,19 +66,16 @@ function fakeSr(opts: { dead?: boolean } = {}): SilverPool {
         }));
       }
       if (sql.includes('brain_bronze') && sql.includes('collector_events_connect')) {
-        return [{ row_count: '5000', freshness_at: recentIso(2) }];
-      }
-      if (sql.includes('silver_job_watermark')) {
-        return [{ last_ingested_at: recentIso(3) }];
+        return [{ row_count: '5000' }];
       }
       if (sql.includes('mv_silver_collector_event')) {
-        return [{ row_count: '4000', freshness_at: recentIso(4) }];
+        return [{ row_count: '4000' }];
       }
       if (sql.includes('mv_silver_order_state')) {
-        return [{ row_count: '900', freshness_at: recentIso(4) }];
+        return [{ row_count: '900' }];
       }
       if (sql.includes('mv_silver_marketing_spend')) {
-        return [{ row_count: '300', freshness_at: recentIso(4) }];
+        return [{ row_count: '300' }];
       }
       return [];
     },

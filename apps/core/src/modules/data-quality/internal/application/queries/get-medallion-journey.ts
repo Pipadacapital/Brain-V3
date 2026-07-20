@@ -7,9 +7,13 @@
  * operator/ops read the data-health surface renders as a single pipeline strip.
  *
  * CHEAP-METADATA DOCTRINE (the serving node 504s on heavy queries under load — NEVER full-scan):
- *   • row counts come from Iceberg metadata (`count(*)` — DuckDB answers from manifest stats, no scan).
- *   • freshness comes from per-file column stats (`max(<ts>)` — no scan).
- *   • the watermark is a tiny side-table read (silver_job_watermark, one row).
+ *   • FRESHNESS + STATE come from the tiny silver_job_watermark side-table (one row per transform JOB,
+ *     both silver AND gold jobs write to it) — read ONCE, cheaply, no WHERE. This is metadata-cheap and
+ *     never full-scans; `max(<ts>)` used to be the expensive part (a full column scan on 5.2M-row Bronze
+ *     / fragmented Silver-Gold marts under compaction) that raced the 4s timeout → null → false 'no_data'.
+ *   • row counts are BEST-EFFORT only (`count(*)` — DuckDB answers cheaply from manifest stats) and
+ *     NEVER gate a tier's state: a timed-out count degrades to null ("—") while the tier keeps its real
+ *     fresh/stale state from the watermark.
  *   • Neo4j counts are `count(n)` / `count(r)` (2-3 cheap graph counts).
  * Every serving query is given a SHORT client timeout so the endpoint stays responsive even when the
  * serving node is loaded; a slow/failed tier degrades to null + an honest state, NEVER a 500.
@@ -36,15 +40,30 @@ import {
 
 /** The Iceberg Bronze landing table (Kafka Connect collector sink, ADR-0010). */
 const BRONZE_TABLE = 'collector_events_connect';
-/** Bronze ingestion-freshness column (the Kafka record timestamp landed on each row). */
-const BRONZE_TS_COL = 'kafka_timestamp';
 
 /** The serving views (over Silver Iceberg marts) that carry the per-tier signals we read. */
 const SILVER_KEYSTONE_VIEW = 'mv_silver_collector_event';
 const SILVER_ORDER_STATE_VIEW = 'mv_silver_order_state';
 const SILVER_MARKETING_SPEND_VIEW = 'mv_silver_marketing_spend';
-/** The tiny watermark side-table + the keystone job's row in it. */
+/**
+ * The tiny watermark side-table (iceberg.brain_silver.silver_job_watermark) carries one row per
+ * transform JOB — both silver AND gold jobs write to it via write_watermark. FRESHNESS + STATE for
+ * every tier are derived from these rows (metadata-cheap), NOT from a max(<ts>) full-column scan.
+ * The job_name strings below are the exact `run_job("<job>", …)` names from the transform tree
+ * (grepped from db/iceberg/duckdb/{silver,gold}/*.py).
+ */
+/** Keystone job (silver_collector_event.py). Its watermark tracks the Bronze arrival clock
+ * (kafka_timestamp on collector_events_connect) — so it is ALSO the Bronze tier's freshness source. */
 const SILVER_WATERMARK_JOB = 'silver-collector-event';
+/** silver_order_state.py — the Silver order-state tier's freshness. */
+const SILVER_ORDER_STATE_JOB = 'silver-order-state';
+/** silver_marketing_spend.py — the Silver ad-spend tier's freshness. */
+const SILVER_MARKETING_SPEND_JOB = 'silver-marketing-spend';
+/** gold_customer_360.py — the Gold customer_360 tier's freshness. */
+const GOLD_CUSTOMER_360_JOB = 'gold-customer-360';
+/** Prefix common to every gold-* job row; Gold/Serving freshness = max last_ingested_at across them
+ * (represents "gold is producing"). */
+const GOLD_JOB_PREFIX = 'gold-';
 /** The Gold 360 mart (partitioned out of the biMarts set below). */
 const GOLD_CUSTOMER_360_VIEW = 'mv_gold_customer_360';
 
@@ -136,18 +155,18 @@ function toNumOrNull(v: string | number | null | undefined): number | null {
 }
 
 /**
- * Derive a tier's text verdict from its row count + freshness (mirrors get-serving-freshness's
- * deriveFreshness): unreadable → no_data; no rows → never; freshness within the SLA → fresh; else stale.
+ * Derive a tier's text verdict from its WATERMARK freshness (the metadata-cheap source; row count is
+ * best-effort and does NOT gate state): no watermark row for the job → the job genuinely never ran →
+ * 'no_data'; freshness within the SLA → 'fresh'; else 'stale'.
  */
 function deriveState(
-  rowCount: number | null,
   freshnessAt: string | null,
   now: number,
 ): MedallionStageHealth['state'] {
-  if (rowCount == null) return 'no_data'; // couldn't read the tier at all
-  if (rowCount === 0) return 'never'; // provisioned but empty
-  if (freshnessAt == null) return 'never'; // has rows but no freshness signal
-  const ageMs = now - new Date(freshnessAt).getTime();
+  if (freshnessAt == null) return 'no_data'; // no watermark row → the job never ran
+  const t = new Date(freshnessAt).getTime();
+  if (Number.isNaN(t)) return 'no_data';
+  const ageMs = now - t;
   return ageMs > STALE_AFTER_MINUTES * 60_000 ? 'stale' : 'fresh';
 }
 
@@ -164,23 +183,22 @@ function worstOf(states: MedallionStageHealth['state'][]): MedallionStageHealth[
   return states.reduce((worst, s) => (WORST_ORDER[s] > WORST_ORDER[worst] ? s : worst), 'fresh');
 }
 
-/** One cheap serving probe (count + max(ts)) wrapped fail-soft → { rowCount, freshnessAt } or nulls. */
-async function probeView(
-  srPool: SilverPool,
-  schemaQualified: string,
-  tsCol: string,
-): Promise<{ rowCount: number | null; freshnessAt: string | null }> {
+/**
+ * BEST-EFFORT count-only probe. `count(*)` alone is far cheaper than the old `count(*), max(<ts>)`
+ * (the max was a full column scan that raced the 4s timeout on big/fragmented tables). This NEVER
+ * gates a tier's state — on timeout/failure it returns a null count and the tier keeps its real
+ * watermark-derived freshness/state (rendered as "—" instead of "No data").
+ */
+async function probeCount(srPool: SilverPool, schemaQualified: string): Promise<number | null> {
   try {
-    const rows = await srPool.query<{ row_count: string | number | null; freshness_at: string | null }>(
-      `SELECT CAST(count(*) AS varchar) AS row_count, CAST(max(${tsCol}) AS varchar) AS freshness_at ` +
-        `FROM ${schemaQualified}`,
+    const rows = await srPool.query<{ row_count: string | number | null }>(
+      `SELECT CAST(count(*) AS varchar) AS row_count FROM ${schemaQualified}`,
       [],
     );
-    const r = rows?.[0];
-    return { rowCount: toNumOrNull(r?.row_count ?? null), freshnessAt: toIso(r?.freshness_at ?? null) };
+    return toNumOrNull(rows?.[0]?.row_count ?? null);
   } catch {
-    // Tier down / view or Iceberg table absent (fresh env) → honest nulls (never a 500).
-    return { rowCount: null, freshnessAt: null };
+    // Count momentarily unavailable → null count, state unaffected (comes from the watermark).
+    return null;
   }
 }
 
@@ -192,7 +210,63 @@ async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T
   ]);
 }
 
-const NULL_PROBE = { rowCount: null as number | null, freshnessAt: null as string | null };
+/** A tier's watermark freshness (ISO) mapped by transform job_name. */
+interface WatermarkEntry {
+  lastIngestedAt: string | null;
+  updatedAt: string | null;
+}
+type WatermarkMap = Map<string, WatermarkEntry>;
+
+/**
+ * Read the ENTIRE silver_job_watermark side-table ONCE (no WHERE — it's tiny, one row per transform
+ * job) → Map<job_name, {lastIngestedAt, updatedAt}>. This is the metadata-cheap freshness source for
+ * every tier. Fail-soft to an empty map on error/timeout (each tier then reads 'no_data' honestly).
+ */
+async function readWatermarks(srPool: SilverPool): Promise<WatermarkMap> {
+  try {
+    const rows = await srPool.query<{
+      job_name: string | null;
+      last_ingested_at: string | null;
+      updated_at: string | null;
+    }>(
+      `SELECT job_name, CAST(last_ingested_at AS varchar) AS last_ingested_at, ` +
+        `CAST(updated_at AS varchar) AS updated_at FROM iceberg.brain_silver.silver_job_watermark`,
+      [],
+    );
+    const map: WatermarkMap = new Map();
+    for (const r of rows ?? []) {
+      if (r?.job_name == null) continue;
+      map.set(r.job_name, {
+        lastIngestedAt: toIso(r.last_ingested_at ?? null),
+        updatedAt: toIso(r.updated_at ?? null),
+      });
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+/** Freshness (ISO) of one job from the watermark map, or null if the job never ran. */
+function wmFreshness(wm: WatermarkMap, jobName: string): string | null {
+  return wm.get(jobName)?.lastIngestedAt ?? null;
+}
+
+/** Max last_ingested_at across every job_name starting with a prefix (e.g. all gold-* jobs). */
+function wmMaxFreshnessByPrefix(wm: WatermarkMap, prefix: string): string | null {
+  let best: number | null = null;
+  let bestIso: string | null = null;
+  for (const [job, entry] of wm) {
+    if (!job.startsWith(prefix) || entry.lastIngestedAt == null) continue;
+    const t = new Date(entry.lastIngestedAt).getTime();
+    if (Number.isNaN(t)) continue;
+    if (best == null || t > best) {
+      best = t;
+      bestIso = entry.lastIngestedAt;
+    }
+  }
+  return bestIso;
+}
 
 /**
  * getMedallionJourney — the whole-pipeline observability read (cheap metadata only, fail-soft).
@@ -206,63 +280,66 @@ export async function getMedallionJourney(
   const now = Date.now();
   const sr = deps.srPool;
 
-  // ── BRONZE: Iceberg-metadata count + max(kafka_timestamp) on the collector landing table. ──
+  // ── WATERMARKS: read the tiny silver_job_watermark side-table ONCE (metadata-cheap). Every tier's
+  //    freshness + state derive from this map — NOT from a max(<ts>) full-column scan. Fail-soft → {}. ──
+  const wmP: Promise<WatermarkMap> = sr
+    ? withTimeout(readWatermarks(sr), SERVING_QUERY_TIMEOUT_MS, new Map() as WatermarkMap)
+    : Promise.resolve(new Map() as WatermarkMap);
+
+  // ── BRONZE: freshness/state from the KEYSTONE watermark (it tracks the Bronze kafka_timestamp arrival
+  //    clock); row count is a best-effort count-only probe that never gates the state. ──
   const bronzeP = (async (): Promise<MedallionJourney['bronze']> => {
-    const probe = sr
+    const wm = await wmP;
+    const freshnessAt = wmFreshness(wm, SILVER_WATERMARK_JOB);
+    const rowCount = sr
       ? await withTimeout(
-          probeView(sr, `iceberg.brain_bronze.${BRONZE_TABLE}`, BRONZE_TS_COL),
+          probeCount(sr, `iceberg.brain_bronze.${BRONZE_TABLE}`),
           SERVING_QUERY_TIMEOUT_MS,
-          NULL_PROBE,
+          null,
         )
-      : NULL_PROBE;
+      : null;
     return {
       table: BRONZE_TABLE,
-      rowCount: probe.rowCount,
-      latestEventAt: probe.freshnessAt,
-      state: deriveState(probe.rowCount, probe.freshnessAt, now),
+      rowCount,
+      latestEventAt: freshnessAt,
+      state: deriveState(freshnessAt, now),
     };
   })();
 
-  // ── SILVER: keystone/order_state/marketing_spend (cheap view probes) + the watermark side-table. ──
+  // ── SILVER: freshness/state per mart from the watermark map (keystone/order-state/marketing-spend
+  //    jobs); row counts are best-effort count-only probes that never gate state. ──
   const silverP = (async (): Promise<MedallionJourney['silver']> => {
-    const [keystone, orderState, marketingSpend, wmRow] = await Promise.all([
+    const wm = await wmP;
+    const keystoneFresh = wmFreshness(wm, SILVER_WATERMARK_JOB);
+    const orderStateFresh = wmFreshness(wm, SILVER_ORDER_STATE_JOB);
+    const marketingSpendFresh = wmFreshness(wm, SILVER_MARKETING_SPEND_JOB);
+
+    const [keystoneCount, orderStateCount, marketingSpendCount] = await Promise.all([
       sr
-        ? withTimeout(probeView(sr, `brain_serving."${SILVER_KEYSTONE_VIEW}"`, 'updated_at'), SERVING_QUERY_TIMEOUT_MS, NULL_PROBE)
-        : Promise.resolve(NULL_PROBE),
+        ? withTimeout(probeCount(sr, `brain_serving."${SILVER_KEYSTONE_VIEW}"`), SERVING_QUERY_TIMEOUT_MS, null)
+        : Promise.resolve<number | null>(null),
       sr
-        ? withTimeout(probeView(sr, `brain_serving."${SILVER_ORDER_STATE_VIEW}"`, 'updated_at'), SERVING_QUERY_TIMEOUT_MS, NULL_PROBE)
-        : Promise.resolve(NULL_PROBE),
+        ? withTimeout(probeCount(sr, `brain_serving."${SILVER_ORDER_STATE_VIEW}"`), SERVING_QUERY_TIMEOUT_MS, null)
+        : Promise.resolve<number | null>(null),
       sr
-        ? withTimeout(probeView(sr, `brain_serving."${SILVER_MARKETING_SPEND_VIEW}"`, 'updated_at'), SERVING_QUERY_TIMEOUT_MS, NULL_PROBE)
-        : Promise.resolve(NULL_PROBE),
-      // Watermark: tiny side-table, one row. Fail-soft to null.
-      (async (): Promise<string | null> => {
-        if (!sr) return null;
-        try {
-          const rows = await withTimeout(
-            sr.query<{ last_ingested_at: string | null }>(
-              `SELECT CAST(last_ingested_at AS varchar) AS last_ingested_at ` +
-                `FROM iceberg.brain_silver.silver_job_watermark WHERE job_name = ?`,
-              [SILVER_WATERMARK_JOB],
-            ),
-            SERVING_QUERY_TIMEOUT_MS,
-            [] as Array<{ last_ingested_at: string | null }>,
-          );
-          return toIso(rows?.[0]?.last_ingested_at ?? null);
-        } catch {
-          return null;
-        }
-      })(),
+        ? withTimeout(probeCount(sr, `brain_serving."${SILVER_MARKETING_SPEND_VIEW}"`), SERVING_QUERY_TIMEOUT_MS, null)
+        : Promise.resolve<number | null>(null),
     ]);
 
+    const keystone = { rowCount: keystoneCount, freshnessAt: keystoneFresh };
+    const orderState = { rowCount: orderStateCount, freshnessAt: orderStateFresh };
+    const marketingSpend = { rowCount: marketingSpendCount, freshnessAt: marketingSpendFresh };
+
+    // The reported watermark stays the keystone job's (unchanged contract field).
+    const wmRow = keystoneFresh;
     const lagSeconds =
       wmRow == null ? null : Math.max(0, Math.round((now - new Date(wmRow).getTime()) / 1000));
 
-    // Tier verdict: worst-of the three Silver marts' freshness verdicts.
+    // Tier verdict: worst-of the three Silver marts' watermark-derived verdicts.
     const state = worstOf([
-      deriveState(keystone.rowCount, keystone.freshnessAt, now),
-      deriveState(orderState.rowCount, orderState.freshnessAt, now),
-      deriveState(marketingSpend.rowCount, marketingSpend.freshnessAt, now),
+      deriveState(keystone.freshnessAt, now),
+      deriveState(orderState.freshnessAt, now),
+      deriveState(marketingSpend.freshnessAt, now),
     ]);
 
     return {
@@ -301,11 +378,12 @@ export async function getMedallionJourney(
     ? withTimeout(getServingFreshness({ srPool: sr }), SERVING_QUERY_TIMEOUT_MS, { state: 'no_data' })
     : Promise.resolve<ServingFreshnessResult>({ state: 'no_data' });
 
-  const [bronze, silver, identity, servingFreshness] = await Promise.all([
+  const [bronze, silver, identity, servingFreshness, wm] = await Promise.all([
     bronzeP,
     silverP,
     identityP,
     servingFreshnessP,
+    wmP,
   ]);
 
   // Partition getServingFreshness's marts: customer_360 → the Gold 360 mart; other mv_gold_* → biMarts.
@@ -327,16 +405,17 @@ export async function getMedallionJourney(
     freshnessAt: c360Row?.lastRefreshAt ?? null,
   };
 
+  // Gold/Serving freshness+state come from the gold-* watermarks (NOT the per-mart max(ts) scan):
+  //   • customer_360 → the gold-customer-360 job watermark.
+  //   • the Gold tier as a whole ("gold is producing") → max last_ingested_at across all gold-* jobs.
   const gold: MedallionJourney['gold'] = {
     customer360,
     biMarts,
-    state: worstOf([
-      deriveState(customer360.rowCount, customer360.freshnessAt, now),
-      ...biMarts.map((m) => deriveState(m.rowCount, m.freshnessAt, now)),
-    ]),
+    state: deriveState(wmFreshness(wm, GOLD_CUSTOMER_360_JOB), now),
   };
 
-  // Serving tier: the full per-mart set (all mv_*, verbatim from getServingFreshness) + its rollup.
+  // Serving tier: the full per-mart set (all mv_*, verbatim from getServingFreshness) for counts; the
+  // tier verdict tracks "gold is producing" via the max gold-* watermark (metadata-cheap, no scan).
   const serving: MedallionJourney['serving'] = {
     marts: allMarts.map((m) => ({
       view: m.mv,
@@ -344,8 +423,7 @@ export async function getMedallionJourney(
       freshnessAt: m.lastRefreshAt,
       state: m.freshness,
     })),
-    state:
-      servingFreshness.state === 'has_data' ? servingFreshness.status : ('no_data' as const),
+    state: deriveState(wmMaxFreshnessByPrefix(wm, GOLD_JOB_PREFIX), now),
   };
 
   return {

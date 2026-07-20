@@ -9,12 +9,12 @@
 # Idempotent (try/except per drop). Reuses the resident SA (IRSA brain-prod-jobs, catalog RW) + core-env.
 #
 # RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/dr001-catalog-hygiene.job.yaml
-# WATCH: kubectl --context brain-prod-ssm -n transform-worker logs -f job/dr001-catalog-hygiene
+# WATCH: kubectl --context brain-prod-ssm -n argo logs -f job/dr001-catalog-hygiene
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: dr001-catalog-hygiene
-  namespace: transform-worker
+  namespace: argo
   labels:
     app.kubernetes.io/part-of: brain
     brain.ops/runbook: design-review-001-hygiene-wave
@@ -26,7 +26,7 @@ spec:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
     spec:
-      serviceAccountName: brain-prod-transform-worker   # IRSA brain-prod-jobs — medallion catalog RW
+      serviceAccountName: brain-jobs   # IRSA brain-prod-jobs — medallion catalog RW
       restartPolicy: Never
       nodeSelector:
         karpenter.sh/nodepool: streaming

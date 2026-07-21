@@ -35,6 +35,8 @@ Env (plan §A):
   DUCKDB_SERVING_MAX_CONCURRENT          admission semaphore width           (default 8)
   STATEMENT_TIMEOUT_MS                   interrupt watchdog (< the TS adapter's 30s abort) (default 25000)
   STATEMENT_TIMEOUT_MAX_MS               hard cap on the per-request timeout_ms raise      (default 180000)
+  DUCKDB_SERVING_PREWARM_TABLES          comma-separated tables/views to scan-warm on each NEW epoch
+                                         BEFORE it goes live (default empty — no pre-warm)
   DUCKDB_SERVING_CATALOG_REFRESH_S       epoch rotation period               (default 60 — ADR-0016 P1.3; view-reapply cadence, not commit freq)
   + the _catalog.py family (ICEBERG_CATALOG/ICEBERG_REST_URI/ICEBERG_WAREHOUSE/S3_ENDPOINT/…)
 """
@@ -43,6 +45,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -62,6 +65,20 @@ STATEMENT_TIMEOUT_MS = int(os.environ.get("STATEMENT_TIMEOUT_MS", "25000") or "2
 # `timeout_ms` above the default, but never beyond this cap. The admission semaphore still bounds
 # how many such slow statements run at once, so OLTP dashboard reads keep their slots.
 STATEMENT_TIMEOUT_MAX_MS = int(os.environ.get("STATEMENT_TIMEOUT_MAX_MS", "180000") or "180000")
+# EPOCH PRE-WARM (2026-07-21 keystone cold-scan incident). The duckdb-iceberg scan's EXECUTE phase
+# does ~200ms of per-data-file work on a COLD connection (measured: keystone 1,384 files → 289s cold
+# vs 2s warm; EXPLAIN/bind is 3.9s — the cost is file opens, not metadata). Every epoch rotation is
+# a NEW connection, so a churn-heavy table is cold on EVERY rotation (60s cadence) and any read of it
+# blows the statement watchdog — uninterruptibly (the file-open loop doesn't observe cur.interrupt()).
+# Listed tables are scan-warmed (SELECT count(*)) on the FRESH epoch BEFORE it is swapped live — the
+# old epoch keeps serving during the warm, so rotation stays invisible to queries. Warm failures are
+# logged and never fail the epoch (a broken table must not stop rotation). Default empty = no-op.
+def parse_prewarm_tables(raw: str) -> list[str]:
+    """Comma-separated table/view list → trimmed, empties dropped (order preserved)."""
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+PREWARM_TABLES = parse_prewarm_tables(os.environ.get("DUCKDB_SERVING_PREWARM_TABLES", ""))
 # ADR-0016 P1.3: 60s so a brand-new mart's view is reapplied within the ≤60s freshness SLO.
 # This is the view-reapply/self-heal cadence, NOT commit frequency — small-file pressure is a
 # function of the transform tick, and the maintenance lane handles compaction. Still configurable.
@@ -183,6 +200,17 @@ class Epoch:
         self.con.execute(f"SET temp_directory='{TEMP_DIRECTORY}';")
         self.con.execute(f"SET max_temp_directory_size='{MAX_TEMP_DIRECTORY_SIZE}';")
         self.views_applied, self.views_skipped = views_mod.apply_views(self.con, views_dir)
+        # Scan-warm the churn-heavy tables BEFORE this epoch goes live (see PREWARM_TABLES above).
+        # Runs on the fresh connection while the OLD epoch still serves — the per-file open cost is
+        # paid here, in the background, instead of inside a request's statement budget.
+        self.prewarmed: list[tuple[str, float]] = []
+        for _tbl in PREWARM_TABLES:
+            _t0 = time.monotonic()
+            try:
+                self.con.execute(f"SELECT count(*) FROM {_tbl}")  # full scan = warm the file opens
+                self.prewarmed.append((_tbl, time.monotonic() - _t0))
+            except Exception as exc:  # noqa: BLE001 — a broken warm table must never fail the epoch
+                print(f'{{"engine":"duckdb-serving","prewarm_failed":"{_tbl}","err":"{exc}"}}', flush=True)
         self._lock = threading.Lock()
         self._refs = 0
         self._retired = False
@@ -267,8 +295,9 @@ class Engine:
         self.rotations_total += 1
         if old is not None:
             old.retire()
+        warm = ",".join(f'"{t}":{s:.1f}' for t, s in fresh.prewarmed)
         print(f'{{"engine":"duckdb-serving","epoch":{fresh.index},"views_applied":{fresh.views_applied},'
-              f'"views_skipped":{len(fresh.views_skipped)}}}', flush=True)
+              f'"views_skipped":{len(fresh.views_skipped)},"prewarm_s":{{{warm}}}}}', flush=True)
 
     def _rotate_loop(self) -> None:
         while not self._stop.is_set():

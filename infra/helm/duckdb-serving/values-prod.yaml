@@ -46,6 +46,13 @@ extraEnv:
   - name: DUCKDB_SERVING_PREWARM_TABLES
     value: "brain_serving.mv_silver_collector_event,brain_serving.mv_silver_touchpoint"
 
+# Startup-probe budget must cover the FIRST epoch's pre-warm (observed ~330s on a fragmented
+# keystone; the 300s default killed the pod at warm-completion → restart loop). 90×10s = 15 min
+# headroom; the silver-hot maintenance lane keeps steady-state warms far below this.
+probes:
+  startupFailureThreshold: 90
+  startupPeriodSeconds: 10
+
 # Real AWS S3 + REST catalog reached via the pod IRSA role — no static keys, no MinIO endpoint.
 iceberg:
   catalog: iceberg

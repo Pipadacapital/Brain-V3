@@ -1,6 +1,7 @@
 # ADR-0017 — Identity resolution + map-export folded into the medallion tick
 
-- **Status:** Proposed (2026-07-21)
+- **Status:** Accepted (2026-07-22) — Option A ratified (owner). Option B (Neo4j retirement) DEFERRED as a separate, later, parity-gated decision that amends ADR-0004; not in scope now.
+- **Superseded Proposed:** Proposed (2026-07-21)
 - **Amends:** ADR-0016 D2 (re-reverses the CORE↔IDENTITY cron split; folds identity into the single triggered pipeline)
 - **Reinforces:** ADR-0004 (Neo4j is identity SoR), ADR-0015 (identity is a Silver-stage batch step; R8 no-stream-consumer rule)
 - **Deciders:** Owner + platform (principal data architect)

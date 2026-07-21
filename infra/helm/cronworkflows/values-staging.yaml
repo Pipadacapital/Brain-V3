@@ -16,13 +16,13 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:d5f60d57ace040b90be0538591d3f852d1ea9b40d799f78065604918f61d0749"
+    digest: "sha256:73c35267d83f3c3abd94c8d9851b68df294310eb9f3b9dcf0b622743ba7749f0"
 # duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image).
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:d5f60d57ace040b90be0538591d3f852d1ea9b40d799f78065604918f61d0749"
+    digest: "sha256:73c35267d83f3c3abd94c8d9851b68df294310eb9f3b9dcf0b622743ba7749f0"
 # ADR-0016 D3 / CORE↔IDENTITY re-split — resident warm transform worker (staging validation env).
 # transform-worker values-staging already has enabled=true; this is the LOCKSTEP flag its header calls
 # for — it SUPPRESSES the v4-medallion (CORE) cron so the resident Deployment is the sole CORE writer.

@@ -697,6 +697,80 @@ additionalPrometheusRulesMap:
               summary: "Data-spine OOM kill: {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}"
               description: "A data-spine container ({{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}) was OOM-killed in the last 15m — Bronze landing, ingest, or serving took an availability hit (no-event-loss budget). Check memory sizing (kafka-connect values-prod heapOpts per AUD-IMPL-024; duckdb-serving DUCKDB_SERVING_MEMORY_LIMIT vs its container limit) before it recurs."
 
+      # ── Data-flow SLOs (Wave 0) ─────────────────────────────────────────────
+      # Alerts over the data pipeline's *flow* signals, not just container health. PROD-ONLY (in
+      # the brain-runtime key by design): they read the duckdb-serving scrape job, the Argo
+      # controller's aggregate workflow gauge, and the stream-worker's silver_identity_watermark_age
+      # gauge — none of which exist in the local compose Prometheus, so no canonical twin
+      # (slo-rules-parity.sh WARNs on a prod-only key, its documented state). These close three
+      # gaps from the 2026-07-21 incident: a 7-DAY-silent identity watermark stall (NO alert bound
+      # to a live series), a serving timeout counter with NO alert, and CronWorkflow failures that
+      # the tier-scoped brain_transform_workflow_failed_total counter cannot see (v4-maintenance /
+      # bronze-erasure never emit it).
+      - name: brain-dataflow-slo
+        rules:
+          - alert: IdentityWatermarkStale
+            # The Silver identity stage advances a per-brand watermark in PG
+            # (ops.silver_identity_watermark). The stream-worker publishes the age of each brand's
+            # watermark as brain_silver_identity_watermark_age_seconds (a 60s poll — the ephemeral
+            # v4-identity Argo pod has no scraped /metrics, so this long-running process owns the
+            # gauge). A stalled stage (lost leader lock, serving-watchdog aborts holding the
+            # watermark, catch-up clipped) makes the OLDEST brand's age climb — the exact 7-day
+            # stall that was previously invisible. max() over brands = alert on the worst tenant.
+            expr: max(brain_silver_identity_watermark_age_seconds) > 7200
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Silver identity watermark stale > 2h (oldest brand {{ $value | humanizeDuration }})"
+              description: "The oldest brand's silver-identity watermark is > 2h behind now — identity resolution has stalled for at least one tenant (new customers un-stitched, journeys incomplete). Check the v4-identity CronWorkflow (argo -n argo list | grep v4-identity), the leader lock, and for serving-watchdog aborts / catch-up clipping in the silver-identity logs."
+
+          - alert: IdentityWatermarkStaleCritical
+            # 6h escalation of the same gauge — a stall this deep means a full identity/journey
+            # freshness outage for the affected brand(s), not a transient catch-up.
+            expr: max(brain_silver_identity_watermark_age_seconds) > 21600
+            for: 15m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Silver identity watermark stale > 6h (oldest brand {{ $value | humanizeDuration }})"
+              description: "The oldest brand's silver-identity watermark is > 6h behind now — sustained identity resolution outage. Customer stitching and journey reconstruction are stale platform-wide for the affected tenant(s). Investigate the v4-identity workflow / stream-worker gauge poll immediately; a manual FULL identity pass may be needed for a clipped brand."
+
+          - alert: ServingQueryTimeoutSpike
+            # duckdb-serving interrupts a query at the per-request watchdog (504) and increments
+            # duckdb_serving_query_timeouts_total. A sustained timeout rate = cold-connection
+            # full-file-scan blowups (the ~200ms/data-file EXECUTE cost on epoch rotation, or a
+            # re-fragmented hot table) — serving is degrading toward the recurring outage class.
+            # NO alert bound to this counter before Wave 0. Rate-based so a one-off slow query on a
+            # quiet node never pages; the 5% ratio arm keeps it silent when overall volume is tiny.
+            expr: |
+              sum(rate(duckdb_serving_query_timeouts_total[10m])) > 0.05
+              and
+              sum(rate(duckdb_serving_query_timeouts_total[10m]))
+                / clamp_min(sum(rate(duckdb_serving_queries_total[10m])), 0.001) > 0.05
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "duckdb-serving query timeouts sustained (watchdog 504s)"
+              description: "duckdb-serving is timing out > 5% of queries (and > 0.05/s) for 10m — the watchdog is interrupting cold-connection full-file scans. Check for hot-table re-fragmentation (silver_collector_event file count), epoch-rotation pre-warm coverage (DUCKDB_SERVING_PREWARM_TABLES), and per-request timeout_ms callers. Repeated timeouts precede the serving-outage class the platform has hit before."
+
+          - alert: CronWorkflowFailed
+            # Controller-level catch-all for ANY workflow in ns argo ending Failed/Error. The
+            # tier-scoped TransformTierRunFailed (scale-tripwires) binds to the custom
+            # brain_transform_workflow_failed_total counter, which ONLY v4-transform / v4-identity /
+            # bronze-maintenance emit — v4-maintenance, bronze-raw-retention, and the bronze-raw-
+            # erasure WorkflowTemplate do NOT, so their terminal failures were previously unalerted.
+            # argo_workflows_count is the controller's aggregate gauge by phase (no per-name label at
+            # chart 0.45.11), so this is a broad safety net; the tier rule remains the precise signal.
+            expr: sum(argo_workflows_count{status=~"Failed|Error"}) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "An Argo workflow is in Failed/Error state (ns argo)"
+              description: "The Argo controller reports >=1 workflow in Failed/Error for 5m. If TransformTierRunFailed is NOT also firing, the failure is a workflow that does not emit brain_transform_workflow_failed_total (v4-maintenance, bronze-raw-retention, or bronze-raw-erasure). Inspect: argo -n argo list --status Failed,Error; kubectl -n argo logs <pod>."
+
   ##############################################################################
   # Brain scale-posture tripwires (Wave-3: AUD-IMPL-027 / AUD-OPS-029 /
   # AUD-OPS-030). VERBATIM conversion of

@@ -30,6 +30,7 @@ export { extractKafkaTraceContext, injectKafkaTraceContext } from './kafka-trace
 export {
   renderPrometheusText,
   resetMetricsRegistry,
+  setGauge,
   PROMETHEUS_CONTENT_TYPE,
 } from './prometheus.js';
 

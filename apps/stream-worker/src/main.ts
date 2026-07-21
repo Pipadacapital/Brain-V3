@@ -40,7 +40,7 @@ import { Neo4jIdentityRepository } from './infrastructure/neo4j/Neo4jIdentityRep
 import { PgScopedRecomputeRepository } from './infrastructure/pg/ScopedRecomputeRepository.js';
 import { Redis } from 'ioredis';
 import { createSaltProvider } from './infrastructure/secrets/SaltProvider.js';
-import { initObservability, initSentry, createLogger, registerProcessFailureHandlers } from '@brain/observability';
+import { initObservability, initSentry, createLogger, registerProcessFailureHandlers, setGauge } from '@brain/observability';
 import { loadStreamWorkerConfig } from '@brain/config';
 
 /** Structured logger for stream-worker lifecycle/error logs. */
@@ -176,6 +176,41 @@ export async function main(): Promise<void> {
     },
     log,
   });
+
+  // ── Silver-identity watermark-age gauge (Wave 0 data-flow SLO) ──────────────────────────
+  // The Silver identity stage runs in an EPHEMERAL v4-identity Argo pod that never starts a
+  // scraped /metrics endpoint — so any gauge set inside jobs/silver-identity/run.ts is invisible
+  // to Prometheus (the same trap that made silver_identity_runs_total a dead series). The
+  // watermark SoT is PG (ops.silver_identity_watermark), so this LONG-RUNNING process (which owns
+  // a scraped /metrics on HEALTH_PORT) polls it and publishes the age of the OLDEST brand
+  // watermark as a gauge the IdentityWatermarkStale alert binds to. A silently-stuck watermark
+  // (the 7-day stall that had NO alert) now shows up as a climbing gauge. Fail-isolated (a PG blip
+  // just skips a tick — the loop never dies); brand_id is on the series for per-tenant drill-down.
+  // Reuses auditPool (brain_app; the table is a cross-brand trusted-ETL table, no brand GUC).
+  const watermarkGaugeIntervalMs = Number(
+    process.env['SILVER_IDENTITY_WATERMARK_GAUGE_INTERVAL_MS'] ?? 60_000,
+  );
+  const publishWatermarkAgeGauge = async (): Promise<void> => {
+    const r = await auditPool.query<{ brand_id: string; age_seconds: string }>(
+      `SELECT brand_id::text AS brand_id,
+              EXTRACT(EPOCH FROM now() - watermark) AS age_seconds
+         FROM ops.silver_identity_watermark
+        WHERE job_name = 'silver-identity'`,
+    );
+    for (const row of r.rows) {
+      setGauge(
+        'silver_identity_watermark_age_seconds',
+        { brand_id: row.brand_id },
+        Number(row.age_seconds),
+      );
+    }
+  };
+  const watermarkGaugeJob = startPeriodicJob(
+    'silver-identity-watermark-gauge',
+    watermarkGaugeIntervalMs,
+    publishWatermarkAgeGauge,
+  );
+  log.info(`silver-identity watermark-age gauge publishing — interval=${watermarkGaugeIntervalMs}ms`);
 
   // ── ADR-0015 WS3: NO identity resolution in this process ────────────────────────────────
   // The Silver identity stage (jobs/silver-identity/run.ts, ordered into tools/dev/duckdb-refresh.sh
@@ -489,6 +524,7 @@ export async function main(): Promise<void> {
     consumersReady = false;
     await Promise.all([
       erasureOrchestrator.stop(),
+      watermarkGaugeJob.stop(),
       syncRequestClaimer.stop(),
       backfillClaimerJob.stop(),
       syncStatusReaperJob.stop(),

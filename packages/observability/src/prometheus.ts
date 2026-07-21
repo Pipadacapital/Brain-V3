@@ -8,8 +8,12 @@
  *
  * Naming: call sites use bare names (e.g. `collector_accept_total`); the dashboards query the
  * `brain_` prefix (`brain_collector_accept_total`) — the prefix is applied HERE, at exposition
- * time, exactly once. Hand-rolled on purpose: counters only (nothing in the dashboards/SLO rules
- * queries a histogram or gauge from the app tier), no new dependency.
+ * time, exactly once. Hand-rolled on purpose: no new dependency.
+ *
+ * Gauges (added for the data-flow SLO alerts, Wave 0): a small set-not-add surface for point-in-time
+ * values (e.g. `silver_identity_watermark_age_seconds`). setGauge OVERWRITES the series value (unlike
+ * recordCounter, which accumulates); counters and gauges share the same `brain_` prefixing + label
+ * rendering but live in independent name→series maps.
  */
 
 /** Content-Type for the /metrics response (Prometheus text exposition format). */
@@ -24,6 +28,9 @@ interface CounterSeries {
 
 /** name → (serialized-label-key → series). Insertion order preserved; render sorts names. */
 const counters = new Map<string, Map<string, CounterSeries>>();
+
+/** Gauge series share CounterSeries's shape (labels + value); setGauge OVERWRITES the value. */
+const gauges = new Map<string, Map<string, CounterSeries>>();
 
 /** Escape a label value per the exposition format: backslash, double-quote, newline. */
 function escapeLabelValue(v: string): string {
@@ -65,15 +72,27 @@ export function recordCounter(name: string, labels: Record<string, string>, valu
 }
 
 /**
- * Render the registry in Prometheus text exposition format. Counter names get the `brain_`
- * prefix (unless the call site already used it), matching the Grafana/SLO-rule expr names.
+ * Set a gauge series to `value` (OVERWRITE — the last write wins, not accumulate). Used for
+ * point-in-time signals the SLO rules alert on, e.g. silver_identity_watermark_age_seconds.
+ * PII-safe by the same contract as recordCounter: labels are a bounded low-cardinality set.
  */
-export function renderPrometheusText(): string {
+export function setGauge(name: string, labels: Record<string, string>, value: number): void {
+  if (!Number.isFinite(value)) return;
+  let series = gauges.get(name);
+  if (!series) {
+    series = new Map();
+    gauges.set(name, series);
+  }
+  series.set(labelKey(labels), { labels: { ...labels }, value });
+}
+
+/** Render one name→series map with the given metric TYPE, applying the `brain_` prefix once. */
+function renderSeriesMap(map: Map<string, Map<string, CounterSeries>>, type: string): string[] {
   const lines: string[] = [];
-  for (const name of [...counters.keys()].sort()) {
+  for (const name of [...map.keys()].sort()) {
     const exposed = sanitizeName(name.startsWith(METRIC_PREFIX) ? name : METRIC_PREFIX + name);
-    lines.push(`# TYPE ${exposed} counter`);
-    for (const s of counters.get(name)!.values()) {
+    lines.push(`# TYPE ${exposed} ${type}`);
+    for (const s of map.get(name)!.values()) {
       const entries = Object.entries(s.labels);
       const labelStr =
         entries.length === 0
@@ -85,10 +104,23 @@ export function renderPrometheusText(): string {
       lines.push(`${exposed}${labelStr} ${s.value}`);
     }
   }
+  return lines;
+}
+
+/**
+ * Render the registry in Prometheus text exposition format. Counter/gauge names get the `brain_`
+ * prefix (unless the call site already used it), matching the Grafana/SLO-rule expr names.
+ */
+export function renderPrometheusText(): string {
+  const lines = [
+    ...renderSeriesMap(counters, 'counter'),
+    ...renderSeriesMap(gauges, 'gauge'),
+  ];
   return lines.join('\n') + (lines.length > 0 ? '\n' : '');
 }
 
 /** Test seam — wipe all series (afterEach). */
 export function resetMetricsRegistry(): void {
   counters.clear();
+  gauges.clear();
 }

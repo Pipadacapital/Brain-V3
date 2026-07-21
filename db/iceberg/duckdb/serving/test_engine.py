@@ -47,6 +47,17 @@ needs_stack = pytest.mark.skipif(not STACK, reason="Iceberg REST catalog unreach
 # ── the SELECT/WITH-only guard (pure unit) ─────────────────────────────────────────────────────
 
 
+# ── epoch pre-warm list parsing (pure unit) ────────────────────────────────────────────────────
+
+
+def test_parse_prewarm_tables():
+    assert engine.parse_prewarm_tables("") == []
+    assert engine.parse_prewarm_tables(" , ,") == []
+    assert engine.parse_prewarm_tables(
+        "brain_serving.mv_silver_collector_event, brain_serving.mv_silver_touchpoint"
+    ) == ["brain_serving.mv_silver_collector_event", "brain_serving.mv_silver_touchpoint"]
+
+
 # ── the per-request timeout clamp (pure unit) ──────────────────────────────────────────────────
 
 

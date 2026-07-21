@@ -82,6 +82,18 @@ sparkV4:
         schedule: "0 4 * * *" # daily 04:00 IST — off the Gold cadence
         activeDeadlineSeconds: 10800 # 3h — enough headroom for the fragmented Silver tables
         orphanFiles: "1"
+      # Silver HOT tables (2026-07-21 keystone incident): silver_collector_event re-fragments
+      # ~2.4 files/min under the */5 MERGE churn (723→1,442 live files in ~5h) — the daily Silver
+      # sweep can't hold it, and serving-mediated reads (the silver-identity lane) then exceed ANY
+      # statement budget on file-count alone (the stuck-watermark class, PR #317's other half).
+      # A TABLES-scoped fast lane compacts just the churn-heavy tables every 2h without re-running
+      # Silver's heavy full sweep (the 2026-07-17 starvation lesson). :30 offset — off Gold's :00.
+      - name: silver-hot
+        namespaces: brain_silver
+        tables: silver_collector_event,silver_touchpoint
+        schedule: "30 */2 * * *" # every 2h at :30 — interleaved with the Gold lane's :00
+        activeDeadlineSeconds: 1800 # 30 min — two-table compact+expiry is minutes
+        orphanFiles: "0"
 # ADR-0016 D3 / CORE↔IDENTITY re-split (2026-07-19) — resident warm transform worker CUTOVER (prod).
 # transformWorker.enabled=true SUPPRESSES the v4-medallion (CORE) CronWorkflow — the resident Deployment
 # (infra/helm/transform-worker, enabled=true there IN LOCKSTEP) becomes the sole CORE writer, gated on its

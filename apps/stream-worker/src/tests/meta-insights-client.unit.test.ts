@@ -24,7 +24,6 @@ import {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FetchStub = (...args: any[]) => Promise<Response>;
 
 function makeResponse(

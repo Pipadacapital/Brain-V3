@@ -348,7 +348,7 @@ def write_watermark(con, job_name: str, ts) -> None:
     )
 
 
-def run_job(job_name: str, build_fn, *, target_table: str, source_table: str = GATED_SOURCE,
+def run_job(job_name: str, build_fn, *, target_table: str, source_table: str | None = GATED_SOURCE,
             ts_col: str = "ingested_at") -> None:
     """
     Thin runner: connect → pin batch hi → build(con) → advance watermark → structured log line.
@@ -359,15 +359,24 @@ def run_job(job_name: str, build_fn, *, target_table: str, source_table: str = G
     job itself. The hi is pinned ONCE here (before build) so an incremental build's read bound and the
     watermark advance are the SAME value, and a row landing mid-run is picked up by the next window rather
     than skipped.
+
+    `source_table=None` SKIPS the pin + watermark write entirely (ADR-0017 A3): the Neo4j→Iceberg identity
+    projections (silver_identity_map/alias/customer_identity/unmerge) don't read the keystone — they project
+    the graph — so pinning `max(ingested_at)` off the fragmented keystone was pure cost (~4.5 min COLD × 4
+    jobs ≈ the 15-min empty export) and the keystone watermark they wrote was meaningless. These jobs are
+    full-projection (no incremental window), so there is nothing to pin and nothing to advance.
     """
     global _CURRENT_HI
     t0 = time.time()
     con = connect()
     try:
-        try:
-            _CURRENT_HI = con.execute(f"SELECT max({ts_col}) FROM {source_table}").fetchone()[0]
-        except Exception:  # noqa: BLE001 — source not created yet → full pass, no advance
-            _CURRENT_HI = None
+        if source_table is None:
+            _CURRENT_HI = None  # A3: no keystone pin for the graph-projection jobs
+        else:
+            try:
+                _CURRENT_HI = con.execute(f"SELECT max({ts_col}) FROM {source_table}").fetchone()[0]
+            except Exception:  # noqa: BLE001 — source not created yet → full pass, no advance
+                _CURRENT_HI = None
         upserted = build_fn(con)
         # Advance the watermark to the SAME pinned hi the build read up to (best-effort, non-fatal).
         try:

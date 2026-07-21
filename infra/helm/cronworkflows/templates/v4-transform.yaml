@@ -237,6 +237,17 @@ spec:
             # no-op for the gold tier (run_all.py only excludes IDENTITY_OWNED_JOBS, all silver_*), but it
             # keeps the CORE lane's env uniform and documents that gold never writes an identity table.
             - { name: TRANSFORM_CORE_ONLY, value: "1" }
+            {{- if .Values.sparkV4.tickMaintTables }}
+            # Wave 2a — hot-table maintenance folded into the transform tick (2026-07-21 keystone incident).
+            # After run_all.py's gold pass lands (this step's END), run_all's in-process hook compacts +
+            # expires these hot tables in the SAME pod/process, riding the same */5 MERGE churn that
+            # re-fragments them (~2.4 files/min for silver_collector_event). Best-effort: a compaction
+            # failure logs loudly and NEVER fails the gold step (run_all keeps the hook exception-walled).
+            # SCALAR value (not a list element) → no Argo list-index-merge footgun. Default empty (base
+            # values) = the hook is a no-op; only prod turns it on below. The v4-maintenance-silver-hot
+            # cron lane STAYS as a backstop until a week of in-tick evidence proves this out.
+            - { name: TICK_MAINT_TABLES, value: {{ .Values.sparkV4.tickMaintTables | quote }} }
+            {{- end }}
           {{- if $envFrom }}
           envFrom:
             - secretRef:

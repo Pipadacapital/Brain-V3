@@ -165,6 +165,12 @@ transformWorker:
 # medallion refresh. Requires the CI-built+digest-pinned brain-duckdb image (B3 fail-closed) + a cluster.
 sparkV4:
   enabled: true
+  # Wave 2a (2026-07-21): hot-table maintenance folded into the transform tick. A comma-separated list of
+  # hot tables run_all.py compacts + expires IN-PROCESS at the end of the gold pass (best-effort, never
+  # fails the run). SCALAR (not a list) → immune to Argo's list-index element-wise merge. Default EMPTY =
+  # the in-tick hook is a NO-OP (base/staging behaviour unchanged); values-prod turns it on. Bare names
+  # resolve against the Silver namespace; `ns:table` (e.g. brain_gold:gold_customer_360) qualifies.
+  tickMaintTables: ""
   # ADR-0016 P2: each tier runs as ONE process (attach the Iceberg catalog once, run all 45 jobs on a
   # single connection via db/iceberg/duckdb/run_all.py) — the retired 90-spawn bash loop paid ~85s FIXED
   # per-process overhead per job (~130 min per run). This is now the ONLY transform path (the singleProcess

@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:81aa630fe0e83870dc9997cc708e4a64ca8f0104b5c8ad6c6f76dad8d0ced842"
+  digest: "sha256:ad5567b51c44c0e58d132d749e7a610c7e2d85497878aa6a01571a01e78835c2"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:98b4ad2fbd5d30a6a361838ec20f076f691ab3ab53be7c492c7be17f2d01f34e"
+  digest: "sha256:030dc10ffcb808778c92aa2e76b7b064ec7fb03970737b201977ea2f3fa960bd"
 # duckdb image (db/iceberg/duckdb/Dockerfile) — runs the bronze/medallion maintenance + erasure (via the
 # PyIceberg maintenance client it carries) AND the V4 Silver/Gold transform crons (.sparkV4.image — CI digest-pins both,
 # one image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover replaces
@@ -16,13 +16,13 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8"
+    digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
 # duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image).
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8"
+    digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
 # ADR-0016 D3 / CORE↔IDENTITY re-split — resident warm transform worker (staging validation env).
 # transform-worker values-staging already has enabled=true; this is the LOCKSTEP flag its header calls
 # for — it SUPPRESSES the v4-medallion (CORE) cron so the resident Deployment is the sole CORE writer.

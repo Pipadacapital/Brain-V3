@@ -373,3 +373,151 @@ def test_preflight_env_probe(monkeypatch):
     monkeypatch.setenv("ICEBERG_REST_URI", "http://iceberg-rest:8181")
     monkeypatch.setenv("DATABASE_URL", "postgres://u:p@h:5432/brain")
     assert run_all._probe_env() == []
+
+
+# ── Wave 2a: hot-table maintenance folded into the transform tick ────────────────────────────────────
+
+
+def test_tick_maint_tables_empty_is_noop(monkeypatch):
+    # DEFAULT (unset / empty) → no tables → the hook is a pure no-op (the safe default the task requires).
+    monkeypatch.delenv("TICK_MAINT_TABLES", raising=False)
+    assert run_all._tick_maint_tables() == []
+    monkeypatch.setenv("TICK_MAINT_TABLES", "   ")
+    assert run_all._tick_maint_tables() == []
+
+
+def test_tick_maint_tables_parses_bare_names(monkeypatch):
+    # Bare names resolve against TICK_MAINT_NAMESPACE (default = the Silver namespace). Whitespace and
+    # empty entries (trailing comma) are tolerated.
+    monkeypatch.delenv("TICK_MAINT_NAMESPACE", raising=False)
+    monkeypatch.setenv("TICK_MAINT_TABLES", "silver_collector_event, silver_touchpoint ,")
+    assert run_all._tick_maint_tables() == [
+        (run_all._catalog.SILVER_NAMESPACE, "silver_collector_event"),
+        (run_all._catalog.SILVER_NAMESPACE, "silver_touchpoint"),
+    ]
+
+
+def test_tick_maint_tables_ns_qualified_and_override(monkeypatch):
+    # `ns:table` overrides the default namespace per-token; TICK_MAINT_NAMESPACE overrides the default
+    # for bare names — so a Gold hot table can be mixed in later.
+    monkeypatch.setenv("TICK_MAINT_NAMESPACE", "brain_silver")
+    monkeypatch.setenv("TICK_MAINT_TABLES", "silver_collector_event,brain_gold:gold_customer_360")
+    assert run_all._tick_maint_tables() == [
+        ("brain_silver", "silver_collector_event"),
+        ("brain_gold", "gold_customer_360"),
+    ]
+
+
+def test_run_tick_maintenance_noop_when_unset(monkeypatch):
+    # With no tables configured the hook must NOT even import/connect the maintenance client. We assert
+    # it returns None and never touched pyiceberg_catalog by making an import failure fatal if reached.
+    monkeypatch.delenv("TICK_MAINT_TABLES", raising=False)
+    called = {"n": 0}
+    monkeypatch.setattr(run_all, "_tick_maint_tables", lambda: (called.__setitem__("n", called["n"] + 1) or []))
+    assert run_all._run_tick_maintenance() is None
+    assert called["n"] == 1  # parsed once, then short-circuited (no catalog connect)
+
+
+def _install_fake_mb(monkeypatch, *, optimize, expire=None):
+    """Register a fake `_maintenance_base` module under the maintenance dir so the hook's lazy
+    `import _maintenance_base as mb` resolves to it. Returns the recorded call log."""
+    import types
+
+    calls = {"optimize": [], "expire": []}
+    fake = types.ModuleType("_maintenance_base")
+    fake.pyiceberg_catalog = lambda: "CATALOG"
+
+    def _optimize(cat, ns, tbl, *a, **k):
+        calls["optimize"].append((cat, ns, tbl))
+        return optimize(cat, ns, tbl)
+
+    def _expire(cat, ns, tbl, ttl_ms):
+        calls["expire"].append((cat, ns, tbl, ttl_ms))
+        if expire:
+            expire(cat, ns, tbl, ttl_ms)
+
+    fake.optimize = _optimize
+    fake.expire = _expire
+    monkeypatch.setitem(sys.modules, "_maintenance_base", fake)
+    return calls
+
+
+def test_run_tick_maintenance_compacts_configured_tables(monkeypatch):
+    monkeypatch.setenv("TICK_MAINT_TABLES", "silver_collector_event,silver_touchpoint")
+    monkeypatch.delenv("TICK_MAINT_NAMESPACE", raising=False)
+    monkeypatch.delenv("SNAPSHOT_TTL_MS", raising=False)
+    calls = _install_fake_mb(monkeypatch, optimize=lambda *_: None)
+    assert run_all._run_tick_maintenance() is None
+    ns = run_all._catalog.SILVER_NAMESPACE
+    assert [(c[1], c[2]) for c in calls["optimize"]] == [(ns, "silver_collector_event"), (ns, "silver_touchpoint")]
+    # expire always follows optimize with the 7-day default TTL.
+    assert [(c[1], c[2], c[3]) for c in calls["expire"]] == [
+        (ns, "silver_collector_event", 604_800_000),
+        (ns, "silver_touchpoint", 604_800_000),
+    ]
+
+
+def test_run_tick_maintenance_isolates_a_failing_optimize(monkeypatch):
+    # A raising optimize on ONE table must NOT propagate and must NOT stop the OTHER table — mirroring
+    # medallion_maintenance.maintain's per-table try/except. This is the mandatory failure-isolation
+    # requirement: the hook always returns None.
+    monkeypatch.setenv("TICK_MAINT_TABLES", "silver_collector_event,silver_touchpoint")
+    monkeypatch.delenv("TICK_MAINT_NAMESPACE", raising=False)
+
+    def _optimize(cat, ns, tbl):
+        if tbl == "silver_collector_event":
+            raise RuntimeError("CommitFailedException: boom")
+
+    calls = _install_fake_mb(monkeypatch, optimize=_optimize)
+    # Must not raise, must return None.
+    assert run_all._run_tick_maintenance() is None
+    # The SECOND table still got optimized+expired despite the first table blowing up.
+    assert (run_all._catalog.SILVER_NAMESPACE, "silver_touchpoint") in [(c[1], c[2]) for c in calls["optimize"]]
+    assert (run_all._catalog.SILVER_NAMESPACE, "silver_touchpoint") in [(c[1], c[2]) for c in calls["expire"]]
+
+
+def test_run_tick_maintenance_never_fails_the_run_on_catalog_error(monkeypatch):
+    # If even pyiceberg_catalog() blows up (catalog unreachable), the ENTIRE hook is swallowed — the
+    # transform run's exit code must be unaffected. We prove _run_tick_maintenance returns None.
+    import types
+
+    monkeypatch.setenv("TICK_MAINT_TABLES", "silver_collector_event")
+    fake = types.ModuleType("_maintenance_base")
+
+    def _boom():
+        raise RuntimeError("REST catalog unreachable")
+
+    fake.pyiceberg_catalog = _boom
+    fake.optimize = lambda *a, **k: None
+    fake.expire = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "_maintenance_base", fake)
+    assert run_all._run_tick_maintenance() is None
+
+
+def test_main_gold_calls_hook_and_tier_failure_alone_sets_exit(monkeypatch):
+    # End-to-end at the gold call site: main('gold') runs the gold tier then the hook. The hook is invoked
+    # exactly once AFTER the tier, and main's return code reflects ONLY the tier's failure tally — the hook
+    # (best-effort) never contributes to it. Here the tier is CLEAN (0) so main returns 0 even though the
+    # hook ran. This is the single-shot cron path a compaction conflict must never fail.
+    seq = []
+    monkeypatch.setattr(run_all._catalog, "connect", lambda: _FakeCon())
+    monkeypatch.setattr(run_all, "_patch_connect", lambda shared: None)
+    monkeypatch.setattr(run_all, "run_tier", lambda shared, tier: seq.append(f"tier:{tier}") or 0)
+    monkeypatch.setattr(run_all, "_run_tick_maintenance", lambda: seq.append("hook"))
+    monkeypatch.setattr(sys, "argv", ["run_all.py", "gold"])
+    assert run_all.main() == 0
+    assert seq == ["tier:gold", "hook"], seq  # hook runs AFTER the tier, in-process
+
+
+def test_run_tick_maintenance_is_exception_walled_end_to_end(monkeypatch):
+    # The hook OWNS a total exception wall: even a mid-loop RuntimeError in mb.expire is swallowed and the
+    # function returns None. (The per-table wall is tested above; this pins the OUTER wall around the whole
+    # thing — the contract that main's exit code can never be moved by the hook.)
+    monkeypatch.setenv("TICK_MAINT_TABLES", "silver_collector_event")
+    monkeypatch.delenv("TICK_MAINT_NAMESPACE", raising=False)
+    _install_fake_mb(
+        monkeypatch,
+        optimize=lambda *_: None,
+        expire=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("expire exploded")),
+    )
+    assert run_all._run_tick_maintenance() is None

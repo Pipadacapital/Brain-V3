@@ -148,6 +148,10 @@ export async function runSilverIdentity(): Promise<SilverIdentityRunResult> {
   const pool = new Pool({ connectionString: dbUrl, max: 3 });
   const silver: SilverReader = createSilverReader({
     baseUrl: `http://${cfg.DUCKDB_SERVING_HOST}:${cfg.DUCKDB_SERVING_PORT}`,
+    // Batch statement budget (server clamps to STATEMENT_TIMEOUT_MAX_MS): the keystone scan has a
+    // ~700-file day-partition floor that exceeds the 25s OLTP default on file-count alone — with
+    // the default budget every data slice aborted and the watermark was held (stuck-since-07-14).
+    queryTimeoutMs: cfg.SILVER_IDENTITY_QUERY_TIMEOUT_MS,
   });
 
   // ── Redis: identifier cache + serving-cache evictor + per-brand flags ────────

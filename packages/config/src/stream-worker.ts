@@ -133,6 +133,17 @@ export const StreamWorkerEnvSchema = CommonEnvSchema.extend({
    * ticks ≈ ~2.3h one-time catch-up, after which steady-state runs are tiny.
    */
   SILVER_IDENTITY_MAX_SLICE_MS: z.coerce.number().int().positive().default(21_600_000),
+  /**
+   * duckdb-serving statement budget (ms) for the identity keystone reads, sent per-request as
+   * `timeout_ms` (server clamps to its STATEMENT_TIMEOUT_MAX_MS cap, default 180s). The identity
+   * lane is BATCH: the keystone's day(occurred_at) partitioning over a multi-year backfill spread
+   * puts a ~700-file floor on every scan (backfilled events carry historical occurred_at, so no
+   * partition pruning is possible for an ingested_at slice), which exceeds the serving default 25s
+   * OLTP watchdog on file-count alone — every data slice aborted and the watermark was held
+   * (stuck-since-2026-07-14 incident). 120s covers the file-count floor with margin; the serving
+   * admission semaphore still bounds how many such statements run concurrently.
+   */
+  SILVER_IDENTITY_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   /** Neo4j bulk read/write batch size (BatchResolveIdentityUseCase). */
   SILVER_IDENTITY_BATCH_SIZE: z.coerce.number().int().positive().default(500),
   /** identifier_hash → brain_id Redis cache TTL (seconds, sliding). Default 7 days. */

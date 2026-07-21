@@ -17,6 +17,14 @@ import { createDuckDbServingPool } from '@brain/metric-engine';
 export interface SilverReaderConfig {
   /** duckdb-serving base URL, e.g. 'http://localhost:8091'. */
   readonly baseUrl: string;
+  /**
+   * Optional server-side statement budget (ms), sent per-request as `timeout_ms` (the serving
+   * engine clamps it to its STATEMENT_TIMEOUT_MAX_MS cap). Batch lanes (silver-identity's
+   * keystone reads — ~700-file day-partition floor, >25s by file-count alone) raise this above
+   * the adapter's 25s OLTP default; the client fetch abort is derived to exceed it by 10s so
+   * the server watchdog always fires first (clean 504, not an opaque fetch abort).
+   */
+  readonly queryTimeoutMs?: number;
 }
 
 export interface SilverReader {
@@ -55,7 +63,14 @@ export function createSilverReader(config: SilverReaderConfig): SilverReader {
   // duckdb-serving HTTP adapter — the replica applies the brain_serving/brain_bronze views into
   // LOCAL schemas at startup, so the two-part `brain_serving.mv_*` names resolve to the serving
   // views over Iceberg Silver. Stateless REST (no connection pool).
-  const pool = createDuckDbServingPool({ baseUrl: config.baseUrl });
+  const pool = createDuckDbServingPool({
+    baseUrl: config.baseUrl,
+    ...(config.queryTimeoutMs !== undefined && {
+      queryTimeoutMs: config.queryTimeoutMs,
+      // Client abort must outlive the server watchdog (server 504s first — never an opaque abort).
+      fetchTimeoutMs: config.queryTimeoutMs + 10_000,
+    }),
+  });
 
   return {
     async scopedQuery<T = Record<string, unknown>>(

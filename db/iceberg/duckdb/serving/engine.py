@@ -34,6 +34,7 @@ Env (plan §A):
   DUCKDB_SERVING_MAX_TEMP_DIRECTORY_SIZE spill cap                           (default 5GB)
   DUCKDB_SERVING_MAX_CONCURRENT          admission semaphore width           (default 8)
   STATEMENT_TIMEOUT_MS                   interrupt watchdog (< the TS adapter's 30s abort) (default 25000)
+  STATEMENT_TIMEOUT_MAX_MS               hard cap on the per-request timeout_ms raise      (default 180000)
   DUCKDB_SERVING_CATALOG_REFRESH_S       epoch rotation period               (default 60 — ADR-0016 P1.3; view-reapply cadence, not commit freq)
   + the _catalog.py family (ICEBERG_CATALOG/ICEBERG_REST_URI/ICEBERG_WAREHOUSE/S3_ENDPOINT/…)
 """
@@ -56,6 +57,11 @@ TEMP_DIRECTORY = os.environ.get("DUCKDB_SERVING_TEMP_DIRECTORY", "/tmp/duckdb-se
 MAX_TEMP_DIRECTORY_SIZE = os.environ.get("DUCKDB_SERVING_MAX_TEMP_DIRECTORY_SIZE", "5GB")
 MAX_CONCURRENT = int(os.environ.get("DUCKDB_SERVING_MAX_CONCURRENT", "8") or "8")
 STATEMENT_TIMEOUT_MS = int(os.environ.get("STATEMENT_TIMEOUT_MS", "25000") or "25000")
+# Per-request timeout raise, HARD-CAPPED (single-query-ceiling doctrine): a batch caller (the
+# silver-identity lane reads the ~700-day-partitioned keystone — >25s by file-count alone) may send
+# `timeout_ms` above the default, but never beyond this cap. The admission semaphore still bounds
+# how many such slow statements run at once, so OLTP dashboard reads keep their slots.
+STATEMENT_TIMEOUT_MAX_MS = int(os.environ.get("STATEMENT_TIMEOUT_MAX_MS", "180000") or "180000")
 # ADR-0016 P1.3: 60s so a brand-new mart's view is reapplied within the ≤60s freshness SLO.
 # This is the view-reapply/self-heal cadence, NOT commit frequency — small-file pressure is a
 # function of the transform tick, and the maintenance lane handles compaction. Still configurable.
@@ -81,6 +87,23 @@ class EngineSaturated(Exception):
 
 class EngineNotReady(Exception):
     """No live epoch yet — catalog attach hasn't succeeded (→ HTTP 503)."""
+
+
+def clamp_timeout_ms(timeout_ms: int | None) -> int:
+    """
+    Resolve the per-request watchdog budget: absent/invalid → STATEMENT_TIMEOUT_MS default,
+    otherwise clamped to [1_000, STATEMENT_TIMEOUT_MAX_MS]. The cap is the doctrine backstop —
+    a caller can raise its own budget (batch lanes) but never disable the watchdog.
+    """
+    if timeout_ms is None:
+        return STATEMENT_TIMEOUT_MS
+    try:
+        value = int(timeout_ms)
+    except (TypeError, ValueError):
+        return STATEMENT_TIMEOUT_MS
+    if value <= 0:
+        return STATEMENT_TIMEOUT_MS
+    return max(1_000, min(value, STATEMENT_TIMEOUT_MAX_MS))
 
 
 def guard_statement(sql: str) -> None:
@@ -259,12 +282,16 @@ class Engine:
 
     # ── serving ────────────────────────────────────────────────────────────────────────────────
 
-    def query(self, sql: str):
+    def query(self, sql: str, timeout_ms: int | None = None):
         """
         Run one guarded SELECT/WITH on a fresh cursor of the current epoch, under the admission
         semaphore, with the interrupt watchdog. Returns (description, rows) for serialize.py.
         Raises QueryRejected / EngineNotReady / EngineSaturated / QueryTimeout / duckdb errors.
+
+        timeout_ms: optional per-request watchdog budget (the TS adapter sends it as `timeout_ms`).
+        Clamped to [1s, STATEMENT_TIMEOUT_MAX_MS]; absent/invalid → STATEMENT_TIMEOUT_MS default.
         """
+        budget_ms = clamp_timeout_ms(timeout_ms)
         try:
             guard_statement(sql)
         except QueryRejected:
@@ -279,13 +306,13 @@ class Engine:
                 if epoch is None or not epoch.acquire():
                     raise EngineNotReady("no live epoch (catalog attach pending)")
             try:
-                return self._run_on_epoch(epoch, sql)
+                return self._run_on_epoch(epoch, sql, budget_ms)
             finally:
                 epoch.release()
         finally:
             self._sem.release()
 
-    def _run_on_epoch(self, epoch: Epoch, sql: str):
+    def _run_on_epoch(self, epoch: Epoch, sql: str, budget_ms: int = STATEMENT_TIMEOUT_MS):
         import duckdb  # lazy, mirrors _catalog.py
 
         self.inflight += 1
@@ -300,7 +327,7 @@ class Engine:
             except Exception:  # noqa: BLE001 — cursor may already be closed; watchdog is best-effort
                 pass
 
-        watchdog = threading.Timer(STATEMENT_TIMEOUT_MS / 1000.0, _interrupt)
+        watchdog = threading.Timer(budget_ms / 1000.0, _interrupt)
         watchdog.daemon = True
         watchdog.start()
         try:
@@ -310,13 +337,13 @@ class Engine:
             return description, rows
         except duckdb.InterruptException as exc:
             self.query_timeouts_total += 1
-            raise QueryTimeout(f"statement interrupted at {STATEMENT_TIMEOUT_MS}ms") from exc
+            raise QueryTimeout(f"statement interrupted at {budget_ms}ms") from exc
         except Exception:
             # The interrupt can surface as a non-InterruptException error depending on the phase it
             # lands in — classify by the watchdog flag so a timeout is never reported as a 500.
             if timed_out.is_set():
                 self.query_timeouts_total += 1
-                raise QueryTimeout(f"statement interrupted at {STATEMENT_TIMEOUT_MS}ms") from None
+                raise QueryTimeout(f"statement interrupted at {budget_ms}ms") from None
             self.query_failures_total += 1
             raise
         finally:

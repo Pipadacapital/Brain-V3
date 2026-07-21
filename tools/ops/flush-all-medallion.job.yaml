@@ -1,0 +1,90 @@
+# Flush ALL medallion data — one-off Job. TRUNCATES every table in brain_bronze + brain_silver +
+# brain_gold (t.delete(AlwaysTrue()) — metadata-fast, drops all data files; table objects stay so
+# Kafka-Connect + the transform jobs keep writing into the emptied tables).
+#
+# WHY: full e2e re-verification from 0 (owner). Data is disposable — no backup, no dedup wait.
+# PRECONDITION: producers stopped first (collector=0, stream-worker=0, crons suspended, kafka-connect
+# sink paused + lag drained) so nothing lands mid-truncate and hits a concurrent-commit retry.
+# Silver's watermark table (silver_job_watermark) lives IN brain_silver, so it resets with the wipe.
+#
+# RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/flush-all-medallion.job.yaml
+# WATCH: kubectl --context brain-prod-ssm -n argo logs -f job/flush-all-medallion
+# NS/SA: runs in `argo` with SA `brain-jobs` + secret `core-env` — same as the v4-medallion cron
+# (transform-worker/brain-prod-transform-worker was PRUNED with the resident-worker revert #304).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flush-all-medallion
+  namespace: argo
+  labels:
+    app.kubernetes.io/part-of: brain
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      serviceAccountName: brain-jobs   # IRSA — same SA the v4-medallion cron runs with
+      restartPolicy: Never
+      nodeSelector:
+        brain.platform/pool: streaming
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: flush-all-medallion
+          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: core-env
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { memory: "2Gi" }
+          command: ["python", "-c"]
+          args:
+            - |
+              import sys
+              sys.path.insert(0, "/opt/brain/duckdb")
+              sys.path.insert(0, "/opt/brain/duckdb/maintenance")
+              from _maintenance_base import pyiceberg_catalog
+              from pyiceberg.expressions import AlwaysTrue
+              # Row counts come from snapshot METADATA (summary total-records) — never a scan:
+              # scan().to_arrow() loads the whole table into RAM and OOMKilled the first attempt.
+              def meta_rows(t):
+                  s = t.current_snapshot()
+                  return int(s.summary.get("total-records", -1)) if s and s.summary else 0
+              cat = pyiceberg_catalog()
+              namespaces = ["brain_bronze", "brain_silver", "brain_gold"]
+              failures = 0
+              for ns in namespaces:
+                  tables = [t[-1] for t in cat.list_tables(ns)]
+                  print(f"=== {ns}: {len(tables)} table(s) → {tables}", flush=True)
+                  for name in tables:
+                      fq = f"{ns}.{name}"
+                      try:
+                          t = cat.load_table(fq)
+                          before = meta_rows(t)
+                          t.delete(delete_filter=AlwaysTrue())   # truncate — drops all data files
+                          t.refresh()
+                          after = meta_rows(t)
+                          flag = "" if after == 0 else "  <-- STILL NON-EMPTY"
+                          if after != 0:
+                              failures += 1
+                          print(f"  {fq}: {before} -> {after}{flag}", flush=True)
+                      except Exception as exc:
+                          failures += 1
+                          print(f"  {fq}: ERROR {exc}", flush=True)
+              print(f"=== flush complete ({failures} failure(s)) ===", flush=True)
+              if failures:
+                  sys.exit(1)

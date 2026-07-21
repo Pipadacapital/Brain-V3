@@ -5,7 +5,7 @@ image:
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:d140f1f816272d238803602fd6e3e5644a264706f5025275d6989dd0e02014f3"
+  digest: "sha256:030dc10ffcb808778c92aa2e76b7b064ec7fb03970737b201977ea2f3fa960bd"
 # duckdb image (db/iceberg/duckdb/Dockerfile) — runs the bronze/medallion maintenance + erasure (via the
 # PyIceberg maintenance client it carries) AND the V4 Silver/Gold transform crons (.sparkV4.image — CI digest-pins both,
 # one image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover replaces
@@ -16,13 +16,13 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:b5bb1c0fed3a7027db7694ffa37fa324e5d8580047de3f5530bd147b3b950466"
+    digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
 # duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image).
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:b5bb1c0fed3a7027db7694ffa37fa324e5d8580047de3f5530bd147b3b950466"
+    digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
 # ADR-0016 D3 / CORE↔IDENTITY re-split — resident warm transform worker (staging validation env).
 # transform-worker values-staging already has enabled=true; this is the LOCKSTEP flag its header calls
 # for — it SUPPRESSES the v4-medallion (CORE) cron so the resident Deployment is the sole CORE writer.

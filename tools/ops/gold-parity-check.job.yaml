@@ -1,0 +1,100 @@
+# Gold incremental↔full parity gate — one-off Job (ADR-0016 P1.1 LIVE end-to-end harness).
+#
+# WHY: db/iceberg/duckdb/parity_check.py is only the COMPARATOR. Its --gold-manifest run "presumes a
+# harness has already produced, on the SAME frozen Bronze/Silver snapshot, both a full-recompute build
+# (<mart>_full) and an incremental build (<mart>_incr)". That producing harness did not exist in-repo.
+# This Job IS that harness: on the live prod catalog it builds every incremental-safe Gold mart twice —
+# once incrementally (GOLD_INCREMENTAL=1), once full-recompute (FULL_REFRESH=1) — into _incr / _full
+# suffixed tables, then runs the STRICT manifest comparator. Exit 0 (every mart money-byte-exact, zero
+# orphan drift) is the merge precondition for flipping GOLD_INCREMENTAL="1" in prod (see
+# docs/runbooks/gold-incremental-promotion.md). The lightweight comparator+window unit gate runs on every
+# promotion PR (integration.yml); THIS is the heavy live gate that must pass before the prod flip.
+#
+# FREEZE PRECONDITION (the docstring's "SAME frozen snapshot" — the owner MUST do this before applying):
+#   Suspend the medallion + identity writers so Silver/Bronze cannot move mid-harness:
+#     kubectl --context brain-prod-ssm -n argo patch cronworkflow v4-medallion \
+#       --type merge -p '{"spec":{"suspend":true}}'
+#     kubectl --context brain-prod-ssm -n argo patch cronworkflow v4-identity \
+#       --type merge -p '{"spec":{"suspend":true}}'
+#   (If the resident transform-worker is enabled, scale it to 0 instead — it is the CORE writer then.)
+#   Let any in-flight run finish, THEN apply this Job. Un-suspend after it completes.
+#
+# BUILD ORDER (matters — the silver_job_watermark row is keyed by job_name and is NOT suffixed, so both
+# _full and _incr builds of one mart share the same watermark row):
+#   1. _incr bootstrap : GOLD_INCREMENTAL=1, no _incr watermark yet → first run full-scans + seeds the wm.
+#   2. _incr windowed  : GOLD_INCREMENTAL=1 again → the REAL mid-snapshot windowed run the gate validates.
+#   3. _full           : FULL_REFRESH=1 → full recompute of the SAME frozen snapshot, run LAST so its
+#                        watermark write cannot retroactively shrink the _incr window.
+# Because the snapshot is FROZEN, steps 1 and 2 read identical Silver — step 2 is the true incremental
+# path (windowed reads over the seeded watermark) and MUST equal step 3's full recompute.
+#
+# RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/gold-parity-check.job.yaml
+# WATCH: kubectl --context brain-prod-ssm -n argo logs -f job/gold-parity-check
+# GATE:  the Job exits 0 IFF every incremental-safe Gold mart is byte-exact (money included). A non-zero
+#        exit BLOCKS the prod flip — read the per-mart REVIEW lines to see which mart drifted.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gold-parity-check
+  namespace: argo
+  labels:
+    app.kubernetes.io/part-of: brain
+spec:
+  backoffLimit: 0            # a parity FAIL must surface, never silently retry into a different snapshot
+  ttlSecondsAfterFinished: 86400   # keep the pod + its per-mart verdict log for a day of review
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"   # never drain mid-build (a half-built _full corrupts the gate)
+    spec:
+      serviceAccountName: brain-jobs   # IRSA — same SA the v4-medallion cron runs with
+      restartPolicy: Never
+      nodeSelector:
+        brain.platform/pool: streaming
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gold-parity-check
+          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: core-env   # ICEBERG_REST_URI / AWS_* / catalog creds — same env the transforms use
+          resources:
+            # Same shape as the prod v4-medallion Gold pass (DuckDB is single-process python, no JVM heap).
+            requests: { cpu: "2", memory: "6Gi" }
+            limits: { memory: "8Gi" }
+          workingDir: /opt/brain/duckdb
+          command: ["bash", "-euo", "pipefail", "-c"]
+          args:
+            - |
+              cd /opt/brain/duckdb
+
+              # The build steps are best-effort PRODUCERS (run_all.py gold exits 1 if any non-required
+              # peripheral mart soft-fails on empty inputs — same posture as the CI refresh's `|| warn`).
+              # They must NOT abort the harness under `set -e`; the SOLE gate is step 4's parity exit,
+              # which fails LOUDLY (missing _incr/_full table → error) if a gated mart never built.
+              echo "── step 1/4: build _incr (bootstrap — seeds the suffixed watermark) ──"
+              MIGRATION_TABLE_SUFFIX=_incr GOLD_INCREMENTAL=1 FULL_REFRESH=0 \
+                python run_all.py gold || echo "::note:: _incr bootstrap reported non-required soft-fails (continuing)"
+
+              echo "── step 2/4: build _incr (windowed — the real mid-snapshot incremental run) ──"
+              MIGRATION_TABLE_SUFFIX=_incr GOLD_INCREMENTAL=1 FULL_REFRESH=0 \
+                python run_all.py gold || echo "::note:: _incr windowed reported non-required soft-fails (continuing)"
+
+              echo "── step 3/4: build _full (full recompute of the SAME frozen snapshot — run LAST) ──"
+              MIGRATION_TABLE_SUFFIX=_full GOLD_INCREMENTAL=0 FULL_REFRESH=1 \
+                python run_all.py gold || echo "::note:: _full recompute reported non-required soft-fails (continuing)"
+
+              echo "── step 4/4: STRICT incremental↔full parity over every incremental-safe Gold mart ──"
+              # Exit code is the GATE: 0 = money byte-exact + zero orphan drift for ALL 22 marts.
+              python parity_check.py --gold-manifest --left-suffix _full --right-suffix _incr

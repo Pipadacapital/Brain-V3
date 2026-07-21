@@ -58,16 +58,21 @@ sparkV4:
   # GOLD_INCREMENTAL default-on gate (ADR-0016 P1.1). prod inherits the base values.yaml env
   # (GOLD_INCREMENTAL="0" → Gold full-scan). To flip Gold to incremental in prod, uncomment the block
   # below (it REPLACES the base env list, so it must re-declare ICEBERG_CATALOG / SILVER_INCREMENTAL /
-  # WATERMARK_LOOKBACK_SECONDS) — but ONLY after db/iceberg/duckdb/parity_check.py's Gold
-  # incremental-vs-full harness passes in CI/staging: money byte-exact, zero orphan drift. The
-  # first incremental Gold run bootstraps (no watermark → full scan) then windows [watermark, now).
+  # WATERMARK_LOOKBACK_SECONDS — and should carry WATERMARK_MAX_SLICE_SECONDS=3600 which base sets) —
+  # but ONLY after the two-stage gate passes (docs/runbooks/gold-incremental-promotion.md):
+  #   1. the comparator + window-arithmetic unit gate runs on every promotion PR (integration.yml step
+  #      "Gold-incremental parity gate machinery");
+  #   2. tools/ops/gold-parity-check.job.yaml — the LIVE incremental↔full harness — has exited 0 against
+  #      a FROZEN prod catalog: money byte-exact, zero orphan drift, all 22 incremental-safe Gold marts.
+  # The first incremental Gold run bootstraps (no watermark → full scan) then windows [watermark, now).
   # gold_revenue_ledger / gold_cac / gold_contribution_margin stay full-scan regardless (they never
   # pass enabled=GOLD_INCREMENTAL — delete_orphans / multi-source money-safety). FULL_REFRESH=1 recovers.
   # env:
   #   - { name: ICEBERG_CATALOG, value: "rest" }
   #   - { name: SILVER_INCREMENTAL, value: "1" }
-  #   - { name: GOLD_INCREMENTAL, value: "1" }   # ← default-on ONLY after parity_check.py Gold gate passes
+  #   - { name: GOLD_INCREMENTAL, value: "1" }   # ← default-on ONLY after the gold-parity-check.job gate passes
   #   - { name: WATERMARK_LOOKBACK_SECONDS, value: "600" }
+  #   - { name: WATERMARK_MAX_SLICE_SECONDS, value: "3600" }
   # MAINTENANCE LANE SPLIT (2026-07-17 fragmentation incident). The single both-namespaces sweep
   # processed Silver first (alphabetically) and burned its whole deadline on Silver's heavy tables
   # (silver_job_watermark ~7.3k tiny files) → Gold never compacted → gold_customer_360 fragmented to

@@ -49,7 +49,7 @@ import sys
 from _catalog import CATALOG, GOLD_NAMESPACE, SILVER_NAMESPACE, connect
 
 # ── Gold incremental-safe mart manifest (ADR-0016 P1.1) ────────────────────────────────────────────────
-# The 30 Gold marts that pass enabled=GOLD_INCREMENTAL to incremental_window() — i.e. the marts whose
+# The 22 Gold marts that pass enabled=GOLD_INCREMENTAL to incremental_window() — i.e. the marts whose
 # incremental output MUST equal their full recompute before GOLD_INCREMENTAL flips default-on. Each entry is
 # (mart, keys, money+material cols to diff). The three full-recompute money marts (gold_revenue_ledger,
 # gold_cac, gold_contribution_margin) are DELIBERATELY ABSENT — they never window (delete_orphans /

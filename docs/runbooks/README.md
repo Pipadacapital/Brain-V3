@@ -36,6 +36,7 @@ Status legend: **CURRENT** = follow it · **SUPERSEDED → X** = do NOT follow, 
 | `rotate-iceberg-catalog-db-password.md` | **CURRENT** | Rotate the `iceberg_catalog` DB password (owed once after AUD-INFRA-023) |
 | `enable-shopify-checkout-pixel.md` | **CURRENT** | Web Pixel activation for checkout events (verify blocks serving-ported — AUD-OPS-025) |
 | `enable-attribution-unlocks.md` | **CURRENT** | The three externally-gated attribution unlocks checklist |
+| `gold-incremental-promotion.md` | **CURRENT** | Promote GOLD_INCREMENTAL default-on (ADR-0016 P1.1): the two-stage parity gate + staging soak + prod flip |
 | `local-dev-startup.md` | **CURRENT** | Fresh clone → full local V4 stack, one command |
 | `enable-prod-cron-pipeline.md` | **SUPERSEDED → GO-LIVE.md steps 10–12 + rerun-medallion.md** | Retired dbt/StarRocks cron pipeline (AUD-OPS-019 banner inside) |
 | `prod-deploy.md` | **SUPERSEDED → GO-LIVE.md** | Pre-Aurora/pre-un-gating prod turn-on (banner inside) |

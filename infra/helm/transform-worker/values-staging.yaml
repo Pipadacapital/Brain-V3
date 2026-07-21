@@ -28,3 +28,17 @@ worker:
   tickMs: 45000
   healthPort: 8092
   lockKey: 910005
+# GOLD_INCREMENTAL staging soak (ADR-0016 P1.1). Staging is where the resident worker is validated, so
+# the resident (enabled:true above) — NOT the cronworkflows v4-medallion (suppressed in staging) — is the
+# active CORE writer here; flipping Gold to incremental in staging means flipping IT. This partial
+# transform map deep-merges over base values.yaml (Helm merges maps, unlike lists), overriding ONLY
+# goldIncremental — silverIncremental / watermark* / iceberg.catalog keep the base values. Turning this on
+# in STAGING (a throwaway validation env, safe to drift) exercises the real Gold windowed-read path under
+# live churn and is the soak that precedes the prod flip. PROD STAYS "0" until the gate passes:
+#   1. every promotion PR runs the comparator+window unit gate (integration.yml);
+#   2. before the prod flip, run tools/ops/gold-parity-check.job.yaml against a frozen prod catalog —
+#      exit 0 (money byte-exact, zero orphan drift, all 22 marts) is the merge precondition;
+# see docs/runbooks/gold-incremental-promotion.md. FULL_REFRESH=1 is the recovery escape if a staging
+# incremental Gold build ever diverges.
+transform:
+  goldIncremental: "1"

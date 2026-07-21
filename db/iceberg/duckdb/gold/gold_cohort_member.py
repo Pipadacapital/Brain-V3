@@ -98,7 +98,7 @@ def _table_exists(con, fq: str) -> bool:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── canonical customer set (Spark _register_customer_set): prefer the sibling Gold gold_customer_360
     #    (post-merge canonical brain_ids); on a cold cycle where it is absent, derive the set from the

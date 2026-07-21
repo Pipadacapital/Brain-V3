@@ -2,7 +2,7 @@
  * prometheus.test.ts — registry + exposition format (AUD-LOCAL-016).
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { incrementCounter, renderPrometheusText, resetMetricsRegistry } from './index.js';
+import { incrementCounter, renderPrometheusText, resetMetricsRegistry, setGauge } from './index.js';
 
 afterEach(() => resetMetricsRegistry());
 
@@ -41,5 +41,30 @@ describe('prometheus registry + exposition', () => {
 
   it('renders empty registry as empty string', () => {
     expect(renderPrometheusText()).toBe('');
+  });
+
+  it('renders a gauge with the gauge TYPE and brain_ prefix', () => {
+    setGauge('silver_identity_watermark_age_seconds', {}, 42);
+    const text = renderPrometheusText();
+    expect(text).toContain('# TYPE brain_silver_identity_watermark_age_seconds gauge');
+    expect(text).toContain('brain_silver_identity_watermark_age_seconds 42');
+  });
+
+  it('OVERWRITES a gauge series (last write wins, does not accumulate)', () => {
+    setGauge('wm_age', { brand_id: 'b1' }, 10);
+    setGauge('wm_age', { brand_id: 'b1' }, 7200);
+    const text = renderPrometheusText();
+    expect(text).toContain('brain_wm_age{brand_id="b1"} 7200');
+    expect(text).not.toContain('brain_wm_age{brand_id="b1"} 10');
+  });
+
+  it('keeps counters and gauges independent in the exposition', () => {
+    incrementCounter('c_total');
+    setGauge('g_seconds', {}, 5);
+    const text = renderPrometheusText();
+    expect(text).toContain('# TYPE brain_c_total counter');
+    expect(text).toContain('# TYPE brain_g_seconds gauge');
+    expect(text).toContain('brain_c_total 1');
+    expect(text).toContain('brain_g_seconds 5');
   });
 });

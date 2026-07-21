@@ -95,7 +95,7 @@ def _item(path: str) -> str:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
     #   GRAIN = entity_fold: MANY order.* events aggregate/sessionize into ONE line row per

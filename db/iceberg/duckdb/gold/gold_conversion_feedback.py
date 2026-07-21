@@ -78,7 +78,7 @@ PK = ["brand_id", "feedback_date", "form_id"]
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), feedback_date")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # Faithful SQL port of the Spark staged CTE. forms (per-form submission/session/journey counts) LEFT
     # JOINed onto pay (the brand-day payment.succeeded total, broadcast onto every form_id of the brand-day

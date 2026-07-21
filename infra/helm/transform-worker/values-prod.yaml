@@ -62,8 +62,10 @@ worker:
 # Incremental-read / OOM-safety env — mirrors the cronworkflows sparkV4.env (values.yaml). The resident
 # chart does NOT inherit that env, so pin it here: SILVER_INCREMENTAL=1 (watermark-windowed reads, prod-on)
 # + WATERMARK_MAX_SLICE_SECONDS=3600 (the OOM-safe 1h forward-slice cap — a resident tick with cap=0 does
-# an unbounded full-scan bootstrap → OOM). GOLD_INCREMENTAL stays "0" (full-scan) until parity_check.py's
-# Gold gate passes, exactly like the cron default.
+# an unbounded full-scan bootstrap → OOM). GOLD_INCREMENTAL stays "0" (full-scan) until the two-stage gate
+# passes (docs/runbooks/gold-incremental-promotion.md: the integration.yml comparator+window unit gate, then
+# tools/ops/gold-parity-check.job.yaml exit 0 on a frozen prod catalog), exactly like the cron default.
+# staging (values-staging) already flips this to "1" for the soak; prod flips only after the gate passes.
 transform:
   iceberg:
     catalog: "rest"

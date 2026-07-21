@@ -128,7 +128,7 @@ def _return_exists(con) -> bool:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # returns CTE: attribute a returned order to a product via silver_return ⋈ silver_order_line on order_id.
     # If silver_return is absent, an empty returns CTE keeps the LEFT JOIN's COALESCE(...,0) → 0.

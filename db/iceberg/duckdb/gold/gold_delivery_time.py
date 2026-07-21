@@ -110,7 +110,7 @@ PK = ["brand_id", "courier", "bucket"]
 
 def build(con):
     # brand-first tenant partitioning (mirrors Spark bucket(4, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD (Phase 1b) ─────────────
     #   GRAIN = entity_fold: MANY silver_shipment rows aggregate into the per-(brand_id, courier)

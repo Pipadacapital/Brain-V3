@@ -226,7 +226,7 @@ def _identity_link_sql(con) -> str:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── ENTITY-INCREMENTAL CHANGED-ENTITY REFOLD (opt-in; SILVER_INCREMENTAL=1) ───────────────────────
     #   order_state is an ENTITY FOLD: MANY events per (brand_id, order_id) aggregate/terminal-wins into ONE

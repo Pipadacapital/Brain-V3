@@ -100,7 +100,7 @@ def _gated_utc(event_types):
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(last_seen_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — GRAIN=entity_fold, so CHANGED-ENTITY REFOLD ──
     #   This dim FOLDS many gated-keystone rows (spend.live.v1 + ad.entity.updated) into ONE row per

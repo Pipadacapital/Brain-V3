@@ -121,7 +121,7 @@ def _try_attach_pg(con) -> bool:
 
 def build(con):
     # brand-first tenant partitioning (mirrors Spark bucket(64, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── Config tier (PG, optional): the per-SKU COGS catalogue ──
     if not _try_attach_pg(con):

@@ -93,7 +93,7 @@ COLUMNS = [
 def build(con):
     # Latest-state grain: partition by brand bucket + day(first_event_at) (always present for any order
     # with events) — matches the Spark partitioning (bucket(256, brand_id), days(first_event_at)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(first_event_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD grain (CHANGED-ENTITY REFOLD) ────
     #   GRAIN = entity_fold: MANY return-transition events aggregate/rank into ONE (brand_id, order_id)

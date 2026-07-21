@@ -112,6 +112,20 @@ jobs:
           /tmp/duckvenv/bin/pip install --quiet --upgrade pip
           /tmp/duckvenv/bin/pip install --quiet -r db/iceberg/duckdb/requirements.txt
 
+      # GOLD_INCREMENTAL parity-gate machinery (ADR-0016 P1.1) — the SHIPPED comparator + watermark
+      # window arithmetic that gate flipping GOLD_INCREMENTAL default-on. These are pure/in-memory
+      # (an in-memory DuckDB stands in for the catalog; the watermark test stubs read_watermark), so
+      # they need only the venv's duckdb — no engines, no Bronze — and run BEFORE the seed so a broken
+      # gate fails fast. This proves the parity_check.parity() algebra + incremental_window() contract
+      # on every promotion PR; the LIVE end-to-end incremental↔full gate over the real medallion is the
+      # one-off ops job tools/ops/gold-parity-check.job.yaml (run before flipping prod — see
+      # docs/runbooks/gold-incremental-promotion.md). Both files carry a __main__ runner (assert-based,
+      # non-zero exit on failure), so plain `python` gates without adding pytest to the transform venv.
+      - name: Gold-incremental parity gate machinery (comparator + window arithmetic)
+        run: |
+          /tmp/duckvenv/bin/python db/iceberg/duckdb/test_incremental_window.py
+          /tmp/duckvenv/bin/python db/iceberg/duckdb/test_parity_gold_incremental.py
+
       # Seed a minimal Bronze fixture BEFORE the refresh. On a cold catalog the DuckDB transform tier
       # has no brain_bronze.collector_events_connect to read → the keystone never creates brain_silver
       # → every Silver/Gold job fails with "Namespace brain_silver does not exist". This writes the

@@ -127,6 +127,85 @@ IDENTITY_OWNED_JOBS = frozenset({
     "silver_identity_unmerge.py",
 })
 
+# ── Wave 2a: HOT-TABLE MAINTENANCE FOLDED INTO THE TRANSFORM TICK (2026-07-21 keystone incident) ──────
+# The */5 medallion MERGE churn re-fragments silver_collector_event ~2.4 files/min (723→1,442 live files
+# in ~5h); duckdb-iceberg's EXECUTE phase costs ~200ms PER DATA FILE on a cold serving connection, so an
+# un-compacted keystone blows past ANY serving statement budget on file-count alone. The
+# v4-maintenance-silver-hot cron lane exists to counter this, but it runs on its OWN */2h schedule —
+# out of phase with the churn it chases. This hook compacts+expires the SAME hot tables at the END of the
+# gold pass, INSIDE the transform run's own process/lock, so compaction rides the churn that produced it.
+#
+# It reuses the maintenance client (mb.optimize / mb.expire) verbatim — no duplicated compaction logic —
+# and is HARD-ISOLATED: any failure is logged loudly and NEVER changes the transform run's exit code or
+# `fails` tally (the medallion must ship even if a compaction unit conflicts). The silver-hot cron lane
+# STAYS as a backstop until a week of in-tick evidence proves this out (do NOT delete it here).
+#
+# TICK_MAINT_TABLES: comma-separated hot tables to compact after the gold pass. Values may be bare table
+# names (resolved against TICK_MAINT_NAMESPACE, default the Silver namespace) OR ns-qualified `ns:table`
+# so a Gold hot table can be added later. DEFAULT EMPTY → the hook is a pure no-op (behaviour unchanged
+# until prod values set it — the safe default the task requires). Read INSIDE the helper (not at import)
+# so tests can monkeypatch os.environ per-case.
+def _tick_maint_tables() -> "list[tuple[str, str]]":
+    """Parse TICK_MAINT_TABLES → [(namespace, table), …]. Empty/unset → [] (no-op)."""
+    raw = (os.environ.get("TICK_MAINT_TABLES") or "").strip()
+    if not raw:
+        return []
+    default_ns = (os.environ.get("TICK_MAINT_NAMESPACE") or _catalog.SILVER_NAMESPACE).strip()
+    out: "list[tuple[str, str]]" = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if ":" in token:
+            ns, _, tbl = token.partition(":")
+            ns, tbl = ns.strip(), tbl.strip()
+        else:
+            ns, tbl = default_ns, token
+        if tbl:
+            out.append((ns, tbl))
+    return out
+
+
+def _run_tick_maintenance() -> None:
+    """Compact + expire the TICK_MAINT_TABLES hot tables, INSIDE the transform process (single-shot gold
+    path) or the resident tick (under the 910005 leader lock — keeps compaction single-writer among
+    replicas). Reuses the maintenance client's mb.optimize (COW rewrite, skip-heuristic near-no-op when
+    already compacted) + mb.expire (snapshot TTL) — NO duplicated logic.
+
+    FAILURE ISOLATION (mandatory): this ALWAYS returns None. Every table is wrapped (mirroring
+    medallion_maintenance.maintain's per-table try/except) inside an OUTER try/except, so neither a
+    catalog-connect failure nor a CommitFailedException on one unit can raise into the caller or touch
+    the run's exit code. Concurrency with the silver-hot cron lane is already safe: both go through
+    _overwrite_with_retry's re-read-and-retry on CommitFailedException, and the loser's next pass is a
+    skip-heuristic no-op.
+
+    We do NOT call medallion_maintenance.maintain() — its MAINT_TABLES/NAMESPACES are IMPORT-TIME module
+    constants; we call mb.optimize/mb.expire directly per configured table instead.
+    """
+    tables = _tick_maint_tables()
+    if not tables:
+        return  # default: no hot tables configured → pure no-op (behaviour unchanged)
+    try:
+        # The maintenance dir is not on sys.path (run_all only adds HERE + HERE/silver); lazy-insert it
+        # so `import _maintenance_base` resolves. Idempotent — a repeated insert is harmless.
+        maint_dir = os.path.join(HERE, "maintenance")
+        if maint_dir not in sys.path:
+            sys.path.insert(0, maint_dir)
+        import _maintenance_base as mb  # noqa: E402 — lazy, only when the hook is enabled
+
+        ttl_ms = int(os.environ.get("SNAPSHOT_TTL_MS", str(604_800_000)))  # 7 days, matches maintain()
+        cat = mb.pyiceberg_catalog()  # a SEPARATE pyiceberg handle — isolates a wedged maintenance conn
+        for namespace, table in tables:
+            # One broken table must not abort the sweep — mirror maintain() :102-110.
+            try:
+                mb.optimize(cat, namespace, table)                # compaction (COW rewrite, skip-safe)
+                mb.expire(cat, namespace, table, ttl_ms)          # snapshot expiry + physical S3 sweep
+            except Exception as exc:  # noqa: BLE001 — isolate one table; converge next tick
+                print(f"[tick-maint] WARN {namespace}.{table}: {exc}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — the ENTIRE hook is best-effort; NEVER fails the transform run
+        print(f"[tick-maint] WARN hot-table maintenance skipped ({type(exc).__name__}): {exc}", flush=True)
+    return None
+
 
 class _SharedConn:
     """Proxy over the single DuckDB connection: forwards everything, no-ops close() (the orchestrator owns
@@ -263,6 +342,11 @@ def main() -> int:
     _patch_connect(shared)
     try:
         fails = run_tier(shared, tier)
+        # Wave 2a: fold hot-table maintenance into the tick. After the gold pass lands all Gold MERGEs
+        # (this is the END of the v4-medallion cron's gold-marts step), compact+expire the configured
+        # hot tables in-process. Best-effort — never touches `fails`/exit code (see _run_tick_maintenance).
+        if tier == "gold":
+            _run_tick_maintenance()
     finally:
         shared._real_close()
 
@@ -424,6 +508,9 @@ def run_one_tick(shared: "_SharedConn") -> int:
             print(f"✗ FAILED: silver_identity_map.py: {exc}", flush=True)
             fails += 1
     fails += run_tier(shared, "gold")
+    # Wave 2a: fold hot-table maintenance into the tick, INSIDE the 910005 leader lock (compaction stays
+    # single-writer among replicas). Best-effort — never touches `fails`/exit code.
+    _run_tick_maintenance()
     return fails
 
 

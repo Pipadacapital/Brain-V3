@@ -143,7 +143,7 @@ def _transitions_sql(lo=None, hi=None) -> str:
 def build(con):
     # Latest-state grain has no NOT-NULL event-time col across the grain; partition by brand bucket +
     # day(first_event_at) (always present for any order with events) — matches the Spark partitioning.
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(first_event_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     lo, hi = incremental_window(con, "silver-shipment", GATED_SOURCE, ts_col="ingested_at")
 

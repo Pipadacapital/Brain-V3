@@ -81,9 +81,10 @@ COLUMNS = [
 
 
 def build(con):
-    # brand-first tenant bucketing + day-partition on the snapshot grain (mirrors the Spark bucket(8,
-    # brand_id), days(snapshot_date); bounds storage, prunes the AS-OF read by day).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id), day(snapshot_date)")
+    # UNPARTITIONED (Wave-1 partition right-sizing): this snapshot mart is S-M class — the old day()
+    # on snapshot_date grew one partition per run-day (unbounded metadata) for no scan win at this
+    # volume. brand_id-first isolation stays on the row predicate; the ${BRAND_PREDICATE} seam prunes reads.
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # The dbt snapshot projection, reproduced verbatim (run-date stamp + pass-through state).
     staged = f"""

@@ -28,6 +28,13 @@ sparkV4:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
     digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
+  # Wave 2a (2026-07-21 keystone incident): fold hot-table maintenance into the transform tick. run_all.py
+  # compacts + expires these two churn-heavy tables IN-PROCESS at the end of every */5 gold pass (same pod,
+  # same run — best-effort, never fails the medallion), so compaction rides the exact MERGE churn that
+  # re-fragments them (~2.4 files/min for silver_collector_event) instead of chasing it from the out-of-phase
+  # */2h silver-hot cron lane. The v4-maintenance `silver-hot` cron lane below is KEPT as a backstop — do NOT
+  # delete it until a week of in-tick evidence proves this out. (Scalar → no Argo list-merge footgun.)
+  tickMaintTables: "silver_collector_event,silver_touchpoint"
   # CORE↔IDENTITY re-split (2026-07-19): prod inherits `identity.enabled: true` + `identitySchedule:
   # */5` + the 1h SILVER_IDENTITY_MAX_SLICE_MS from base values.yaml. The v4-identity cron reuses this
   # sparkV4 image (map-export, duckdb) + streamWorkerImage (identity-resolve) + the nodeSelector /
@@ -51,16 +58,21 @@ sparkV4:
   # GOLD_INCREMENTAL default-on gate (ADR-0016 P1.1). prod inherits the base values.yaml env
   # (GOLD_INCREMENTAL="0" → Gold full-scan). To flip Gold to incremental in prod, uncomment the block
   # below (it REPLACES the base env list, so it must re-declare ICEBERG_CATALOG / SILVER_INCREMENTAL /
-  # WATERMARK_LOOKBACK_SECONDS) — but ONLY after db/iceberg/duckdb/parity_check.py's Gold
-  # incremental-vs-full harness passes in CI/staging: money byte-exact, zero orphan drift. The
-  # first incremental Gold run bootstraps (no watermark → full scan) then windows [watermark, now).
+  # WATERMARK_LOOKBACK_SECONDS — and should carry WATERMARK_MAX_SLICE_SECONDS=3600 which base sets) —
+  # but ONLY after the two-stage gate passes (docs/runbooks/gold-incremental-promotion.md):
+  #   1. the comparator + window-arithmetic unit gate runs on every promotion PR (integration.yml step
+  #      "Gold-incremental parity gate machinery");
+  #   2. tools/ops/gold-parity-check.job.yaml — the LIVE incremental↔full harness — has exited 0 against
+  #      a FROZEN prod catalog: money byte-exact, zero orphan drift, all 22 incremental-safe Gold marts.
+  # The first incremental Gold run bootstraps (no watermark → full scan) then windows [watermark, now).
   # gold_revenue_ledger / gold_cac / gold_contribution_margin stay full-scan regardless (they never
   # pass enabled=GOLD_INCREMENTAL — delete_orphans / multi-source money-safety). FULL_REFRESH=1 recovers.
   # env:
   #   - { name: ICEBERG_CATALOG, value: "rest" }
   #   - { name: SILVER_INCREMENTAL, value: "1" }
-  #   - { name: GOLD_INCREMENTAL, value: "1" }   # ← default-on ONLY after parity_check.py Gold gate passes
+  #   - { name: GOLD_INCREMENTAL, value: "1" }   # ← default-on ONLY after the gold-parity-check.job gate passes
   #   - { name: WATERMARK_LOOKBACK_SECONDS, value: "600" }
+  #   - { name: WATERMARK_MAX_SLICE_SECONDS, value: "3600" }
   # MAINTENANCE LANE SPLIT (2026-07-17 fragmentation incident). The single both-namespaces sweep
   # processed Silver first (alphabetically) and burned its whole deadline on Silver's heavy tables
   # (silver_job_watermark ~7.3k tiny files) → Gold never compacted → gold_customer_360 fragmented to
@@ -88,6 +100,11 @@ sparkV4:
       # statement budget on file-count alone (the stuck-watermark class, PR #317's other half).
       # A TABLES-scoped fast lane compacts just the churn-heavy tables every 2h without re-running
       # Silver's heavy full sweep (the 2026-07-17 starvation lesson). :30 offset — off Gold's :00.
+      # BACKSTOP (Wave 2a, 2026-07-21): the transform tick now ALSO compacts these same tables in-process
+      # after every gold pass (sparkV4.tickMaintTables above). This lane is KEPT as a safety net — the
+      # tick hook is best-effort (a compaction conflict is skipped, converges next tick), so this */2h
+      # sweep guarantees eventual compaction even if the in-tick path is starved. Do NOT delete this lane
+      # until a week of in-tick evidence proves the tick hook holds the file count on its own.
       - name: silver-hot
         namespaces: brain_silver
         tables: silver_collector_event,silver_touchpoint

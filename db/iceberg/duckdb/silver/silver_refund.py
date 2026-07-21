@@ -98,7 +98,7 @@ def _reason_code_sql(reason_expr: str) -> str:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
     #   per_event grain: each gated keystone row → 0..1 silver_refund row via the idempotent MERGE on

@@ -70,7 +70,7 @@ PK = ["brand_id", "cart_date", "currency_code"]
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), cart_date")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # Faithful SQL port of the Spark staged CTE. cart_agg (distinct item_added sessions/day/currency)
     # FULL-keyed against abandoned (distinct abandonment-signal order_ids + per-currency Σ at-risk value),

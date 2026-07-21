@@ -120,7 +120,7 @@ def _attr_credit_available(con) -> bool:
 
 def build(con):
     # brand-first tenant partitioning (mirrors Spark bucket(64, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────────
     #   GRAIN = entity_fold: MANY silver_marketing_spend rows aggregate into ONE

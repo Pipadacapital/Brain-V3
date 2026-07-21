@@ -76,7 +76,7 @@ PK = ["brand_id", "funnel_date"]
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), funnel_date")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # Faithful SQL port of the Spark staged CTE. pv_agg (top-of-funnel session/product-view counts) plus
     # cart (cart_added) plus chk (checkout_started + purchased) are keyed by (brand_id, funnel_date) and

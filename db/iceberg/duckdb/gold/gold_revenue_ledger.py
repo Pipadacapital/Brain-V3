@@ -299,7 +299,7 @@ def _brain_id_v2_join_sql(con, stg_sql: str) -> str:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # Per-brand prepaid horizon: PG when reachable, else the schema DEFAULT (7). The finalization branch
     # LEFT JOINs _horizons and coalesces to DEFAULT_PREPAID_HORIZON, so a missing brand row → default.

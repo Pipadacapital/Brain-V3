@@ -366,7 +366,7 @@ def _supersede_refolded_credits(con, staged_view: str) -> int:
 
 def build(con):
     # brand-first tenant bucketing (mirrors the Spark bucket(8, brand_id) hidden partitioning).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     tp_rows = _read_touchpoints(con)              # REQUIRED source (SystemExit if absent, as Spark)
     basis_rows = _read_recognized_basis(con)      # None → 0 recognized basis → 0 credit rows

@@ -166,7 +166,7 @@ def _register_event_category_udf(con) -> None:
 
 def build(con):
     # brand-first tenant bucketing + day() partition (mirrors Spark bucket(8, brand_id), days(occurred_at)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id), day(occurred_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
     _register_event_category_udf(con)
 
     # composite_order_key transitional seam: if silver_touchpoint lacks the column, synthesize it from

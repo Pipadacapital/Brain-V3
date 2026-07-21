@@ -87,14 +87,17 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- if .Values.probes.enabled }}
-          # Startup gates on /readyz — the epoch build (catalog attach + 65-view apply) must finish
-          # before the replica joins the Service. 60×5s tolerates a cold REST-catalog/S3 start.
+          # Startup gates on /readyz — the epoch build (catalog attach + view apply + PRE-WARM scans
+          # when DUCKDB_SERVING_PREWARM_TABLES is set) must finish before the replica joins the
+          # Service. Values-driven since the pre-warm (2026-07-21): a fragmented hot table warms in
+          # minutes on the FIRST epoch, and a too-small budget kill-loops the pod at exactly the
+          # moment the warm completes (observed live: 300s budget vs ~330s boot).
           startupProbe:
             httpGet:
               path: {{ .Values.probes.readinessPath }}
               port: http
-            failureThreshold: 60
-            periodSeconds: 5
+            failureThreshold: {{ .Values.probes.startupFailureThreshold | default 60 }}
+            periodSeconds: {{ .Values.probes.startupPeriodSeconds | default 5 }}
           readinessProbe:
             httpGet:
               path: {{ .Values.probes.readinessPath }}

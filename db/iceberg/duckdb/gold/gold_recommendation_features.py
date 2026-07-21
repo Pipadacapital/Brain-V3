@@ -134,7 +134,7 @@ def _src_or_empty(con, fq: str, empty_select: str) -> str:
 
 def build(con):
     # brand-first tenant bucketing (mirrors the Spark bucket(64, brand_id) hidden partitioning).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     order_state_src = _src_or_empty(
         con, SILVER_ORDER_STATE,

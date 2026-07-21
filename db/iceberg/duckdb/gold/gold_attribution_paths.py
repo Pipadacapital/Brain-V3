@@ -93,7 +93,7 @@ PK = ["brand_id", "brain_anon_id", "stitched_order_id"]
 
 def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(8, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — GRAIN = entity_fold (CHANGED-ENTITY REFOLD) ──
     #   MANY silver_touchpoint rows aggregate into ONE path row per (brand_id, brain_anon_id,

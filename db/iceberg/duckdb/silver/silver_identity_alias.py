@@ -69,7 +69,7 @@ def _read_edges() -> list[dict]:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     if not NEO4J_URI:
         print("[silver-identity-alias] NEO4J_URI not set — created EMPTY table (data-thin path).", flush=True)

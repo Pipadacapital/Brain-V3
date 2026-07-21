@@ -99,7 +99,7 @@ COLUMNS = [
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1 — Gold tier, INDEPENDENT of SILVER_INCREMENTAL) ──
     #   GRAIN = entity_fold: MANY silver_customer rows aggregate into ONE (brand_id, cohort_month) cohort

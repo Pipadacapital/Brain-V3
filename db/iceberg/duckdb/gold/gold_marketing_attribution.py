@@ -92,7 +92,7 @@ def _source_exists(con) -> bool:
 
 def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(8, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # If the credit ledger is absent, the empty target is already created — nothing to MERGE. Exit clean.
     if not _source_exists(con):

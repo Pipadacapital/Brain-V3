@@ -27,7 +27,9 @@ THE FOLDED TRANSFORM CHAIN (dbt → Spark → DuckDB, inlined so this one job re
 GRAIN : exactly 1 row per (brand_id, brain_anon_id, touch_seq). PK = those three columns.
 NO MONEY: touchpoints are not monetary — there is NO money column (dbt asserts the same). Only
   hashed/anon identifiers ride through (brain_anon_id is an opaque pixel anon id, never raw PII).
-ISOLATION: brand_id first + bucket() partition anchor.
+ISOLATION: brand_id first (row predicate + ${BRAND_PREDICATE} serving seam; table is UNPARTITIONED after
+  Wave-1 right-sizing — the old bucket(256)×day(occurred_at) cross-product floored ~700 daily partitions
+  and re-fragmented ~2.4 files/min under the */5 MERGE churn on a 60MB keystone-class mart).
 IDEMPOTENT / REPLAY-SAFE: MERGE on (brand_id, brain_anon_id, touch_seq) — re-run yields identical rows.
 
 ENTITY-INCREMENTAL → ONE FULL PASS (parity note): the Spark job is entity-incremental (re-fold only the
@@ -278,7 +280,7 @@ def _order_state_available(con) -> bool:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
     _register_murmur_udf(con)
     has_stitch = _attach_stitch(con)
     has_order = _order_state_available(con)

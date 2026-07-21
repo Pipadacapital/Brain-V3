@@ -85,7 +85,7 @@ PK = ["brand_id", "behavior_date", "page_type"]
 
 def build(con):
     # brand-first tenant partitioning + per-day anchor (mirrors Spark bucket(64, brand_id), behavior_date).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), behavior_date")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ────────────────────────
     #   GRAIN = entity_fold: MANY silver_page_view rows aggregate into ONE (brand_id, behavior_date,

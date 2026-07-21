@@ -107,7 +107,7 @@ def _latest_per_order(inner_sql: str, cols: list[str]) -> str:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD via CHANGED-ENTITY REFOLD. ─────
     #   GRAIN=entity_fold: MANY gated-keystone rows across THREE signals (COD orders / RTO predictions /

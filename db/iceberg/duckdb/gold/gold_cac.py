@@ -80,7 +80,7 @@ COLUMNS = [
 
 def build(con):
     # brand-first tenant partitioning (mirrors Spark bucket(8, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── new_customers: newly-acquired customers per brand × acquisition_month × currency ──
     new_customers = f"""

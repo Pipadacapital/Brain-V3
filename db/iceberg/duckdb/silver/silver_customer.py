@@ -102,7 +102,7 @@ ORDER_TS = "(updated_at AT TIME ZONE 'UTC')"
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ──────────────────────
     #   GRAIN = entity_fold: MANY silver_order_state rows aggregate into ONE (brand_id, brain_id) customer

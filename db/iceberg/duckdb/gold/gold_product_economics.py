@@ -127,7 +127,7 @@ def _lines_exists(con) -> bool:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     if not _econ_exists(con):
         print("[gold_product_economics] gold_order_economics absent — writing empty mart", flush=True)

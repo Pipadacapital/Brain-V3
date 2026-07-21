@@ -164,7 +164,7 @@ def _ltv_cte(con) -> str:
 
 def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(16, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(16, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-BRAND REFOLD ─────────────────────────
     #   GRAIN = entity_fold: MANY silver_touchpoint rows fold — via each visitor's FIRST-touch utm — into

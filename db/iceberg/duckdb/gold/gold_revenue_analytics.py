@@ -83,7 +83,7 @@ COLUMNS = [
 
 def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(256, brand_id) hidden partitioning).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ─────────────────────────
     #   GRAIN = entity_fold: MANY silver_order_state rows aggregate into the mart's (brand_id, period_month,

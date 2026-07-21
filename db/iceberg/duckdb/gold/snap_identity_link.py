@@ -80,7 +80,7 @@ COLUMNS = [
 def build(con):
     # Brand-first tenant bucketing + day-partition on the snapshot grain (mirrors the Spark bucket(8,
     # brand_id), days(snapshot_date)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id), day(snapshot_date)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # The snapshot projection: run-date stamp + pass-through link state.
     staged = f"""

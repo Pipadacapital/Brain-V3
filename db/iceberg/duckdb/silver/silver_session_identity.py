@@ -179,7 +179,7 @@ def _register_salts(con, salts: dict) -> None:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="brand_id, event_date")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     brands = _enabled_brands(con)
     if not brands:

@@ -157,7 +157,7 @@ _STRING_PROPS = [
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
     #   PER-EVENT grain: each gated keystone row → 0..1 spend row via the idempotent MERGE on

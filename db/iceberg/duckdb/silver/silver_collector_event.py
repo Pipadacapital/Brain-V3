@@ -192,7 +192,12 @@ def _register_installs(con) -> bool:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
+    # UNPARTITIONED (Wave-1 partition right-sizing): the keystone is ~60MB/158k rows — well under the
+    # ~100MB single-partition rule. The retired bucket(256, brand_id) × day(occurred_at) spec floored
+    # ~700 daily partitions over the multi-year backfill spread and re-fragmented ~2.4 files/min under
+    # the */5 medallion MERGE churn (the cold-connection file-walk that cost ~200ms/file). brand_id-first
+    # isolation stays on the row predicate + the ${BRAND_PREDICATE} serving seam — spec only, no data move.
+    ensure_table(con, TARGET, COLUMNS_SQL)
     _register_udfs(con)
     _register_installs(con)
 

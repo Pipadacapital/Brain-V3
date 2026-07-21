@@ -75,7 +75,7 @@ COLUMNS = [
 
 def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(64, brand_id) hidden partitioning).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # Cap of co-purchase partners kept per product_a (bounds the n^2 pair fan-out). 0 → no cap. Verbatim
     # to the Spark TOP_PAIRS_PER_PRODUCT env (default 50) + `WHERE rn <= {top_n}` rank filter.

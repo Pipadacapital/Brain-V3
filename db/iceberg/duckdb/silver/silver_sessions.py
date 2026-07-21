@@ -79,7 +79,7 @@ COLUMNS = [
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) ─────────────────────────────────────────────
     #   GRAIN = entity_fold: MANY silver_touchpoint per-touch rows sessionize (GROUP BY) into ONE

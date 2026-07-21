@@ -72,7 +72,7 @@ def _read_customers() -> list[dict]:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     if not NEO4J_URI:
         print("[silver-customer-identity] NEO4J_URI not set — created EMPTY table (data-thin path).", flush=True)

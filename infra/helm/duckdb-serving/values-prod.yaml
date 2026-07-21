@@ -33,6 +33,19 @@ autoscaling:
   maxReplicas: 4
   targetCPUUtilizationPercentage: 60
 
+# EPOCH PRE-WARM (2026-07-21 keystone cold-scan incident): the duckdb-iceberg EXECUTE phase pays
+# ~200ms/data-file on a COLD connection (keystone measured: 289s cold vs 2s warm; EXPLAIN/bind is
+# 3.9s — the cost is the per-file opens), and every epoch rotation is a new cold connection — so a
+# churn-heavy table blew the statement watchdog on EVERY read, uninterruptibly (the silver-identity
+# stuck-watermark chain). Listed tables are scan-warmed on the fresh epoch BEFORE it goes live; the
+# old epoch serves during the warm, so rotation stays invisible. Warmed via serving VIEW names (no
+# catalog-alias coupling). NOTE: a fresh pod's FIRST epoch also warms → /readyz turns ready minutes
+# later on a fragmented keystone; rolling updates keep old pods serving meanwhile, and the
+# silver-hot maintenance lane (same incident, cronworkflows values) bounds the file count.
+extraEnv:
+  - name: DUCKDB_SERVING_PREWARM_TABLES
+    value: "brain_serving.mv_silver_collector_event,brain_serving.mv_silver_touchpoint"
+
 # Real AWS S3 + REST catalog reached via the pod IRSA role — no static keys, no MinIO endpoint.
 iceberg:
   catalog: iceberg

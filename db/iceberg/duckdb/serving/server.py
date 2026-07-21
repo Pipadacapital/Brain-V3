@@ -57,6 +57,10 @@ class QueryRequest(BaseModel):
     """The single-round-trip query body. SQL arrives FINAL (params substituted client-side)."""
 
     sql: str
+    # Optional per-request watchdog raise (the TS adapter always sends its queryTimeoutMs here;
+    # previously silently DROPPED — the silver-identity batch lane needs > the 25s OLTP default).
+    # Engine-side clamp_timeout_ms bounds it to [1s, STATEMENT_TIMEOUT_MAX_MS]; absent → default.
+    timeout_ms: int | None = None
 
 
 def _error(status: int, message: str) -> JSONResponse:
@@ -68,7 +72,7 @@ def _error(status: int, message: str) -> JSONResponse:
 @app.post("/v1/query")
 def v1_query(req: QueryRequest):
     try:
-        description, rows = ENGINE.query(req.sql)
+        description, rows = ENGINE.query(req.sql, timeout_ms=req.timeout_ms)
     except QueryRejected as exc:
         return _error(400, str(exc))
     except (EngineNotReady, EngineSaturated) as exc:

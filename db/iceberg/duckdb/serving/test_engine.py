@@ -47,6 +47,26 @@ needs_stack = pytest.mark.skipif(not STACK, reason="Iceberg REST catalog unreach
 # ── the SELECT/WITH-only guard (pure unit) ─────────────────────────────────────────────────────
 
 
+# ── the per-request timeout clamp (pure unit) ──────────────────────────────────────────────────
+
+
+def test_clamp_timeout_defaults_when_absent_or_invalid():
+    # Absent / invalid / non-positive → the OLTP default, never a disabled watchdog.
+    assert engine.clamp_timeout_ms(None) == engine.STATEMENT_TIMEOUT_MS
+    assert engine.clamp_timeout_ms("nope") == engine.STATEMENT_TIMEOUT_MS  # type: ignore[arg-type]
+    assert engine.clamp_timeout_ms(0) == engine.STATEMENT_TIMEOUT_MS
+    assert engine.clamp_timeout_ms(-5_000) == engine.STATEMENT_TIMEOUT_MS
+
+
+def test_clamp_timeout_honors_raise_within_cap():
+    # A batch caller may raise its budget (silver-identity keystone reads)…
+    assert engine.clamp_timeout_ms(120_000) == 120_000
+    # …the floor keeps a pathological tiny budget sane…
+    assert engine.clamp_timeout_ms(1) == 1_000
+    # …and the STATEMENT_TIMEOUT_MAX_MS cap is the single-query-ceiling backstop.
+    assert engine.clamp_timeout_ms(10**9) == engine.STATEMENT_TIMEOUT_MAX_MS
+
+
 def test_guard_accepts_select_and_with():
     guard_statement("SELECT 1")
     guard_statement("  select brand_id FROM brain_serving.mv_gold_revenue_ledger WHERE brand_id = ?")

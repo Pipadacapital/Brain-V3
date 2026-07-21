@@ -1,0 +1,84 @@
+# Verify + finish the medallion flush — one-off Job (companion to flush-all-medallion.job.yaml).
+#
+# WHY: the first flush pass reported partial residue on Silver/Gold — but those numbers came from
+# the snapshot-summary `total-records`, which pyiceberg may write inaccurately on delete commits.
+# Ground truth is the LIVE DATA FILE count (scan().plan_files(), pure metadata). This job counts
+# files per table, re-runs delete(AlwaysTrue()) on anything non-empty, and re-counts. Exit 0 only
+# when every table in brain_bronze/brain_silver/brain_gold has ZERO live data files.
+#
+# RUN:   kubectl --context brain-prod-ssm apply -f tools/ops/verify-flush-medallion.job.yaml
+# WATCH: kubectl --context brain-prod-ssm -n argo logs -f job/verify-flush-medallion
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify-flush-medallion
+  namespace: argo
+  labels:
+    app.kubernetes.io/part-of: brain
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      serviceAccountName: brain-jobs   # IRSA — same SA the v4-medallion cron runs with
+      restartPolicy: Never
+      nodeSelector:
+        brain.platform/pool: streaming
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: verify-flush-medallion
+          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: core-env
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { memory: "2Gi" }
+          command: ["python", "-c"]
+          args:
+            - |
+              import sys
+              sys.path.insert(0, "/opt/brain/duckdb")
+              sys.path.insert(0, "/opt/brain/duckdb/maintenance")
+              from _maintenance_base import pyiceberg_catalog
+              from pyiceberg.expressions import AlwaysTrue
+              def nfiles(t):
+                  return sum(1 for _ in t.scan().plan_files())   # metadata-only: live data files
+              cat = pyiceberg_catalog()
+              bad = 0
+              for ns in ["brain_bronze", "brain_silver", "brain_gold"]:
+                  for tup in cat.list_tables(ns):
+                      fq = f"{ns}.{tup[-1]}"
+                      try:
+                          t = cat.load_table(fq)
+                          f0 = nfiles(t)
+                          if f0 > 0:
+                              t.delete(delete_filter=AlwaysTrue())
+                              t.refresh()
+                              f1 = nfiles(t)
+                          else:
+                              f1 = 0
+                          tag = "EMPTY OK" if f1 == 0 else f"STILL {f1} FILES XX"
+                          if f1 != 0:
+                              bad += 1
+                          print(f"{fq}: files {f0} -> {f1}  {tag}", flush=True)
+                      except Exception as exc:
+                          bad += 1
+                          print(f"{fq}: ERROR {exc}", flush=True)
+              print(f"=== verify complete ({bad} non-empty) ===", flush=True)
+              if bad:
+                  sys.exit(1)

@@ -126,4 +126,4 @@ def build(con):
 
 
 if __name__ == "__main__":
-    run_job("silver-identity-alias", build, target_table=TABLE)
+    run_job("silver-identity-alias", build, target_table=TABLE, source_table=None)  # A3: graph projection, no keystone pin

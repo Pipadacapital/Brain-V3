@@ -236,6 +236,41 @@ def test_create_function_idempotent_across_ticks():
     assert "sr_murmur_hash3_32" in fc._fns
 
 
+def test_refresh_shared_swaps_connection_and_resets_udfs(monkeypatch):
+    # Wave 3: _refresh_shared must swap a FRESH connection under the same proxy, close the old one, and
+    # reset the UDF registry (a fresh connection has no registered functions) — so the next tick reads
+    # current Iceberg metadata and re-registers cleanly. The proxy IDENTITY is preserved (so
+    # _patch_connect's closure keeps returning the same object without re-patching).
+    old = _FakeCon()
+    shared = run_all._SharedConn(old)
+    shared.create_function("sr_murmur_hash3_32")
+    assert "sr_murmur_hash3_32" in object.__getattribute__(shared, "_registered")
+
+    fresh = _FakeCon()
+    monkeypatch.setattr(run_all._catalog, "connect", lambda: fresh)
+    run_all._refresh_shared(shared)
+
+    assert object.__getattribute__(shared, "_con") is fresh          # swapped to the new connection
+    assert old.closed is True                                        # old connection closed
+    assert object.__getattribute__(shared, "_registered") == set()   # UDF registry reset for the fresh con
+    # the proxy re-registers on the fresh connection without raising
+    shared.create_function("sr_murmur_hash3_32")
+    assert "sr_murmur_hash3_32" in fresh._fns
+
+
+def test_refresh_shared_keeps_live_con_when_old_close_errors(monkeypatch):
+    # A stale-connection close error must NOT strand the tick — the fresh connection is already swapped in.
+    class _BadCloseCon(_FakeCon):
+        def close(self):
+            raise RuntimeError("stale handle")
+
+    shared = run_all._SharedConn(_BadCloseCon())
+    fresh = _FakeCon()
+    monkeypatch.setattr(run_all._catalog, "connect", lambda: fresh)
+    run_all._refresh_shared(shared)  # must not raise
+    assert object.__getattribute__(shared, "_con") is fresh
+
+
 def test_healthz_handler_state_machine():
     # The /healthz endpoint returns 200 while alive+running, 503 once stopping or dead. We exercise the
     # decision the handler makes without binding a real socket.

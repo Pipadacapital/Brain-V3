@@ -101,6 +101,21 @@ LEADER_LOCK_TRANSFORM_WORKER = int(os.environ.get("TRANSFORM_WORKER_LOCK_KEY", "
 SILVER_IDENTITY_CMD = os.environ.get(
     "SILVER_IDENTITY_CMD", "pnpm --filter @brain/stream-worker run job:silver-identity"
 )
+# ── Wave 3 (2026-07-22): per-tick catalog refresh — the fix for the 2026-07-20 resident revert ───────
+# WHY THE RESIDENT WAS SHELVED: it held ONE warm DuckDB+Iceberg attach for the process lifetime, so its
+# cached snapshot metadata (file list, manifest URIs) went STALE as Kafka-Connect appended new Bronze
+# snapshots and maintenance expired+physically-deleted the old data files — a later tick's scan then tried
+# to open files that no longer existed → 400. The cold */5 cron never hit this (fresh attach per run).
+# THE FIX, now affordable: rebuild the shared connection at the TOP of every tick (mirrors duckdb-serving's
+# 60s epoch rotation). This was too expensive pre-Wave-1 (cold read of the 733-file keystone = ~289s); AFTER
+# the repartition (keystone → 1-3 files) a cold attach+read is seconds, so a fresh connection per 45s tick
+# is cheap AND can never carry stale file handles. The resident's remaining edge over the cron is the tight
+# cadence (45s vs */5+run-time) and the held health/leader/UDF state — NOT connection reuse, which was the
+# bug. Default ON (it is the correctness fix); RESIDENT_REFRESH_PER_TICK=0 restores the old warm-hold for
+# an A/B or a low-churn cluster that never needed it.
+RESIDENT_REFRESH_PER_TICK = os.environ.get("RESIDENT_REFRESH_PER_TICK", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 # ── CORE-ONLY switch (CORE↔IDENTITY re-split, 2026-07-19) ───────────────────────────────────────────
 # The identity lane (Neo4j resolve → identity-owned Silver marts) was DECOUPLED out of the blocking core
@@ -267,6 +282,26 @@ def _patch_connect(shared: "_SharedConn") -> None:
     """Route every job's `_base.connect()` at the shared warm connection. Idempotent — safe to call
     once per single-shot run or once at resident startup."""
     _base.connect = lambda: shared
+
+
+def _refresh_shared(shared: "_SharedConn") -> None:
+    """Wave 3: swap a FRESH `_catalog.connect()` under the same `_SharedConn` proxy so the next tick
+    reads current Iceberg snapshot metadata (no stale file handles — the 2026-07-20 revert cause).
+
+    Swaps the inner `_con` in place (so `_patch_connect`'s closure — which returns `shared` — keeps
+    working without re-patching) and resets the per-connection UDF registry (a fresh connection has no
+    registered functions; jobs re-register on their pass, exactly as on a cold single-shot run). The old
+    connection is closed best-effort AFTER the swap so a close error can never strand the tick without a
+    live connection. Attach failure PROPAGATES: the caller runs it inside the tick's try/except, so a
+    transient catalog blip is logged as a failed tick and retried next interval — never crashes the loop."""
+    fresh = _catalog.connect()  # raises on catalog-down → caught by the tick try/except (loop survives)
+    old = object.__getattribute__(shared, "_con")
+    object.__setattr__(shared, "_con", fresh)
+    object.__setattr__(shared, "_registered", set())
+    try:
+        old.close()
+    except Exception:  # noqa: BLE001 — the fresh connection is already live; a stale-close error is moot
+        pass
 
 
 def run_tier(shared: "_SharedConn", tier: str) -> int:
@@ -671,6 +706,12 @@ def run_resident() -> int:
             try:
                 if leader.try_acquire():
                     ran_as_leader = True
+                    # Wave 3: rebuild the attach at the top of every tick so this tick reads CURRENT
+                    # snapshot metadata — never a stale file handle from a snapshot Connect/maintenance
+                    # has since expired (the 2026-07-20 revert cause). Cheap post-repartition (1-3 file
+                    # keystone). Inside the tick try/except: a catalog blip → failed tick, retried next.
+                    if RESIDENT_REFRESH_PER_TICK:
+                        _refresh_shared(shared)
                     fails = run_one_tick(shared)
                     state.note_tick()
                     dt = time.time() - t0

@@ -148,7 +148,7 @@ def _spend_cte(con) -> str:
 
 def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(64, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # The credit ledger is the REQUIRED attribution source. Absent → the empty target is already created;
     # nothing to MERGE. Exit clean (parity: both sides row-count 0).

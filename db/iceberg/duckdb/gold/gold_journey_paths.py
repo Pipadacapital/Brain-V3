@@ -217,7 +217,7 @@ def _build_sql(refold_filter: str = "") -> str:
 
 def build(con):
     # brand-first tenant partitioning (mirrors the Spark bucket(8, brand_id)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY (per-brand) REFOLD ─────────────
     #   GRAIN = entity_fold: MANY silver_touchpoint rows fold, per (brand_id, brain_anon_id) journey, into a

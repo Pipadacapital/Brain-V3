@@ -59,7 +59,7 @@ COLUMNS = [
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(occurred_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1). per_event grain over the gated keystone → windowing
     # the source read is safe. Default OFF → (None, None) → read_gated_events_sql omits the predicate → full

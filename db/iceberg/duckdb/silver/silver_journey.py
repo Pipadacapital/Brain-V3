@@ -138,7 +138,7 @@ def _gated_utc(event_types, *, lo=None, hi=None):
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id), day(first_touch_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; SILVER_INCREMENTAL=1) — ENTITY-FOLD via CHANGED-KEY REFOLD ──────────
     #   GRAIN = entity_fold: MANY source touches sessionize/aggregate into ONE (brand_id, brain_anon_id)

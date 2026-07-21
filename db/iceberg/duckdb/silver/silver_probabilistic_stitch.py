@@ -298,7 +298,7 @@ def _score(con, feats):
 
 
 def build(con):
-    ensure_table(con, TARGET, _COLUMNS, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, _COLUMNS)
 
     feats = _feature_frame(con)
     scored = _score(con, feats)

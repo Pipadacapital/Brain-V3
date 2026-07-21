@@ -131,13 +131,16 @@ connectors:
     transforms.coords.offset.field: kafka_offset
     transforms.coords.timestamp.field: kafka_timestamp
     iceberg.tables: brain_bronze.collector_events_connect
-    # AUD-IMPL-025: partition NEW auto-creates of the collector table by day(kafka_timestamp) — the
-    # sink's PHYSICAL InsertField column — so Spark's incremental watermark AND the Trino health
-    # reads get partition pruning from day one in a fresh env. AUTO-CREATE ONLY: the already-created
-    # prod table is migrated by the one-time db/iceberg/spark/bronze_collector_partition_migrate.py
-    # (metadata-only ALTER + parity check; runbook-gated). Collector-lane only — the raw lanes carry
-    # NO kafka_timestamp (no InsertField transform), a default-partition-by would break their creates.
-    iceberg.table.brain_bronze.collector_events_connect.partition-by: "day(kafka_timestamp)"
+    # Wave-1 partition right-sizing (was day(kafka_timestamp), AUD-IMPL-025): partition NEW auto-creates
+    # of the collector table by MONTH(kafka_timestamp) — the sink's PHYSICAL InsertField column. Bronze
+    # accrues indefinitely, so it needs SOME temporal partition to stay <100MB/partition, but day() over
+    # a multi-year spread floored ~700 daily partitions (the same pathology Silver hit); month() bounds
+    # it to ~12 partitions/yr while keeping each partition well under the target file size at current
+    # volume. AUTO-CREATE ONLY (the LIVE prod table is UNPARTITIONED and stays as-is — it was never
+    # day-migrated; the one-time Spark migrate script was deleted with the Spark tree, so a fresh env is
+    # the only place this spec applies). Collector-lane only — the raw lanes carry NO kafka_timestamp
+    # (no InsertField transform), a default-partition-by would break their creates.
+    iceberg.table.brain_bronze.collector_events_connect.partition-by: "month(kafka_timestamp)"
   # ADR-0016 (2026-07-18): the 9 <lane>_raw_connect sink connectors are RETIRED — connectors emit
   # canonical events to the collector lane, so the <lane>.raw.v1 topics never received data and
   # their shadow-parity normalize jobs were dead-ends. Only the collector sink remains.

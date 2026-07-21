@@ -1,0 +1,212 @@
+# One-off medallion REPARTITION — evolve each listed table's partition spec to UNPARTITIONED (or a new
+# coarser temporal spec) and REWRITE its data into that spec in ONE commit (a single manifest — that is
+# the whole point). This is the data-side companion to the Wave-1 partition right-sizing: the transform
+# jobs now CREATE tables unpartitioned (ensure_table's IF NOT EXISTS never reconciles an existing spec),
+# so the ALREADY-CREATED live tables keep their old day()/bucket() spec + fragmented layout until this
+# Job migrates them.
+#
+# WHY ONE COMMIT: the live keystone floored ~700 day-partitions that re-fragment ~2.4 files/min under the
+# */5 MERGE churn; every extra data file costs ~200ms on the cold-connection metadata walk. Evolving the
+# spec alone changes nothing for existing files — they stay in their old partitions. A single whole-table
+# overwrite(AlwaysTrue()) reads every surviving row (DuckDB honours MoR delete files) and rewrites it into
+# ONE unpartitioned manifest, collapsing the file count in a single atomic Iceberg commit. Compaction-only
+# (no row values change) → NO parity risk. Afterward the pre-rewrite snapshots (still referencing the old
+# fragmented files) are expired so the bytes actually leave S3.
+#
+# TABLE LIST is env-driven (REPARTITION_TABLES = comma-separated <namespace>.<table>). Each entry may
+# carry an optional new spec after a colon: "brain_silver.silver_touchpoint" (→ unpartitioned) or
+# "brain_bronze.collector_events_connect:month(kafka_timestamp)" (→ evolve to a coarser temporal spec).
+# Per-table failure isolation (one bad table never aborts the rest); loud per-table logging.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────
+# RUNBOOK
+#   RUN THIS DURING A MEDALLION GOLD WINDOW OR WITH THE WRITER PAUSED. The overwrite is optimistic-
+#   concurrency-safe (bounded retry re-reads survivors on CommitFailedException) but a concurrent
+#   Silver/Gold MERGE or a Kafka-Connect Bronze append racing the rewrite just wastes retries. Cleanest:
+#     - Silver/Gold marts: run between medallion ticks (the v4-medallion cron is */5; a table's own
+#       MERGE only touches it for a few seconds per tick — apply this in the idle gap), OR suspend the
+#       cron:  kubectl --context brain-prod-ssm -n argo patch cronworkflow v4-medallion \
+#                --type merge -p '{"spec":{"suspend":true}}'   (un-suspend after).
+#     - collector_events_connect (Bronze): PAUSE the Kafka-Connect sink first (compaction has raced
+#       Connect commits into CommitFailedException before) —
+#         curl -s -X PUT http://<connect>:8083/connectors/iceberg-bronze-collector/pause
+#       resume with .../resume after the Job completes.
+#
+#   APPLY:  kubectl --context brain-prod-ssm apply -f tools/ops/repartition-medallion.job.yaml
+#   WATCH:  kubectl --context brain-prod-ssm -n argo logs -f job/repartition-medallion
+#
+#   VERIFY (per table, from a duckdb-serving or maintenance pod / python -c against the catalog):
+#     from _maintenance_base import pyiceberg_catalog
+#     t = pyiceberg_catalog().load_table("brain_silver.silver_collector_event")
+#     # spec is now empty (unpartitioned) — expect: fields=()
+#     print(t.spec())
+#     # ONE data file (or a small handful for a very large table) — expect a tiny count, not ~700+:
+#     print(len([f for f in t.inspect.files().to_pylist() if f["content"] == 0]))
+#     # row count is unchanged (parity — compaction never drops rows):
+#     print(t.current_snapshot().summary.get("total-records"))
+#   Cross-check the serving row count is identical before/after via brain_serving.mv_* over the mart.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: repartition-medallion
+  namespace: argo
+  labels:
+    app.kubernetes.io/part-of: brain
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  # NO activeDeadlineSeconds — a whole-table rewrite of the keystone-class marts must not be SIGTERM'd
+  # mid-commit; run it in a quiet window and let it finish.
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      serviceAccountName: brain-jobs   # IRSA — same SA the v4-medallion cron + flush-all run with
+      restartPolicy: Never
+      nodeSelector:
+        brain.platform/pool: streaming
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: repartition-medallion
+          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: core-env       # ICEBERG_REST_URI + ICEBERG_WAREHOUSE + AWS_* (IRSA chain)
+          env:
+            # Comma-separated <namespace>.<table>[:<new-partition-spec>]. Default = the full Wave-1 set:
+            # every day()/date-partitioned Silver/Gold mart + the keystone/touchpoint → UNPARTITIONED.
+            # (Bucket-only marts are left out by default — their fan-out is already ≈#brands; add them
+            # here explicitly if you want them collapsed too. collector_events_connect is likewise NOT in
+            # the default set — the live Bronze table is intentionally left unpartitioned already.)
+            - name: REPARTITION_TABLES
+              value: >-
+                brain_silver.silver_collector_event,brain_silver.silver_touchpoint,
+                brain_silver.silver_page_view,brain_silver.silver_cart_event,
+                brain_silver.silver_checkout_signal,brain_silver.silver_form_submission,
+                brain_silver.silver_fulfillment,brain_silver.silver_payment,
+                brain_silver.silver_refund,brain_silver.silver_cod_rto,
+                brain_silver.silver_settlement,brain_silver.silver_marketing_spend,
+                brain_silver.silver_campaign,brain_silver.silver_journey,
+                brain_silver.silver_return,brain_silver.silver_shipment,
+                brain_silver.silver_session_identity,
+                brain_gold.gold_journey_events,brain_gold.gold_journey,
+                brain_gold.snap_order_state,brain_gold.snap_attribution_credit,
+                brain_gold.snap_identity_link,brain_gold.gold_funnel,
+                brain_gold.gold_conversion_feedback,brain_gold.gold_behavior,
+                brain_gold.gold_abandoned_cart
+            # Expire pre-rewrite snapshots after each successful rewrite so the old fragmented files leave
+            # S3. 0 → immediate (cutoff = now); the current snapshot is always branch-protected.
+            - name: EXPIRE_AFTER_MS
+              value: "0"
+          resources:
+            requests: { cpu: "2", memory: "6Gi" }
+            limits:   { cpu: "3", memory: "8Gi" }
+          command: ["python", "-c"]
+          args:
+            - |
+              import os
+              import sys
+              sys.path.insert(0, "/opt/brain/duckdb")
+              sys.path.insert(0, "/opt/brain/duckdb/maintenance")
+              import _maintenance_base as mb
+              from pyiceberg.expressions import AlwaysTrue
+
+              def meta_rows(t):
+                  # Row count from snapshot METADATA (summary total-records) — never a scan (a full
+                  # scan().to_arrow() loads the whole table into RAM). -1 → no snapshot yet.
+                  s = t.current_snapshot()
+                  return int(s.summary.get("total-records", -1)) if s and s.summary else 0
+
+              def data_files(t):
+                  try:
+                      return sum(1 for f in t.inspect.files().to_pylist() if f["content"] == 0)
+                  except Exception:  # empty current snapshot → inspect.files() raises
+                      return 0
+
+              def parse_spec(spec_str):
+                  # SQL partition-spec string → (source_column, pyiceberg-transform-string) for add_field.
+                  #   "month(kafka_timestamp)" → ("kafka_timestamp", "month")   (temporal/identity: last arg)
+                  #   "bucket(16, brand_id)"   → ("brand_id", "bucket[16]")     (N moves into [] — the form
+                  #   "truncate(10, name)"     → ("name", "truncate[10]")        pyiceberg.parse_transform wants)
+                  # UNPARTITIONED specs never reach here (empty → skipped by the caller).
+                  transform, _, rest = spec_str.strip().partition("(")
+                  transform = transform.strip()
+                  args = [p.strip() for p in rest.rstrip(")").split(",")]
+                  col = args[-1]  # source column is always the LAST arg in every spec form we emit
+                  if transform in ("bucket", "truncate"):
+                      return col, f"{transform}[{args[0]}]"  # bucket(N, col) → bucket[N]
+                  return col, transform  # day/month/year/hour/identity — no numeric parameter
+
+              raw = os.environ.get("REPARTITION_TABLES", "").replace("\n", " ")
+              entries = [e.strip() for e in raw.split(",") if e.strip()]
+              expire_ms = int(os.environ.get("EXPIRE_AFTER_MS", "0"))
+              cat = mb.pyiceberg_catalog()
+
+              print(f"=== repartition-medallion: {len(entries)} table(s) → {entries}", flush=True)
+              failures = 0
+              for entry in entries:
+                  # <namespace>.<table>[:<new-spec>]  — new-spec omitted ⇒ UNPARTITIONED.
+                  ident_part, sep, new_spec = entry.partition(":")
+                  ns, _, table = ident_part.partition(".")
+                  new_spec = new_spec.strip()
+                  fq = mb.ident(ns, table)
+                  try:
+                      tbl = cat.load_table(fq)
+                      old_spec = str(tbl.spec())
+                      before_rows, before_files = meta_rows(tbl), data_files(tbl)
+                      print(f"--- {fq}: spec={old_spec} rows={before_rows} data_files={before_files} → "
+                            f"{'UNPARTITIONED' if not new_spec else new_spec}", flush=True)
+
+                      # 1) Evolve the partition spec. Remove EVERY existing field (→ unpartitioned), then
+                      #    add the new one if a target spec was given. update_spec() is metadata-only —
+                      #    existing files stay in their old partitions until the rewrite below.
+                      existing = [pf.name for pf in tbl.spec().fields]
+                      if existing or new_spec:
+                          with tbl.update_spec() as us:
+                              for name in existing:
+                                  us.remove_field(name)
+                              if new_spec:
+                                  col, transform = parse_spec(new_spec)
+                                  us.add_field(col, transform)
+                          tbl = cat.load_table(fq)
+                          print(f"    spec evolved → {tbl.spec()}", flush=True)
+                      else:
+                          print("    already unpartitioned — no spec change; rewriting layout only", flush=True)
+
+                      # 2) Rewrite ALL data into the new spec in ONE atomic commit — a single manifest.
+                      #    _overwrite_with_retry reads the surviving rows through DuckDB (honours MoR
+                      #    delete files) and overwrite(AlwaysTrue()) replaces every file; bounded retry
+                      #    re-reads survivors on a concurrent-commit conflict so nothing is clobbered.
+                      mb._overwrite_with_retry(cat, ns, table, AlwaysTrue(), "TRUE")
+                      tbl = cat.load_table(fq)
+                      after_rows, after_files = meta_rows(tbl), data_files(tbl)
+                      parity = "OK" if after_rows == before_rows else f"!! ROW DRIFT {before_rows}->{after_rows}"
+                      print(f"    rewritten: data_files {before_files} -> {after_files}, rows {after_rows} "
+                            f"(parity {parity})", flush=True)
+                      if after_rows != before_rows:
+                          failures += 1
+
+                      # 3) Expire the pre-rewrite snapshots so the old fragmented files leave S3 (expire()
+                      #    carries the mandatory physical-file sweep — pyiceberg expire is metadata-only).
+                      mb.expire(cat, ns, table, expire_ms)
+                      print(f"    expired pre-rewrite snapshots (older_than={expire_ms}ms)", flush=True)
+                  except Exception as exc:  # per-table isolation — one bad table never aborts the rest
+                      failures += 1
+                      print(f"    ERROR {fq}: {type(exc).__name__}: {exc}", flush=True)
+
+              print(f"=== repartition complete ({failures} failure(s)) ===", flush=True)
+              if failures:
+                  sys.exit(1)

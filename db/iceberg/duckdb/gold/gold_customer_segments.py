@@ -92,7 +92,7 @@ PK = ["brand_id", "segment_type", "segment"]
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(4, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # The value-tier + lifecycle CASE strings — the EXACT expression strings the Spark job executes
     # (imported from the shared source of truth, so thresholds are byte-identical).

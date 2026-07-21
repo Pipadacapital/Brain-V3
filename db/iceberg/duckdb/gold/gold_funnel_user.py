@@ -102,7 +102,7 @@ ANON = f"json_extract_string(payload, '$.properties.brain_anon_id')"
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # Faithful SQL port of the Spark staged CTE chain.
     #   events    — pixel events with a non-null extracted brain_anon_id (occurred_at → UTC-naive).

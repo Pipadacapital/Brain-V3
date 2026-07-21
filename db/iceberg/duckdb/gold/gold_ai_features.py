@@ -106,7 +106,7 @@ def _table_exists(con, fq: str) -> bool:
 
 def build(con):
     # brand-first tenant bucketing (mirrors the Spark bucket(64, brand_id) hidden partitioning).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── order rollup from the order spine (silver_order_state), brain_id-resolved only. The
     #    authoritative per-customer order aggregate: count, Σ recognized money (per-currency), recency. ──

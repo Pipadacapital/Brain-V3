@@ -174,7 +174,7 @@ def _register_udfs(con) -> None:
 def build(con):
     # brand-first tenant bucketing (mirrors the Spark bucket(8, brand_id) hidden partitioning).
     from _base import ensure_table  # noqa: E402 — imported here so the module imports without duckdb
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
     con.execute("INSTALL json; LOAD json;")  # to_json() for the journey_summary array assembly
     _register_udfs(con)
 

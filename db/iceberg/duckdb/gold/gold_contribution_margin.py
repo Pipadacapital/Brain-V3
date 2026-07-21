@@ -200,7 +200,7 @@ def _register_config_views(con, pg_ok: bool) -> None:
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
     as_of = date.today().isoformat()
 
     # ── INCREMENTAL (Phase 1b, GOLD_INCREMENTAL): DELIBERATELY LEFT FULL-SCAN — money-safety. ─────────────

@@ -102,7 +102,7 @@ COLUMNS = [
 
 def build(con):
     # brand-first tenant bucketing + day() partition (mirrors Spark bucket(64, brand_id), days(first_touch_at)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(64, brand_id), day(first_touch_at)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # ── INCREMENTAL WINDOW (opt-in; GOLD_INCREMENTAL=1) — CHANGED-ENTITY REFOLD ──────────────────────────
     #   GRAIN = entity_fold: MANY silver_touchpoint / silver_sessions rows aggregate into ONE

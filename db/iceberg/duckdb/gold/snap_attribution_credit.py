@@ -102,7 +102,7 @@ def _source_exists(con) -> bool:
 def build(con):
     # brand-first tenant bucketing + day-partition on the snapshot grain (mirrors the Spark bucket(8,
     # brand_id), days(snapshot_date)).
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(8, brand_id), day(snapshot_date)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     if not _source_exists(con):
         print(f"[snap-attribution-credit] source {SRC_TABLE} absent — wrote empty {TABLE}, exiting",

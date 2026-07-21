@@ -272,7 +272,7 @@ def _append_per_mutation(con):
 
 
 def build(con):
-    ensure_table(con, TARGET, COLUMNS_SQL, partitioned_by="bucket(256, brand_id)")
+    ensure_table(con, TARGET, COLUMNS_SQL)
 
     # System-time backfill runs BEFORE the append (and even in the data-thin path). One-time + idempotent.
     _backfill_system_time(con)

@@ -110,6 +110,11 @@ spec:
             {{- if $lane.namespaces }}
             - { name: MAINT_NAMESPACES, value: {{ $lane.namespaces | quote }} }
             {{- end }}
+            {{- if $lane.tables }}
+            {{- /* HOT-TABLE lane (2026-07-21): scope the sweep to churn-heavy tables so a frequent
+                   cadence never re-runs the whole namespace (the 2026-07-17 starvation lesson). */}}
+            - { name: MAINT_TABLES, value: {{ $lane.tables | quote }} }
+            {{- end }}
             {{- if hasKey $lane "orphanFiles" }}
             - { name: ORPHAN_FILES, value: {{ $lane.orphanFiles | quote }} }
             {{- end }}

@@ -69,6 +69,15 @@ NAMESPACES = [
     for ns in (os.environ.get("MAINT_NAMESPACES") or f"{mb.GOLD_NAMESPACE},{mb.SILVER_NAMESPACE}").split(",")
     if ns.strip()
 ]
+# Optional TABLE allowlist (comma-separated, applied across every namespace in this run). Powers the
+# HOT-TABLE lane (2026-07-21 keystone incident): silver_collector_event re-fragments ~2.4 files/min
+# under the */5 MERGE churn (723→1,442 live files in ~5h), and the daily whole-namespace Silver sweep
+# can't hold it — serving-mediated reads (the silver-identity lane) then exceed ANY statement budget
+# on file-count alone. A tables-scoped fast lane compacts just the hot tables every couple of hours
+# without re-running Silver's heavy full sweep (the 2026-07-17 lane-split starvation lesson). Empty →
+# all tables in the namespace (unchanged behavior). maintain-mode only; erase always sweeps ALL
+# tables (RTBF must never skip one).
+MAINT_TABLES = {t.strip() for t in os.environ.get("MAINT_TABLES", "").split(",") if t.strip()}
 # SNAPSHOT TTL ≠ DATA RETENTION (AUD-PERF-013). expire_snapshots only drops HISTORY. 7-day bounded
 # time-travel window; DATA retention is a row/partition DELETE concern (bronze_raw_retention.py).
 SNAPSHOT_TTL_MS = int(os.environ.get("SNAPSHOT_TTL_MS", str(604_800_000)))  # 7 days
@@ -83,6 +92,11 @@ def maintain(cat) -> None:
     failures = 0
     for namespace in NAMESPACES:
         tables = mb.tables_in(cat, namespace)
+        if MAINT_TABLES:
+            skipped = [t for t in tables if t not in MAINT_TABLES]
+            tables = [t for t in tables if t in MAINT_TABLES]
+            # No silent caps: a hot-lane run says exactly what it does NOT cover.
+            print(f"[maintenance] {namespace}: MAINT_TABLES filter → {tables} ({len(skipped)} skipped)", flush=True)
         print(f"[maintenance] {namespace}: {len(tables)} table(s) → {tables}", flush=True)
         for table in tables:
             # One broken table must not abort the whole sweep — log, count, keep going, exit non-zero.

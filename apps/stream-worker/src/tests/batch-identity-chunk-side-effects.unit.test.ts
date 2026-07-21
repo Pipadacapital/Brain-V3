@@ -160,6 +160,9 @@ function makeSideEffectHarness() {
         brandId: string,
         entries: Array<{ type: string; hash: string; brainId: string }>,
       ) => {
+        // In-memory Map STUB of the identifier cache — not Redis; the brand id is part of the fake
+        // key on purpose (mirrors the adapter's brand-scoped shape the assertions read back).
+        // eslint-disable-next-line brain-redis/no-raw-redis-key
         for (const e of entries) cache.set(`${brandId}|${e.type}|${e.hash}`, e.brainId);
       },
     },

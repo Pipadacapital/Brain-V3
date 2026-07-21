@@ -1,11 +1,11 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:ad5567b51c44c0e58d132d749e7a610c7e2d85497878aa6a01571a01e78835c2"
+  digest: "sha256:4fcd7b216078a6281946d3ce95d3669adb48248c6480994276dd5b11c8688850"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:030dc10ffcb808778c92aa2e76b7b064ec7fb03970737b201977ea2f3fa960bd"
+  digest: "sha256:549b2b3568fca242241219ee1542b18efc9d4687d4d8042ec8e3d878396e9505"
 # duckdb image — bronze/medallion maintenance + erasure (via the PyIceberg maintenance client it carries) AND the V4
 # Silver/Gold transform crons (.sparkV4.image — CI promotes both digests build-once from staging, one
 # image). Bronze LANDING is the kafka-connect chart (ADR-0010). Spark→DuckDB cutover: replaces
@@ -15,7 +15,7 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
+    digest: "sha256:d5f60d57ace040b90be0538591d3f852d1ea9b40d799f78065604918f61d0749"
   # AUD-PROD-006: the maintenance/erasure cron pods run on the streaming Karpenter pool (the batch pool
   # was removed in the Spark→DuckDB cutover — the DuckDB crons are lightweight python, no JVM). A
   # Spot/consolidation bounce mid-run is replay-safe: Forbid + Argo retry + idempotent maintenance.
@@ -27,7 +27,7 @@ sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
+    digest: "sha256:d5f60d57ace040b90be0538591d3f852d1ea9b40d799f78065604918f61d0749"
   # Wave 2a (2026-07-21 keystone incident): fold hot-table maintenance into the transform tick. run_all.py
   # compacts + expires these two churn-heavy tables IN-PROCESS at the end of every */5 gold pass (same pod,
   # same run — best-effort, never fails the medallion), so compaction rides the exact MERGE churn that

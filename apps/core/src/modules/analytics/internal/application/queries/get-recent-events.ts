@@ -22,7 +22,14 @@
  */
 
 import { withSilverBrand, BRAND_PREDICATE } from '@brain/metric-engine';
-import { type BronzeReadDeps, COLLECTOR_EVENTS_VIEW, COLLECTOR_PREDICATE, hasSilver } from './_bronze-source.js';
+import {
+  type BronzeReadDeps,
+  COLLECTOR_EVENTS_VIEW,
+  COLLECTOR_PREDICATE,
+  RECENT_EVENTS_MART_VIEW,
+  recentEventsFromMart,
+  hasSilver,
+} from './_bronze-source.js';
 import { PIXEL_EVENT_IN } from './_pixel-events.js';
 
 export interface RecentEventRow {
@@ -112,25 +119,36 @@ export async function getRecentEvents(
   // no StarRocks wired → honest no_data (PG bronze retired)
   if (!hasSilver(deps)) return { rows: [] };
 
-  // ── Iceberg Bronze source — brand-isolated via the withSilverBrand seam ──────────
+  // ── Source SQL (ADR-0018 F4 flag-gated) ──────────────────────────────────────────
+  // ON  ⇒ the pre-baked top-N mart (mv_gold_recent_events): columns already lifted, is_pixel
+  //        precomputed, ≤200 rows/brand — a bounded read, no keystone full-scan / global top-N sort.
+  // OFF ⇒ today's keystone scan (mv_silver_collector_event) with per-row json_extract (rollback).
+  // Either branch: the seam appends ${BRAND_PREDICATE} for tenant isolation; ONLY pixel-origin events
+  // are returned (connector events order.live.v1/spend.*/gokwik.* excluded). safeLimit is a clamped
+  // int and PIXEL_EVENT_IN is a static code-defined list — both safe to interpolate.
+  const sql = recentEventsFromMart()
+    ? `SELECT event_id, event_type, occurred_at,
+              anon_id, session_id, has_consent,
+              details_json AS properties_json
+         FROM ${RECENT_EVENTS_MART_VIEW}
+        WHERE ${BRAND_PREDICATE} AND is_pixel
+        ORDER BY occurred_at DESC
+        LIMIT ${safeLimit}`
+    : `SELECT event_id, event_type, occurred_at,
+              json_extract_string(payload, '$.properties.brain_anon_id') AS anon_id,
+              json_extract_string(payload, '$.hashed_session_id')        AS session_id,
+              CASE WHEN json_extract_string(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent,
+              json_extract(payload, '$.properties')                      AS properties_json
+         FROM ${COLLECTOR_EVENTS_VIEW}
+        WHERE ${COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
+          AND event_type IN (${PIXEL_EVENT_IN})
+        ORDER BY occurred_at DESC
+        LIMIT ${safeLimit}`;
+
+  // ── Iceberg source — brand-isolated via the withSilverBrand seam ──────────
   {
     const rows = await withSilverBrand(deps.srPool, brandId, async (scope) =>
-      // safeLimit is a clamped int (never user text) and PIXEL_EVENT_IN is a static code-defined list
-      // — both safe to interpolate. The seam appends the brand predicate at ${BRAND_PREDICATE};
-      // the pixel-only filter + ORDER BY/LIMIT follow it. ONLY pixel-origin events are returned —
-      // server-trusted connector events (order.live.v1, spend.*, gokwik.*, …) are excluded.
-      scope.runScoped<{ event_id: string; event_type: string; occurred_at: Date | string; anon_id: string | null; session_id: string | null; has_consent: boolean | number; properties_json: string | null }>(
-        `SELECT event_id, event_type, occurred_at,
-                json_extract_string(payload, '$.properties.brain_anon_id') AS anon_id,
-                json_extract_string(payload, '$.hashed_session_id')        AS session_id,
-                CASE WHEN json_extract_string(payload, '$.consent_flags.analytics') = 'true' THEN true ELSE false END AS has_consent,
-                json_extract(payload, '$.properties')                      AS properties_json
-           FROM ${COLLECTOR_EVENTS_VIEW}
-          WHERE ${COLLECTOR_PREDICATE} AND ${BRAND_PREDICATE}
-            AND event_type IN (${PIXEL_EVENT_IN})
-          ORDER BY occurred_at DESC
-          LIMIT ${safeLimit}`,
-      ),
+      scope.runScoped<{ event_id: string; event_type: string; occurred_at: Date | string; anon_id: string | null; session_id: string | null; has_consent: boolean | number; properties_json: string | null }>(sql),
     );
     return {
       rows: rows.map((row) => ({

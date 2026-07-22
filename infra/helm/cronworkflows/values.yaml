@@ -75,6 +75,21 @@ sparkBronze:
   # deliberate one-off backlog clear). Silver's admission MERGE remains the final backstop.
   dedup:
     enabled: true
+  # ── Bronze HOT maintenance lane (ADR-0018 D3) ──────────────────────────────────────────────────
+  # Bronze is written by Kafka-Connect (NOT the transform tick), fragmenting at ~5,760 files/day —
+  # the daily bronze-maintenance cron above cannot keep pace. This lane mirrors the proven Silver
+  # HOT lane (values-prod v4-maintenance silver-hot): every 2h it runs dedup → optimize → expire
+  # scoped to the HOT month(s) ONLY (BRONZE_DEDUP_PARTITION_SCOPED=1 / MONTHS_BACK=1 +
+  # BRONZE_TABLE=collector_events_connect on the optimize/expire), so each unit is a bounded
+  # month-partition COW rewrite (well within the 8Gi pod, no whole-table OOM). concurrencyPolicy
+  # Forbid — never overlaps itself. The daily bronze-maintenance cron stays the frozen-month sweep
+  # (now a fast no-op on already-hot-deduped months). DEFAULT-OFF: the merge-time fix is the D1
+  # month-scoped dedup that auto-heals the EXISTING daily cron (no whole-table OOM); this extra 2h
+  # cadence is owner-enabled after review (set hot.enabled=true in values-prod/staging to activate).
+  hot:
+    enabled: false
+    schedule: "0 */2 * * *"             # every 2h — keeps collector_events_connect deduped + compacted
+    activeDeadlineSeconds: 1800         # 30 min — one hot-month dedup+compact+expiry is minutes
   # ── Raw-lane PII retention (ADR-0006 D4; AUD-IMPL-019/AUD-OPS-038) + ADR-0015 collector TTL ─────
   # bronze_raw_retention.py: row-TTL DELETE + snapshot expiry over the *_raw_connect lanes so raw
   # un-hashed PII/PCI never outlives the 7-day landing-buffer window. ADR-0015 D7 adds the

@@ -34,6 +34,27 @@ export const COLLECTOR_EVENTS_VIEW = 'brain_serving.mv_silver_collector_event';
 export const COLLECTOR_PREDICATE = 'TRUE';
 
 /**
+ * ADR-0018 F4/D4 — the pre-baked top-N recent-events RING (gold_recent_events / mv_gold_recent_events).
+ * The transform tier runs the expensive ROW_NUMBER() top-200-per-brand sort ONCE per */5 tick, so a
+ * cache-miss reads a bounded ≤200-rows/brand table instead of full-scanning + global-top-N-sorting the
+ * growing keystone mv_silver_collector_event (the last single-query-ceiling violation on this read).
+ * `is_pixel` is precomputed; `details_json` carries the raw properties (the read side scrubs PII).
+ */
+export const RECENT_EVENTS_MART_VIEW = 'brain_serving.mv_gold_recent_events';
+
+/**
+ * Flag-gated source selector for getRecentEvents (ADR-0018 F4). DEFAULT OFF (staged, staging-first):
+ * OFF ⇒ today's keystone-scan behavior (mv_silver_collector_event); ON ⇒ the pre-baked mart. Set
+ * RECENT_EVENTS_FROM_MART=1|true to flip. The RecentEventsResult contract is byte-identical either
+ * way — only the SQL + source view change. Default-OFF = merging this changes NOTHING in prod until
+ * the mart + view are shipped and the flag is flipped.
+ */
+export function recentEventsFromMart(): boolean {
+  const v = (process.env.RECENT_EVENTS_FROM_MART ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+/**
  * True when the serving pool is wired (the only Bronze source now). Guards srPool presence so
  * a deployment without the serving tier returns honest no_data instead of erroring.
  */

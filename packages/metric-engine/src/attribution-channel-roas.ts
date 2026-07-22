@@ -24,6 +24,7 @@ import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
 import type { AttributionModelId } from './attribution-models.js';
 import { spendView } from './measurement-migration.js';
+import { channelRoasFromMart } from './serving-mart-flags.js';
 
 /** Format an exact BIGINT ratio to a fixed-precision decimal string (no float). */
 function exactRatioString(numerator: bigint, denominator: bigint, fractionalDigits = 4): string {
@@ -82,12 +83,53 @@ interface SpendRow { platform: string; currency_code: string; spend_minor: strin
 export async function computeChannelRoas(
   brandId: string,
   params: { model: AttributionModelId; fromDate: Date; toDate: Date },
-  deps: { srPool: SilverPool; measurementMartsMigration?: boolean },
+  // ADR-0019 WS-3 D6: `fromMart` (default the SERVING_CHANNEL_ROAS_FROM_MART process flag) repoints the
+  // read to the pre-baked mv_gold_channel_roas instead of FX-blending attribution × spend at read time.
+  // Default OFF → today's live recompute; explicit `fromMart` on deps overrides the env (testable seam).
+  deps: { srPool: SilverPool; measurementMartsMigration?: boolean; fromMart?: boolean },
 ): Promise<ChannelRoasRow[]> {
   const fromStr = params.fromDate.toISOString().split('T')[0] as string; // Date-formatted → injection-safe
   const toStr = params.toDate.toISOString().split('T')[0] as string;
   // model is a typed AttributionModelId; guard to a safe identifier before interpolation.
   const model = /^[a-z0-9_]+$/i.test(params.model) ? params.model : '__invalid__';
+
+  // ── Flag-ON: pre-baked mart. Sum the two exact BIGINT operands over the [from, to] window at
+  //    (channel, currency) grain, then derive the ratio from the exact operands — no read-time blend. ──
+  if (deps.fromMart ?? channelRoasFromMart()) {
+    return withSilverBrand(deps.srPool, brandId, async (scope) => {
+      const rows = await scope.runScoped<{
+        channel: string;
+        currency_code: string;
+        attributed_minor: string | number;
+        spend_minor: string | number;
+      }>(
+        `SELECT channel, currency_code,
+                COALESCE(SUM(attributed_minor), 0) AS attributed_minor,
+                COALESCE(SUM(spend_minor), 0)      AS spend_minor
+           FROM brain_serving.mv_gold_channel_roas
+          WHERE model_id = '${model}'
+            AND stat_date BETWEEN DATE '${fromStr}' AND DATE '${toStr}'
+            AND ${BRAND_PREDICATE}
+          GROUP BY channel, currency_code`,
+        [],
+      );
+      const out: ChannelRoasRow[] = rows.map((r) => {
+        const attributedMinor = BigInt(String(r.attributed_minor).split('.')[0] ?? '0');
+        const spendMinor = BigInt(String(r.spend_minor).split('.')[0] ?? '0');
+        return {
+          channel: r.channel,
+          currencyCode: r.currency_code,
+          attributedMinor,
+          spendMinor,
+          roasRatio: spendMinor > 0n ? exactRatioString(attributedMinor, spendMinor) : null,
+        };
+      });
+      out.sort((a, b) =>
+        a.channel < b.channel ? -1 : a.channel > b.channel ? 1 : a.currencyCode < b.currencyCode ? -1 : a.currencyCode > b.currencyCode ? 1 : 0,
+      );
+      return out;
+    });
+  }
 
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
     // Attributed revenue per (channel, currency) — the channel_contribution_as_of math.

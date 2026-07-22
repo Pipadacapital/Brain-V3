@@ -138,6 +138,103 @@ def test_guard_rejects_unterminated_block_comment():
         guard_statement("SELECT 1 /* runaway")
 
 
+# ── ADR-0019 WS-1 D1/D2: signal-driven + hold-warm rotation (pure unit, no live stack) ──────────
+
+
+class _FakeEngine:
+    """Minimal stand-in wired to the REAL Engine methods under test — we drive _should_rotate_this_tick
+    and signal_rotate without building a live epoch (which needs the Iceberg stack). Only the fields the
+    two methods read are present; rotate_once itself is exercised against the live stack below."""
+
+    def __init__(self):
+        self._epoch = object()          # a truthy 'live epoch' placeholder
+        self._epoch_lock = __import__("threading").Lock()
+        self._attach_poisoned = False
+        self._rotate_signal = False
+
+    class _E:
+        def __init__(self, skipped):
+            self.views_skipped = skipped
+
+
+def test_signal_rotate_sets_the_flag():
+    fe = _FakeEngine()
+    assert fe._rotate_signal is False
+    engine.Engine.signal_rotate(fe)  # unbound — runs the real method against the fake
+    assert fe._rotate_signal is True
+    # Idempotent: a second signal before the loop consumes it stays a single level.
+    engine.Engine.signal_rotate(fe)
+    assert fe._rotate_signal is True
+
+
+def test_should_rotate_flag_off_always_rotates(monkeypatch):
+    # DEFAULT OFF (unset) → today's unconditional clock: always True regardless of skipped/signal.
+    monkeypatch.delenv("DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY", raising=False)
+    fe = _FakeEngine()
+    fe._epoch = _FakeEngine._E(skipped=[])   # no skips, no signal — flag OFF still rotates
+    assert engine.Engine._should_rotate_this_tick(fe) is True
+
+
+def test_should_rotate_skip_only_holds_warm_in_steady_state(monkeypatch):
+    monkeypatch.setenv("DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY", "1")
+    fe = _FakeEngine()
+    fe._epoch = _FakeEngine._E(skipped=[])   # every view applied, no signal, healthy attach
+    fe._attach_poisoned = False
+    fe._rotate_signal = False
+    # Hold-warm: nothing needs a rotation → skip it.
+    assert engine.Engine._should_rotate_this_tick(fe) is False
+
+
+def test_should_rotate_skip_only_self_heals_on_views_skipped(monkeypatch):
+    monkeypatch.setenv("DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY", "1")
+    fe = _FakeEngine()
+    fe._epoch = _FakeEngine._E(skipped=["mv_gold_channel_roas"])  # a dep may now exist → self-heal
+    assert engine.Engine._should_rotate_this_tick(fe) is True
+
+
+def test_should_rotate_skip_only_rotates_on_signal(monkeypatch):
+    monkeypatch.setenv("DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY", "1")
+    fe = _FakeEngine()
+    fe._epoch = _FakeEngine._E(skipped=[])   # no skips…
+    fe._rotate_signal = True                 # …but the write-driven signal (D1) fired
+    assert engine.Engine._should_rotate_this_tick(fe) is True
+
+
+def test_should_rotate_skip_only_rotates_when_no_or_poisoned_epoch(monkeypatch):
+    monkeypatch.setenv("DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY", "1")
+    # No live epoch yet (bootstrap) → must keep trying.
+    fe = _FakeEngine()
+    fe._epoch = None
+    assert engine.Engine._should_rotate_this_tick(fe) is True
+    # Poisoned attach (last build failed) → must keep retrying, not hold a poison.
+    fe2 = _FakeEngine()
+    fe2._epoch = _FakeEngine._E(skipped=[])
+    fe2._attach_poisoned = True
+    assert engine.Engine._should_rotate_this_tick(fe2) is True
+
+
+@needs_stack
+def test_internal_rotate_calls_rotate_once_thread_safe(tmp_path):
+    # POST /internal/rotate → ENGINE.rotate_once. Assert the route triggers exactly one rotation (epoch
+    # index advances) through the real engine, and that a concurrent clock-loop rotate is serialized by
+    # the mutex (no crash / double-swap). Uses the live stack (empty views dir → ready).
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+    import server as server_mod  # noqa: E402
+    from fastapi.testclient import TestClient
+
+    server_mod.ENGINE = engine.Engine(views_dir=str(tmp_path))
+    server_mod.ENGINE.rotate_once()
+    before = server_mod.ENGINE.status()["epoch"]
+    with TestClient(server_mod.app) as client:
+        # lifespan starts the rotation thread; the explicit POST is the write-driven path under test.
+        resp = client.post("/internal/rotate")
+        assert resp.status_code == 200
+        assert resp.json()["ready"] is True
+    after = server_mod.ENGINE.status()["epoch"]
+    assert after > before, "POST /internal/rotate must advance the epoch (a real rotate_once)"
+
+
 # ── epoch lifecycle against the live stack (auto-skipped without it) ───────────────────────────
 
 

@@ -222,6 +222,93 @@ def _run_tick_maintenance() -> None:
     return None
 
 
+# ── ADR-0019 WS-1 D1 + WS-4 D7: end-of-tick serving warm-up POSTs (default OFF, fail-open) ───────────
+# The writer that just produced fresh marts is the entity that knows they're fresh. At end-of-tick (after
+# the Gold pass + tick-compaction) the tick can (D1) signal duckdb-serving to rotate its epoch — so a
+# brand-new Gold view is applied within one tick instead of on the slow self-heal clock — and (D7) pre-fill
+# the app's hot Redis cache keys BEFORE any user arrives, killing the cold-first-hit at the source.
+#
+# BOTH are default-OFF (the owner merges the final PR inert) and STRICTLY FAIL-OPEN: a failed POST logs and
+# NEVER fails the tick / touches the exit code — exactly mirroring tools/dev/duckdb-refresh.sh's run_cache_bust
+# ("cache busting is an optimization; a failure never fails the refresh — TTL is the net"). Flags read INSIDE
+# the helpers (not at import) so tests can monkeypatch os.environ per-case.
+#
+#   DUCKDB_SERVING_ROTATE_ON_SIGNAL   ON → POST {SERVING_INTERNAL_URL}/internal/rotate after the tick.
+#   SERVING_WARM_ON_WRITE             ON → POST {CORE_INTERNAL_URL}/internal/serving/warm  after the tick.
+#   SERVING_INTERNAL_URL  base of the in-cluster duckdb-serving Service (default http://duckdb-serving:8091).
+#   CORE_INTERNAL_URL     base of the in-cluster core Service            (default http://brain-core:3001).
+#   SERVING_WARM_TOKEN    the cluster-internal service token core requires on /internal/serving/warm.
+#   SERVING_WARM_TIMEOUT_S  per-POST timeout (default 10s) — a slow serving/core must not stall the loop.
+def _flag_on(name: str) -> bool:
+    """A tick flag is ON iff its env value is a truthy token. DEFAULT OFF for every new flag (ADR-0019
+    safe-off doctrine) — an unset/empty/false value keeps today's behaviour verbatim."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _post_json(url: str, payload: "dict | None", *, headers: "dict | None" = None, timeout_s: float = 10.0):
+    """Minimal stdlib POST (no requests dep). Raises on any non-2xx / transport error — the CALLER walls
+    it (fail-open). Kept tiny + dependency-free: the transform image ships urllib, not httpx."""
+    import urllib.request  # noqa: E402 — lazy, only when a warm hook is enabled
+
+    body = b"" if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("content-type", "application/json")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:  # noqa: S310 — in-cluster http to our own svc
+        return resp.status, resp.read(512)  # bounded read; we only care about the status
+
+
+def _run_serving_rotate() -> None:
+    """ADR-0019 WS-1 D1: POST /internal/rotate so serving picks up any brand-new Gold view this tick.
+    DEFAULT OFF (DUCKDB_SERVING_ROTATE_ON_SIGNAL). FAIL-OPEN: a failed POST logs and returns None — the
+    tick's exit code is never touched (the 600s self-heal clock is the backstop). Mirrors run_cache_bust."""
+    if not _flag_on("DUCKDB_SERVING_ROTATE_ON_SIGNAL"):
+        return None
+    base = (os.environ.get("SERVING_INTERNAL_URL") or "http://duckdb-serving:8091").rstrip("/")
+    timeout_s = float(os.environ.get("SERVING_WARM_TIMEOUT_S", "10") or "10")
+    try:
+        status, _ = _post_json(f"{base}/internal/rotate", None, timeout_s=timeout_s)
+        print(f'{{"tick":"serving-rotate","ok":true,"status":{status}}}', flush=True)
+    except Exception as exc:  # noqa: BLE001 — fail-open: a rotate POST failure NEVER fails the tick
+        print(f'{{"tick":"serving-rotate","ok":false,"err":"{str(exc)[:200]}"}}', flush=True)
+    return None
+
+
+def _run_serving_warm() -> None:
+    """ADR-0019 WS-4 D7: POST /internal/serving/warm so core pre-fills the hot Redis cache keys (the
+    measured slow-cold dataset allowlist × active brands) BEFORE any user arrives. DEFAULT OFF
+    (SERVING_WARM_ON_WRITE). FAIL-OPEN: a failed POST logs and returns None — the tick never fails on it
+    (the cache TTL + SWR are the net). Body `{"datasets":"all","brands":"all"}` — core owns the allowlist
+    + active-brand enumeration + the default window; the tick only pulls the trigger."""
+    if not _flag_on("SERVING_WARM_ON_WRITE"):
+        return None
+    base = (os.environ.get("CORE_INTERNAL_URL") or "http://brain-core:3001").rstrip("/")
+    timeout_s = float(os.environ.get("SERVING_WARM_TIMEOUT_S", "10") or "10")
+    headers = {}
+    token = (os.environ.get("SERVING_WARM_TOKEN") or "").strip()
+    if token:
+        headers["x-internal-token"] = token
+    try:
+        status, _ = _post_json(
+            f"{base}/internal/serving/warm", {"datasets": "all", "brands": "all"},
+            headers=headers, timeout_s=timeout_s,
+        )
+        print(f'{{"tick":"serving-warm","ok":true,"status":{status}}}', flush=True)
+    except Exception as exc:  # noqa: BLE001 — fail-open: a warm POST failure NEVER fails the tick
+        print(f'{{"tick":"serving-warm","ok":false,"err":"{str(exc)[:200]}"}}', flush=True)
+    return None
+
+
+def _run_serving_warmup() -> None:
+    """End-of-tick serving warm-up: rotate signal (D1) THEN cache warm (D7), in that order — warming a
+    hot key is pointless until serving has rotated onto the fresh Gold view. Both individually flagged +
+    fail-open; the whole thing is best-effort and returns None regardless."""
+    _run_serving_rotate()
+    _run_serving_warm()
+    return None
+
+
 class _SharedConn:
     """Proxy over the single DuckDB connection: forwards everything, no-ops close() (the orchestrator owns
     the lifetime), and makes create_function idempotent so a job re-registering a UDF on pass 2 (or a name
@@ -382,6 +469,9 @@ def main() -> int:
         # hot tables in-process. Best-effort — never touches `fails`/exit code (see _run_tick_maintenance).
         if tier == "gold":
             _run_tick_maintenance()
+            # ADR-0019 WS-1 D1 + WS-4 D7: signal serving to rotate + pre-fill the app's hot cache keys.
+            # Both default-OFF + fail-open — never touches `fails`/exit code (mirrors _run_tick_maintenance).
+            _run_serving_warmup()
     finally:
         shared._real_close()
 
@@ -546,6 +636,9 @@ def run_one_tick(shared: "_SharedConn") -> int:
     # Wave 2a: fold hot-table maintenance into the tick, INSIDE the 910005 leader lock (compaction stays
     # single-writer among replicas). Best-effort — never touches `fails`/exit code.
     _run_tick_maintenance()
+    # ADR-0019 WS-1 D1 + WS-4 D7: signal serving to rotate + pre-fill the app's hot cache keys (both
+    # default-OFF + fail-open). Runs under the leader lock so exactly one replica warms per tick.
+    _run_serving_warmup()
     return fails
 
 

@@ -100,6 +100,19 @@ export const CoreEnvSchema = CommonEnvSchema.extend({
    */
   SERVING_CACHE_TTL_MS: z.coerce.number().int().positive().default(300_000),
   /**
+   * ADR-0019 WS-2 — stale-while-revalidate for the serving cache. DEFAULT-OFF: unset/'false' →
+   * the cache behaves exactly as today (fresh-or-block getOrSet). 'true' → a read past a value's
+   * SOFT ttl serves it immediately and refreshes it in the background, so the first hit after a TTL
+   * boundary no longer pays the full cold serving round-trip. Flipping this ON also routes the two
+   * historically-uncached headline reads (blended_roas, order_status_mix) through the cache.
+   */
+  SERVING_CACHE_SWR: z.enum(['true', 'false']).optional(),
+  /**
+   * SWR stale-serve grace (ms): how long a value may be served STALE past its soft ttl while a
+   * background revalidation recomputes it. Hard Redis TTL of an SWR entry = softTtl + this. Default 10m.
+   */
+  SERVING_CACHE_SWR_GRACE_MS: z.coerce.number().int().positive().default(600_000),
+  /**
    * Serving materialization version — the trailing cache-key segment. Bumping it on a
    * serving-view rebuild invalidates every cached read without flushing Redis.
    */

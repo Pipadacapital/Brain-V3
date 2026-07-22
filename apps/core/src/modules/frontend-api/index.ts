@@ -8,3 +8,5 @@
  */
 
 export { registerBffRoutes } from './internal/bff.routes.js';
+export { registerServingWarmRoute, HOT_WARM_DATASETS } from './internal/serving-warm.js';
+export type { ServingWarmDeps, HotWarmDataset } from './internal/serving-warm.js';

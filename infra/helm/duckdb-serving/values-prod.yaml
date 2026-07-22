@@ -33,18 +33,19 @@ autoscaling:
   maxReplicas: 4
   targetCPUUtilizationPercentage: 60
 
-# EPOCH PRE-WARM (2026-07-21 keystone cold-scan incident): the duckdb-iceberg EXECUTE phase pays
-# ~200ms/data-file on a COLD connection (keystone measured: 289s cold vs 2s warm; EXPLAIN/bind is
-# 3.9s — the cost is the per-file opens), and every epoch rotation is a new cold connection — so a
-# churn-heavy table blew the statement watchdog on EVERY read, uninterruptibly (the silver-identity
-# stuck-watermark chain). Listed tables are scan-warmed on the fresh epoch BEFORE it goes live; the
-# old epoch serves during the warm, so rotation stays invisible. Warmed via serving VIEW names (no
-# catalog-alias coupling). NOTE: a fresh pod's FIRST epoch also warms → /readyz turns ready minutes
-# later on a fragmented keystone; rolling updates keep old pods serving meanwhile, and the
-# silver-hot maintenance lane (same incident, cronworkflows values) bounds the file count.
+# EPOCH PRE-WARM — ADR-0019 WS-0 (2026-07-22 serving cold-start incident). The duckdb-iceberg EXECUTE
+# phase pays ~200ms/data-file on a COLD connection; every 60s epoch rotation is a fresh cold connection.
+# The keystone mv_silver_collector_event re-fragments under the */5 MERGE churn → its pre-warm measured
+# ~300s, which CANNOT complete inside a 60s epoch → no epoch ever went warm → every analytics mart stayed
+# cold → 10-27s dashboard cold-first-hits (1000x cold→warm gap proven live). WS-0 FIX: DROP the keystone
+# from pre-warm (only the 3 Bronze-operational endpoints read it, and their 5-min Redis TTL absorbs the
+# occasional cold scan — ADR-0018 pre-bakes them properly), and WIDEN pre-warm to the small ~1-file
+# working-set Gold/Silver marts the dashboards actually read, which warm in seconds so the whole set fits
+# inside one epoch build. This removes the dominant cold-start class with zero code; WS-1 (hold-warm +
+# signal rotation) makes it structural. Fully reversible — restore the two-table value to revert.
 extraEnv:
   - name: DUCKDB_SERVING_PREWARM_TABLES
-    value: "brain_serving.mv_silver_collector_event,brain_serving.mv_silver_touchpoint"
+    value: "brain_serving.mv_gold_revenue_ledger,brain_serving.mv_gold_customer_360,brain_serving.mv_gold_customer_scores,brain_serving.mv_silver_order_state,brain_serving.mv_gold_marketing_attribution,brain_serving.mv_silver_marketing_spend,brain_serving.mv_gold_abandoned_cart,brain_serving.mv_gold_product_detail,brain_serving.mv_gold_product_affinity,brain_serving.mv_gold_journey,brain_serving.mv_gold_journey_paths,brain_serving.mv_gold_cod_rto,brain_serving.mv_gold_executive_metrics,brain_serving.mv_silver_touchpoint"
 
 # Startup-probe budget must cover the FIRST epoch's pre-warm (observed ~330s on a fragmented
 # keystone; the 300s default killed the pod at warm-completion → restart loop). 90×10s = 15 min

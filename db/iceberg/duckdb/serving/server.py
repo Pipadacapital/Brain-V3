@@ -84,6 +84,22 @@ def v1_query(req: QueryRequest):
     return {"columns": serialize.columns_of(description), "data": serialize.serialize_rows(rows)}
 
 
+@app.post("/internal/rotate")
+def internal_rotate():
+    """ADR-0019 WS-1 D1 — write-driven epoch rotation. The transform tick POSTs this at end-of-tick
+    (after the Gold pass + tick-compaction) so serving picks up a brand-new Gold view within one tick
+    instead of waiting on the slow self-heal clock. Cluster-internal: no browser reaches it (the pod is
+    fronted by the in-cluster duckdb-serving Service only), so no auth gate here — it triggers exactly
+    ONE thread-safe rotate_once (the rotation mutex serializes it against the clock loop) and never
+    executes user SQL. Returns the post-rotation status; a build failure surfaces as 503 (the caller —
+    run_all's warm hook — is fail-open and never fails the tick on it)."""
+    try:
+        ENGINE.rotate_once()
+    except Exception as exc:  # noqa: BLE001 — a poisoned/absent catalog: honest 503, old epoch kept serving
+        return _error(503, f"rotate failed: {exc}")
+    return ENGINE.status()
+
+
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}

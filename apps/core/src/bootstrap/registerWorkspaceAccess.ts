@@ -29,7 +29,7 @@ import {
   registerBrandRoutes,
   registerMemberRoutes,
 } from '../modules/workspace-access/index.js';
-import { registerBffRoutes } from '../modules/frontend-api/index.js';
+import { registerBffRoutes, registerServingWarmRoute } from '../modules/frontend-api/index.js';
 import { registerDevRoutes, registerConsentRoutes } from '../modules/notification/index.js';
 import type { ContactPiiVaultService } from '../modules/identity/index.js';
 import type { Neo4jIdentityReader } from '../modules/identity/internal/infrastructure/neo4j-identity-reader.js';
@@ -72,6 +72,13 @@ export interface RegisterWorkspaceAccessDeps {
   erasureEventPublisher?: ErasureEventPublisher;
   /** SPEC: D.3 — semantic-serving flag switch (compiled-view migration; DEFAULT OFF, legacy pass-through). */
   semanticRouter?: SemanticServingRouter;
+  /**
+   * ADR-0019 WS-4 D7 — cluster-internal service token for POST /internal/serving/warm. When ABSENT
+   * (default) the warm endpoint is DISABLED (404) — the transform tick's warm-on-write POST is itself
+   * default-OFF (SERVING_WARM_ON_WRITE), so the whole warm-on-write path ships inert until BOTH the
+   * token is set AND the tick flag is flipped. Sourced from SERVING_WARM_TOKEN at the composition root.
+   */
+  servingWarmToken?: string;
 }
 
 export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWorkspaceAccessDeps): void {
@@ -98,6 +105,7 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
     identityUnmergeDirty,
     erasureEventPublisher,
     semanticRouter,
+    servingWarmToken,
   } = deps;
 
   // Register workspace-access + BFF routes.
@@ -106,6 +114,16 @@ export function registerWorkspaceAccess(app: FastifyInstance, deps: RegisterWork
   registerBrandRoutes(app, authService, brandService);
   registerMemberRoutes(app, authService, inviteService, rawPgPool);
   registerBffRoutes(app, authService, pool, cookieSecret, rateLimiter, rawPgPool, onboardingService, srPool, piiVaultService, identityReader, getCoreSaltHex, servingCache, flagService, identityUnmergeDirty, touchpointCacheReader, semanticRouter, erasureEventPublisher, neo4jPipelineCounts);
+
+  // ADR-0019 WS-4 D7 — cluster-internal warm-on-write endpoint (POST /internal/serving/warm), mounted
+  // OUTSIDE /api/v1 and gated by the SERVING_WARM_TOKEN service token. DISABLED (404) until the token is
+  // configured; the tick-side POST is separately default-OFF — the whole path ships inert.
+  registerServingWarmRoute(app, {
+    servingCache,
+    srPool,
+    rawPool: rawPgPool,
+    warmToken: servingWarmToken,
+  });
 
   // D13: consent write + can_contact() gate-probe routes (brand-scoped, session-guarded).
   registerConsentRoutes(app, {

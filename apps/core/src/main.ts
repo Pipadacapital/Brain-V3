@@ -920,6 +920,9 @@ export async function main(): Promise<void> {
     // SPEC: D.3 — the semantic-serving flag switch (DEFAULT OFF, legacy pass-through). Migrated
     // metric reads route through it; a metric with no compiled view yet stays on legacy even ON.
     semanticRouter,
+    // ADR-0019 WS-4 D7 — service token for the cluster-internal warm-on-write endpoint. Unset (default)
+    // → the endpoint is DISABLED (404); the tick-side POST is separately default-OFF. Ships inert.
+    servingWarmToken: process.env.SERVING_WARM_TOKEN,
   });
 
   // ── CQ-2: register the connector + pixel context (HIGH-MOUNT-01) ────────────

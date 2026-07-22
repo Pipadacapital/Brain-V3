@@ -178,6 +178,142 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+{{- if .Values.sparkBronze.hot.enabled }}
+---
+{{- /*
+ADR-0018 D3 — bronze-hot maintenance lane. Bronze is Kafka-Connect-written (NOT the transform
+tick), fragmenting continuously; the daily bronze-maintenance cron above cannot keep pace. This
+lane mirrors the Silver-hot pattern: every 2h it runs dedup → optimize → expire SCOPED TO THE HOT
+MONTH(S) ONLY (BRONZE_DEDUP_PARTITION_SCOPED / MONTHS_BACK on dedup; BRONZE_TABLE pins the
+collector lane for the month-chunked optimize+expire). Each unit is a bounded month-partition COW
+rewrite (fits the 8Gi pod; the whole-table OOM class is eliminated). concurrencyPolicy Forbid.
+The daily cron stays the frozen-month sweep — a fast no-op on already-hot-deduped months.
+
+The dedup step is FAIL-SOFT (continueOn.failed), same contract as the daily lane: a valve refusal
+marks the step Failed (metered via the bronze-dedup tier counter) but never blocks the compaction/
+expiry maintain step — dedup converges on a later run (idempotent), Silver's MERGE is the backstop.
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: bronze-hot
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: bronze-hot
+spec:
+  schedule: {{ .Values.sparkBronze.hot.schedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid            # never overlap the hot lane with itself
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    {{- with .Values.sparkBronze.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkBronze.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    activeDeadlineSeconds: {{ .Values.sparkBronze.hot.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    metrics:
+      prometheus:
+        - name: brain_transform_workflow_failed_total
+          help: "Maintenance/transform workflow runs that ended Failed (deadline/retries exhausted)"
+          labels:
+            - key: tier
+              value: bronze-hot
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
+    templates:
+      - name: run
+        steps:
+          - - name: dedup
+              template: dedup-hot
+              continueOn:
+                failed: true
+          - - name: maintain
+              template: maintain-hot
+      - name: dedup-hot
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}   # idempotent month-scoped COW delete — retry-safe
+          retryPolicy: OnError
+        metrics:
+          prometheus:
+            - name: brain_transform_workflow_failed_total
+              help: "Maintenance/transform workflow runs that ended Failed (deadline/retries exhausted)"
+              labels:
+                - key: tier
+                  value: bronze-dedup
+              when: {{ `"{{status}} == Failed"` }}
+              counter:
+                value: "1"
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # ADR-0018 D1/D3: month-scoped hot dedup — one hot month-partition at a time,
+              # checkpointed (recheck-and-commit per month). PARTITION_SCOPED=1 / MONTHS_BACK=1 are
+              # the defaults; pinned here for auditability. FAIL-SOFT: a non-zero exit marks THIS
+              # step Failed (alertable via the bronze-dedup tier counter) but never blocks maintain.
+              rc=0
+              python /opt/brain/duckdb/maintenance/bronze_dedup.py || rc=$?
+              if [ "${rc}" -ne 0 ]; then
+                echo "✗ BRONZE-HOT-DEDUP FAILED (rc=${rc}) — hot month(s) may still hold duplicates; compaction/expiry continue in maintain. See output above." >&2
+                exit "${rc}"
+              fi
+          env:
+            - { name: BRONZE_DEDUP_PARTITION_SCOPED, value: "1" }
+            - { name: BRONZE_DEDUP_MONTHS_BACK, value: "1" }
+            {{- with .Values.sparkBronze.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* (REST catalog + S3 seams)
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+      - name: maintain-hot
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # BRONZE_TABLE pins the collector lane so the optimize + expire are month-chunked over
+              # just this table (D2: _rewrite_units chunks month(kafka_timestamp) one partition at a
+              # time) rather than sweeping the whole namespace — the hot lane never touches the raw
+              # lanes (that stays the daily bronze-maintenance sweep).
+              exec python /opt/brain/duckdb/maintenance/bronze_maintenance.py
+          env:
+            - { name: MODE, value: "maintain" }
+            - { name: BRONZE_TABLE, value: "collector_events_connect" }
+            {{- with .Values.sparkBronze.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}    # ICEBERG_REST_URI + AWS_* (REST catalog + S3 seams)
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkBronze.resources | nindent 12 }}
+{{- end }}
 {{- if .Values.sparkBronze.rawRetention.enabled }}
 ---
 apiVersion: argoproj.io/v1alpha1

@@ -296,9 +296,15 @@ def _rewrite_units(tbl) -> "list[tuple[str, object, str, int, int, tuple | None]
     overwrite_filter deletes). Only ROW-expressible partition transforms qualify for per-partition
     chunking — identity, and day/month/year/hour on a timestamp source (value → half-open range
     predicate). bucket()/truncate() partition values have no row predicate, so any spec containing
-    only those (or an unpartitioned table, e.g. collector_events_connect) is a single whole-table
-    unit. A mixed spec chunks on its FIRST expressible field (the other dimensions ride along —
-    correct, just coarser units).
+    only those (or a genuinely unpartitioned table) is a single whole-table unit. A mixed spec
+    chunks on its FIRST expressible field (the other dimensions ride along — correct, just coarser).
+
+    D2 (ADR-0018): collector_events_connect is `month(kafka_timestamp)` (AUD-IMPL-025 — was `day()`,
+    floored ~700 daily partitions). `kafka_timestamp` is a timestamptz source, so the MonthTransform
+    int-value → [start,end) tstz branch below fires for it: bronze_maintenance's optimize() therefore
+    compacts it ONE month-partition at a time (each a bounded COW rewrite under the valve), NOT as
+    the old whole-table arrow read that OOMKilled at 4Gi. (Prior to the AUD-IMPL-025 repartition this
+    table WAS unpartitioned and this docstring said so — that assumption is now stale.)
     """
     from pyiceberg.expressions import (
         AlwaysTrue,

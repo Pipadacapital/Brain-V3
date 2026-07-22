@@ -239,8 +239,8 @@ spec:
             - { name: TRANSFORM_CORE_ONLY, value: "1" }
             {{- if .Values.sparkV4.heavyLane.enabled }}
             # Tiered gold cadence (P1 medallion-slowness fix): this */5 FAST lane skips the always-full-scan
-            # heavy marts (revenue_ledger ~21min + journey_events_reversion ~13min + cac + contribution_margin
-            # ≈ 63% of the gold pass). They run on the separate v4-medallion-heavy */20 lane below; the fast
+            # heavy money marts (revenue_ledger ~21min + cac + contribution_margin — always full-scan).
+            # They run on the separate v4-medallion-heavy */20 lane below; the fast
             # lane reads their LAST-WRITTEN Iceberg table (slightly stale, converges — same stale-tolerant
             # pattern as the CORE↔IDENTITY silver_identity_map split). heavyLane.enabled=false → no GOLD_LANE
             # env → run_all defaults "all" → today's single-cron-runs-everything behaviour (clean revert).
@@ -287,10 +287,11 @@ spec:
 {{- if .Values.sparkV4.heavyLane.enabled }}
 {{- /* -- v4-medallion-heavy -- the DECOUPLED heavy/money gold lane (P1 medallion-slowness fix).
        The fast v4-medallion above (every 5 min) skips GOLD_HEAVY_JOBS; this lane runs ONLY them, on a
-       slower cadence. WHY: gold_revenue_ledger (~21min) + gold_journey_events_reversion (~13min) + gold_cac
-       + gold_contribution_margin are ALWAYS full-scan (delete_orphans full-fold + two independent Silver
-       source clocks -- money-safety; the code correctly refuses to make them incremental) and don't need
-       5-min freshness. Running them every 5 min dragged the whole tick to ~99min over the 2.5h deadline on
+       slower cadence. WHY: gold_revenue_ledger (~21min) + gold_cac + gold_contribution_margin are ALWAYS
+       full-scan (delete_orphans full-fold + two independent Silver source clocks -- money-safety; the code
+       correctly refuses to make them incremental) and don't need 5-min freshness. They are also the ONLY
+       gold marts NO fast-lane mart also writes, so the two independent-schedule crons never race on an
+       Iceberg commit. Running them every 5 min dragged the whole tick to ~99min over the 2.5h deadline on
        variance -- Failed runs + ~100min effective freshness. Decoupled here: recognized-revenue freshness
        becomes the heavy schedule (default 20 min), the fast lane finishes far under its deadline.
 
@@ -378,7 +379,7 @@ spec:
           env:
             {{- toYaml .Values.sparkV4.env | nindent 12 }}
             - { name: TRANSFORM_CORE_ONLY, value: "1" }
-            # Run ONLY the heavy full-scan marts (revenue_ledger, journey_events_reversion, cac, cm).
+            # Run ONLY the heavy full-scan money marts (revenue_ledger, cac, contribution_margin).
             - { name: GOLD_LANE, value: "heavy" }
           {{- if $envFrom }}
           envFrom:

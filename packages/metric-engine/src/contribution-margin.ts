@@ -25,9 +25,17 @@ import type { EngineDeps } from './deps.js';
 import { withBrandTxn } from './deps.js';
 import type { SilverDeps } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+import { contribMarginFromMart } from './serving-mart-flags.js';
 
-/** CM reads both tiers: operational PG (cost config + currency) + lakehouse (realized + spend). */
-export type ContributionMarginDeps = EngineDeps & SilverDeps;
+/**
+ * CM reads both tiers: operational PG (cost config + currency) + lakehouse (realized + spend).
+ *
+ * ADR-0019 WS-3 D5: `fromMart` (default the SERVING_CONTRIB_MARGIN_FROM_MART process flag) repoints the
+ * read to the pre-baked mv_gold_contribution_margin instead of recomputing CM1/CM2 at read time. Default
+ * OFF → today's live recompute; explicit `fromMart` on deps overrides the env (unit-testable seam). The
+ * mart is byte-parity-gated against this recompute before the flag flips default-ON.
+ */
+export type ContributionMarginDeps = EngineDeps & SilverDeps & { fromMart?: boolean };
 
 export type CostConfidence = 'Trusted' | 'Estimated' | 'Insufficient';
 
@@ -80,6 +88,15 @@ export async function computeContributionMargin(
   deps: ContributionMarginDeps,
 ): Promise<ContributionMarginResult> {
   const asOfStr = asOf.toISOString().split('T')[0] as string;
+
+  // ── ADR-0019 WS-3 D5: pre-baked mart read (flag SERVING_CONTRIB_MARGIN_FROM_MART, default OFF) ──
+  // When ON, serve gold_contribution_margin (already built every Gold pass, one row per (brand,currency),
+  // cumulative-to-the-Gold-pass, computing the identical CM math in the transform tier per the
+  // single-query-ceiling doctrine). One thin brand-scoped read — no read-time recompute. Default OFF and
+  // any override false → today's live recompute below (unchanged). Parity-gated to the money-byte.
+  if (deps.fromMart ?? contribMarginFromMart()) {
+    return readContributionMarginFromMart(brandId, deps);
+  }
 
   // ── Config tier (operational PG, RLS-scoped): brand currency + cost_input rates ──
   const config = await withBrandTxn(deps.pool, brandId, async (client) => {
@@ -182,6 +199,64 @@ export async function computeContributionMargin(
     marketingMinor,
     cm2Minor,
     costConfidence,
+  };
+}
+
+/**
+ * readContributionMarginFromMart — the ADR-0019 WS-3 D5 pre-baked read path.
+ *
+ * Reads the single (brand_id, currency_code) row from the pre-materialized mv_gold_contribution_margin
+ * (brand-scoped via the ${BRAND_PREDICATE} seam). Every *_minor is bigint MINOR + the sibling
+ * currency_code, carried verbatim from the mart — never re-derived, never blended. Honest no_data when
+ * the brand has no mart row (hasData=false). A brand with multiple currency rows takes its own reporting
+ * currency's row (the M1 single-currency invariant the mart itself credits marketing under); the mart
+ * yields at most one row per (brand, currency), so the first row is the brand's realized-revenue row.
+ */
+async function readContributionMarginFromMart(
+  brandId: string,
+  deps: ContributionMarginDeps,
+): Promise<ContributionMarginResult> {
+  const row = await withSilverBrand(deps.srPool, brandId, async (scope) => {
+    const rows = await scope.runScoped<{
+      currency_code: string;
+      net_revenue_minor: string | number;
+      cogs_minor: string | number;
+      variable_minor: string | number;
+      cm1_minor: string | number;
+      marketing_minor: string | number;
+      cm2_minor: string | number;
+      cost_confidence: string;
+    }>(
+      // The mart is one row per (brand, currency); order by realized revenue DESC so the brand's
+      // reporting-currency row (the one carrying realized revenue + credited marketing) is first.
+      `SELECT currency_code, net_revenue_minor, cogs_minor, variable_minor, cm1_minor,
+              marketing_minor, cm2_minor, cost_confidence
+         FROM brain_serving.mv_gold_contribution_margin
+        WHERE ${BRAND_PREDICATE}
+        ORDER BY net_revenue_minor DESC
+        LIMIT 1`,
+      [],
+    );
+    return rows[0] ?? null;
+  });
+
+  if (row === null) return emptyResult();
+
+  const toBig = (v: string | number): bigint => BigInt(String(v).split('.')[0] ?? '0');
+  const confidence: CostConfidence =
+    row.cost_confidence === 'Trusted' || row.cost_confidence === 'Estimated' ? row.cost_confidence : 'Insufficient';
+  const netRevenueMinor = toBig(row.net_revenue_minor);
+  return {
+    // hasData mirrors the recompute: realized revenue present OR a cost config exists (marketing/cogs>0).
+    hasData: netRevenueMinor !== 0n || toBig(row.cogs_minor) !== 0n || toBig(row.marketing_minor) !== 0n,
+    currencyCode: (row.currency_code as CurrencyCode) ?? null,
+    netRevenueMinor,
+    cogsMinor: toBig(row.cogs_minor),
+    variableCostMinor: toBig(row.variable_minor),
+    cm1Minor: toBig(row.cm1_minor),
+    marketingMinor: toBig(row.marketing_minor),
+    cm2Minor: toBig(row.cm2_minor),
+    costConfidence: confidence,
   };
 }
 

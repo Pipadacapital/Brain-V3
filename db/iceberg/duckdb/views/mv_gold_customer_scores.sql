@@ -23,6 +23,10 @@ SELECT
   frequency_score,
   monetary_score,
   churn_risk,
+  -- ADR-0019 WS-3 D6: the canonical lifecycle segment, pre-baked once in the Gold pass
+  -- (gold_customer_360.py) from the ONE segment ladder — getCustomerSegmentMembers filters on this
+  -- instead of re-deriving the ladder in TS. Retires the TS-side ladder-drift hazard.
+  segment,
   'live' AS data_source,
   updated_at AS computed_at
 FROM iceberg.brain_gold.gold_customer_360;

@@ -172,6 +172,13 @@ jobs:
         run: tools/lint/structured-log-guard.sh --selftest
       - name: Run the structured-log guard over the service trees (AUD-OBS-2)
         run: tools/lint/structured-log-guard.sh
+      # View-drift guard (ADR-0019 WS-5 D8) — every brain_serving.mv_* an endpoint references must be
+      # DEFINED in db/iceberg/duckdb/views/*.sql. A drifted ref is skipped by the serving layer and 500s →
+      # core fail-safes to an empty chart (a silent failure); this makes it an author-time CI failure.
+      - name: Self-test the view-drift guard (proves catch + comment/dynamic skip)
+        run: tools/lint/view-drift-guard.sh --selftest
+      - name: Run the view-drift guard over apps/** + packages/** (WS-5 D8)
+        run: tools/lint/view-drift-guard.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # (REMOVED in the Spark→DuckDB cutover, feat/spark-to-duckdb-cutover) — the

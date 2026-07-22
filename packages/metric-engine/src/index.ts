@@ -349,6 +349,15 @@ export { computeChannelRoas } from './attribution-channel-roas.js';
 export type { ChannelRoasRow } from './attribution-channel-roas.js';
 // SPEC:C.4 — CAC/ROAS/executive marts-migration spend-source resolver (flag: measurement.marts_migration).
 export { spendView, LEGACY_SPEND_VIEW, MEASUREMENT_SPEND_VIEW } from './measurement-migration.js';
+// ADR-0019 WS-3 pre-baked-mart read seams (process-env flags, default OFF).
+export {
+  contribMarginFromMart,
+  channelRoasFromMart,
+  segmentFromMart,
+  CONTRIB_MARGIN_FROM_MART_ENV,
+  CHANNEL_ROAS_FROM_MART_ENV,
+  SEGMENT_FROM_MART_ENV,
+} from './serving-mart-flags.js';
 
 // SPEC:C.5.1 — measurement lineage: every executive metric → its Measurement facts (machine-readable audit).
 export {

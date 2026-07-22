@@ -544,6 +544,79 @@ def test_main_gold_calls_hook_and_tier_failure_alone_sets_exit(monkeypatch):
     assert seq == ["tier:gold", "hook"], seq  # hook runs AFTER the tier, in-process
 
 
+# ── ADR-0019 WS-1 D1 + WS-4 D7: end-of-tick serving warm-up POSTs (default OFF, fail-open) ──────────
+
+
+def test_serving_warmup_flags_default_off_no_post(monkeypatch):
+    # DEFAULT: both flags unset → NEITHER helper posts. _post_json must never be called (assert by making
+    # it explode if reached). This is the inert-on-merge contract.
+    monkeypatch.delenv("DUCKDB_SERVING_ROTATE_ON_SIGNAL", raising=False)
+    monkeypatch.delenv("SERVING_WARM_ON_WRITE", raising=False)
+    monkeypatch.setattr(run_all, "_post_json",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not POST when flags OFF")))
+    assert run_all._run_serving_warmup() is None  # no POST, no raise
+
+
+def test_serving_rotate_posts_when_flag_on(monkeypatch):
+    monkeypatch.setenv("DUCKDB_SERVING_ROTATE_ON_SIGNAL", "1")
+    monkeypatch.setenv("SERVING_INTERNAL_URL", "http://duckdb-serving:8091")
+    calls = []
+    monkeypatch.setattr(run_all, "_post_json",
+                        lambda url, payload, **k: calls.append((url, payload)) or (200, b"{}"))
+    assert run_all._run_serving_rotate() is None
+    assert calls == [("http://duckdb-serving:8091/internal/rotate", None)]
+
+
+def test_serving_warm_posts_with_token_when_flag_on(monkeypatch):
+    monkeypatch.setenv("SERVING_WARM_ON_WRITE", "true")
+    monkeypatch.setenv("CORE_INTERNAL_URL", "http://brain-core:3001/")  # trailing slash is stripped
+    monkeypatch.setenv("SERVING_WARM_TOKEN", "s3cr3t")
+    calls = []
+
+    def _fake_post(url, payload, *, headers=None, timeout_s=10.0):
+        calls.append((url, payload, headers))
+        return 200, b'{"warmed":8}'
+
+    monkeypatch.setattr(run_all, "_post_json", _fake_post)
+    assert run_all._run_serving_warm() is None
+    assert calls[0][0] == "http://brain-core:3001/internal/serving/warm"
+    assert calls[0][1] == {"datasets": "all", "brands": "all"}
+    assert calls[0][2] == {"x-internal-token": "s3cr3t"}
+
+
+def test_serving_warmup_failure_never_raises(monkeypatch):
+    # FAIL-OPEN: a failing POST from EITHER helper logs and returns None — the tick's exit code is
+    # untouched. Monkeypatch a POST that always throws; the warm-up must swallow it.
+    monkeypatch.setenv("DUCKDB_SERVING_ROTATE_ON_SIGNAL", "1")
+    monkeypatch.setenv("SERVING_WARM_ON_WRITE", "1")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(run_all, "_post_json", _boom)
+    assert run_all._run_serving_warmup() is None  # both helpers swallow the error, no raise
+
+
+def test_main_gold_warmup_runs_after_maintenance_and_never_moves_exit(monkeypatch):
+    # At the gold single-shot call site: main('gold') runs the tier → hot-table maintenance → the serving
+    # warm-up, in that order. A THROWING warm-up (both flags on, POST explodes) must NOT change main's exit
+    # code — the tier is clean (0) so main returns 0. This is the fail-open contract at the real call site.
+    seq = []
+    monkeypatch.setenv("DUCKDB_SERVING_ROTATE_ON_SIGNAL", "1")
+    monkeypatch.setenv("SERVING_WARM_ON_WRITE", "1")
+    monkeypatch.setattr(run_all._catalog, "connect", lambda: _FakeCon())
+    monkeypatch.setattr(run_all, "_patch_connect", lambda shared: None)
+    monkeypatch.setattr(run_all, "run_tier", lambda shared, tier: seq.append(f"tier:{tier}") or 0)
+    monkeypatch.setattr(run_all, "_run_tick_maintenance", lambda: seq.append("maint"))
+    monkeypatch.setattr(run_all, "_post_json",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("serving down")))
+    monkeypatch.setattr(sys, "argv", ["run_all.py", "gold"])
+    assert run_all.main() == 0
+    # maintenance THEN warm-up, both after the tier; the warm-up ran (didn't raise) — no 4th seq entry
+    # because _run_serving_warmup logs internally, but main returned 0 despite the exploding POST.
+    assert seq == ["tier:gold", "maint"], seq
+
+
 def test_run_tick_maintenance_is_exception_walled_end_to_end(monkeypatch):
     # The hook OWNS a total exception wall: even a mid-loop RuntimeError in mb.expire is swallowed and the
     # function returns None. (The per-table wall is tested above; this pins the OUTER wall around the whole

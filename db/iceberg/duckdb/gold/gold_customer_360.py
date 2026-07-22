@@ -128,6 +128,7 @@ COLUMNS_SQL = """
   frequency_score      int,
   monetary_score       int,
   churn_risk           string,
+  segment              string,
   customer_watermark   timestamp,
   updated_at           timestamp
 """.strip("\n")
@@ -139,13 +140,52 @@ COLUMNS = [
     "preferred_channel", "preferred_device", "top_category", "acquisition_source",
     "health_band", "churn_score", "lifecycle_stage", "journey_summary",
     "recency_days", "frequency", "health_score", "last_order_at", "days_since_last_order",
-    "recency_score", "frequency_score", "monetary_score", "churn_risk",
+    "recency_score", "frequency_score", "monetary_score", "churn_risk", "segment",
     "customer_watermark", "updated_at",
 ]
 
 PK = ["brand_id", "brain_id"]
 
 _JOURNEY_LIMIT = 200
+
+# ── Lifecycle-segment ladder (ADR-0019 WS-3 D6) — the SINGLE source of truth. ────────────────────────
+# Thresholds MIRRORED verbatim from the TS reader's named constants (deriveLifecycleSegment in
+# packages/metric-engine/src/customer-scores-batch.ts, itself the mirror of the retired _segment_rules.py).
+# Pre-baking the segment here (a column on the 360 → mv_gold_customer_scores) kills the TS re-derivation
+# (a full brand scan) AND the ladder-drift hazard: the ladder now lives in exactly one place, the Gold pass.
+_SEG_RECENCY_AT_RISK_MAX_DAYS = 180
+_SEG_RECENCY_ACTIVE_MAX_DAYS = 90
+_SEG_RECENCY_VIP_MAX_DAYS = 60
+_SEG_FREQUENCY_LOYAL_MIN_ORDERS = 5
+_SEG_MONETARY_VIP_MIN_MINOR = 10_000_000
+_SEG_MONETARY_HIGH_MIN_MINOR = 5_000_000
+
+
+def segment_case_sql(dslo_expr: str, orders_expr: str, value_expr: str) -> str:
+    """The lifecycle-segment first-match ladder as a DuckDB CASE, reproducing deriveLifecycleSegment EXACTLY.
+
+    Args are SQL expressions for the three base signals:
+      dslo_expr   = days_since_last_order (recency). NULL when last_seen_at is unknown — SQL three-valued
+                    logic makes every recency comparison NULL→false, matching the TS `recent` guard, so a
+                    null-recency customer falls through to the value/frequency ladder (never churned/VIP).
+      orders_expr = lifetime_orders (frequency). COALESCE'd to 0 to mirror the TS toBigIntFloor(null)=0n.
+      value_expr  = lifetime_value_minor (MINOR units, never blended/float). COALESCE'd to 0 likewise.
+    First-match precedence is byte-identical to the TS ladder; thresholds are the mirrored constants above.
+    """
+    orders = f"COALESCE({orders_expr}, 0)"
+    value = f"COALESCE({value_expr}, 0)"
+    return (
+        f"CASE "
+        f"WHEN {dslo_expr} > {_SEG_RECENCY_AT_RISK_MAX_DAYS} THEN 'churned' "
+        f"WHEN {dslo_expr} > {_SEG_RECENCY_ACTIVE_MAX_DAYS} THEN 'at_risk' "
+        f"WHEN {value} >= {_SEG_MONETARY_VIP_MIN_MINOR} AND {orders} >= {_SEG_FREQUENCY_LOYAL_MIN_ORDERS} "
+        f"     AND {dslo_expr} <= {_SEG_RECENCY_VIP_MAX_DAYS} THEN 'VIP' "
+        f"WHEN {orders} >= {_SEG_FREQUENCY_LOYAL_MIN_ORDERS} AND {dslo_expr} <= {_SEG_RECENCY_ACTIVE_MAX_DAYS} THEN 'loyal' "
+        f"WHEN {value} >= {_SEG_MONETARY_HIGH_MIN_MINOR} THEN 'high_value' "
+        f"WHEN {orders} = 1 AND {value} > 0 THEN 'first_time_buyer' "
+        f"WHEN {value} = 0 THEN 'cart_abandoner' "
+        f"ELSE 'window_shopper' END"
+    )
 
 
 def _table_exists(con, fq: str) -> bool:
@@ -426,6 +466,11 @@ def build(con):
     churn_expr = (
         f"CASE WHEN {dslo} > 180 THEN 'high' WHEN {dslo} > 90 THEN 'medium' ELSE 'low' END"
     )
+
+    # ── segment (ADR-0019 WS-3 D6): the canonical lifecycle-segment ladder computed ONCE here in the Gold
+    #    pass (segment_case_sql — module-level so it is the single, testable source of truth), so
+    #    getCustomerSegmentMembers filters on this column instead of re-deriving the ladder in TS. ──
+    segment_expr = segment_case_sql(dslo, "c.lifetime_orders", "c.lifetime_value_minor")
     pc_expr = "pc.preferred_channel" if preferred_channel else "CAST(NULL AS VARCHAR)"
     pd_expr = "pd.preferred_device" if preferred_device else "CAST(NULL AS VARCHAR)"
     tc_expr = "tc.top_category" if top_category else "CAST(NULL AS VARCHAR)"
@@ -475,6 +520,7 @@ def build(con):
                   WHEN c.lifetime_value_minor >= 200000   THEN 2
                   ELSE 1 END AS INTEGER)                                AS monetary_score,
         {churn_expr}                                                    AS churn_risk,
+        {segment_expr}                                                  AS segment,
         c.customer_watermark,
         now() AT TIME ZONE 'UTC'                                        AS updated_at
       FROM {SILVER_CUSTOMER} c

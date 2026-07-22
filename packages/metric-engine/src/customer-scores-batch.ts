@@ -29,6 +29,7 @@
  */
 import type { SilverPool } from './silver-deps.js';
 import { withSilverBrand, BRAND_PREDICATE } from './silver-deps.js';
+import { segmentFromMart } from './serving-mart-flags.js';
 
 /** The named lifecycle/behavioral segments (segment_type='lifecycle' in gold_customer_segments). */
 export type LifecycleSegment =
@@ -177,13 +178,38 @@ export async function getCustomerScoresForBrainIds(
  *
  * Bounded by `cap` (default 50_000 customers) to avoid pathological memory; brands beyond the cap get the
  * first `cap` members (documented limit). Empty brand / unavailable tier → [] (honest-empty).
+ *
+ * ADR-0019 WS-3 D6: `fromMart` (default the SERVING_SEGMENT_FROM_MART process flag) repoints the filter
+ * to the pre-baked `segment` column of gold_customer_scores — pushing the WHERE into the mart so the read
+ * returns ONLY the matching brain_ids (no full brand scan, no TS re-derivation of the ladder). Default
+ * OFF → today's full-scan-and-derive-in-TS; explicit `fromMart` on deps overrides the env (testable seam).
+ * The mart's segment CASE is the byte-parity mirror of deriveLifecycleSegment (single source of truth in
+ * gold_customer_360.py), so the flag flips only the WHERE location, never the membership.
  */
 export async function getCustomerSegmentMembers(
   brandId: string,
   segment: LifecycleSegment,
-  deps: { srPool: SilverPool },
+  deps: { srPool: SilverPool; fromMart?: boolean },
   cap = 50_000,
 ): Promise<string[]> {
+  // Flag-ON: filter at the mart on the pre-baked segment column — only matching rows come back.
+  if (deps.fromMart ?? segmentFromMart()) {
+    return withSilverBrand(deps.srPool, brandId, async (scope) => {
+      // segment is a typed LifecycleSegment (a fixed enum), never user free-text — but guard to a safe
+      // identifier before interpolation as defence-in-depth (matches the model-id guard elsewhere).
+      const seg = isLifecycleSegment(segment) ? segment : '__invalid__';
+      const rows = await scope.runScoped<{ brain_id: string }>(
+        `SELECT brain_id
+           FROM brain_serving.mv_gold_customer_scores
+          WHERE segment = '${seg}' AND ${BRAND_PREDICATE}
+          LIMIT ${cap}`,
+        [],
+      );
+      return rows.map((r) => r.brain_id);
+    });
+  }
+
+  // Flag-OFF (default): full brand scan + derive the ladder in TS (today's behaviour, unchanged).
   return withSilverBrand(deps.srPool, brandId, async (scope) => {
     const rows = await scope.runScoped<{
       brain_id: string;

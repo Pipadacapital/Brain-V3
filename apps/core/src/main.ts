@@ -486,6 +486,8 @@ export async function main(): Promise<void> {
     cfg.SERVING_CACHE_ENABLED !== undefined
       ? cfg.SERVING_CACHE_ENABLED === 'true'
       : isProduction;
+  // ADR-0019 WS-2 — stale-while-revalidate. DEFAULT-OFF: unset → today's fresh-or-block cache.
+  const servingCacheSwrEnabled = cfg.SERVING_CACHE_SWR === 'true';
   const servingCache: ServingCacheReader = createServingCacheReader({
     // ioredis.Redis satisfies the RedisCacheClient structural port at runtime (get/set 'PX'/del),
     // but its overloaded `set` signature doesn't structurally unify with the minimal port — cast.
@@ -493,9 +495,10 @@ export async function main(): Promise<void> {
     servingVersion: cfg.SERVING_VERSION,
     ttlMs: cfg.SERVING_CACHE_TTL_MS,
     enabled: servingCacheEnabled,
+    swr: { enabled: servingCacheSwrEnabled, staleGraceMs: cfg.SERVING_CACHE_SWR_GRACE_MS },
   });
   log.info(
-    `[core] serving cache ${servingCacheEnabled ? 'ENABLED' : 'disabled'} (duckdb-serving reads, ttl=${cfg.SERVING_CACHE_TTL_MS}ms, version=${cfg.SERVING_VERSION})`,
+    `[core] serving cache ${servingCacheEnabled ? 'ENABLED' : 'disabled'} (duckdb-serving reads, ttl=${cfg.SERVING_CACHE_TTL_MS}ms, version=${cfg.SERVING_VERSION}, swr=${servingCacheEnabled && servingCacheSwrEnabled ? `on/grace=${cfg.SERVING_CACHE_SWR_GRACE_MS}ms` : 'off'})`,
   );
 
   // ── SPEC: 0.5 — per-brand platform flags (Redis-backed, DEFAULT OFF, fail-closed) ──
@@ -920,6 +923,9 @@ export async function main(): Promise<void> {
     // SPEC: D.3 — the semantic-serving flag switch (DEFAULT OFF, legacy pass-through). Migrated
     // metric reads route through it; a metric with no compiled view yet stays on legacy even ON.
     semanticRouter,
+    // ADR-0019 WS-4 D7 — service token for the cluster-internal warm-on-write endpoint. Unset (default)
+    // → the endpoint is DISABLED (404); the tick-side POST is separately default-OFF. Ships inert.
+    servingWarmToken: process.env.SERVING_WARM_TOKEN,
   });
 
   // ── CQ-2: register the connector + pixel context (HIGH-MOUNT-01) ────────────

@@ -83,6 +83,23 @@ PREWARM_TABLES = parse_prewarm_tables(os.environ.get("DUCKDB_SERVING_PREWARM_TAB
 # This is the view-reapply/self-heal cadence, NOT commit frequency — small-file pressure is a
 # function of the transform tick, and the maintenance lane handles compaction. Still configurable.
 CATALOG_REFRESH_S = int(os.environ.get("DUCKDB_SERVING_CATALOG_REFRESH_S", "60") or "60")
+
+
+def _flag_on(name: str) -> bool:
+    """A serving flag is ON iff its env value is a truthy token. DEFAULT OFF for every new flag
+    (ADR-0019 safe-off doctrine) — an unset/empty/false value keeps today's behaviour verbatim."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# ADR-0019 WS-1 D2 — HOLD-WARM (skip-only rotation). The rotation's ONLY jobs are (a) re-apply views
+# whose Gold dep didn't exist last epoch (self-heal via views_skipped) and (b) recover a poisoned attach;
+# freshness for ALREADY-applied views is commit-driven on re-query, NOT the rotation path. So in steady
+# state a scheduled rotation just rebuilds a cold connection for nothing. When this flag is ON, the
+# rotation loop HOLDS the warm epoch and rotates only when the last epoch had non-empty views_skipped
+# (a Gold dep may now exist), OR a poisoned-attach flag is set, OR the write-driven signal (D1) fired.
+# Self-heal is preserved: a newly-deployed view still triggers exactly one rotation via views_skipped.
+# DEFAULT OFF → today's unconditional clock. Read at call time so tests can toggle per-case.
+DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY = "DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY"
 # Admission wait: a request queues briefly for a semaphore slot, then 503s — the TS adapter
 # aborts at 30s, so queueing long merely converts saturation into timeouts. Short and fixed.
 ADMISSION_WAIT_S = 2.0
@@ -250,6 +267,19 @@ class Engine:
         self._sem = threading.Semaphore(MAX_CONCURRENT)
         self._stop = threading.Event()
         self._rotator: threading.Thread | None = None
+        # ADR-0019 WS-1 D2 — write-driven rotation signal (set by POST /internal/rotate via the tick;
+        # WS-1 D1). The skip-only loop rotates when this is set even if views_skipped is empty (fresh Gold
+        # landed but every view already applied). A plain bool under the GIL — set from the request thread,
+        # read+cleared in the rotation thread; a lost race merely defers one rotation to the backstop tick.
+        self._rotate_signal = False
+        # WS-1 D2 — poisoned-attach flag: a rotation build failure (rotation_failures_total++) marks the
+        # attach suspect so the skip-only loop keeps retrying instead of holding a broken/empty epoch.
+        self._attach_poisoned = False
+        # WS-1 D1 — serialize rotate_once across the rotation thread AND the /internal/rotate request
+        # thread, so a signal-driven rotate can never race the clock loop into two overlapping epoch
+        # builds. The epoch swap itself is already _epoch_lock-guarded; this mutex serializes the whole
+        # build+swap so the two callers never both attach at once (which would waste a connection).
+        self._rotate_mutex = threading.Lock()
         # Prometheus counters (exposed by server.py /metrics; plain ints under the GIL are fine
         # for monotonic counters — a lost increment under contention is a rounding error, not a lie).
         self.queries_total = 0
@@ -281,29 +311,69 @@ class Engine:
         if old is not None:
             old.retire()
 
+    def signal_rotate(self) -> None:
+        """ADR-0019 WS-1 D1 — request a rotation on the NEXT loop tick (write-driven). The transform
+        tick POSTs /internal/rotate at end-of-tick so rotation becomes write-driven; this just sets a
+        flag the skip-only loop (D2) observes. Cheap, thread-safe (plain bool under the GIL), and does
+        NOT rotate inline — the rotation thread owns the single-writer epoch swap. Idempotent: a second
+        signal before the loop consumes the first collapses into one rotation (the flag is a level, not
+        an edge)."""
+        self._rotate_signal = True
+
     def rotate_once(self) -> None:
         """Build a NEW epoch (attach + pragmas + views), atomically swap it in, retire the old.
-        On build failure the CURRENT epoch keeps serving — rotation is self-heal, not a risk."""
-        self._epoch_seq += 1
-        try:
-            fresh = Epoch(self._epoch_seq, self._views_dir)
-        except Exception:
-            self.rotation_failures_total += 1
-            raise
+        On build failure the CURRENT epoch keeps serving — rotation is self-heal, not a risk.
+
+        Thread-safe (WS-1 D1): the whole build+swap runs under _rotate_mutex so the clock loop and the
+        write-driven /internal/rotate request never overlap two epoch builds."""
+        with self._rotate_mutex:
+            self._epoch_seq += 1
+            # Consume the write-driven signal at the START of the build (WS-1 D2): a signal that arrives
+            # DURING the build re-arms for the next loop, so a rotate can never silently drop a fresh-Gold
+            # notification. Cleared even on the unconditional-clock path (harmless — the flag is only read
+            # under skip-only).
+            self._rotate_signal = False
+            try:
+                fresh = Epoch(self._epoch_seq, self._views_dir)
+            except Exception:
+                self.rotation_failures_total += 1
+                self._attach_poisoned = True  # WS-1 D2: keep the skip-only loop retrying (don't hold poison)
+                raise
+            with self._epoch_lock:
+                old, self._epoch = self._epoch, fresh
+            self.rotations_total += 1
+            self._attach_poisoned = False  # a clean build clears the poison latch
+            if old is not None:
+                old.retire()
+            warm = ",".join(f'"{t}":{s:.1f}' for t, s in fresh.prewarmed)
+            print(f'{{"engine":"duckdb-serving","epoch":{fresh.index},"views_applied":{fresh.views_applied},'
+                  f'"views_skipped":{len(fresh.views_skipped)},"prewarm_s":{{{warm}}}}}', flush=True)
+
+    def _should_rotate_this_tick(self) -> bool:
+        """ADR-0019 WS-1 D2 hold-warm decision (evaluated once per loop tick). Under the skip-only flag,
+        a scheduled rotation runs ONLY when something genuinely needs it — otherwise the warm epoch is
+        held. 'Needs it' = (a) the last epoch skipped a view (a Gold dep may now exist → self-heal), OR
+        (b) the attach is poisoned (last build failed / no live epoch yet), OR (c) the write-driven signal
+        fired (D1). Flag OFF → today's behaviour: always rotate on the clock."""
+        if not _flag_on(DUCKDB_SERVING_ROTATE_ON_SKIP_ONLY):
+            return True
+        if self._epoch is None or self._attach_poisoned:
+            return True  # no live/healthy epoch yet — the bootstrap/self-heal path must keep trying
+        if self._rotate_signal:
+            return True  # write-driven: fresh Gold landed (D1)
         with self._epoch_lock:
-            old, self._epoch = self._epoch, fresh
-        self.rotations_total += 1
-        if old is not None:
-            old.retire()
-        warm = ",".join(f'"{t}":{s:.1f}' for t, s in fresh.prewarmed)
-        print(f'{{"engine":"duckdb-serving","epoch":{fresh.index},"views_applied":{fresh.views_applied},'
-              f'"views_skipped":{len(fresh.views_skipped)},"prewarm_s":{{{warm}}}}}', flush=True)
+            epoch = self._epoch
+        return bool(epoch is not None and epoch.views_skipped)  # a skipped view may now have its dep
 
     def _rotate_loop(self) -> None:
         while not self._stop.is_set():
             wait = CATALOG_REFRESH_S if self._epoch is not None else BOOTSTRAP_RETRY_S
             if self._stop.wait(wait):
                 return
+            # WS-1 D2: hold the warm epoch unless a rotation is genuinely needed (self-heal preserved via
+            # views_skipped; write-driven via the signal). Flag OFF → always True → today's clock.
+            if not self._should_rotate_this_tick():
+                continue
             try:
                 self.rotate_once()
             except Exception as exc:  # noqa: BLE001 — keep serving on the old epoch; retry next tick

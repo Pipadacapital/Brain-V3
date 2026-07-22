@@ -59,6 +59,16 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
     compute: () => Promise<T>,
   ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
+  // ADR-0019 WS-2: order_status_mix was historically UNCACHED. Route it through the cache ONLY when
+  // SWR is on (merge stays a no-op until SERVING_CACHE_SWR flips) → then served stale-while-revalidate.
+  const cachedUnderSwr = <T>(
+    brandId: string,
+    metricId: string,
+    params: Record<string, unknown>,
+    compute: () => Promise<T>,
+  ): Promise<T> =>
+    servingCache?.swrEnabled ? servingCache.read(brandId, metricId, params, compute) : compute();
+
   // ── CoD / RTO endpoints (GoKwik + Shopflo Track C) ────────────────────────
   // Three reads for the CoD/RTO analytics surface, all via the metric-engine sole
   // read-path (ADR-002 — NO ad-hoc SUM/COUNT here). Brand from session (D-1, never
@@ -287,19 +297,25 @@ export function registerAnalyticsLogisticsRoutes(fastify: FastifyInstance, deps:
       // SPEC:D.3 — served through the semantic-serving switch (metricId 'order_status_mix'). Flag OFF
       // (default) → this exact legacy read; the compiled order_status_mix view (D.2) migrates it later.
       const brandId = auth.brandId; // const-capture preserves the !brandId guard across the closure
-      const result: ContractOrderStatusMix = await routeMetric(brandId, 'order_status_mix', () =>
-        getOrderStatusMix(
-          brandId,
-          { srPool },
-          {
-            from: new Date(`${fromStr}T00:00:00Z`),
-            to: new Date(`${toStr}T23:59:59Z`),
-            fromStr,
-            toStr,
-            // Dev: the order ledger's cod_* rows folded into Silver are synthetic (real shape).
-            dataSource: 'synthetic',
-          },
-        ),
+      const result: ContractOrderStatusMix = await cachedUnderSwr(
+        brandId,
+        'order_status_mix',
+        { fromStr, toStr },
+        () =>
+          routeMetric(brandId, 'order_status_mix', () =>
+            getOrderStatusMix(
+              brandId,
+              { srPool },
+              {
+                from: new Date(`${fromStr}T00:00:00Z`),
+                to: new Date(`${toStr}T23:59:59Z`),
+                fromStr,
+                toStr,
+                // Dev: the order ledger's cod_* rows folded into Silver are synthetic (real shape).
+                dataSource: 'synthetic',
+              },
+            ),
+          ),
       );
 
       return reply.send({ request_id: requestId, data: result });

@@ -180,3 +180,134 @@ describe('ServingCacheReader — fail-soft', () => {
     expect(compute).toHaveBeenCalledTimes(1); // exactly once — no double-read on a genuine error
   });
 });
+
+describe('ServingCacheReader — ADR-0019 WS-2 stale-while-revalidate', () => {
+  /** Drain the microtask queue so a fire-and-forget background revalidation completes. */
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('swrEnabled reflects enabled AND swr.enabled', () => {
+    const cache = makeFakeCache();
+    const off = createServingCacheReader({ cache, servingVersion: 'v1', ttlMs: 1000, enabled: true });
+    const swrOn = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: true, swr: { enabled: true, staleGraceMs: 60_000 },
+    });
+    const cacheOff = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: false, swr: { enabled: true, staleGraceMs: 60_000 },
+    });
+    expect(off.swrEnabled).toBe(false); // no swr block
+    expect(swrOn.swrEnabled).toBe(true);
+    expect(cacheOff.swrEnabled).toBe(false); // cache disabled ⇒ swr inert
+  });
+
+  it('swr.enabled=false → identical to today (getOrSet path, plain key, no :swr suffix)', async () => {
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: true, swr: { enabled: false, staleGraceMs: 60_000 },
+    });
+    const compute = vi.fn(async () => ({ value: 7 }));
+    await reader.read(BRAND_A, 'kpi_summary', { asOf: 'x' }, compute);
+    await reader.read(BRAND_A, 'kpi_summary', { asOf: 'x' }, compute);
+    expect(compute).toHaveBeenCalledTimes(1); // cached
+    expect(cache.keys.every((k) => !k.endsWith(':swr'))).toBe(true); // plain keyspace, unchanged
+  });
+
+  it('SWR keys are :swr-suffixed AND brand_id-LEADING (disjoint keyspace, still isolatable)', async () => {
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: true, swr: { enabled: true, staleGraceMs: 60_000 },
+    });
+    await reader.read(BRAND_A, 'kpi_summary', { asOf: 'x' }, async () => 1);
+    expect(cache.keys[0]!.startsWith(`${BRAND_A}:`)).toBe(true);
+    expect(cache.keys[0]!.endsWith(':swr')).toBe(true);
+  });
+
+  it('fresh hit within soft ttl serves from cache (compute NOT re-run)', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: true, swr: { enabled: true, staleGraceMs: 60_000 },
+    });
+    const compute = vi.fn(async () => ({ value: 1 }));
+    const a = await reader.read(BRAND_A, 'm', { p: 1 }, compute); // miss
+    const b = await reader.read(BRAND_A, 'm', { p: 1 }, compute); // fresh hit (same instant)
+    expect(a).toEqual({ value: 1 });
+    expect(b).toEqual({ value: 1 });
+    expect(compute).toHaveBeenCalledTimes(1);
+  });
+
+  it('past soft ttl serves STALE immediately + revalidates in background; next read is fresh', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: true, swr: { enabled: true, staleGraceMs: 60_000 },
+    });
+    let v = 1;
+    const compute = vi.fn(async () => ({ value: v }));
+
+    const a = await reader.read(BRAND_A, 'm', { p: 1 }, compute); // miss → stores value 1
+    expect(a).toEqual({ value: 1 });
+    expect(compute).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockReturnValue(1_000_000 + 2_000); // +2s > 1s soft ttl → stale (but < grace, still present)
+    v = 2;
+    const b = await reader.read(BRAND_A, 'm', { p: 1 }, compute); // STALE served immediately
+    expect(b).toEqual({ value: 1 }); // the last-known value, NOT blocked on a recompute
+    await flush(); // let the background revalidation land
+    expect(compute).toHaveBeenCalledTimes(2); // refreshed in the background
+
+    const c = await reader.read(BRAND_A, 'm', { p: 1 }, compute); // fresh again (refreshed value)
+    expect(c).toEqual({ value: 2 });
+    expect(compute).toHaveBeenCalledTimes(2); // read c was a fresh hit, no new compute
+  });
+
+  it('stale serve emits result=stale (distinct from hit/miss)', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: true, swr: { enabled: true, staleGraceMs: 60_000 },
+    });
+    const results: string[] = [];
+    const restore = setCounterSink({
+      add: (name, _v, labels) => {
+        if (name === 'serving_cache_requests_total') results.push(labels.result as string);
+      },
+    });
+    try {
+      await reader.read(BRAND_A, 'm', { p: 1 }, async () => 1); // miss
+      nowSpy.mockReturnValue(1_000_000 + 2_000);
+      await reader.read(BRAND_A, 'm', { p: 1 }, async () => 1); // stale
+      await flush();
+    } finally {
+      restore();
+    }
+    expect(results).toEqual(['miss', 'stale']);
+  });
+
+  it('background revalidation failure keeps serving stale (no throw to the caller)', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = makeFakeCache();
+    const reader = createServingCacheReader({
+      cache, servingVersion: 'v1', ttlMs: 1000, enabled: true, swr: { enabled: true, staleGraceMs: 60_000 },
+    });
+    let fail = false;
+    const compute = vi.fn(async () => {
+      if (fail) throw new Error('Trino down mid-refresh');
+      return { value: 1 };
+    });
+    await reader.read(BRAND_A, 'm', { p: 1 }, compute); // miss → value 1
+
+    nowSpy.mockReturnValue(1_000_000 + 2_000);
+    fail = true;
+    const b = await reader.read(BRAND_A, 'm', { p: 1 }, compute); // stale served; background will fail
+    expect(b).toEqual({ value: 1 }); // no throw — stale value returned
+    await flush();
+
+    const c = await reader.read(BRAND_A, 'm', { p: 1 }, compute); // still stale (refresh failed, value kept)
+    expect(c).toEqual({ value: 1 });
+  });
+});

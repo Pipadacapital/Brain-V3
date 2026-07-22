@@ -237,6 +237,15 @@ spec:
             # no-op for the gold tier (run_all.py only excludes IDENTITY_OWNED_JOBS, all silver_*), but it
             # keeps the CORE lane's env uniform and documents that gold never writes an identity table.
             - { name: TRANSFORM_CORE_ONLY, value: "1" }
+            {{- if .Values.sparkV4.heavyLane.enabled }}
+            # Tiered gold cadence (P1 medallion-slowness fix): this */5 FAST lane skips the always-full-scan
+            # heavy marts (revenue_ledger ~21min + journey_events_reversion ~13min + cac + contribution_margin
+            # ≈ 63% of the gold pass). They run on the separate v4-medallion-heavy */20 lane below; the fast
+            # lane reads their LAST-WRITTEN Iceberg table (slightly stale, converges — same stale-tolerant
+            # pattern as the CORE↔IDENTITY silver_identity_map split). heavyLane.enabled=false → no GOLD_LANE
+            # env → run_all defaults "all" → today's single-cron-runs-everything behaviour (clean revert).
+            - { name: GOLD_LANE, value: "fast" }
+            {{- end }}
             {{- if .Values.sparkV4.tickMaintTables }}
             # Wave 2a — hot-table maintenance folded into the transform tick (2026-07-21 keystone incident).
             # After run_all.py's gold pass lands (this step's END), run_all's in-process hook compacts +
@@ -274,4 +283,122 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.defaults.resources | nindent 12 }}
+
+{{- if .Values.sparkV4.heavyLane.enabled }}
+{{- /* -- v4-medallion-heavy -- the DECOUPLED heavy/money gold lane (P1 medallion-slowness fix).
+       The fast v4-medallion above (every 5 min) skips GOLD_HEAVY_JOBS; this lane runs ONLY them, on a
+       slower cadence. WHY: gold_revenue_ledger (~21min) + gold_journey_events_reversion (~13min) + gold_cac
+       + gold_contribution_margin are ALWAYS full-scan (delete_orphans full-fold + two independent Silver
+       source clocks -- money-safety; the code correctly refuses to make them incremental) and don't need
+       5-min freshness. Running them every 5 min dragged the whole tick to ~99min over the 2.5h deadline on
+       variance -- Failed runs + ~100min effective freshness. Decoupled here: recognized-revenue freshness
+       becomes the heavy schedule (default 20 min), the fast lane finishes far under its deadline.
+
+       It runs gold(heavy) then serving-cache-bust ONLY -- NO silver step (it reads the silver tables the
+       fast lane writes every 5 min). Writes a DISJOINT set of gold tables from the fast lane (no shared
+       table, no write conflict); Iceberg snapshot isolation covers the fast lane reading the ledger while
+       this lane rewrites it. concurrencyPolicy Forbid means a long heavy run skips its own next tick. */ -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: v4-medallion-heavy
+  labels:
+    {{- include "brain.labels" . | nindent 4 }}
+    brain.io/job: v4-medallion-heavy
+spec:
+  schedule: {{ .Values.sparkV4.heavyLane.schedule | quote }}
+  timezone: {{ $tz | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.defaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.defaults.failedJobsHistoryLimit }}
+  workflowSpec:
+    serviceAccountName: {{ $sa }}
+    entrypoint: run
+    {{- with .Values.sparkV4.podAnnotations }}
+    podMetadata:
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    metrics:
+      prometheus:
+        - name: brain_transform_workflow_duration_seconds
+          help: "Realtime wall-clock (s) of the running v4 DuckDB medallion-heavy workflow"
+          labels:
+            - key: tier
+              value: v4-medallion-heavy
+          gauge:
+            realtime: true
+            value: {{ `"{{workflow.duration}}"` }}
+        - name: brain_transform_workflow_failed_total
+          help: "v4 DuckDB medallion-heavy workflow runs that ended Failed"
+          labels:
+            - key: tier
+              value: v4-medallion-heavy
+          when: {{ `"{{workflow.status}} == Failed"` }}
+          counter:
+            value: "1"
+    {{- with .Values.sparkV4.nodeSelector }}
+    nodeSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.sparkV4.tolerations }}
+    tolerations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    # Heavy lane is short (measured ~34min) → a much tighter deadline than the fast lane's full-CORE ceiling.
+    activeDeadlineSeconds: {{ .Values.sparkV4.heavyLane.activeDeadlineSeconds }}
+    podGC:
+      strategy: OnWorkflowSuccess
+    templates:
+      - name: run
+        steps:
+          - - name: gold-heavy
+              template: gold-heavy
+          - - name: serving-cache-bust
+              template: serving-cache-bust
+              continueOn:
+                failed: true
+
+      - name: gold-heavy
+        retryStrategy:
+          limit: {{ .Values.defaults.backoffLimit | quote }}
+          retryPolicy: OnError
+        container:
+          image: {{ $ref | quote }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              {{- include "brain.sparkPgEnvDerivation" $ | nindent 14 }}
+              echo "── gold-heavy: single-process runner (GOLD_LANE=heavy) ──"
+              python /opt/brain/duckdb/run_all.py gold
+          env:
+            {{- toYaml .Values.sparkV4.env | nindent 12 }}
+            - { name: TRANSFORM_CORE_ONLY, value: "1" }
+            # Run ONLY the heavy full-scan marts (revenue_ledger, journey_events_reversion, cac, cm).
+            - { name: GOLD_LANE, value: "heavy" }
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.sparkV4.resources | nindent 12 }}
+
+      - name: serving-cache-bust
+        container:
+          image: {{ $swRef | quote }}
+          imagePullPolicy: {{ $swImg.pullPolicy }}
+          command: ["pnpm", "exec", "tsx", "src/jobs/gold-rewritten-publish/run.ts"]
+          {{- if $envFrom }}
+          envFrom:
+            - secretRef:
+                name: {{ $envFrom }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.defaults.resources | nindent 12 }}
+{{- end }}
 {{- end }}

@@ -122,6 +122,37 @@ def test_tier_config_files_exist():
         assert len(rest) > 0, f"{tier}: no rest jobs discovered"
 
 
+def test_gold_lane_splits_heavy_marts(monkeypatch):
+    """P1 tiered cadence: GOLD_LANE selects which gold marts a `run_all.py gold` run owns.
+      all   → every gold mart (today's behaviour; heavy ⊆ all).
+      fast  → the incremental-safe marts, NONE of the heavy full-scan ones.
+      heavy → ONLY the heavy full-scan marts (revenue_ledger, journey_events_reversion, cac, cm).
+    Drives the real run_tier over the real gold dir with _run_job_file stubbed to just record names."""
+    ran: list[str] = []
+    monkeypatch.setattr(run_all, "_run_job_file", lambda path: ran.append(os.path.basename(path)))
+    heavy = set(run_all.GOLD_HEAVY_JOBS)
+
+    def run_lane(lane: str) -> set[str]:
+        ran.clear()
+        monkeypatch.setattr(run_all, "GOLD_LANE", lane)
+        run_all.run_tier(object(), "gold")  # run_tier doesn't touch the connection (jobs are stubbed)
+        return set(ran)
+
+    all_jobs = run_lane("all")
+    fast = run_lane("fast")
+    heavy_only = run_lane("heavy")
+
+    # Every heavy mart exists in the full set (sanity: the basenames match real files).
+    assert heavy <= all_jobs, f"heavy marts not all present in the full gold set: {heavy - all_jobs}"
+    # fast lane = the full set MINUS the heavy marts (and shares nothing with heavy).
+    assert fast == all_jobs - heavy
+    assert not (fast & heavy)
+    # heavy lane = EXACTLY the heavy marts.
+    assert heavy_only == heavy
+    # fast ∪ heavy reconstructs the whole set — no mart is dropped by the split.
+    assert fast | heavy_only == all_jobs
+
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 # ADR-0016 P2.2 — resident warm micro-batch worker: pure-logic control-loop tests
 # ══════════════════════════════════════════════════════════════════════════════════════════════════

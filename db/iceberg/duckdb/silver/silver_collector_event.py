@@ -56,7 +56,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _base import ensure_table, incremental_window, merge_on_pk, run_job  # noqa: E402
 from _catalog import CATALOG, BRONZE_NAMESPACE, SILVER_NAMESPACE  # noqa: E402
-from _silver_technical_ports import event_category, identify_consent_denied  # noqa: E402
+# The pure ports event_category / identify_consent_denied are no longer imported at runtime — the Stage-1
+# gate columns are now vectorized SQL macros (_MACRO_* below). _silver_technical_ports.py stays the spec
+# source of truth and the parity oracle (test_silver_collector_event_macros.py pins macro == port).
 
 # ADR-0010: the collector lane lands VERBATIM in collector_events_connect (payload + kafka coords only).
 CONNECT_TABLE = (
@@ -126,16 +128,75 @@ def _in_list(vals) -> str:
     return ", ".join(f"'{v}'" for v in sorted(vals))
 
 
+# ── Stage-1 gate columns as VECTORIZED SQL MACROS (P3 keystone perf) ──────────────────────────────────
+# Was: two Python scalar UDFs (con.create_function of event_category / identify_consent_denied). Python
+# scalar UDFs break DuckDB's vectorized execution — every row is marshalled Python↔C, the dominant per-row
+# cost on the 78k-rows/window keystone (~18.5min/tick). These MACROs are BYTE-IDENTICAL SQL translations of
+# the SAME pure ports (branch order + return values preserved; see _silver_technical_ports.py, which stays
+# the spec source of truth + the parity oracle in test_silver_collector_event_macros.py). A macro is inlined
+# into the query plan → fully vectorized. Call sites are UNCHANGED (sce_event_category(event_type) /
+# sce_identify_consent_denied(event_type, consent_state, analytics_flag)). CREATE OR REPLACE is idempotent
+# across the shared-connection multi-pass run (no per-connection registry dance needed).
+#
+# event_category: prefix-first, `.upsert.v1` decided BEFORE the broad prefixes (order matters —
+#   product.upsert.v1 → other, product.viewed → behaviour). event_type is trim+lower'd (Python .strip().lower()).
+_MACRO_EVENT_CATEGORY = """
+CREATE OR REPLACE MACRO sce_event_category(event_type) AS (
+  CASE
+    WHEN trim(lower(coalesce(event_type, ''))) = ''                THEN 'other'
+    WHEN trim(lower(event_type)) LIKE '%.upsert.v1'                THEN 'other'
+    WHEN trim(lower(event_type)) LIKE 'order.%'
+      OR trim(lower(event_type)) LIKE 'refund.%'
+      OR trim(lower(event_type)) LIKE 'payment.%'
+      OR trim(lower(event_type)) LIKE 'settlement.%'               THEN 'transaction'
+    WHEN trim(lower(event_type)) LIKE 'spend.%'
+      OR trim(lower(event_type)) LIKE 'ad.%'                       THEN 'marketing'
+    WHEN trim(lower(event_type)) LIKE 'shiprocket.%'
+      OR trim(lower(event_type)) LIKE 'fulfillment.%'
+      OR trim(lower(event_type)) = 'gokwik.rto_predict.v1'        THEN 'fulfillment'
+    WHEN trim(lower(event_type)) LIKE 'ticket.%'
+      OR trim(lower(event_type)) LIKE 'call.%'
+      OR trim(lower(event_type)) LIKE 'support.%'                 THEN 'support'
+    WHEN trim(lower(event_type)) IN (
+           'dead.click','rage.click','exit_intent','video','identify',
+           'pixel.identify.v1','coupon.applied','download','share')
+      OR trim(lower(event_type)) LIKE 'page.%'
+      OR trim(lower(event_type)) LIKE 'product.%'
+      OR trim(lower(event_type)) LIKE 'collection.%'
+      OR trim(lower(event_type)) LIKE 'cart.%'
+      OR trim(lower(event_type)) LIKE 'session.%'
+      OR trim(lower(event_type)) LIKE 'scroll.%'
+      OR trim(lower(event_type)) LIKE 'element.%'
+      OR trim(lower(event_type)) LIKE 'search.%'
+      OR trim(lower(event_type)) LIKE 'form.%'
+      OR trim(lower(event_type)) LIKE 'user.%'
+      OR trim(lower(event_type)) LIKE '%checkout%'                THEN 'behaviour'
+    ELSE 'other'
+  END
+);
+"""
+# identify_consent_denied: event_type matched RAW (case-sensitive, NOT trim/lower'd — mirrors the Python
+#   `event_type not in IDENTIFY_EVENT_TYPES`); NULL event_type → not identify → FALSE. consent_state present →
+#   denied unless 'granted'; else analytics_flag=='false' → denied; else FALSE.
+_MACRO_IDENTIFY_CONSENT_DENIED = """
+CREATE OR REPLACE MACRO sce_identify_consent_denied(event_type, consent_state, analytics_flag) AS (
+  CASE
+    WHEN event_type IS NULL OR event_type NOT IN ('identify', 'pixel.identify.v1') THEN FALSE
+    WHEN consent_state IS NOT NULL          THEN (lower(trim(consent_state)) <> 'granted')
+    WHEN analytics_flag IS NOT NULL
+      AND lower(trim(analytics_flag)) = 'false'                                    THEN TRUE
+    ELSE FALSE
+  END
+);
+"""
+
+
 def _register_udfs(con) -> None:
-    """Expose the two VENDORED pure Stage-1 ports as DuckDB scalar UDFs — the DuckDB analogue of the Spark
-    event_category_udf() / identify_consent_denied_udf() (which udf-wrap the SAME functions)."""
-    con.create_function(
-        "sce_event_category", event_category, ["VARCHAR"], "VARCHAR", null_handling="special",
-    )
-    con.create_function(
-        "sce_identify_consent_denied", identify_consent_denied,
-        ["VARCHAR", "VARCHAR", "VARCHAR"], "BOOLEAN", null_handling="special",
-    )
+    """Register the two Stage-1 gate columns as VECTORIZED SQL macros (replacing the old Python scalar UDFs
+    — see the _MACRO_* rationale above). BYTE-IDENTICAL to the _silver_technical_ports.py pure ports; the
+    macro-vs-port parity is pinned by test_silver_collector_event_macros.py. Call sites are unchanged."""
+    con.execute(_MACRO_EVENT_CATEGORY)
+    con.execute(_MACRO_IDENTIFY_CONSENT_DENIED)
 
 
 def _jdbc_to_libpq(jdbc_url: str) -> str:

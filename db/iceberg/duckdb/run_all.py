@@ -142,6 +142,27 @@ IDENTITY_OWNED_JOBS = frozenset({
     "silver_identity_unmerge.py",
 })
 
+# ── Tiered gold cadence (P1 — medallion slowness remediation, ADR-0019 follow-up) ────────────────────
+# GOLD_HEAVY_JOBS are the always-FULL-SCAN gold marts that dominate the pass (measured prod: revenue_ledger
+# ~21min + journey_events_reversion ~13min = 63% of the gold pass) and CANNOT be made incremental —
+# gold_revenue_ledger / gold_cac / gold_contribution_margin fold with delete_orphans / two independent
+# Silver source clocks (money-safety; see gold_contribution_margin.py), and journey_events_reversion is a
+# correctness-eventual BI job. They don't need */5 freshness, so we DECOUPLE them onto a slower cadence
+# (the v4-medallion-heavy CronWorkflow) instead of dragging every 5-min tick. The fast lane reads their
+# LAST-WRITTEN Iceberg table (slightly stale, converges — the same stale-tolerant pattern the CORE↔IDENTITY
+# split already uses for silver_identity_map). GOLD_LANE selects which marts a `run_all.py gold` run owns:
+#   "all"  (default) — today's behaviour: the single tick runs every gold mart (dev shim, resident, legacy).
+#   "fast"           — skip GOLD_HEAVY_JOBS (the */5 fast lane).
+#   "heavy"          — run ONLY GOLD_HEAVY_JOBS (the */20 heavy lane).
+# Silver and every non-gold tier ignore GOLD_LANE entirely.
+GOLD_HEAVY_JOBS = frozenset({
+    "gold_revenue_ledger.py",
+    "gold_journey_events_reversion.py",
+    "gold_cac.py",
+    "gold_contribution_margin.py",
+})
+GOLD_LANE = os.environ.get("GOLD_LANE", "all").strip().lower()
+
 # ── Wave 2a: HOT-TABLE MAINTENANCE FOLDED INTO THE TRANSFORM TICK (2026-07-21 keystone incident) ──────
 # The */5 medallion MERGE churn re-fragments silver_collector_event ~2.4 files/min (723→1,442 live files
 # in ~5h); duckdb-iceberg's EXECUTE phase costs ~200ms PER DATA FILE on a cold serving connection, so an
@@ -399,6 +420,16 @@ def run_tier(shared: "_SharedConn", tier: str) -> int:
     subdir, pattern, required, ordered, passes = TIERS[tier]
     job_dir = os.path.join(HERE, subdir)
 
+    # Tiered gold cadence: the fast lane skips the heavy full-scan marts; the heavy lane runs ONLY them.
+    # Applied to required + ordered here; the `rest` glob is filtered symmetrically below. Non-gold tiers
+    # and GOLD_LANE="all" are untouched (today's behaviour).
+    if tier == "gold" and GOLD_LANE == "fast":
+        required = [j for j in required if j not in GOLD_HEAVY_JOBS]
+        ordered = [j for j in ordered if j not in GOLD_HEAVY_JOBS]
+    elif tier == "gold" and GOLD_LANE == "heavy":
+        required = [j for j in required if j in GOLD_HEAVY_JOBS]
+        ordered = [j for j in ordered if j in GOLD_HEAVY_JOBS]
+
     # Required jobs first — hard deps every other job reads; a failure aborts (raises to the caller).
     for req in required:
         print(f"▶ {req} (required)", flush=True)
@@ -439,6 +470,12 @@ def run_tier(shared: "_SharedConn", tier: str) -> int:
         b for b in (os.path.basename(p) for p in glob.glob(os.path.join(job_dir, pattern)))
         if b not in skip and not b.startswith("_")
     )
+    # Tiered gold cadence (symmetric with the required/ordered filter above): fast lane drops the heavy
+    # marts from the glob; heavy lane keeps ONLY them. No-op for non-gold tiers / GOLD_LANE="all".
+    if tier == "gold" and GOLD_LANE == "fast":
+        rest = [b for b in rest if b not in GOLD_HEAVY_JOBS]
+    elif tier == "gold" and GOLD_LANE == "heavy":
+        rest = [b for b in rest if b in GOLD_HEAVY_JOBS]
     rest_fails = 0
     for p in range(1, passes + 1):
         if passes > 1:

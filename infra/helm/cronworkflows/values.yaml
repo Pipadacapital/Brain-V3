@@ -208,7 +208,7 @@ sparkV4:
   medallionSchedule: "*/5 * * * *"   # every 5 min — the CORE chain (keystone → silver ×2 → gold → cache-bust)
   # ── Tiered gold cadence (P1 medallion-slowness fix) ──────────────────────────────────────────────
   # heavyLane.enabled splits the always-full-scan heavy/money gold marts (revenue_ledger ~21min +
-  # journey_events_reversion ~13min + cac + contribution_margin ≈ 63% of the gold pass) OFF the */5 fast
+  # cac + contribution_margin — all always-full-scan money marts) OFF the */5 fast
   # lane and onto their OWN slower CronWorkflow (v4-medallion-heavy). WHY: they can't be made incremental
   # (delete_orphans full-fold + two independent Silver source clocks — money-safety), don't need */5
   # freshness, and running them every tick dragged the whole run to ~99min > the 2.5h deadline on variance

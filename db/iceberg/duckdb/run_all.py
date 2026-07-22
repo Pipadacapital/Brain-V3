@@ -143,21 +143,28 @@ IDENTITY_OWNED_JOBS = frozenset({
 })
 
 # ── Tiered gold cadence (P1 — medallion slowness remediation, ADR-0019 follow-up) ────────────────────
-# GOLD_HEAVY_JOBS are the always-FULL-SCAN gold marts that dominate the pass (measured prod: revenue_ledger
-# ~21min + journey_events_reversion ~13min = 63% of the gold pass) and CANNOT be made incremental —
-# gold_revenue_ledger / gold_cac / gold_contribution_margin fold with delete_orphans / two independent
-# Silver source clocks (money-safety; see gold_contribution_margin.py), and journey_events_reversion is a
-# correctness-eventual BI job. They don't need */5 freshness, so we DECOUPLE them onto a slower cadence
-# (the v4-medallion-heavy CronWorkflow) instead of dragging every 5-min tick. The fast lane reads their
-# LAST-WRITTEN Iceberg table (slightly stale, converges — the same stale-tolerant pattern the CORE↔IDENTITY
-# split already uses for silver_identity_map). GOLD_LANE selects which marts a `run_all.py gold` run owns:
+# GOLD_HEAVY_JOBS are the always-FULL-SCAN money marts that dominate the pass (measured prod: revenue_ledger
+# ~21min, + cac + contribution_margin) and CANNOT be made incremental — they fold with delete_orphans / two
+# independent Silver source clocks (money-safety; see gold_contribution_margin.py). They don't need */5
+# freshness, so we DECOUPLE them onto a slower cadence (the v4-medallion-heavy CronWorkflow) instead of
+# dragging every 5-min tick. The fast lane reads their LAST-WRITTEN Iceberg table (slightly stale, converges
+# — the same stale-tolerant pattern the CORE↔IDENTITY split uses for silver_identity_map).
+#
+# SINGLE-WRITER-PER-TABLE INVARIANT (why the heavy set is EXACTLY these three): the fast and heavy crons run
+# on INDEPENDENT schedules and OVERLAP in wall-clock, so a table written by BOTH lanes would race on the
+# Iceberg optimistic-concurrency commit → 409 CommitFailedException (prod 2026-07-23: the first cut wrongly
+# included gold_journey_events_reversion, which writes gold_journey_events — the SAME table the fast lane's
+# gold_journey_events.py writes → the heavy reversion lost the commit race every run). Each heavy mart here
+# writes a table (gold_revenue_ledger / gold_cac / gold_contribution_margin) that NO fast-lane mart writes —
+# so the two lanes are commit-disjoint. gold_journey_events_reversion is therefore NOT heavy: it stays in the
+# fast lane, where it runs sequentially AFTER gold_journey_events in the same process (single writer, no race).
+# GOLD_LANE selects which marts a `run_all.py gold` run owns:
 #   "all"  (default) — today's behaviour: the single tick runs every gold mart (dev shim, resident, legacy).
-#   "fast"           — skip GOLD_HEAVY_JOBS (the */5 fast lane).
+#   "fast"           — skip GOLD_HEAVY_JOBS (the */5 fast lane; still runs gold_journey_events + its reversion).
 #   "heavy"          — run ONLY GOLD_HEAVY_JOBS (the */20 heavy lane).
 # Silver and every non-gold tier ignore GOLD_LANE entirely.
 GOLD_HEAVY_JOBS = frozenset({
     "gold_revenue_ledger.py",
-    "gold_journey_events_reversion.py",
     "gold_cac.py",
     "gold_contribution_margin.py",
 })

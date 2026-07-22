@@ -22,9 +22,13 @@
 #     assembled at runtime, so there is no single static view to check. These are matched by their own
 #     generator contract, not this guard. (A bare `mv_gold_` prefix with nothing after it is likewise not
 #     a whole view name.)
+#   • the semantic-metrics GENERATED tree (packages/semantic-metrics/src/generated/**): the compiled
+#     mv_metric_* views + their catalog.json are the EXPANSION of exactly those dynamic names — a closed,
+#     self-consistent generated set (each generated/views/*.sql defines the view its catalog references),
+#     governed by the compiler's own contract, not this guard. Not authored endpoint code.
 #
-# EXCLUDED from scanning: node_modules, .git, dist/.next/coverage build output, *.snap, this guard + its
-# self-test corpus.
+# EXCLUDED from scanning: node_modules, .git, dist/.next/coverage build output, *.snap, generated semantic
+# views (packages/semantic-metrics/src/generated/**), this guard + its self-test corpus.
 #
 # Usage:
 #   tools/lint/view-drift-guard.sh            # scan apps/** + packages/**; exit 1 on any drifted mv_ ref
@@ -79,6 +83,9 @@ is_excluded() {
     .git/*) return 0 ;;
     */dist/*|*/.next/*|*/coverage/*|dist/*|.next/*|coverage/*) return 0 ;;
     *.snap) return 0 ;;
+    # semantic-metrics GENERATED tree — compiled mv_metric_* views + catalog.json (the runtime-assembled
+    # family's expansion; governed by the compiler contract, not this guard). Not authored endpoint code.
+    */semantic-metrics/src/generated/*) return 0 ;;
     tools/lint/view-drift-guard.sh) return 0 ;;
     *.test.ts|*.spec.ts|*.test.tsx|*.spec.tsx) return 0 ;;
     */test/*|*/tests/*|*/__tests__/*) return 0 ;;

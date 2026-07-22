@@ -27,7 +27,7 @@ image:
   # sha256:bc865113… pre-resident pin CrashLooped prod for 3h, 2026-07-19).
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
   tag: ""
-  digest: "sha256:3fedbfd91ff66bedccff724771ef36ade9c53634fa93eb8053afbc964df127cf"
+  digest: "sha256:899cb5f32f72478020d72649f16c88a62d8308472e7d4440ebf9dffd48a57b57"
 # The SAME catalog-creds secret the cronworkflows medallion steps envFrom.
 envSecretName: core-env
 serviceAccount:

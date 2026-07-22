@@ -38,6 +38,17 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
     compute: () => Promise<T>,
   ): Promise<T> => (servingCache ? servingCache.read(brandId, metricId, params, compute) : compute());
 
+  // ADR-0019 WS-2: blended_roas was historically UNCACHED (recomputed every hit). Route it through
+  // the cache ONLY when SWR is on, so merging is a no-op until SERVING_CACHE_SWR flips — then it is
+  // served stale-while-revalidate (fast first-hit after a TTL boundary) instead of a cold read.
+  const cachedUnderSwr = <T>(
+    brandId: string,
+    metricId: string,
+    params: Record<string, unknown>,
+    compute: () => Promise<T>,
+  ): Promise<T> =>
+    servingCache?.swrEnabled ? servingCache.read(brandId, metricId, params, compute) : compute();
+
   // SPEC:C.4 — resolve the per-brand marts-migration flag (default OFF, fail-closed). ON → ad-spend /
   // blended-ROAS spend reads switch to the Wave-C measurement spend view (parity-safe alias; AMD-16).
   const martsMigrationEnabled = (brandId: string): Promise<boolean> =>
@@ -200,12 +211,18 @@ export function registerAnalyticsMarketingRoutes(fastify: FastifyInstance, deps:
       // wired as the semanticCompute and the flag migrates it, parity-pinned to the minor unit.
       const brandId = auth.brandId; // const-capture preserves the !brandId guard across the awaits/closure
       const martsMigration = await martsMigrationEnabled(brandId);
-      const result = await routeMetric(brandId, 'blended_roas', () =>
-        getBlendedRoas(
-          brandId,
-          { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
-          { srPool, measurementMartsMigration: martsMigration },
-        ),
+      const result = await cachedUnderSwr(
+        brandId,
+        'blended_roas',
+        { fromStr, toStr, martsMigration },
+        () =>
+          routeMetric(brandId, 'blended_roas', () =>
+            getBlendedRoas(
+              brandId,
+              { fromDate: new Date(`${fromStr}T00:00:00Z`), toDate: new Date(`${toStr}T00:00:00Z`) },
+              { srPool, measurementMartsMigration: martsMigration },
+            ),
+          ),
       );
 
       // FX convenience view (display-only): a SINGLE blended ROAS in the brand's primary currency.

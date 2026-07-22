@@ -29,6 +29,7 @@ function recordingCache(opts: { failOn?: (brand: string, metricId: string) => bo
 } {
   const reads: Array<{ brand: string; metricId: string }> = [];
   const cache: ServingCacheReader = {
+    swrEnabled: false,
     async read<T>(brandId: string, metricId: string, _params: unknown, _compute: () => Promise<T>): Promise<T> {
       reads.push({ brand: brandId, metricId });
       if (opts.failOn?.(brandId, metricId)) throw new Error('compute blew up');

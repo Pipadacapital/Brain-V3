@@ -297,7 +297,7 @@ spec:
        It runs gold(heavy) then serving-cache-bust ONLY -- NO silver step (it reads the silver tables the
        fast lane writes every 5 min). Writes a DISJOINT set of gold tables from the fast lane (no shared
        table, no write conflict); Iceberg snapshot isolation covers the fast lane reading the ledger while
-       this lane rewrites it. concurrencyPolicy Forbid means a long heavy run skips its own next tick. */ -}}
+       this lane rewrites it. concurrencyPolicy Forbid means a long heavy run skips its own next tick. */}}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow

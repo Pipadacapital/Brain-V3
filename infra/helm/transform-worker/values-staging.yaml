@@ -8,7 +8,7 @@ image:
   # Same brain-duckdb image + digest the cronworkflows staging medallion steps run.
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
   tag: ""
-  digest: "sha256:73c35267d83f3c3abd94c8d9851b68df294310eb9f3b9dcf0b622743ba7749f0"
+  digest: "sha256:899cb5f32f72478020d72649f16c88a62d8308472e7d4440ebf9dffd48a57b57"
 # Same catalog-creds secret the cronworkflows staging medallion steps envFrom.
 envSecretName: core-env
 serviceAccount:

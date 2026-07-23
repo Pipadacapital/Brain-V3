@@ -20,7 +20,7 @@ enabled: true
 #   • Freshness SPOF gone — a single worker/node loss no longer stalls ALL Bronze
 #     landing; tasks re-balance onto the surviving worker.
 # Reversible: set replicas back to 1 to restore the previous single-writer topology.
-replicas: 0   # FLUSH-STOP: Bronze sink off so nothing lands mid-truncate. Revert → 2.
+replicas: 2
 
 # REL-4: keep the 2 HA workers off the same node (and prefer distinct AZs) so one node
 # or AZ loss cannot take both. ScheduleAnyway/preferred = SOFT — never blocks scheduling

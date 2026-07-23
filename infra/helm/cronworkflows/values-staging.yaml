@@ -1,7 +1,7 @@
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-core-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
-  digest: "sha256:3a66491a79247ac4fc7f4669ae382c38166f64a2c34f85f788148bcaa1d66626"
+  digest: "sha256:ffad9646a90562b072c186a798d4b2bff662d65c200bb0628074234eabe05ca8"
 streamWorkerImage:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
   tag: "" # B3: no mutable :latest — CI populates image.digest at deploy (fail-closed in the template)
@@ -16,13 +16,13 @@ sparkBronze:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:899cb5f32f72478020d72649f16c88a62d8308472e7d4440ebf9dffd48a57b57"
+    digest: "sha256:ca9327390c155e0d2047a4deae545f9ee1477dd59afcc7fd58da39a32a4fe996"
 # duckdb V4 Silver/Gold transform crons — same image as sparkBronze (one brain-duckdb image).
 sparkV4:
   image:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
-    digest: "sha256:899cb5f32f72478020d72649f16c88a62d8308472e7d4440ebf9dffd48a57b57"
+    digest: "sha256:ca9327390c155e0d2047a4deae545f9ee1477dd59afcc7fd58da39a32a4fe996"
 # ADR-0016 D3 / CORE↔IDENTITY re-split — resident warm transform worker (staging validation env).
 # transform-worker values-staging already has enabled=true; this is the LOCKSTEP flag its header calls
 # for — it SUPPRESSES the v4-medallion (CORE) cron so the resident Deployment is the sole CORE writer.

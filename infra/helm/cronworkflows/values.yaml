@@ -210,19 +210,19 @@ sparkV4:
   # applies it — a manual `kubectl patch suspend` is reverted by selfHeal). Set true in an overlay for a
   # maintenance op needing a frozen Silver snapshot (the gold-incremental parity harness), then back to false.
   transformSuspend: false
-  # ── Tiered gold cadence (P1 medallion-slowness fix) ──────────────────────────────────────────────
-  # heavyLane.enabled splits the always-full-scan heavy/money gold marts (revenue_ledger ~21min +
-  # cac + contribution_margin — all always-full-scan money marts) OFF the */5 fast
-  # lane and onto their OWN slower CronWorkflow (v4-medallion-heavy). WHY: they can't be made incremental
-  # (delete_orphans full-fold + two independent Silver source clocks — money-safety), don't need */5
-  # freshness, and running them every tick dragged the whole run to ~99min > the 2.5h deadline on variance
-  # → Failed runs + ~100min effective freshness. Split ON: fast lane finishes far under deadline; recognized
-  # -revenue freshness = the heavy schedule (*/20). Split OFF: run_all defaults GOLD_LANE=all → the single
-  # v4-medallion runs every gold mart (today's behaviour) — a clean one-flag revert.
+  # ── Tiered gold cadence (P1) — REVERTED (2026-07-23) ─────────────────────────────────────────────
+  # heavyLane.enabled=true SPLIT the always-full-scan money marts onto a separate v4-medallion-heavy
+  # */20 cron. In prod this BACKFIRED: the fast (*/5) and heavy (*/20) lanes both run heavy DuckDB on the
+  # same CPU-limited streaming pool and overlap almost constantly → CPU CONTENTION → the fast lane's gold
+  # pass ballooned from ~53min (monolith) to 66–101min → it blew the 2.5h workflow deadline on 3
+  # consecutive runs (worse than the pre-split occasional failures). The real bottleneck was always gold
+  # FULL-SCAN, which GOLD_INCREMENTAL fixes — not the cadence. So revert to the single cron (enabled=false
+  # → run_all defaults GOLD_LANE=all → v4-medallion runs every gold mart, no second lane, no contention)
+  # and rely on GOLD_INCREMENTAL for the speedup. Simpler + reliable. Keep the knob for a future revisit.
   heavyLane:
-    enabled: true
-    schedule: "*/20 * * * *"          # every 20 min — recognized-revenue / cm2 freshness (money marts)
-    activeDeadlineSeconds: 5400        # 90 min — heavy pass is ~34min; generous margin for variance
+    enabled: false
+    schedule: "*/20 * * * *"          # (inert while enabled=false)
+    activeDeadlineSeconds: 5400
   # ── CORE↔IDENTITY re-split (2026-07-19 freshness incident; templates/v4-identity.yaml) ──────────
   # The SLOW identity(resolve) → map-export pair used to be two steps INSIDE the v4-medallion chain
   # (ADR-0016 D2). A data-heavy brand's identity watermark ran ~6 DAYS behind (each 6h slice ~2h), so

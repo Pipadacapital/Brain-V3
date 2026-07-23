@@ -1,4 +1,4 @@
-replicaCount: 0   # FLUSH-STOP: connector/backfill/erasure runners off while the DB is wiped. Revert → 3.
+replicaCount: 3
 
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-stream-worker-prod
@@ -97,7 +97,7 @@ resources:
 # (KEDA operator installed via infra/argocd/envs/prod/keda.yaml, proven on trino) and
 # suppresses the plain CPU HPA. Rollback = keda.enabled: false (plain CPU HPA returns).
 autoscaling:
-  enabled: false   # FLUSH-STOP: HPA off so replicaCount:0 holds. Revert → true.
+  enabled: true
   # ADR-0015 right-size: stream-worker is no longer the live-lane consumer fleet
   # (CollectorEventConsumer + identity/consent/cache consumers removed; Kafka
   # Connect lands Bronze, identity is a Silver-stage batch job; WS4 completion:

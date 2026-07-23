@@ -1,4 +1,4 @@
-replicaCount: 0   # FLUSH-STOP: pixels off while the medallion is wiped + re-ingested from 0. Revert → 2.
+replicaCount: 2
 
 image:
   repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-collector-prod
@@ -56,6 +56,6 @@ resources:
 # low traffic. 2 keeps the ingest front HA (survives one pod/node loss) behind the ALB + client
 # retries; the HPA still bursts to maxReplicas=24 on real spikes. Rollback: minReplicas/replicaCount 3.
 autoscaling:
-  enabled: false   # FLUSH-STOP: HPA off so replicaCount:0 holds (else it scales back to minReplicas). Revert → true.
+  enabled: true
   minReplicas: 2
   maxReplicas: 24

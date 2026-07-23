@@ -82,6 +82,11 @@ metadata:
     brain.io/job: v4-medallion
 spec:
   schedule: {{ .Values.sparkV4.medallionSchedule | quote }}
+  # GitOps-driven freeze knob (default false). Set sparkV4.transformSuspend=true in values-prod to durably
+  # suspend the CORE transform writers for a maintenance op (e.g. the gold-incremental parity harness needs
+  # a frozen Silver snapshot) — a manual `kubectl patch suspend` does NOT hold here (ArgoCD selfHeal reverts
+  # it), so the suspend must come from git. Flip back to false to resume.
+  suspend: {{ .Values.sparkV4.transformSuspend | default false }}
   timezone: {{ $tz | quote }}
   # ONE writer: a long run skips the next tick (never overlaps a second medallion writer). This is
   # the cron-side single-writer guarantee; WS2's resident worker takes over the pg advisory-lock role.
@@ -309,6 +314,7 @@ metadata:
     brain.io/job: v4-medallion-heavy
 spec:
   schedule: {{ .Values.sparkV4.heavyLane.schedule | quote }}
+  suspend: {{ .Values.sparkV4.transformSuspend | default false }}   # gitops freeze knob (see v4-medallion)
   timezone: {{ $tz | quote }}
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: {{ .Values.defaults.startingDeadlineSeconds }}

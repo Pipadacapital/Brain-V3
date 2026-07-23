@@ -60,7 +60,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gold-parity-check
-          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:32086d1b05c8f99097f34dbcb286c7d6151bd198319ca30573adaea8c49c53d8
+          image: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod@sha256:ca9327390c155e0d2047a4deae545f9ee1477dd59afcc7fd58da39a32a4fe996
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

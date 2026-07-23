@@ -69,6 +69,7 @@ metadata:
     brain.io/job: v4-identity
 spec:
   schedule: {{ .Values.sparkV4.identitySchedule | quote }}
+  suspend: {{ .Values.sparkV4.transformSuspend | default false }}   # gitops freeze knob (see v4-medallion)
   timezone: {{ $tz | quote }}
   # ONE identity writer: a long run skips the identity lane's OWN next tick (never overlaps a second
   # identity writer) — but it NEVER blocks the separate v4-medallion (core) cron. That decoupling is

@@ -206,6 +206,10 @@ sparkV4:
   # Forbid self-throttles: a long run skips the next tick (never overlaps a second medallion writer), so
   # freshness degrades gracefully to whatever the whole chain can sustain warm.
   medallionSchedule: "*/5 * * * *"   # every 5 min — the CORE chain (keystone → silver ×2 → gold → cache-bust)
+  # GitOps-driven freeze: true → suspends v4-medallion + v4-medallion-heavy + v4-identity (durable, ArgoCD
+  # applies it — a manual `kubectl patch suspend` is reverted by selfHeal). Set true in an overlay for a
+  # maintenance op needing a frozen Silver snapshot (the gold-incremental parity harness), then back to false.
+  transformSuspend: false
   # ── Tiered gold cadence (P1 medallion-slowness fix) ──────────────────────────────────────────────
   # heavyLane.enabled splits the always-full-scan heavy/money gold marts (revenue_ledger ~21min +
   # cac + contribution_margin — all always-full-scan money marts) OFF the */5 fast

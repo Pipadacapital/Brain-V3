@@ -28,6 +28,12 @@ sparkV4:
     repository: 380254378136.dkr.ecr.ap-south-1.amazonaws.com/brain-duckdb-prod
     tag: ""
     digest: "sha256:ca9327390c155e0d2047a4deae545f9ee1477dd59afcc7fd58da39a32a4fe996"
+  # ── P2 gold-incremental parity FREEZE (temporary) ────────────────────────────────────────────────
+  # true → durably suspends v4-medallion + v4-medallion-heavy + v4-identity so Silver/Bronze cannot move
+  # while the gold-parity-check.job harness builds each mart _incr + _full on ONE frozen snapshot. After the
+  # job exits, flip this back to false (PR B) to resume the medallion. Leaving it true STOPS all transform
+  # freshness — do not forget to revert.
+  transformSuspend: true
   # Wave 2a (2026-07-21 keystone incident): fold hot-table maintenance into the transform tick. run_all.py
   # compacts + expires these two churn-heavy tables IN-PROCESS at the end of every */5 gold pass (same pod,
   # same run — best-effort, never fails the medallion), so compaction rides the exact MERGE churn that
